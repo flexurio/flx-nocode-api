@@ -53,6 +53,7 @@ To run this project, you will need to add the following environment variables to
 
 `LOC_LOG=`
 
+`CUSTOME_JWT_QUERY="SELECT email FROM flx_users WHERE id = {:?}`
 
 ## Roadmap
 
@@ -61,3 +62,5 @@ To run this project, you will need to add the following environment variables to
 - Then create an API configuration in `config_example` -> `entity` -> create a file like the name in the list in the routes.json file
 
 - Continue to create an API configuration like the sample in flx_user, there is already a `GET` `POST` `PUT` `DELETE` `PATCH` `TRACE` method
+
+- `CUSTOME_JWT_QUERY` is used as a reference to fetch the email from flx_users based on the ID, for example, to authenticate an admin.
