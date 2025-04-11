@@ -1,0 +1,262 @@
+{
+        "table": "model_mobil",
+        "primary_key": {
+            "columns": ["id"],
+            "auto_increment": true
+        },
+        "columns": [
+            {
+                "name": "id",
+                "auto_increment": true,
+                "nullable": false,
+                "function": "",
+                "type_data": "int"
+            },
+            {
+                "name": "id_travel",
+                "auto_increment": false,
+                "nullable": false,
+                "function": "",
+                "type_data": "int"
+            },
+            {
+                "name": "id_kategori",
+                "auto_increment": false,
+                "nullable": false,
+                "function": "",
+                "type_data": "int"
+            },
+            {
+                "name": "merek",
+                "auto_increment": false,
+                "nullable": false,
+                "function": "",
+                "type_data": "varchar(255)"
+            },
+            {
+                "name": "model",
+                "auto_increment": false,
+                "nullable": false,
+                "function": "",
+                "type_data": "varchar(255)"
+            },
+            {
+                "name": "tahun",
+                "auto_increment": false,
+                "nullable": false,
+                "function": "",
+                "type_data": "int"
+            },
+            {
+                "name": "transmisi",
+                "auto_increment": false,
+                "nullable": false,
+                "function": "",
+                "type_data": "enum('otomatis','manual')"
+            },
+            {
+                "name": "jenis_bahan_bakar",
+                "auto_increment": false,
+                "nullable": false,
+                "function": "",
+                "type_data": "enum('bensin','diesel','electric')"
+            },
+            {
+                "name": "jumlah_seat",
+                "auto_increment": false,
+                "nullable": false,
+                "function": "",
+                "type_data": "int"
+            },
+            {
+                "name": "jumlah_bagasi",
+                "auto_increment": false,
+                "nullable": false,
+                "function": "",
+                "type_data": "int"
+            },
+            {
+                "name": "deskripsi",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "text"
+            },
+            {
+                "name": "jumlah_mobil",
+                "auto_increment": false,
+                "nullable": false,
+                "function": "",
+                "type_data": "int"
+            },
+            {
+                "name": "daily_price",
+                "auto_increment": false,
+                "nullable": false,
+                "function": "",
+                "type_data": "float"
+            },
+            {
+                "name": "daily_driver_price",
+                "auto_increment": false,
+                "nullable": false,
+                "function": "",
+                "type_data": "float"
+            },
+            {
+                "name": "delivery_price",
+                "auto_increment": false,
+                "nullable": false,
+                "function": "",
+                "type_data": "float"
+            },
+            {
+                "name": "created_at",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "datetime"
+            },
+            {
+                "name": "updated_at",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "datetime"
+            },
+            {
+                "name": "deleted_at",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "datetime"
+            },
+            {
+                "name": "created_by_id",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "int"
+            },
+            {
+                "name": "updated_by_id",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "int"
+            },
+            {
+                "name": "deleted_by_id",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "int"
+            }
+        ],
+        "indexes": [
+            {
+                "name": "index_model_mobil_id_travel",
+                "columns": ["id_travel"],
+                "unique": false
+            }
+        ],
+        "redis": {
+            "keys": ["id_travel", "id_kategori"],
+            "ttl": 3600
+        },
+        "get": {
+            "columns": [
+                "model_mobil.id",
+                "model_mobil.merek",
+                "model_mobil.model",
+                "model_mobil.tahun",
+                "model_mobil.transmisi",
+                "model_mobil.jenis_bahan_bakar",
+                "model_mobil.jumlah_seat",
+                "model_mobil.jumlah_bagasi",
+                "model_mobil.daily_price",
+                "model_mobil.daily_driver_price",
+                "model_mobil.delivery_price",
+                "model_mobil.deskripsi",
+                "unit_mobil.nomor_plat",
+                "unit_mobil.kota",
+                "unit_mobil.provinsi",
+                "COUNT(unit_mobil.id)"
+            ],
+            "parameters": [
+                "search",
+                "page",
+                "sort",
+                "ascending",
+                "limit",
+                "deleted_at.is",
+                "unit_mobil.kota.eq",
+                "paramjoin_1.eq",
+                "paramjoin_2.eq"
+            ],
+            "join_tables": [
+                {
+                    "table": "unit_mobil",
+                    "columns": ["id_mobil", "kota", "provinsi", "nomor_plat"],
+                    "logical": "model_mobil.id = unit_mobil.id_mobil",
+                    "type_join": "inner"
+                },
+                {
+                    "table": "unit_order",
+                    "columns": ["nama"],
+                    "logical": "model_mobil.id = unit_order.id_unit_mobil AND ( ('paramjoin_1' BETWEEN unit_order.start_datetime AND unit_order.end_datetime) OR  ('paramjoin_2' BETWEEN unit_order.start_datetime AND unit_order.end_datetime) OR  (unit_order.start_datetime BETWEEN 'paramjoin_1' AND 'paramjoin_2') OR (unit_order.end_datetime BETWEEN 'paramjoin_1' AND 'paramjoin_2') )",
+                    "type_join": "left"
+                }
+            ],
+            "column_groups": [
+                "model_mobil.id", 
+                "model_mobil.merek", 
+                "model_mobil.model", 
+                "model_mobil.tahun", 
+                "model_mobil.transmisi", 
+                "model_mobil.jenis_bahan_bakar", 
+                "model_mobil.jumlah_seat",
+                "model_mobil.jumlah_bagasi",
+                "model_mobil.daily_price",
+                "model_mobil.daily_driver_price",
+                "model_mobil.delivery_price",
+                "model_mobil.deskripsi",
+                "unit_mobil.nomor_plat",
+                "unit_mobil.kota",
+                "unit_mobil.provinsi"
+            ],
+            "having": [
+                "COUNT(unit_mobil.id) > 0"
+            ],
+            "order_by": ["model_mobil.id"]
+        },
+        "post": {
+            "columns": ["id_travel", "id_kategori", "merek", "model", "tahun", "transmisi", "jenis_bahan_bakar", "jumlah_seat", "jumlah_bagasi", "deskripsi", "jumlah_mobil", "daily_price", "daily_driver_price", "delivery_price"]
+        },
+        "put": {
+            "columns": ["id_travel", "id_kategori", "merek", "model", "tahun", "transmisi", "jenis_bahan_bakar", "jumlah_seat", "jumlah_bagasi", "deskripsi", "jumlah_mobil", "daily_price", "daily_driver_price", "delivery_price"]
+        },
+        "del": {
+            "columns": ["id"]
+        },
+        "trace": {
+            "insert_into": "",
+            "column_inserts": [],
+            "column_selects": [],
+            "parameters": [],
+            "join_tables": [
+                {
+                    "table": "",
+                    "columns": [],
+                    "logical": "",
+                    "type_join": ""
+                }
+            ],
+            "column_groups": [],
+            "column_conflicts": []
+        },
+        "patch": {
+            "pre_process_sp": "",
+            "parameters": []
+        }
+    }

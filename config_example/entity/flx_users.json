@@ -133,6 +133,7 @@
                 ],
                 "join_tables":[],
                 "column_groups":[],
+                "having": [],
                 "order_by":["flx_users.id"]
         },
         "post":{

@@ -68,6 +68,7 @@
                         "id_users.eq",
                         "endpoint.eq"
                 ],
+                "having": [],
                 "join_tables":[],
                 "column_groups":[],
                 "order_by":["id"]

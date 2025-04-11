@@ -1,0 +1,135 @@
+{
+        "table": "gambar_mobil",
+        "primary_key": {
+            "columns": ["id"],
+            "auto_increment": true
+        },
+        "columns": [
+            {
+                "name": "id",
+                "auto_increment": true,
+                "nullable": false,
+                "function": "",
+                "type_data": "int"
+            },
+            {
+                "name": "id_mobil",
+                "auto_increment": false,
+                "nullable": false,
+                "function": "",
+                "type_data": "int"
+            },
+            {
+                "name": "image_url",
+                "auto_increment": false,
+                "nullable": false,
+                "function": "",
+                "type_data": "varchar(255)"
+            },
+            {
+                "name": "created_at",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "datetime"
+            },
+            {
+                "name": "updated_at",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "datetime"
+            },
+            {
+                "name": "deleted_at",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "datetime"
+            },
+            {
+                "name": "created_by_id",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "int"
+            },
+            {
+                "name": "updated_by_id",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "int"
+            },
+            {
+                "name": "deleted_by_id",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "int"
+            }
+        ],
+        "indexes": [
+            {
+                "name": "index_gambar_mobil_id_mobil",
+                "columns": ["id_mobil"],
+                "unique": false
+            }
+        ],
+        "redis": {
+            "keys": ["id_mobil"],
+            "ttl": 3600
+        },
+        "get": {
+            "columns": ["gambar_mobil.*", "model_mobil.merek", "model_mobil.model", "model_mobil.tahun"],
+            "parameters": [
+                "search",
+                "page",
+                "sort",
+                "ascending",
+                "limit",
+                "id_mobil.eq",
+                "deleted_at.is"
+            ],
+            "join_tables": [
+                {
+                    "table": "model_mobil",
+                    "columns": ["merek", "model", "tahun"],
+                    "logical": "gambar_mobil.id_mobil = model_mobil.id",
+                    "type_join": "inner"
+                }
+            ],
+            "column_groups": [],
+            "having": [],
+            "order_by": ["gambar_mobil.id"]
+        },
+        "post": {
+            "columns": ["id_mobil", "image_url"]
+        },
+        "put": {
+            "columns": ["image_url"]
+        },
+        "del": {
+            "columns": ["id"]
+        },
+        "trace": {
+            "insert_into": "",
+            "column_inserts": [],
+            "column_selects": [],
+            "parameters": [],
+            "join_tables": [
+                {
+                    "table": "",
+                    "columns": [],
+                    "logical": "",
+                    "type_join": ""
+                }
+            ],
+            "column_groups": [],
+            "column_conflicts": []
+        },
+        "patch": {
+            "pre_process_sp": "",
+            "parameters": []
+        }
+    }

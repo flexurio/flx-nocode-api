@@ -1,0 +1,217 @@
+{
+        "table": "orders",
+        "primary_key": {
+            "columns": ["id"],
+            "auto_increment": true
+        },
+        "columns": [
+            {
+                "name": "id",
+                "auto_increment": true,
+                "nullable": false,
+                "function": "",
+                "type_data": "int"
+            },
+            {
+                "name": "customer_name",
+                "auto_increment": false,
+                "nullable": false,
+                "function": "",
+                "type_data": "varchar(255)"
+            },
+            {
+                "name": "customer_email",
+                "auto_increment": false,
+                "nullable": false,
+                "function": "",
+                "type_data": "varchar(255)"
+            },
+            {
+                "name": "customer_phone",
+                "auto_increment": false,
+                "nullable": false,
+                "function": "",
+                "type_data": "varchar(20)"
+            },
+            {
+                "name": "pickup_type",
+                "auto_increment": false,
+                "nullable": false,
+                "function": "",
+                "type_data": "enum('office', 'delivery')"
+            },
+            {
+                "name": "delivery_address",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "text"
+            },
+            {
+                "name": "delivery_notes",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "text"
+            },
+            {
+                "name": "start_date",
+                "auto_increment": false,
+                "nullable": false,
+                "function": "",
+                "type_data": "datetime"
+            },
+            {
+                "name": "end_date",
+                "auto_increment": false,
+                "nullable": false,
+                "function": "",
+                "type_data": "datetime"
+            },
+            {
+                "name": "rental_duration",
+                "auto_increment": false,
+                "nullable": false,
+                "function": "",
+                "type_data": "int"
+            },
+            {
+                "name": "total_price",
+                "auto_increment": false,
+                "nullable": false,
+                "function": "",
+                "type_data": "float"
+            },
+            {
+                "name": "status",
+                "auto_increment": false,
+                "nullable": false,
+                "function": "",
+                "type_data": "enum('pending', 'active', 'cancelled', 'completed')"
+            },
+            {
+                "name": "created_at",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "datetime"
+            },
+            {
+                "name": "updated_at",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "datetime"
+            },
+            {
+                "name": "deleted_at",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "datetime"
+            },
+            {
+                "name": "created_by_id",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "int"
+            },
+            {
+                "name": "updated_by_id",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "int"
+            },
+            {
+                "name": "deleted_by_id",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "int"
+            }
+        ],
+        "indexes": [
+            {
+                "name": "index_orders_customer_name",
+                "columns": ["customer_name"],
+                "unique": false
+            }
+        ],
+        "redis": {
+            "keys": [],
+            "ttl": 0
+        },
+        "get": {
+            "columns": ["*"],
+            "parameters": [
+                "search",
+                "page",
+                "sort",
+                "ascending",
+                "limit",
+                "customer_name.like",
+                "customer_email.eq",
+                "customer_phone.eq",
+                "start_date.gte",
+                "end_date.lte",
+                "status.eq",
+                "deleted_at.is"
+            ],
+            "join_tables": [],
+            "column_groups": [],
+            "having": [],
+            "order_by": ["id"]
+        },
+        "post": {
+            "columns": [
+                "customer_name",
+                "customer_email",
+                "customer_phone",
+                "pickup_type",
+                "delivery_address",
+                "delivery_notes",
+                "start_date",
+                "end_date",
+                "rental_duration",
+                "total_price",
+                "status"
+            ]
+        },
+        "put": {
+            "columns": [
+                "pickup_type",
+                "delivery_address",
+                "delivery_notes",
+                "start_date",
+                "end_date",
+                "rental_duration",
+                "total_price",
+                "status"
+            ]
+        },
+        "del": {
+            "columns": ["id"]
+        },
+        "trace": {
+            "insert_into": "",
+            "column_inserts": [],
+            "column_selects": [],
+            "parameters": [],
+            "join_tables": [
+                {
+                    "table": "",
+                    "columns": [],
+                    "logical": "",
+                    "type_join": ""
+                }
+            ],
+            "column_groups": [],
+            "column_conflicts": []
+        },
+        "patch": {
+            "pre_process_sp": "",
+            "parameters": []
+        }
+    }

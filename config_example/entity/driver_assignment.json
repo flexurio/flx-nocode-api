@@ -1,0 +1,165 @@
+{
+        "table": "driver_assignment",
+        "primary_key": {
+            "columns": ["id"],
+            "auto_increment": true
+        },
+        "columns": [
+            {
+                "name": "id",
+                "auto_increment": true,
+                "nullable": false,
+                "function": "",
+                "type_data": "int"
+            },
+            {
+                "name": "id_driver",
+                "auto_increment": false,
+                "nullable": false,
+                "function": "",
+                "type_data": "int"
+            },
+            {
+                "name": "start_datetime",
+                "auto_increment": false,
+                "nullable": false,
+                "function": "",
+                "type_data": "datetime"
+            },
+            {
+                "name": "end_datetime",
+                "auto_increment": false,
+                "nullable": false,
+                "function": "",
+                "type_data": "datetime"
+            },
+            {
+                "name": "created_at",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "datetime"
+            },
+            {
+                "name": "updated_at",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "datetime"
+            },
+            {
+                "name": "deleted_at",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "datetime"
+            },
+            {
+                "name": "created_by_id",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "int"
+            },
+            {
+                "name": "updated_by_id",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "int"
+            },
+            {
+                "name": "deleted_by_id",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "int"
+            }
+        ],
+        "indexes": [
+            {
+                "name": "index_driver_assignment_id_driver",
+                "columns": ["id_driver"],
+                "unique": false
+            }
+        ],
+        "redis": {
+            "keys": [],
+            "ttl": 0
+        },
+        "get": {
+            "columns": ["driver_assignment.*", "driver.full_name", "driver.nomor_telepon"],
+            "parameters": [
+                "search",
+                "page",
+                "sort",
+                "ascending",
+                "limit",
+                "id_driver.eq",
+                "start_datetime.gte",
+                "end_datetime.lte",
+                "id_travel.eq"
+            ],
+            "join_tables": [
+                {
+                    "table": "driver",
+                    "columns": ["full_name", "nomor_telepon", "id_travel"],
+                    "logical": "driver_assignment.id_driver = driver.id",
+                    "type_join": "inner"
+                }
+            ],
+            "column_groups": [],
+            "having": [],
+            "order_by": ["start_datetime"]
+        },
+        "post": {
+            "columns": ["id_driver", "start_datetime", "end_datetime"]
+        },
+        "put": {
+            "columns": ["start_datetime", "end_datetime"]
+        },
+        "del": {
+            "columns": ["id"]
+        },
+        "trace": {
+            "insert_into": "driver_assignment",
+            "column_inserts": [
+                "id_driver", 
+                "start_datetime",
+                "end_datetime"
+            ],
+            "column_selects": [
+                "driver.id", 
+                ":start_datetime",
+                ":end_datetime"
+            ],
+            "parameters": [
+                "id_travel",
+                "jumlah_driver",
+                "start_datetime",
+                "end_datetime"
+            ],
+            "join_tables": [
+                {
+                    "table": "driver",
+                    "columns": ["id"],
+                    "logical": "driver.id_travel = :id_travel AND driver.status = 'available'",
+                    "type_join": "inner"
+                },
+                {
+                    "table": "driver_assignment",
+                    "columns": [],
+                    "logical": "driver_assignment.id_driver = driver.id AND NOT (driver_assignment.start_datetime > :end_datetime OR driver_assignment.end_datetime < :start_datetime)",
+                    "type_join": "left"
+                }
+            ],
+            "column_groups": ["driver.id"],
+            "having": "COUNT(driver_assignment.id) = 0",
+            "limit": ":jumlah_driver",
+            "column_conflicts": []
+        },
+        "patch": {
+            "pre_process_sp": "",
+            "parameters": []
+        }
+    }

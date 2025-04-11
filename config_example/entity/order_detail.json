@@ -1,0 +1,273 @@
+{
+        "table": "order_detail",
+        "primary_key": {
+            "columns": ["id"],
+            "auto_increment": true
+        },
+        "columns": [
+            {
+                "name": "id",
+                "auto_increment": true,
+                "nullable": false,
+                "function": "",
+                "type_data": "int"
+            },
+            {
+                "name": "id_order",
+                "auto_increment": false,
+                "nullable": false,
+                "function": "",
+                "type_data": "int"
+            },
+            {
+                "name": "id_travel",
+                "auto_increment": false,
+                "nullable": false,
+                "function": "",
+                "type_data": "int"
+            },
+            {
+                "name": "id_model_mobil",
+                "auto_increment": false,
+                "nullable": false,
+                "function": "",
+                "type_data": "int"
+            },
+            {
+                "name": "jumlah_unit",
+                "auto_increment": false,
+                "nullable": false,
+                "function": "",
+                "type_data": "int"
+            },
+            {
+                "name": "start_datetime",
+                "auto_increment": false,
+                "nullable": false,
+                "function": "",
+                "type_data": "datetime"
+            },
+            {
+                "name": "end_datetime",
+                "auto_increment": false,
+                "nullable": false,
+                "function": "",
+                "type_data": "datetime"
+            },
+            {
+                "name": "rental_days",
+                "auto_increment": false,
+                "nullable": false,
+                "function": "",
+                "type_data": "int"
+            },
+            {
+                "name": "with_driver",
+                "auto_increment": false,
+                "nullable": false,
+                "function": "",
+                "type_data": "boolean"
+            },
+            {
+                "name": "daily_price",
+                "auto_increment": false,
+                "nullable": false,
+                "function": "",
+                "type_data": "float"
+            },
+            {
+                "name": "driver_price",
+                "auto_increment": false,
+                "nullable": false,
+                "function": "",
+                "type_data": "float"
+            },
+            {
+                "name": "subtotal",
+                "auto_increment": false,
+                "nullable": false,
+                "function": "",
+                "type_data": "float"
+            },
+            {
+                "name": "created_at",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "datetime"
+            },
+            {
+                "name": "updated_at",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "datetime"
+            },
+            {
+                "name": "deleted_at",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "datetime"
+            },
+            {
+                "name": "created_by_id",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "int"
+            },
+            {
+                "name": "updated_by_id",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "int"
+            },
+            {
+                "name": "deleted_by_id",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "int"
+            }
+        ],
+        "indexes": [
+            {
+                "name": "index_order_detail_id_order",
+                "columns": ["id_order"],
+                "unique": false
+            }
+        ],
+        "redis": {
+            "keys": [],
+            "ttl": 0
+        },
+        "get": {
+            "columns": [
+                "order_detail.*",
+                "orders.customer_name",
+                "travel.nama_travel",
+                "travel.kota",
+                "travel.provinsi",
+                "model_mobil.merek",
+                "model_mobil.model",
+                "model_mobil.tahun"
+            ],
+            "parameters": [
+                "search",
+                "page",
+                "sort",
+                "ascending",
+                "limit",
+                "id_order.eq",
+                "id_travel.eq",
+                "id_model_mobil.eq",
+                "start_datetime.gte",
+                "end_datetime.lte",
+                "jumlah_unit.gte",
+                "deleted_at.is"
+            ],
+            "join_tables": [
+                {
+                    "table": "orders",
+                    "columns": ["customer_name"],
+                    "logical": "order_detail.id_order = orders.id",
+                    "type_join": "inner"
+                },
+                {
+                    "table": "travel",
+                    "columns": ["nama_travel", "kota", "provinsi"],
+                    "logical": "order_detail.id_travel = travel.id",
+                    "type_join": "inner"
+                },
+                {
+                    "table": "model_mobil",
+                    "columns": ["merek", "model", "tahun"],
+                    "logical": "order_detail.id_model_mobil = model_mobil.id",
+                    "type_join": "inner"
+                }
+            ],
+            "column_groups": [],
+            "having": [],
+            "order_by": ["id"]
+        },
+        "post": {
+            "columns": [
+                "id_order",
+                "id_travel",
+                "id_model_mobil",
+                "jumlah_unit",
+                "start_datetime",
+                "end_datetime",
+                "rental_days",
+                "with_driver",
+                "daily_price",
+                "driver_price",
+                "subtotal"
+            ]
+        },
+        "put": {
+            "columns": [
+                "jumlah_unit",
+                "start_datetime",
+                "end_datetime",
+                "rental_days",
+                "with_driver",
+                "daily_price",
+                "driver_price",
+                "subtotal"
+            ]
+        },
+        "del": {
+            "columns": ["id"]
+        },
+        "trace": {
+            "insert_into": "unit_order",
+            "column_inserts": [
+                "id_order_detail", 
+                "id_unit_mobil", 
+                "start_datetime",
+                "end_datetime"
+            ],
+            "column_selects": [
+                ":id_order_detail", 
+                "unit_mobil.id", 
+                "order_detail.start_datetime",
+                "order_detail.end_datetime"
+            ],
+            "parameters": [
+                "id_order_detail", 
+                "id_model_mobil",
+                "jumlah_unit"
+            ],
+            "join_tables": [
+                {
+                    "table": "order_detail",
+                    "columns": ["start_datetime", "end_datetime"],
+                    "logical": "order_detail.id = :id_order_detail",
+                    "type_join": "inner"
+                },
+                {
+                    "table": "unit_mobil",
+                    "columns": ["id"],
+                    "logical": "unit_mobil.id_mobil = :id_model_mobil AND unit_mobil.is_available = TRUE",
+                    "type_join": "inner"
+                },
+                {
+                    "table": "unit_order",
+                    "columns": [],
+                    "logical": "unit_order.id_unit_mobil = unit_mobil.id AND NOT (unit_order.start_datetime > order_detail.end_datetime OR unit_order.end_datetime < order_detail.start_datetime)",
+                    "type_join": "left"
+                }
+            ],
+            "column_groups": ["unit_mobil.id"],
+            "having": "COUNT(unit_order.id) = 0",
+            "limit": ":jumlah_unit",
+            "column_conflicts": []
+        },
+        "patch": {
+            "pre_process_sp": "",
+            "parameters": []
+        }
+    }
