@@ -64,3 +64,17 @@ To run this project, you will need to add the following environment variables to
 - Continue to create an API configuration like the sample in flx_user, there is already a `GET` `POST` `PUT` `DELETE` `PATCH` `TRACE` method
 
 - `CUSTOME_JWT_QUERY` is used as a reference to fetch the email from flx_users based on the ID, for example, to authenticate an admin.
+
+## Example
+
+- Add new route name to add new api example `banks`
+![route](routes.png)
+
+- Create new file in `config_example` -> `entity` -> `banks` (use the same file name as the name of the route you created)
+![service](services.png)
+
+- Run your project after running search `banks`
+![running](<running project.png>)
+
+- Run endpoint `validate/banks` to check whether the format in the `bank` entity is correct (OK) or not (NOT OK)
+![validate format](<validate format.png>)
