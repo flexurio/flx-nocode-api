@@ -1,51 +1,32 @@
-
 {
-        "table":"flx_roles",
+        "table":"bank_types",
         "primary_key":
         {
-                "columns":["id"],
-                "auto_increment":true
+                "columns":["id"]
         },
         "columns":[
                 {
                         "name":"id",
-                        "auto_increment":true,
+                        "auto_increment":false,
+                        "function":"BT/%Y/%m/000ID",
                         "nullable":false,
-                        "function":"",
-                        "type_data":"bigint",
+                        "type_data":"varchar(15)",
                         "encrypt":false
                 },
                 {
-                        "name":"id_users",
+                        "name":"name",
                         "auto_increment":false,
                         "nullable":false,
                         "function":"",
-                        "type_data":"bigint",
+                        "type_data":"varchar(255)",
                         "encrypt":false
                 },
-                {
-                        "name":"endpoint",
-                        "auto_increment":false,
-                        "nullable":false,
-                        "function":"",
-                        "type_data":"varchar(100)",
-                        "encrypt":false
-                },
-                {
-                        "name":"role",
-                        "auto_increment":false,
-                        "nullable":false,
-                        "function":"",
-                        "type_data":"tinyint",
-                        "encrypt":false
-                },
-
                 {
                         "name":"created_at",
                         "auto_increment":false,
                         "nullable":true,
                         "function":"",
-                        "type_data":"datetime",
+                        "type_data":"timestamp",
                         "encrypt":false
                 },
                 {
@@ -53,44 +34,76 @@
                         "auto_increment":false,
                         "nullable":true,
                         "function":"",
-                        "type_data":"datetime",
+                        "type_data":"timestamp",
+                        "encrypt":false
+                },
+                {
+                        "name":"deleted_at",
+                        "auto_increment":false,
+                        "nullable":true,
+                        "function":"",
+                        "type_data":"timestamp",
+                        "encrypt":false
+                },
+                {
+                        "name":"created_by_id",
+                        "auto_increment":false,
+                        "nullable":true,
+                        "function":"",
+                        "type_data":"int",
+                        "encrypt":false
+                },
+                {
+                        "name":"updated_by_id",
+                        "auto_increment":false,
+                        "nullable":true,
+                        "function":"",
+                        "type_data":"int",
+                        "encrypt":false
+                },
+                {
+                        "name":"deleted_by_id",
+                        "auto_increment":false,
+                        "nullable":true,
+                        "function":"",
+                        "type_data":"int",
                         "encrypt":false
                 }
         ],
         "indexes":[
                 {
-                        "name":"idx_role_name",
-                        "columns":["id_users", "endpoint"],
-                        "unique":true
+                        "name":"index_banks_name",
+                        "columns":["name"],
+                        "unique":false
                 }
         ],
         "redis":{
-                "keys":["id_users", "endpoint"],
+                "keys":["id"],
                 "ttl":3600
         },
         "get":{
-                "columns":["id", "id_users", "endpoint", "role"],
+                "columns":["id", "name", "created_at"],
                 "parameters":[
-                        "id_users.eq",
-                        "endpoint.eq"
+                        "name.like",
+                        "name.like|id.like",
+                        "id.eq",
+                        "name.eq", 
+                        "deleted_at.is"
                 ],
                 "join_tables":[],
-                "column_groups":[],
                 "having": [],
+                "column_groups":[],
                 "order_by":["id"]
+
         },
         "post":{
-                "columns":["id_users", "endpoint", "role"]
+                "columns":["name"]
         },
         "put":{
-                "columns":["id_users", "endpoint", "role"]
+                "columns":["name"]
         },
         "del":{
                 "columns":["id"]
-        },
-        "patch":{
-                "pre_process_sp":"",
-                "parameters":[]
         },
         "trace":{
                 "insert_into":"",
@@ -107,7 +120,10 @@
                 ],
                 "column_groups":[],
                 "column_conflicts":[]
-
+        },
+        "patch":{
+                "pre_process_sp":"",
+                "parameters":[]
         }
-}
 
+}
