@@ -1,0 +1,10 @@
+services:
+  rust-app:
+    build: .
+    container_name: flexurio-api-nocode-v2
+    restart: always
+    ports:
+      - "0.0.0.0:2121:8080"
+    volumes:
+      - "/home/DOCKER/FLEXURIO/flexurio-api-nocode-v2/static:/app/static"
+      - "/home/DOCKER/FLEXURIO/flexurio-api-nocode-v2/config:/app/config"
