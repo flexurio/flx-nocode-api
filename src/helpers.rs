@@ -24,32 +24,45 @@ pub fn cetak_label(host: String, port: u16) {
 // create function to get data from table_schemas where table is equal to route
 pub async fn filter_table_schema(table_schemas:&[TableSchema], route:String) -> TableSchema {
         let mut result = Vec::new();
-        for table_schema in table_schemas {
-                if table_schema.table == route {
-                    
-                    // tambah parameter mandatory
-                    let mut table_schema_clone = table_schema.clone();
+        
 
-                    let deleted_at_param = format!("{}.deleted_at", table_schema_clone.table);
-    
-                    let existing_params: HashSet<_> = table_schema_clone.get.parameters.iter().cloned().collect();
-                    
-                    if !existing_params.contains(&deleted_at_param) {
-                        table_schema_clone.get.parameters.push(deleted_at_param);
-                    }
+        for table_schema in table_schemas {
+
+            // check if table_schema.table contains .
+            // if it does, split the string by . and get the last element
+            // if it does not, use the table_schema.table as is
+            let table_schema_table = if table_schema.table.contains('.') {
+                let table_schema_table_split: Vec<&str> = table_schema.table.split('.').collect();
+                table_schema_table_split[table_schema_table_split.len() - 1].to_string()
+            } else {
+                table_schema.table.clone()
+            };
+
+            if table_schema_table == route {
                 
-                    let params_mandatory = &[
-                        "page", "sort", "ascending", "limit", "search", "redis",
-                    ];
-                        
-                    for param in params_mandatory {
-                        if !existing_params.contains(*param) {
-                            table_schema_clone.get.parameters.push(param.to_string());
-                        }
-                    }
-                    
-                    result.push(table_schema_clone);
+                // tambah parameter mandatory
+                let mut table_schema_clone = table_schema.clone();
+
+                let deleted_at_param = format!("{}.deleted_at", table_schema_clone.table);
+
+                let existing_params: HashSet<_> = table_schema_clone.get.parameters.iter().cloned().collect();
+                
+                if !existing_params.contains(&deleted_at_param) {
+                    table_schema_clone.get.parameters.push(deleted_at_param);
                 }
+            
+                let params_mandatory = &[
+                    "page", "sort", "ascending", "limit", "search", "redis",
+                ];
+                    
+                for param in params_mandatory {
+                    if !existing_params.contains(*param) {
+                        table_schema_clone.get.parameters.push(param.to_string());
+                    }
+                }
+                
+                result.push(table_schema_clone);
+            }
         }
         if result.is_empty() {
                 TableSchema::default()

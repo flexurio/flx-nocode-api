@@ -172,6 +172,9 @@ async fn main() -> std::io::Result<()> {
         return Ok(());
     }
 
+    println!("{:?}", SCHEMAS);
+
+
     let host: &str = "0.0.0.0";
     let port: u16 = env::var("PORT")
         .expect("PORT must be set")
