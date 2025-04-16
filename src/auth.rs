@@ -64,10 +64,9 @@ pub async fn create_token(id_user: i64, name: String, state: web::Data<AppState>
             sql_query = sql_query.replace("{:?}", &id_user.to_string());
             println!("SQL Query Custome JWT: {:?}", sql_query);
 
-            addjwt = match sqlx::query(sql_query.as_str()).fetch_one(&state.db).await {
-                Ok(row) => row.get::<String, _>(0),
-                Err(_) => "".to_string(),
-            };
+            addjwt = state.db.query(&sql_query).await.unwrap().get(0)
+                .and_then(|value| value.as_str().map(|s| s.to_string()))
+                .unwrap_or_default();
 
         }
 

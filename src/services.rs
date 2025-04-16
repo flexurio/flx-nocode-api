@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use crate::{crypt::is_encrypted_string, log::log_output, model::ParamJoin};
+use crate::{crypt::is_encrypted_string, db::vecvalues_to_string, log::log_output, model::ParamJoin};
 use actix_multipart::Multipart;
 use actix_web::{
     web::{self, Data, Path},
@@ -8,11 +8,10 @@ use actix_web::{
 };
 use anyhow::Result;
 use base64::{self, Engine};
-use chrono::{DateTime, Utc};
+use chrono::DateTime;
 use futures::StreamExt;
 use rand::Rng;
 use serde_json::{json, Value};
-use sqlx::{self, Row};
 
 use crate::{
     auth::{check_access, create_token, get_user_info_from_token},
@@ -315,17 +314,14 @@ pub async fn nocode_get(
         table_schema.table, join_clause, where_clause, group_clause
     );
 
-    // println!("-----sql total------");
-    // println!("{}", s_sql_total);
+    // get total data from 
+    let total_data:i32 = state.db.get_total_rows(&s_sql_total).await.unwrap_or(0);
 
-    let total_data: i32 = match sqlx::query(s_sql_total.as_str()).fetch_one(&state.db).await {
-        Ok(row) => row.get("total_data"),
-        Err(_) => 0,
-    };
-
-    match sqlx::query(s_sql.as_str()).fetch_all(&state.db).await {
+    match &state.db.query(&s_sql_total).await {
         Ok(rows) => {
-            let json_rows: Vec<Value> = rows
+            let json_rows: Vec<Value> = rows[0]
+                .as_array()
+                .unwrap_or(&vec![])
                 .iter()
                 .map(|row| {
                     let mut json_obj = serde_json::Map::new();
@@ -339,23 +335,24 @@ pub async fn nocode_get(
                             col = col_split[1].to_string();
                         }
 
-                        let value: Value = if let Ok(v) = row.try_get::<Option<String>, _>(idx) {
-                            v.map(Value::String).unwrap_or(Value::Null)
-                        } else if let Ok(v) = row.try_get::<Option<i64>, _>(idx) {
-                            v.map(|num| Value::Number(num.into()))
-                                .unwrap_or(Value::Null)
-                        } else if let Ok(v) = row.try_get::<Option<u64>, _>(idx) {
-                            v.map(|num| Value::Number(serde_json::Number::from(num)))
-                                .unwrap_or(Value::Null)
-                        } else if let Ok(v) = row.try_get::<Option<f64>, _>(idx) {
-                            v.and_then(serde_json::Number::from_f64)
+                        let value: Value = if let Some(v) = row.get(idx).and_then(|val| val.as_str()) {
+                            Value::String(v.to_string())
+                        } else if let Some(v) = row.get(idx).and_then(|val| val.as_i64()) {
+                            Value::Number(v.into())
+                        } else if let Some(v) = row.get(idx).and_then(|val| val.as_u64()) {
+                            Value::Number(serde_json::Number::from(v))
+                        } else if let Some(v) = row.get(idx).and_then(|val| val.as_f64()) {
+                            serde_json::Number::from_f64(v)
                                 .map(Value::Number)
                                 .unwrap_or(Value::Null)
-                        } else if let Ok(v) = row.try_get::<Option<bool>, _>(idx) {
-                            v.map(Value::Bool).unwrap_or(Value::Null)
-                        } else if let Ok(v) = row.try_get::<Option<DateTime<Utc>>, _>(idx) {
-                            v.map(|dt| Value::String(dt.to_rfc3339()))
-                                .unwrap_or(Value::Null)
+                        } else if let Some(v) = row.get(idx).and_then(|val| val.as_bool()) {
+                            Value::Bool(v)
+                        } else if let Some(v) = row.get(idx).and_then(|val| val.as_str()) {
+                            if let Ok(dt) = DateTime::parse_from_rfc3339(v) {
+                                Value::String(dt.to_rfc3339())
+                            } else {
+                                Value::Null
+                            }
                         } else {
                             Value::Null
                         };
@@ -536,7 +533,7 @@ pub async fn nocode_trace(
 
     log_output("QUERY", "TRACE", route.as_str(), s_sql.clone(), true);
 
-    match sqlx::query(s_sql.as_str()).execute(&state.db).await {
+    match &state.db.query(&s_sql).await {
         Ok(_) => HttpResponse::Ok().json(WebResponse {
             success: true,
             message: "Data inserted".to_string(),
@@ -599,7 +596,7 @@ pub async fn nocode_delete(
 
     log_output("QUERY", "DELETE", route.as_str(), s_sql.clone(), true);
 
-    match sqlx::query(s_sql.as_str()).execute(&state.db).await {
+    match &state.db.query(&s_sql).await {
         Ok(_) => HttpResponse::Ok().json(WebResponse {
             success: true,
             message: "Data deleted".to_string(),
@@ -794,8 +791,6 @@ pub async fn nocode_post(
 
 
 
-    // db begin transaction
-    let mut tx = state.db.begin().await.unwrap();
 
     println!("function_id_split: {:?}", function_id_split);
 
@@ -825,8 +820,8 @@ pub async fn nocode_post(
                 // get max id from table from column id with length len_id from left
                 let s_sql_max_id = format!("SELECT COALESCE(MAX(id),0) as max_id FROM {} ", table_schema.table );
                 log_output("QUERY", "GET", route.as_str(), s_sql_max_id.clone(), true);
-                let max_id: String = match sqlx::query(s_sql_max_id.as_str()).fetch_one(&mut *tx).await {
-                    Ok(row) => row.get("max_id"),
+                let max_id: String = match &state.db.query(&s_sql_max_id).await {
+                    Ok(row) => row[0].get("max_id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
                     Err(_) => "0".to_string(),
                 };
                 println!("max_id: {:?}", max_id);
@@ -879,9 +874,8 @@ pub async fn nocode_post(
 
     log_output("QUERY", "POST", route.as_str(), s_sql.clone(), true);
 
-    match sqlx::query(s_sql.as_str()).execute(&mut *tx).await {
+    match &state.db.query(&s_sql).await {
         Ok(_) => {
-            tx.commit().await.unwrap();
             HttpResponse::Ok().json(WebResponse {
                 success: true,
                 message: "Data inserted".to_string(),
@@ -890,7 +884,6 @@ pub async fn nocode_post(
             })
         },
         Err(err) => {
-            tx.rollback().await.unwrap();
             HttpResponse::InternalServerError().json(WebResponse {
                 success: false,
                 message: format!("Error NCO-POST: {}", err),
@@ -1005,7 +998,7 @@ pub async fn nocode_put(
 
     log_output("QUERY", "PUT", route.as_str(), s_sql.clone(), true);
 
-    match sqlx::query(s_sql.as_str()).execute(&state.db).await {
+    match &state.db.query(&s_sql).await {
         Ok(_) => HttpResponse::Ok().json(WebResponse {
             success: true,
             message: "Data updated".to_string(),
@@ -1107,9 +1100,7 @@ pub async fn nocode_generate_table(
     );
 
     // execute sql_create_table
-    match sqlx::query(sql_create_table.as_str())
-        .execute(&state.db)
-        .await
+    match &state.db.query(&sql_create_table).await
     {
         Ok(_) => {
             println!("Table {} created", table_schema.table);
@@ -1125,9 +1116,7 @@ pub async fn nocode_generate_table(
 
     
     // execute sql_create_index
-    match sqlx::query(sql_create_index.as_str())
-        .execute(&state.db)
-        .await
+    match &state.db.query(&sql_create_index).await
     {
         Ok(_) => {
             println!("Index {} created", table_schema.table);
@@ -1182,8 +1171,24 @@ pub async fn login(state: web::Data<AppState>, req: actix_web::HttpRequest) -> i
     );
     log_output("QUERY", "POST", "login", s_sql.clone(), true);
 
-    let (password_db, id_user, name) = match sqlx::query(s_sql.as_str()).fetch_one(&state.db).await {
-        Ok(row) => (row.get("password"), row.get("id"), row.get("name")),
+    let (password_db, id_user, name) = match &state.db.query(&s_sql).await {
+        Ok(row) =>  {
+            let password = row[0].get("password")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+    
+            let id = row[0].get("id")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+    
+            let name = row[0].get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+    
+            (password, id, name)
+        },
         Err(_) => ("".to_string(), 0_i64, "".to_string()),
     };
 
@@ -1208,14 +1213,9 @@ pub async fn login(state: web::Data<AppState>, req: actix_web::HttpRequest) -> i
 
     log_output("QUERY", "POST", "flx_roles", s_sql.clone(), true);
 
-    let roles = (sqlx::query(s_sql.as_str()).fetch_all(&state.db).await).unwrap_or_default();
+    let roles = state.db.query(&s_sql).await.unwrap_or_default();
+    let roles_data = vecvalues_to_string(roles, "endpoint_role");
 
-    // convert roles to string and split by ","
-    let roles_data = roles
-        .iter()
-        .map(|row| row.get("endpoint_role"))
-        .collect::<Vec<String>>()
-        .join(",");
 
 
     let token = create_token(id_user, name, state.clone(), roles_data);
@@ -1254,7 +1254,7 @@ pub async fn register(state: Data<AppState>, multipart: Multipart) -> impl Respo
     log_output("QUERY", "POST", "register", s_sql.clone(), true);
 
     // execute sql
-    match sqlx::query(s_sql.as_str()).execute(&state.db).await {
+    match &state.db.query(&s_sql).await {
         Ok(_) => HttpResponse::Ok().json(WebResponse {
             success: true,
             message: "Register Success".to_string(),
@@ -1301,7 +1301,7 @@ pub async fn generate_users(state: Data<AppState>) -> impl Responder {
     log_output("QUERY", "POST", "generate/table/flx_users", s_sql.clone(), true);
 
     // execute sql
-    match sqlx::query(s_sql.as_str()).execute(&state.db).await {
+    match &state.db.query(&s_sql).await {
         Ok(_) => HttpResponse::Ok().json(WebResponse {
             success: true,
             message: "Generate Table users".to_string(),
@@ -1347,7 +1347,7 @@ pub async fn generate_users(state: Data<AppState>) -> impl Responder {
     log_output("QUERY", "POST", "generate/table/flx_roles", s_sql.clone(), true);
 
     // execute sql
-    match sqlx::query(s_sql.as_str()).execute(&state.db).await {
+    match &state.db.query(&s_sql).await {
         Ok(_) => HttpResponse::Ok().json(WebResponse {
             success: true,
             message: "Generate Table users".to_string(),
@@ -1368,7 +1368,7 @@ pub async fn generate_users(state: Data<AppState>) -> impl Responder {
     log_output("QUERY", "POST", "generate/table/users", s_sql.clone(), true);
 
     // execute sql
-    match sqlx::query(s_sql.as_str()).execute(&state.db).await {
+    match &state.db.query(&s_sql).await {
         Ok(_) => HttpResponse::Ok().json(WebResponse {
             success: true,
             message: "Generate Table users".to_string(),
@@ -1386,8 +1386,8 @@ pub async fn generate_users(state: Data<AppState>) -> impl Responder {
 
     // guery to flx_users where name = "Flexurio Admin"
     s_sql = "SELECT id FROM flx_users WHERE email = 'admin';".to_string().replace("\"", "");
-    let mut id_user: i64 = match sqlx::query(s_sql.as_str()).fetch_one(&state.db).await {
-        Ok(row) => row.get("id"),
+    let mut id_user: i64 = match &state.db.query(&s_sql).await {
+        Ok(row) => row[0].get("id").and_then(|v| v.as_i64()).unwrap_or(0),
         Err(_) => 0,
     };
 
@@ -1417,7 +1417,7 @@ pub async fn generate_users(state: Data<AppState>) -> impl Responder {
 
 
         // execute sql
-        match sqlx::query(s_sql.as_str()).execute(&state.db).await {
+        match &state.db.query(&s_sql).await {
             Ok(_) => HttpResponse::Ok().json(WebResponse {
                 success: true,
                 message: "Generate Table users".to_string(),
@@ -1443,7 +1443,7 @@ pub async fn generate_users(state: Data<AppState>) -> impl Responder {
         log_output("EXEC", "POST", "generate/table/users", s_sql.clone(), true);
 
         // execute sql
-        match sqlx::query(s_sql.as_str()).execute(&state.db).await {
+        match &state.db.query(&s_sql).await {
             Ok(_) => HttpResponse::Ok().json(WebResponse {
                 success: true,
                 message: "Generate Table users".to_string(),
@@ -1466,7 +1466,7 @@ pub async fn generate_users(state: Data<AppState>) -> impl Responder {
         ).replace("\"", "");
         
         // execute sql
-        match sqlx::query(s_sql.as_str()).execute(&state.db).await {
+        match &state.db.query(&s_sql).await {
             Ok(_) => HttpResponse::Ok().json(WebResponse {
                 success: true,
                 message: "Generate Table users".to_string(),
