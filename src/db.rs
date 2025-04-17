@@ -21,7 +21,7 @@ pub struct MySqlRepo {
     pub pool: MySqlPool,
 }
 
-pub fn mysqlrows_to_json(rows: Vec<MySqlRow>) -> Vec<Value> {
+pub fn mysqlrows_to_json3(rows: Vec<MySqlRow>) -> Vec<Value> {
     let mut json_array = Vec::new();
 
     for row in rows {
@@ -30,15 +30,32 @@ pub fn mysqlrows_to_json(rows: Vec<MySqlRow>) -> Vec<Value> {
         for column in row.columns() {
             let name = column.name();
             let type_name = format!("{:?}", column.type_info()).to_uppercase();
+            println!("{}: {}", name, type_name.as_str());
 
             let value = match type_name.as_str() {
                 // Integer types
-                "TINYINT" | "SMALLINT" | "MEDIUMINT" | "INT" | "INTEGER" | "BIGINT" => {
+                "LONGLONG" | "TINYINT" | "SMALLINT" | "MEDIUMINT" | "INT" | "INTEGER" | "BIGINT" => {
                     match row.try_get::<i64, _>(name) {
                         Ok(v) => Value::Number(v.into()),
-                        Err(_) => Value::Null,
+                        Err(err) => {
+                            println!("Error converting {} to i64: {:?}", name, err);
+                            Value::Null
+                        },
                     }
                 }
+
+                // Integer types (Unsigned)
+                "TINYINT UNSIGNED" | "SMALLINT UNSIGNED" | "MEDIUMINT UNSIGNED" |
+                "INT UNSIGNED" | "INTEGER UNSIGNED" | "BIGINT UNSIGNED" => {
+                    match row.try_get::<u64, _>(name) {
+                        Ok(v) => Value::Number(v.into()),
+                        Err(err) => {
+                            println!("Error converting {} to u64: {:?}", name, err);
+                            Value::Null
+                        },
+                    }
+                }
+
 
                 // Float/Double/Decimal
                 "FLOAT" | "DOUBLE" | "DECIMAL" | "NUMERIC" => {
@@ -94,6 +111,7 @@ pub fn mysqlrows_to_json(rows: Vec<MySqlRow>) -> Vec<Value> {
                 "BINARY" | "VARBINARY" | "BLOB" | "TINYBLOB" | "MEDIUMBLOB" | "LONGBLOB" => {
                     match row.try_get::<Vec<u8>, _>(name) {
                         Ok(v) => {
+                            println!("Binary/Blob (convert to base64 string)");
                             let engine = base64::engine::general_purpose::STANDARD;
                             Value::String(engine.encode(v))
                         },
@@ -118,6 +136,76 @@ pub fn mysqlrows_to_json(rows: Vec<MySqlRow>) -> Vec<Value> {
 
     json_array
 }
+
+
+pub fn mysqlrows_to_json(rows: Vec<MySqlRow>) -> Vec<Value> {
+    let mut json_array = Vec::new();
+
+    for row in rows {
+        let mut obj = Map::new();
+
+        for column in row.columns() {
+            let name = column.name();
+            let type_info_debug = format!("{:?}", column.type_info()).to_uppercase();
+            let is_unsigned = type_info_debug.contains("UNSIGNED");
+
+            let value = if type_info_debug.contains("LONGLONG") {
+                if is_unsigned {
+                    row.try_get::<u64, _>(name)
+                        .map(|v| Value::Number(v.into()))
+                        .unwrap_or_else(|e| {
+                            println!("Failed to get {} as u64: {:?}", name, e);
+                            Value::Null
+                        })
+                } else {
+                    row.try_get::<i64, _>(name)
+                        .map(|v| Value::Number(v.into()))
+                        .unwrap_or_else(|e| {
+                            println!("Failed to get {} as i64: {:?}", name, e);
+                            Value::Null
+                        })
+                }
+            } else if type_info_debug.contains("VARSTRING") || type_info_debug.contains("VARCHAR") 
+                || type_info_debug.contains("DATE") || type_info_debug.contains("TIME")
+                || type_info_debug.contains("DECIMAL") || type_info_debug.contains("NUMERIC")
+                || type_info_debug.contains("ENUM") || type_info_debug.contains("SET")  {
+                row.try_get::<String, _>(name)
+                    .map(Value::String)
+                    .unwrap_or(Value::Null)
+            } else if type_info_debug.contains("BLOB") {
+                row.try_get::<Vec<u8>, _>(name)
+                    .map(|v| Value::String(base64::engine::general_purpose::STANDARD.encode(v)))
+                    .unwrap_or(Value::Null)
+            } else if type_info_debug.contains("FLOAT") || type_info_debug.contains("DOUBLE") {
+                row.try_get::<f64, _>(name)
+                    .map(|v| serde_json::Number::from_f64(v).map(Value::Number).unwrap_or(Value::Null))
+                    .unwrap_or(Value::Null)
+            } else if type_info_debug.contains("BIT") {
+                row.try_get::<i64, _>(name)
+                    .map(|v| Value::Bool(v != 0))
+                    .unwrap_or(Value::Null)
+            } else if type_info_debug.contains("JSON") {
+                row.try_get::<String, _>(name)
+                    .ok()
+                    .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+                    .unwrap_or(Value::Null)
+            } else {
+                // fallback default string conversion
+                row.try_get::<String, _>(name)
+                    .map(Value::String)
+                    .unwrap_or_else(|_| Value::Null)
+            };
+
+            obj.insert(name.to_string(), value);
+        }
+
+        json_array.push(Value::Object(obj));
+    }
+
+    json_array
+}
+
+
 
 #[async_trait::async_trait]
 impl DbRepository for MySqlRepo {
