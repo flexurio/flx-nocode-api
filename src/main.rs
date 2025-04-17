@@ -178,16 +178,12 @@ async fn main() -> std::io::Result<()> {
     let _ = &*SCHEMAS;
     let _ = &*ISDEBUG;
 
-    // println!("{:?}", SCHEMAS);
-
     if ROUTES.is_empty() {
         println!("--------------------------------------");
         println!("{}", "ROUTES NOT VALID ! ".on_red());
         println!("--------------------------------------");
         return Ok(());
     }
-
-    println!("{:?}", SCHEMAS);
 
 
     let host: &str = "0.0.0.0";

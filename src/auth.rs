@@ -4,7 +4,6 @@ use actix_web::{web, HttpResponse};
 use chrono::{Duration, Utc};
 use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
-use sqlx::Row; // Import the Row trait to enable the `get` method
 
 use crate::AppState;
 
@@ -164,7 +163,6 @@ pub fn check_access(claims: &Claims, route: &str, permission: &str) -> bool {
         // split r by "/"
         let route_rol = r.split("/").collect::<Vec<&str>>();
         if route_rol[0] == route {
-            println!("route_rol[0]: {:?}", route_rol[0]);
             role = route_rol[1].parse::<i8>().unwrap();
         }
     }
