@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::{collections::HashSet, result};
 
 use crate::{crypt::is_encrypted_string, db::concat_column_values, log::log_output, model::ParamJoin};
 use actix_multipart::Multipart;
@@ -317,73 +317,31 @@ pub async fn nocode_get(
 
     // get total data from 
     let total_data:i32 = state.db.get_total_rows(&s_sql_total).await.unwrap_or(0);
-
-    match &state.db.query(&s_sql_total).await {
-        Ok(rows) => {
-            let json_rows: Vec<Value> = rows[0]
-                .as_array()
-                .unwrap_or(&vec![])
-                .iter()
-                .map(|row| {
-                    let mut json_obj = serde_json::Map::new();
-                    for (idx, col) in table_schema.get.columns.iter().enumerate() {
-                        // remove table name from column
-                        let mut col = col.replace(&(table_schema.clone().table + "."), "");
-
-                        // split col with " as "
-                        let col_split: Vec<&str> = col.split(" as ").collect();
-                        if col_split.len() > 1 {
-                            col = col_split[1].to_string();
-                        }
-
-                        let value: Value = if let Some(v) = row.get(idx).and_then(|val| val.as_str()) {
-                            Value::String(v.to_string())
-                        } else if let Some(v) = row.get(idx).and_then(|val| val.as_i64()) {
-                            Value::Number(v.into())
-                        } else if let Some(v) = row.get(idx).and_then(|val| val.as_u64()) {
-                            Value::Number(serde_json::Number::from(v))
-                        } else if let Some(v) = row.get(idx).and_then(|val| val.as_f64()) {
-                            serde_json::Number::from_f64(v)
-                                .map(Value::Number)
-                                .unwrap_or(Value::Null)
-                        } else if let Some(v) = row.get(idx).and_then(|val| val.as_bool()) {
-                            Value::Bool(v)
-                        } else if let Some(v) = row.get(idx).and_then(|val| val.as_str()) {
-                            if let Ok(dt) = DateTime::parse_from_rfc3339(v) {
-                                Value::String(dt.to_rfc3339())
-                            } else {
-                                Value::Null
-                            }
-                        } else {
-                            Value::Null
-                        };
-
-                        json_obj.insert(col.clone(), value); // Masukkan nilai ke dalam JSON!
-                    }
-                    Value::Object(json_obj)
-                })
-                .collect();
-
+    let query_result = state.db.query(&s_sql).await;
+    match query_result {
+        Ok(res) => {
             let result = WebResponse {
                 success: true,
                 message: "Data found".to_string(),
                 total_data,
-                data: Value::Array(json_rows),
+                data: Value::Array(res),
             };
 
             HttpResponse::Ok().json(result)
-        }
-
-        Err(err) => {
-            let result = WebResponse {
+        },
+        Err(e) => {
+            let res = WebResponse {
                 success: false,
-                message: format!("Error NCO-GET: {}", err),
+                message: format!("Error NCO-GET: {}", e),
                 total_data: 0,
                 data: Value::Null,
             };
-            HttpResponse::InternalServerError().json(result)
-        }
+            HttpResponse::InternalServerError().json(res)
+    
+        },
     }
+
+
 }
 
 // NCO-TRACE

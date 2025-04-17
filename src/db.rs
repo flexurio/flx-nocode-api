@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{process::exit, sync::Arc};
 use base64::Engine;
 use serde_json::{Map, Value};
 use sqlx::{Pool, Column, mysql::MySqlRow, MySqlPool, Row, postgres::Postgres};
@@ -31,45 +31,89 @@ pub fn mysqlrows_to_json(rows: Vec<MySqlRow>) -> Vec<Value> {
             let type_info_debug = format!("{:?}", column.type_info()).to_uppercase();
             let is_unsigned = type_info_debug.contains("UNSIGNED");
 
+            // if name == "created_by_id" {
+            //     println!("name: {:?}", name);
+            //     println!("type_info_debug: {:?}", type_info_debug);
+            //     println!("is_unsigned: {:?}", is_unsigned);
+            // }
+
             let value = if type_info_debug.contains("LONGLONG") {
                 if is_unsigned {
-                    row.try_get::<u64, _>(name)
-                        .map(|v| Value::Number(v.into()))
-                        .unwrap_or_else(|e| {
-                            println!("Failed to get {} as u64: {:?}", name, e);
+                    match row.try_get::<Option<u64>, _>(name) {
+                        Ok(Some(v)) => Value::Number(v.into()),
+                        Ok(None) => Value::Null,
+                        Err(e) => {
+                            println!("Failed to get {} as Option<u64>: {:?}", name, e);
                             Value::Null
-                        })
+                        }
+                    }
                 } else {
-                    row.try_get::<i64, _>(name)
-                        .map(|v| Value::Number(v.into()))
-                        .unwrap_or_else(|e| {
-                            println!("Failed to get {} as i64: {:?}", name, e);
+                    match row.try_get::<Option<i64>, _>(name) {
+                        Ok(Some(v)) => Value::Number(v.into()),
+                        Ok(None) => Value::Null,
+                        Err(e) => {
+                            println!("Failed to get {} as Option<i64>: {:?}", name, e);
                             Value::Null
-                        })
+                        }
+                    }
                 }
             } else if type_info_debug.contains("VARSTRING") || type_info_debug.contains("VARCHAR") 
-                || type_info_debug.contains("DATE") || type_info_debug.contains("TIME")
                 || type_info_debug.contains("DECIMAL") || type_info_debug.contains("NUMERIC")
                 || type_info_debug.contains("ENUM") || type_info_debug.contains("SET")  {
-                row.try_get::<String, _>(name)
-                    .map(Value::String)
-                    .unwrap_or(Value::Null)
+                    match row.try_get::<Option<String>, _>(name) {
+                        Ok(Some(v)) => Value::String(v),
+                        Ok(None) => Value::Null,
+                        Err(e) => {
+                            println!("Failed to get {} as Option<u64>: {:?}", name, e);
+                            Value::Null
+                        }
+                    }
+
             } else if type_info_debug.contains("BLOB") {
-                row.try_get::<Vec<u8>, _>(name)
-                    .map(|v| Value::String(base64::engine::general_purpose::STANDARD.encode(v)))
-                    .unwrap_or(Value::Null)
+                match row.try_get::<Option<Vec<u8>>, _>(name) {
+                    Ok(Some(v)) => Value::String(base64::engine::general_purpose::STANDARD.encode(v)),
+                    Ok(None) => Value::Null,
+                    Err(e) => {
+                        println!("Failed to get {} as Option<u64>: {:?}", name, e);
+                        Value::Null
+                    }
+                }
             } else if type_info_debug.contains("FLOAT") || type_info_debug.contains("DOUBLE") {
-                row.try_get::<f64, _>(name)
-                    .map(|v| serde_json::Number::from_f64(v).map(Value::Number).unwrap_or(Value::Null))
-                    .unwrap_or(Value::Null)
-            } else if type_info_debug.contains("BIT") {
-                row.try_get::<i64, _>(name)
-                    .map(|v| Value::Bool(v != 0))
-                    .unwrap_or(Value::Null)
+                match row.try_get::<Option<f64>, _>(name) {
+                    Ok(Some(v)) => serde_json::Number::from_f64(v).map(Value::Number).unwrap_or(Value::Null),
+                    Ok(None) => Value::Null,
+                    Err(e) => {
+                        println!("Failed to get {} as Option<u64>: {:?}", name, e);
+                        Value::Null
+                    }
+                }
+
+            } else if type_info_debug.contains("TINY") || type_info_debug.contains("BIT") {
+                match row.try_get::<Option<i32>, _>(name) {
+                    Ok(Some(v)) => Value::Number(v.into()),
+                    Ok(None) => Value::Null,
+                    Err(e) => {
+                        println!("Failed to get {} as Option<u64>: {:?}", name, e);
+                        Value::Null
+                    }
+                }
+
             } else if type_info_debug.contains("JSON") {
                 row.try_get::<String, _>(name)
                     .ok()
                     .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+                    .unwrap_or(Value::Null)
+            } else if type_info_debug.contains("DATETIME") {
+                row.try_get::<chrono::NaiveDateTime, _>(name)
+                    .map(|dt| Value::String(dt.to_string()))
+                    .unwrap_or(Value::Null)
+            } else if type_info_debug.contains("TIMESTAMP") {
+                row.try_get::<chrono::NaiveDateTime, _>(name)
+                    .map(|dt| Value::String(dt.to_string()))
+                    .unwrap_or(Value::Null)
+            } else if type_info_debug.contains("TIME") {
+                row.try_get::<chrono::NaiveTime, _>(name)
+                    .map(|t| Value::String(t.to_string()))
                     .unwrap_or(Value::Null)
             } else {
                 // fallback default string conversion
