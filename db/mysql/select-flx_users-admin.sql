@@ -1,0 +1,1 @@
+SELECT id FROM flx_users WHERE email = 'admin';

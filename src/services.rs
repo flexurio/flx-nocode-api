@@ -1106,6 +1106,8 @@ pub async fn nocode_generate_table(
 
 // NCO-GENERATE-TABLE
 pub async fn login(state: web::Data<AppState>, req: actix_web::HttpRequest) -> impl Responder {
+    println!("Masuk Login");
+
     // get username password from req Authorization Basic
     let auth_split: Vec<&str> = req
         .headers()
@@ -1115,6 +1117,7 @@ pub async fn login(state: web::Data<AppState>, req: actix_web::HttpRequest) -> i
         .unwrap()
         .split(" ")
         .collect();
+
     let auth_decoded = base64::engine::general_purpose::STANDARD
         .decode(auth_split[1])
         .unwrap();
@@ -1254,18 +1257,8 @@ pub async fn generate_users(state: Data<AppState>) -> impl Responder {
         }),
     };
 
-    // // role
-    // 1 → Delete
-    // 2 → Write (Insert/Update)
-    // 4 → Read
-    // 8 → Execute (Eksekusi query/prosedur)
-
-    // 1 (Delete) + 2 (Write) + 4 (Read) + 8 (Execute)    = 15 FULL ACCESS
-    // 1 (delete) + 2 (write) + 4 (read)        = 7
-
     // read sql from file db/mysql/create-flx_users.sql
-    let db_file_path = format!("db/{}/create-flx_roles.sql", state.db_type);
-    s_sql = std::fs::read_to_string(db_file_path)
+    s_sql = std::fs::read_to_string(format!("db/{}/create-flx_roles.sql", state.db_type))
         .expect("Failed to read SQL file")
         .replace("\"", "");
 
@@ -1287,30 +1280,13 @@ pub async fn generate_users(state: Data<AppState>) -> impl Responder {
         }),
     };
 
-    // insert into test.users (id, email, phone, role, password, name, photo, email_verified, created_at, updated_at, enabled)
-    let mut s_sql = "CREATE INDEX idx_flx_users_enabled ON flx_users(enabled);".to_string().replace("\"", "");
-
-    log_output("QUERY", "POST", "generate/table/users", s_sql.clone(), true);
-
-    // execute sql
-    match &state.db.query(&s_sql).await {
-        Ok(_) => HttpResponse::Ok().json(WebResponse {
-            success: true,
-            message: "Generate Table users".to_string(),
-            total_data: 1,
-            data: Value::Null,
-        }),
-        Err(err) => HttpResponse::InternalServerError().json(WebResponse {
-            success: false,
-            message: format!("Error NCO-POST: {}", err),
-            total_data: 0,
-            data: Value::Null,
-        }),
-    };
-
 
     // guery to flx_users where name = "Flexurio Admin"
-    s_sql = "SELECT id FROM flx_users WHERE email = 'admin';".to_string().replace("\"", "");
+    // read sql from file db/mysql/create-flx_users.sql
+    s_sql = std::fs::read_to_string(format!("db/{}/select-flx_users-admin.sql", state.db_type))
+        .expect("Failed to read SQL file")
+        .replace("\"", "");
+
     let mut id_user: i64 = match &state.db.query(&s_sql).await {
         Ok(row) => {
             // check if row is empty
@@ -1338,12 +1314,10 @@ pub async fn generate_users(state: Data<AppState>) -> impl Responder {
 
 
         // insert into test.users (id, email, phone, role, password, name, photo, email_verified, created_at, updated_at, enabled)
-        s_sql = format!(
-            "INSERT INTO flx_users 
-                (id, email, phone,  password, name, created_at, updated_at, enabled) 
-            VALUES ({},'admin', '5758', '{}', 'Admin Flexurio', NOW(), NOW(), 1)",
-            id_user, encrypt_password
-        ).replace("\"", "");
+        s_sql = std::fs::read_to_string(format!("db/{}/insert-flx_users-admin.sql", state.db_type))
+        .expect("Failed to read SQL file")
+        .replace("\"", "").
+        replace("{{password}}", &encrypt_password);
 
         log_output("EXEC", "POST", "generate/table/users", s_sql.clone(), true);
 
