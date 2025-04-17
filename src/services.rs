@@ -1229,31 +1229,12 @@ pub async fn register(state: Data<AppState>, multipart: Multipart) -> impl Respo
 
 // NCO-POST
 pub async fn generate_users(state: Data<AppState>) -> impl Responder {
-    
-    // insert into test.users (id, email, phone, role, password, name, photo, email_verified, created_at, updated_at, enabled)
-    let s_sql = "
-        CREATE TABLE IF NOT EXISTS flx_users (
-            id             BIGINT AUTO_INCREMENT PRIMARY KEY,
-            email          VARCHAR(100) NOT NULL,
-            phone          VARCHAR(15) NOT NULL,
-            password       LONGTEXT NOT NULL,
-            name           VARCHAR(50) NOT NULL,
-            photo          VARCHAR(50) NULL,
-            email_verified TINYINT NOT NULL DEFAULT 0,
-            enabled        TINYINT DEFAULT 1 NULL,
 
-            created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
-            updated_at    DATETIME null,
-            deleted_at    DATETIME null,
-            created_by_id bigint unsigned null,
-            updated_by_id bigint unsigned null,
-            deleted_by_id bigint unsigned null,
-
-            CONSTRAINT idx_user_email UNIQUE (email),
-            CONSTRAINT idx_user_phone UNIQUE (phone)
-        );
-    ".to_string()
-    .replace("\"", "");
+    // read sql from file db/mysql/create-flx_users.sql
+    let db_file_path = format!("db/{}/create-flx_users.sql", state.db_type);
+    let mut s_sql = std::fs::read_to_string(db_file_path)
+        .expect("Failed to read SQL file")
+        .replace("\"", "");
 
     log_output("QUERY", "POST", "generate/table/flx_users", s_sql.clone(), true);
 
@@ -1282,24 +1263,11 @@ pub async fn generate_users(state: Data<AppState>) -> impl Responder {
     // 1 (Delete) + 2 (Write) + 4 (Read) + 8 (Execute)    = 15 FULL ACCESS
     // 1 (delete) + 2 (write) + 4 (read)        = 7
 
-    let s_sql =
-        "
-    CREATE TABLE IF NOT EXISTS flx_roles (
-        id            BIGINT AUTO_INCREMENT PRIMARY KEY,
-        id_users      BIGINT NOT NULL,
-        endpoint      VARCHAR(100) NOT NULL,
-        role          TINYINT NOT NULL,
-
-        created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
-        updated_at    DATETIME null,
-        deleted_at    DATETIME null,
-        created_by_id bigint unsigned null,
-        updated_by_id bigint unsigned null,
-        deleted_by_id bigint unsigned null,
-
-        CONSTRAINT idx_role_name UNIQUE (id_users, endpoint)
-    );
-    ".replace("\"", "");
+    // read sql from file db/mysql/create-flx_users.sql
+    let db_file_path = format!("db/{}/create-flx_roles.sql", state.db_type);
+    s_sql = std::fs::read_to_string(db_file_path)
+        .expect("Failed to read SQL file")
+        .replace("\"", "");
 
     log_output("QUERY", "POST", "generate/table/flx_roles", s_sql.clone(), true);
 
@@ -1344,7 +1312,14 @@ pub async fn generate_users(state: Data<AppState>) -> impl Responder {
     // guery to flx_users where name = "Flexurio Admin"
     s_sql = "SELECT id FROM flx_users WHERE email = 'admin';".to_string().replace("\"", "");
     let mut id_user: i64 = match &state.db.query(&s_sql).await {
-        Ok(row) => row[0].get("id").and_then(|v| v.as_i64()).unwrap_or(0),
+        Ok(row) => {
+            // check if row is empty
+            if row.is_empty() {
+                0                
+            } else {
+                row[0].get("id").and_then(|v| v.as_i64()).unwrap_or(0)
+            }
+        },
         Err(_) => 0,
     };
 

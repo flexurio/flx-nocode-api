@@ -5,6 +5,7 @@ use sqlx::{Pool, Column, mysql::MySqlRow, MySqlPool, Row, postgres::Postgres};
 
 pub struct AppState {
     pub db: Arc<dyn DbRepository>,
+    pub db_type: String,
     pub secret: String,
     pub encrypt_key: String,
 }
@@ -170,10 +171,33 @@ pub struct PostgresRepo {
 #[async_trait::async_trait]
 impl DbRepository for PostgresRepo {
     async fn query(&self, sql: &str) -> Result<Vec<Value>, anyhow::Error> {
-        println!("SQL Query: {:?}", sql);
-        // Query dari PostgreSQL
-        Ok(vec![]) // dummy
-    }
+        match sqlx::query(sql)
+            .fetch_all(&self.pool)
+            .await {
+            Ok(rows) => {
+                // Jika berhasil, konversi hasilnya ke dalam JSON
+                let result_val = rows.into_iter().map(|row| {
+                    let mut obj = Map::new();
+                    for column in row.columns() {
+                        let name = column.name();
+                        let value = match row.try_get::<Option<String>, _>(name) {
+                            Ok(Some(v)) => Value::String(v),
+                            Ok(None) => Value::Null,
+                            Err(_) => Value::Null,
+                        };
+                        obj.insert(name.to_string(), value);
+                    }
+                    Value::Object(obj)
+                }).collect();
+                println!("result_val: {:?}", result_val);
+                return Ok(result_val);
+            }
+            Err(e) => {
+                // Jika terjadi error, kembalikan error
+                return Err(anyhow::anyhow!("Error executing query: {}", e));
+            }
+            
+        }    }
 
     async fn get_total_rows(&self, sql: &str) -> Result<i32, anyhow::Error> {
         // Menghitung total baris dari tabel PostgreSQL

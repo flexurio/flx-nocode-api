@@ -143,14 +143,7 @@ async fn main() -> std::io::Result<()> {
     dotenv().ok();
     let secret_key = env::var("SECRET_KEY").expect("SECRET_KEY must be set");
     let encrypt_key = env::var("ENCRYPT_KEY").expect("ENCRYPT_KEY must be set");
-    // let pool = MySqlPoolOptions::new()
-    //     .max_connections(5)
-    //     .connect(&database_url)
-    //     .await
-    //     .expect("Error building a connection pool");
-
     let db_type = env::var("DB_TYPE").unwrap_or_else(|_| "mysql".to_string());
-
     let db_repo: Arc<dyn DbRepository> = match db_type.as_str() {
         "mysql" => {
             let url: String = env::var("MYSQL_URL").expect("MYSQL_URL must be set");
@@ -159,6 +152,7 @@ async fn main() -> std::io::Result<()> {
         }
         "postgres" => {
             let url = env::var("POSTGRES_URL").expect("POSTGRES_URL must be set");
+            println!("Connecting to Postgres at {}", url);
             let pool = sqlx::PgPool::connect(&url).await.unwrap();
             Arc::new(PostgresRepo { pool })
         }
@@ -167,6 +161,7 @@ async fn main() -> std::io::Result<()> {
             
     let app_state = web::Data::new(AppState {
         db: db_repo,
+        db_type,
         secret: secret_key,
         encrypt_key,
     });
