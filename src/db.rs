@@ -1,4 +1,4 @@
-use std::{process::exit, sync::Arc};
+use std::sync::Arc;
 use base64::Engine;
 use serde_json::{Map, Value};
 use sqlx::{Pool, Column, mysql::MySqlRow, MySqlPool, Row, postgres::Postgres};

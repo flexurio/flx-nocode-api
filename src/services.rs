@@ -748,15 +748,9 @@ pub async fn nocode_post(
         })
         .collect();
 
-
-
-
-    println!("function_id_split: {:?}", function_id_split);
-
     if !function_id_split.is_empty() {
         // loop every function_id_split
         for function_id in function_id_split.iter() {
-            println!("function_id: {:?}", function_id);
             if function_id == "%Y"{
                 // get year from now with format YYYY
                 let year = chrono::Utc::now().format("%Y").to_string();
@@ -773,11 +767,16 @@ pub async fn nocode_post(
                 id.push('/');
                 id.push_str(&day);
             } else if function_id.contains("ID"){
+                println!("id: {:?}", id);
+                let mut id_find = id.clone();
+                id_find.remove(0);
+
                 let s_append = function_id.replace("ID", "");
                 let len_id = s_append.len();
 
+
                 // get max id from table from column id with length len_id from left
-                let s_sql_max_id = format!("SELECT COALESCE(MAX(id),0) as max_id FROM {} ", table_schema.table );
+                let s_sql_max_id = format!("SELECT COALESCE(MAX(id),0) as max_id FROM {} WHERE id like '%{}%' ", table_schema.table, id_find);
                 log_output("QUERY", "GET", route.as_str(), s_sql_max_id.clone(), true);
                 let max_id: String = match &state.db.query(&s_sql_max_id).await {
                     Ok(row) => row[0].get("max_id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
