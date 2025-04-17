@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use crate::{crypt::is_encrypted_string, db::vecvalues_to_string, log::log_output, model::ParamJoin};
+use crate::{crypt::is_encrypted_string, db::concat_column_values, log::log_output, model::ParamJoin};
 use actix_multipart::Multipart;
 use actix_web::{
     web::{self, Data, Path},
@@ -56,6 +56,7 @@ pub async fn nocode_get(
     req: actix_web::HttpRequest,
 ) -> impl Responder {
     let claims = get_user_info_from_token(req, state.clone()).unwrap();
+
     if !check_access(&claims, &route, "read") {
         return HttpResponse::Unauthorized().json(WebResponse {
             success: false,
@@ -1193,14 +1194,7 @@ pub async fn login(state: web::Data<AppState>, req: actix_web::HttpRequest) -> i
         Err(_) => ("".to_string(), 0_i64, "".to_string()),
     };
 
-    println!("password_db: {:?}", password_db);
-    println!("id_user: {:?}", id_user);
-    println!("name: {:?}", name);
-    
-
     let decrypt_password = decrypt(state.encrypt_key.clone(), password_db);
-
-    println!("decrypt_password: {:?}", decrypt_password);
 
     if auth_str_split[1] != decrypt_password {
         return HttpResponse::Unauthorized().json(WebResponse {
@@ -1223,11 +1217,7 @@ pub async fn login(state: web::Data<AppState>, req: actix_web::HttpRequest) -> i
 
     let roles = state.db.query(&s_sql).await.unwrap_or_default();
 
-    println!("roles: {:?}", roles);
-
-    let roles_data = vecvalues_to_string(roles, "endpoint_role");
-
-    println!("roles_data: {:?}", roles_data);
+    let roles_data = concat_column_values(roles,"endpoint_role", ",");
 
     let token = create_token(id_user, name, state.clone(), roles_data);
     HttpResponse::Ok().json(WebResponse {

@@ -62,7 +62,6 @@ pub async fn create_token(id_user: i64, name: String, state: web::Data<AppState>
         if !sql_query.is_empty() {
 
             sql_query = sql_query.replace("{:?}", &id_user.to_string());
-            println!("SQL Query Custome JWT: {:?}", sql_query);
 
             addjwt = state.db.query(&sql_query).await.unwrap().first()
                 .and_then(|value| value.as_str().map(|s| s.to_string()))
@@ -165,11 +164,11 @@ pub fn check_access(claims: &Claims, route: &str, permission: &str) -> bool {
         // split r by "/"
         let route_rol = r.split("/").collect::<Vec<&str>>();
         if route_rol[0] == route {
+            println!("route_rol[0]: {:?}", route_rol[0]);
             role = route_rol[1].parse::<i8>().unwrap();
         }
     }
 
     let access = get_permissions(role);
-    println!("Access: {:?}", access);
     access.contains(&permission.to_lowercase().as_str())
 }
