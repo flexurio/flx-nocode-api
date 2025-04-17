@@ -1124,21 +1124,24 @@ pub async fn login(state: web::Data<AppState>, req: actix_web::HttpRequest) -> i
     let auth_str = String::from_utf8(auth_decoded).unwrap();
     let auth_str_split: Vec<&str> = auth_str.split(":").collect();
 
-    // check if username and password is valid from mysql
-    let s_sql = format!(
-        "SELECT id, name, CAST(password as CHAR(255)) as password FROM flx_users WHERE email = '{}' AND enabled=1 LIMIT 1;",
-        auth_str_split[0]
-    );
+    // read sql from file db/mysql/create-flx_users.sql
+    let s_sql = std::fs::read_to_string(format!("db/{}/select-flx_users-login.sql", state.db_type))
+    .expect("Failed to read SQL file")
+    .replace("\"", "")
+    .replace("{{email}}", auth_str_split[0]);
+
     log_output("QUERY", "POST", "login", s_sql.clone(), true);
 
     let (password_db, id_user, name) = match &state.db.query(&s_sql).await {
         Ok(row) =>  {
+            println!("row: {:?}", row);
+
             let password = row[0].get("password")
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
-                .to_string();
+                .to_string()
+                .replace(" ", "");
 
-            println!("id: {:?}", row[0].get("id"));
             let id = row[0].get("id")
                 .and_then(|v| v.as_i64())
                 .unwrap_or(0);
@@ -1152,6 +1155,10 @@ pub async fn login(state: web::Data<AppState>, req: actix_web::HttpRequest) -> i
         },
         Err(_) => ("".to_string(), 0_i64, "".to_string()),
     };
+
+    println!("password_db: {:?}", password_db);
+    println!("id_user: {:?}", id_user);
+    println!("name: {:?}", name);
 
     let decrypt_password = decrypt(state.encrypt_key.clone(), password_db);
 
