@@ -12,9 +12,15 @@ use log::log_output;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use serde_json::{from_str, Value};
-use sqlx::{mysql::MySqlPoolOptions, MySql, Pool};
 use std::env;
 use std::fs;
+
+mod db;
+use db::AppState;
+use db::DbRepository;
+use db::MySqlRepo;
+use db::PostgresRepo;
+use std::sync::Arc;
 
 mod services;
 use services::{
@@ -24,12 +30,6 @@ use services::{
 
 mod auth;
 mod crypt;
-
-pub struct AppState {
-    db: Pool<MySql>,
-    secret: String,
-    encrypt_key: String,
-}
 
 mod model;
 use model::{Config, TableSchema};
@@ -141,17 +141,32 @@ static SCHEMAS: Lazy<Vec<TableSchema>> = Lazy::new(|| {
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     dotenv().ok();
-    let database_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set");
     let secret_key = env::var("SECRET_KEY").expect("SECRET_KEY must be set");
     let encrypt_key = env::var("ENCRYPT_KEY").expect("ENCRYPT_KEY must be set");
-    let pool = MySqlPoolOptions::new()
-        .max_connections(5)
-        .connect(&database_url)
-        .await
-        .expect("Error building a connection pool");
+    // let pool = MySqlPoolOptions::new()
+    //     .max_connections(5)
+    //     .connect(&database_url)
+    //     .await
+    //     .expect("Error building a connection pool");
 
+    let db_type = env::var("DB_TYPE").unwrap_or_else(|_| "mysql".to_string());
+
+    let db_repo: Arc<dyn DbRepository> = match db_type.as_str() {
+        "mysql" => {
+            let url: String = env::var("MYSQL_URL").expect("MYSQL_URL must be set");
+            let pool = sqlx::MySqlPool::connect(&url).await.unwrap();
+            Arc::new(MySqlRepo { pool })
+        }
+        "postgres" => {
+            let url = env::var("POSTGRES_URL").expect("POSTGRES_URL must be set");
+            let pool = sqlx::PgPool::connect(&url).await.unwrap();
+            Arc::new(PostgresRepo { pool })
+        }
+        _ => panic!("Unsupported DB_TYPE: {}", db_type),
+    };
+            
     let app_state = web::Data::new(AppState {
-        db: pool,
+        db: db_repo,
         secret: secret_key,
         encrypt_key,
     });
@@ -163,16 +178,12 @@ async fn main() -> std::io::Result<()> {
     let _ = &*SCHEMAS;
     let _ = &*ISDEBUG;
 
-    // println!("{:?}", SCHEMAS);
-
     if ROUTES.is_empty() {
         println!("--------------------------------------");
         println!("{}", "ROUTES NOT VALID ! ".on_red());
         println!("--------------------------------------");
         return Ok(());
     }
-
-    println!("{:?}", SCHEMAS);
 
 
     let host: &str = "0.0.0.0";
