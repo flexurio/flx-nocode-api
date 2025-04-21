@@ -2,7 +2,7 @@ use colored::Colorize;
 use std::collections::HashSet;
 use std::fmt::Write;
 
-use crate::{model::{Column, GetOperation, Index, JoinTable, Operation, Patch, PrimaryKey, Redis, TableSchema, Trace}, ISDEBUG};
+use crate::{model::{Column, GetOperation, Index, JoinTable, Operation, OperationDelete, Patch, PrimaryKey, Redis, TableSchema, Trace}, ISDEBUG};
 
 pub fn cetak_label(host: String, port: u16) {
     println!("\n\n");
@@ -113,17 +113,24 @@ pub fn operator_query(symbol: &str) -> String {
 }
 
 
-pub fn generate_table(data: &TableSchema) -> (String, String) {
+pub fn generate_table(db_type:String, data: &TableSchema) -> (String, Vec<String>) {
     let mut create_table_sql = format!("CREATE TABLE IF NOT EXISTS {} (\n", data.table);
 
     for col in &data.columns {
         let mut auto_increment = "".to_string();
-        if data.primary_key.columns.len() == 1
-            && data.primary_key.columns[0] == col.name
-        {
-            auto_increment = " auto_increment".to_string();
+        if data.primary_key.columns.len() == 1 && data.primary_key.columns[0] == col.name {
+            if db_type == "mysql" {
+                auto_increment = " auto_increment".to_string();
+                create_table_sql.push_str(&format!("  {} {}{},\n", col.name, col.type_data, auto_increment));
+            } else if db_type == "postgres" {
+                auto_increment = " bigserial".to_string();
+                create_table_sql.push_str(&format!("  {} {},\n", col.name, auto_increment));
+            } else {
+                create_table_sql.push_str(&format!("  {} {}{},\n", col.name, col.type_data, auto_increment));
+            }
+        } else {
+            create_table_sql.push_str(&format!("  {} {}{},\n", col.name, col.type_data, auto_increment));
         }
-        create_table_sql.push_str(&format!("  {} {}{},\n", col.name, col.type_data, auto_increment));
     }
 
     let _ = writeln!(
@@ -132,7 +139,9 @@ pub fn generate_table(data: &TableSchema) -> (String, String) {
         data.primary_key.columns.join(", ")
     );
 
-    let mut create_index_sql = String::new();
+    // create variable to store multipe query create index Vec<String>
+    let mut create_index_sql_vec = Vec::new();
+
 
     for idx in &data.indexes {
         if idx.columns.is_empty() {
@@ -149,17 +158,10 @@ pub fn generate_table(data: &TableSchema) -> (String, String) {
         } else {
             format!("{}_{}", data.table, idx.name)
         };
-        let _ = writeln!(
-            create_index_sql,
-            "CREATE {}INDEX {} ON {} ({});",
-            unique,
-            index_name,
-            data.table,
-            idx.columns.join(", ")
-        );
+        create_index_sql_vec.push(format!("CREATE {}INDEX {} ON {} ({});",unique,index_name,data.table,idx.columns.join(", ")));
     }
 
-    (create_table_sql, create_index_sql)
+    (create_table_sql, create_index_sql_vec)
 }
 
 
@@ -188,8 +190,9 @@ pub fn validate_table_design(design: TableSchema) -> TableSchema {
         put: Operation {
             columns: Vec::new(),
         },
-        del: Operation {
+        del: OperationDelete {
             columns: Vec::new(),
+            type_delete: "soft".to_string()
         },
         patch: Patch {
             pre_process_sp: String::new(),

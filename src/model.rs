@@ -20,7 +20,7 @@ pub struct TableSchema {
     pub get: GetOperation,
     pub post: Operation,
     pub put: Operation,
-    pub del: Operation,
+    pub del: OperationDelete,
     pub patch: Patch,
     pub trace: Trace,
 }
@@ -48,7 +48,10 @@ impl Default for TableSchema {
             },
             post: Operation { columns: vec![] },
             put: Operation { columns: vec![] },
-            del: Operation { columns: vec![] },
+            del: OperationDelete { 
+                columns: vec![],
+                type_delete: "soft".to_string()
+            },
             patch: Patch {
                 pre_process_sp: "".to_string(),
                 parameters: vec![],
@@ -114,6 +117,12 @@ pub struct JoinTable {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Operation {
     pub columns: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct OperationDelete {
+    pub columns: Vec<String>,
+    pub type_delete: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

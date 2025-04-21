@@ -547,10 +547,23 @@ pub async fn nocode_delete(
         format!("'{}'", id)
     };
 
-    let s_sql = format!(
-        "UPDATE {} SET deleted_at = NOW(), deleted_by_id = {} WHERE id = {}",
-        table_schema.table, claims.id, id
-    );
+    // check table_schemas.delete.type_delete
+    let type_delete = table_schema.del.type_delete.clone();
+    let mut s_sql = "".to_string();
+
+    if type_delete == "soft" {
+        // create query UPDATE sql from table in variable route and structure table in table_schemas where id = id, set deleted_at = NOW(), deleted_by_id = 1
+        s_sql = format!(
+            "UPDATE {} SET deleted_at = NOW(), deleted_by_id = {} WHERE id = {}",
+            table_schema.table, claims.id, id
+        );
+    } else if type_delete == "hard" {
+        // create query DELETE sql from table in variable route and structure table in table_schemas where id = id
+        s_sql = format!(
+            "DELETE FROM {} WHERE id = {}",
+            table_schema.table, id
+        );
+    }
 
     log_output("QUERY", "DELETE", route.as_str(), s_sql.clone(), true);
 
@@ -1038,7 +1051,7 @@ pub async fn nocode_generate_table(
         });
     }
 
-    let (sql_create_table, sql_create_index) = generate_table(&table_schema);
+    let (sql_create_table, sql_create_index) = generate_table(state.db_type.clone(), &table_schema);
     let mut err_message = String::new();
 
     log_output(
@@ -1052,7 +1065,7 @@ pub async fn nocode_generate_table(
         "QUERY",
         "GENERATE INDEX",
         route.clone().as_str(),
-        sql_create_index.clone(),
+        sql_create_index.clone().join("\n"),
         true
     );
 
@@ -1073,19 +1086,33 @@ pub async fn nocode_generate_table(
 
     
     // execute sql_create_index
-    match &state.db.query(&sql_create_index).await
-    {
-        Ok(_) => {
-            println!("Index {} created", table_schema.table);
-        }
-        Err(err) => {
-            err_message = format!(
-                "{} \n
-                Failed to create index {} with error : {}",
-                err_message, table_schema.table, err
-            );
-        }
+    // loop every sql_create_index
+    for sql_create_index in sql_create_index.iter() {
+        log_output(
+            "QUERY",
+            "GENERATE INDEX",
+            route.clone().as_str(),
+            sql_create_index.clone(),
+            true
+        );
+
+
+        match &state.db.query(sql_create_index).await
+        {
+            Ok(_) => {
+                println!("Index {} created", table_schema.table);
+            }
+            Err(err) => {
+                err_message = format!(
+                    "{} \n
+                    Failed to create index {} with error : {}",
+                    err_message, table_schema.table, err
+                );
+            }
+        }        
+
     }
+    
 
     if !err_message.is_empty() {
         HttpResponse::InternalServerError().json(WebResponse {
