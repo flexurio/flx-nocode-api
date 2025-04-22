@@ -4,7 +4,6 @@ use actix_web::{web, HttpResponse};
 use chrono::{Duration, Utc};
 use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
-use sqlx::Row; // Import the Row trait to enable the `get` method
 
 use crate::AppState;
 
@@ -62,12 +61,10 @@ pub async fn create_token(id_user: i64, name: String, state: web::Data<AppState>
         if !sql_query.is_empty() {
 
             sql_query = sql_query.replace("{:?}", &id_user.to_string());
-            println!("SQL Query Custome JWT: {:?}", sql_query);
 
-            addjwt = match sqlx::query(sql_query.as_str()).fetch_one(&state.db).await {
-                Ok(row) => row.get::<String, _>(0),
-                Err(_) => "".to_string(),
-            };
+            addjwt = state.db.query(&sql_query).await.unwrap().first()
+                .and_then(|value| value.as_str().map(|s| s.to_string()))
+                .unwrap_or_default();
 
         }
 
@@ -171,6 +168,5 @@ pub fn check_access(claims: &Claims, route: &str, permission: &str) -> bool {
     }
 
     let access = get_permissions(role);
-    println!("Access: {:?}", access);
     access.contains(&permission.to_lowercase().as_str())
 }

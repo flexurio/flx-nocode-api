@@ -2,7 +2,7 @@ use colored::Colorize;
 use std::collections::HashSet;
 use std::fmt::Write;
 
-use crate::{model::{Column, GetOperation, Index, JoinTable, Operation, Patch, PrimaryKey, Redis, TableSchema, Trace}, ISDEBUG};
+use crate::{model::{Column, GetOperation, Index, JoinTable, Operation, OperationDelete, Patch, PrimaryKey, Redis, TableSchema, Trace}, ISDEBUG};
 
 pub fn cetak_label(host: String, port: u16) {
     println!("\n\n");
@@ -24,32 +24,45 @@ pub fn cetak_label(host: String, port: u16) {
 // create function to get data from table_schemas where table is equal to route
 pub async fn filter_table_schema(table_schemas:&[TableSchema], route:String) -> TableSchema {
         let mut result = Vec::new();
-        for table_schema in table_schemas {
-                if table_schema.table == route {
-                    
-                    // tambah parameter mandatory
-                    let mut table_schema_clone = table_schema.clone();
+        
 
-                    let deleted_at_param = format!("{}.deleted_at", table_schema_clone.table);
-    
-                    let existing_params: HashSet<_> = table_schema_clone.get.parameters.iter().cloned().collect();
-                    
-                    if !existing_params.contains(&deleted_at_param) {
-                        table_schema_clone.get.parameters.push(deleted_at_param);
-                    }
+        for table_schema in table_schemas {
+
+            // check if table_schema.table contains .
+            // if it does, split the string by . and get the last element
+            // if it does not, use the table_schema.table as is
+            let table_schema_table = if table_schema.table.contains('.') {
+                let table_schema_table_split: Vec<&str> = table_schema.table.split('.').collect();
+                table_schema_table_split[table_schema_table_split.len() - 1].to_string()
+            } else {
+                table_schema.table.clone()
+            };
+
+            if table_schema_table == route {
                 
-                    let params_mandatory = &[
-                        "page", "sort", "ascending", "limit", "search", "redis",
-                    ];
-                        
-                    for param in params_mandatory {
-                        if !existing_params.contains(*param) {
-                            table_schema_clone.get.parameters.push(param.to_string());
-                        }
-                    }
-                    
-                    result.push(table_schema_clone);
+                // tambah parameter mandatory
+                let mut table_schema_clone = table_schema.clone();
+
+                let deleted_at_param = format!("{}.deleted_at", table_schema_clone.table);
+
+                let existing_params: HashSet<_> = table_schema_clone.get.parameters.iter().cloned().collect();
+                
+                if !existing_params.contains(&deleted_at_param) {
+                    table_schema_clone.get.parameters.push(deleted_at_param);
                 }
+            
+                let params_mandatory = &[
+                    "page", "sort", "ascending", "limit", "search", "redis",
+                ];
+                    
+                for param in params_mandatory {
+                    if !existing_params.contains(*param) {
+                        table_schema_clone.get.parameters.push(param.to_string());
+                    }
+                }
+                
+                result.push(table_schema_clone);
+            }
         }
         if result.is_empty() {
                 TableSchema::default()
@@ -100,17 +113,24 @@ pub fn operator_query(symbol: &str) -> String {
 }
 
 
-pub fn generate_table(data: &TableSchema) -> (String, String) {
+pub fn generate_table(db_type:String, data: &TableSchema) -> (String, Vec<String>) {
     let mut create_table_sql = format!("CREATE TABLE IF NOT EXISTS {} (\n", data.table);
 
     for col in &data.columns {
         let mut auto_increment = "".to_string();
-        if data.primary_key.columns.len() == 1
-            && data.primary_key.columns[0] == col.name
-        {
-            auto_increment = " auto_increment".to_string();
+        if data.primary_key.columns.len() == 1 && data.primary_key.columns[0] == col.name {
+            if db_type == "mysql" {
+                auto_increment = " auto_increment".to_string();
+                create_table_sql.push_str(&format!("  {} {}{},\n", col.name, col.type_data, auto_increment));
+            } else if db_type == "postgres" {
+                auto_increment = " bigserial".to_string();
+                create_table_sql.push_str(&format!("  {} {},\n", col.name, auto_increment));
+            } else {
+                create_table_sql.push_str(&format!("  {} {}{},\n", col.name, col.type_data, auto_increment));
+            }
+        } else {
+            create_table_sql.push_str(&format!("  {} {}{},\n", col.name, col.type_data, auto_increment));
         }
-        create_table_sql.push_str(&format!("  {} {}{},\n", col.name, col.type_data, auto_increment));
     }
 
     let _ = writeln!(
@@ -119,7 +139,9 @@ pub fn generate_table(data: &TableSchema) -> (String, String) {
         data.primary_key.columns.join(", ")
     );
 
-    let mut create_index_sql = String::new();
+    // create variable to store multipe query create index Vec<String>
+    let mut create_index_sql_vec = Vec::new();
+
 
     for idx in &data.indexes {
         if idx.columns.is_empty() {
@@ -136,17 +158,10 @@ pub fn generate_table(data: &TableSchema) -> (String, String) {
         } else {
             format!("{}_{}", data.table, idx.name)
         };
-        let _ = writeln!(
-            create_index_sql,
-            "CREATE {}INDEX {} ON {} ({});",
-            unique,
-            index_name,
-            data.table,
-            idx.columns.join(", ")
-        );
+        create_index_sql_vec.push(format!("CREATE {}INDEX {} ON {} ({});",unique,index_name,data.table,idx.columns.join(", ")));
     }
 
-    (create_table_sql, create_index_sql)
+    (create_table_sql, create_index_sql_vec)
 }
 
 
@@ -175,8 +190,9 @@ pub fn validate_table_design(design: TableSchema) -> TableSchema {
         put: Operation {
             columns: Vec::new(),
         },
-        del: Operation {
+        del: OperationDelete {
             columns: Vec::new(),
+            type_delete: "soft".to_string()
         },
         patch: Patch {
             pre_process_sp: String::new(),
