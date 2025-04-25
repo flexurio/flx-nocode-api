@@ -24,9 +24,12 @@ use std::sync::Arc;
 
 mod services;
 use services::{
-    generate_users, login, nocode_delete, nocode_generate_table, nocode_get, nocode_post,
-    nocode_put, nocode_trace, nocode_validate, register,
+    nocode_delete, nocode_generate_table, nocode_get, nocode_post,
+    nocode_put, nocode_trace, nocode_validate,
 };
+
+mod core;
+use core::{generate_users, login, register};
 
 mod auth;
 mod crypt;

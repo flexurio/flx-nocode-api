@@ -1,8 +1,13 @@
+use base64::Engine;
 use colored::Colorize;
 use std::collections::HashSet;
 use std::fmt::Write;
+use actix_multipart::Multipart;
+use serde_json::{json, Value};
+use futures::StreamExt;
 
-use crate::{model::{Column, GetOperation, Index, JoinTable, Operation, OperationDelete, Patch, PrimaryKey, Redis, TableSchema, Trace}, ISDEBUG};
+
+use crate::{log::log_output, model::{Column, GetOperation, Index, JoinTable, Operation, OperationDelete, Patch, PrimaryKey, Redis, TableSchema, Trace}, ISDEBUG};
 
 pub fn cetak_label(host: String, port: u16) {
     println!("\n\n");
@@ -112,7 +117,6 @@ pub fn operator_query(symbol: &str) -> String {
         operator.to_string()
 }
 
-
 pub fn generate_table(db_type:String, data: &TableSchema) -> (String, Vec<String>) {
     let mut create_table_sql = format!("CREATE TABLE IF NOT EXISTS {} (\n", data.table);
 
@@ -163,7 +167,6 @@ pub fn generate_table(db_type:String, data: &TableSchema) -> (String, Vec<String
 
     (create_table_sql, create_index_sql_vec)
 }
-
 
 pub fn validate_table_design(design: TableSchema) -> TableSchema {
     let mut schema_check = TableSchema {
@@ -410,3 +413,75 @@ pub fn validate_table_design(design: TableSchema) -> TableSchema {
 
     schema_check
 }
+
+// create function convert MultiPart to Json
+pub async fn multipart_to_json(mut multipart: Multipart) -> Result<Value, actix_web::Error> {
+    let mut json_data = json!({});
+
+    while let Some(item) = multipart.next().await {
+        let mut field = item.map_err(actix_web::Error::from)?;
+
+        let content_disposition = field.content_disposition().cloned();
+        let field_name = content_disposition
+            .as_ref()
+            .and_then(|cd| cd.get_name())
+            .map(|name| name.to_string())
+            .unwrap_or_else(|| "unnamed".to_string());
+
+        if let Some(filename) = content_disposition
+            .as_ref()
+            .and_then(|cd| cd.get_filename())
+        {
+            let mut buffer = Vec::new();
+            while let Some(chunk) = field.next().await {
+                let data = chunk?;
+                buffer.extend_from_slice(&data);
+            }
+
+            // check env IMAGE_STORAGE
+            // if IMAGE_STORAGE is DB than convert file to base64 else save to disk that defined in IMAGE_STORAGE
+
+            let image_storage = std::env::var("LOC_IMAGE").unwrap_or("DB".to_string());
+            if image_storage == "DB" {
+                let base64_data = base64::engine::general_purpose::STANDARD.encode(&buffer);
+                let mime_type = field
+                    .content_type()
+                    .map(|t| t.to_string())
+                    .unwrap_or("application/octet-stream".to_string());
+                let data_uri = format!("data:{};base64,{}", mime_type, base64_data);
+                json_data[field_name] = json!(data_uri);
+            } else {
+                // save to disk
+                let file_path = format!("{}/{}", image_storage, filename);
+                std::fs::write(&file_path, &buffer)?;
+                let base_url =
+                    std::env::var("BASE_URL").unwrap_or("http://localhost:8080".to_string());
+                let url = format!("{}/{}", base_url, file_path);
+                log_output(
+                    "QUERY",
+                    "POST IMAGE",
+                    field_name.clone().as_str(),
+                    url.clone(),
+                    true
+                );
+                json_data[field_name] = json!(url);
+            }
+        } else {
+            let mut text_data = String::new();
+            while let Some(chunk) = field.next().await {
+                let data = chunk?;
+                text_data.push_str(&String::from_utf8_lossy(&data));
+            }
+            json_data[field_name] = match serde_json::from_str(&text_data) {
+                Ok(parsed) => parsed,
+                Err(_) => json!(text_data),
+            };
+        }
+    }
+
+    Ok(json_data)
+}
+
+
+
+
