@@ -104,213 +104,213 @@ pub async fn login(state: web::Data<AppState>, req: actix_web::HttpRequest) -> i
    
 // NCO-POST
 pub async fn register(state: Data<AppState>, multipart: Multipart) -> impl Responder {
-let body = multipart_to_json(multipart).await.unwrap();
+       let body = multipart_to_json(multipart).await.unwrap();
 
-if body["email"] == "" || body["password"] == "" || body["name"] == "" || body["phone"] == "" {
-       return HttpResponse::BadRequest().json(WebResponse {
-              success: false,
-              message: "Email and Password is required".to_string(),
-              total_data: 0,
-              data: Value::Null,
-       });
-}
+       if body["email"] == "" || body["password"] == "" || body["name"] == "" || body["phone"] == "" {
+              return HttpResponse::BadRequest().json(WebResponse {
+                     success: false,
+                     message: "Email and Password is required".to_string(),
+                     total_data: 0,
+                     data: Value::Null,
+              });
+       }
 
-let encrypt_password = encrypt(
-       state.encrypt_key.clone(),
-       body["password"].as_str().unwrap().to_string(),
-);
+       let encrypt_password = encrypt(
+              state.encrypt_key.clone(),
+              body["password"].as_str().unwrap().to_string(),
+       );
 
-// insert into test.users (id, email, phone, role, password, name, photo, email_verified, created_at, updated_at, enabled)
-let s_sql = format!(
-       "INSERT INTO flx_users (email, phone,  password, name, created_at, updated_at, enabled) VALUES ('{}', '{}', '{}', '{}', NOW(), NOW(), 1)",
-       body["email"], body["phone"], encrypt_password, body["name"]
-).replace("\"", "");
+       // insert into test.users (id, email, phone, role, password, name, photo, email_verified, created_at, updated_at, enabled)
+       let s_sql = format!(
+              "INSERT INTO flx_users (email, phone,  password, name, created_at, updated_at, enabled) VALUES ('{}', '{}', '{}', '{}', NOW(), NOW(), 1)",
+              body["email"], body["phone"], encrypt_password, body["name"]
+       ).replace("\"", "");
 
-log_output("QUERY", "POST", "register", s_sql.clone(), true);
+       log_output("QUERY", "POST", "register", s_sql.clone(), true);
 
-// execute sql
-match &state.db.query(&s_sql).await {
-       Ok(_) => HttpResponse::Ok().json(WebResponse {
-              success: true,
-              message: "Register Success".to_string(),
-              total_data: 1,
-              data: Value::Null,
-       }),
-       Err(err) => HttpResponse::InternalServerError().json(WebResponse {
-              success: false,
-              message: format!("Error NCO-POST: {}", err),
-              total_data: 0,
-              data: Value::Null,
-       }),
-}
+       // execute sql
+       match &state.db.query(&s_sql).await {
+              Ok(_) => HttpResponse::Ok().json(WebResponse {
+                     success: true,
+                     message: "Register Success".to_string(),
+                     total_data: 1,
+                     data: Value::Null,
+              }),
+              Err(err) => HttpResponse::InternalServerError().json(WebResponse {
+                     success: false,
+                     message: format!("Error NCO-POST: {}", err),
+                     total_data: 0,
+                     data: Value::Null,
+              }),
+       }
 }
 
 // NCO-POST
 pub async fn generate_users(state: Data<AppState>) -> impl Responder {
 
-// read sql from file db/mysql/create-flx_users.sql
-let db_file_path = format!("db/{}/create-flx_users.sql", state.db_type);
-let mut s_sql = std::fs::read_to_string(db_file_path)
-       .expect("Failed to read SQL file")
-       .replace("\"", "");
+       // read sql from file db/mysql/create-flx_users.sql
+       let db_file_path = format!("db/{}/create-flx_users.sql", state.db_type);
+       let mut s_sql = std::fs::read_to_string(db_file_path)
+              .expect("Failed to read SQL file")
+              .replace("\"", "");
 
-log_output("QUERY", "POST", "generate/table/flx_users", s_sql.clone(), true);
-
-// execute sql
-match &state.db.query(&s_sql).await {
-       Ok(_) => HttpResponse::Ok().json(WebResponse {
-              success: true,
-              message: "Generate Table users".to_string(),
-              total_data: 1,
-              data: Value::Null,
-       }),
-       Err(err) => HttpResponse::InternalServerError().json(WebResponse {
-              success: false,
-              message: format!("Error NCO-POST: {}", err),
-              total_data: 0,
-              data: Value::Null,
-       }),
-};
-
-// read sql from file db/mysql/create-flx_users.sql
-s_sql = std::fs::read_to_string(format!("db/{}/create-flx_roles.sql", state.db_type))
-       .expect("Failed to read SQL file")
-       .replace("\"", "");
-
-log_output("QUERY", "POST", "generate/table/flx_roles", s_sql.clone(), true);
-
-// execute sql
-match &state.db.query(&s_sql).await {
-       Ok(_) => HttpResponse::Ok().json(WebResponse {
-              success: true,
-              message: "Generate Table users".to_string(),
-              total_data: 1,
-              data: Value::Null,
-       }),
-       Err(err) => HttpResponse::InternalServerError().json(WebResponse {
-              success: false,
-              message: format!("Error NCO-POST: {}", err),
-              total_data: 0,
-              data: Value::Null,
-       }),
-};
-
-
-// guery to flx_users where name = "Flexurio Admin"
-// read sql from file db/mysql/create-flx_users.sql
-s_sql = std::fs::read_to_string(format!("db/{}/select-flx_users-admin.sql", state.db_type))
-       .expect("Failed to read SQL file")
-       .replace("\"", "");
-
-let mut id_user: i64 = match &state.db.query(&s_sql).await {
-       Ok(row) => {
-              // check if row is empty
-              if row.is_empty() {
-              0                
-              } else {
-              row[0].get("id").and_then(|v| v.as_i64()).unwrap_or(0)
-              }
-       },
-       Err(_) => 0,
-};
-
-log_output("QUERY", "POST", "generate/table/users", s_sql.clone(), true);
-
-
-if id_user == 0 {
-       id_user = 1;
-       // create string number
-       let random_pass = rand::rng().random_range(1000..9999).to_string();
-       let encrypt_password = encrypt(state.encrypt_key.clone(), random_pass.clone());
-
-       println!("==========================================");
-       println!("Your admin Password: {:?}", random_pass);
-       println!("==========================================");
-
-
-       // insert into test.users (id, email, phone, role, password, name, photo, email_verified, created_at, updated_at, enabled)
-       s_sql = std::fs::read_to_string(format!("db/{}/insert-flx_users-admin.sql", state.db_type))
-       .expect("Failed to read SQL file")
-       .replace("\"", "").
-       replace("{{password}}", &encrypt_password);
-
-       log_output("EXEC", "POST", "generate/table/users", s_sql.clone(), true);
-
+       log_output("QUERY", "POST", "generate/table/flx_users", s_sql.clone(), true);
 
        // execute sql
        match &state.db.query(&s_sql).await {
               Ok(_) => HttpResponse::Ok().json(WebResponse {
-              success: true,
-              message: "Generate Table users".to_string(),
-              total_data: 1,
-              data: Value::Null,
+                     success: true,
+                     message: "Generate Table users".to_string(),
+                     total_data: 1,
+                     data: Value::Null,
               }),
               Err(err) => HttpResponse::InternalServerError().json(WebResponse {
-              success: false,
-              message: format!("Error NCO-POST: {}", err),
-              total_data: 0,
-              data: Value::Null,
+                     success: false,
+                     message: format!("Error NCO-POST: {}", err),
+                     total_data: 0,
+                     data: Value::Null,
+              }),
+       };
+
+       // read sql from file db/mysql/create-flx_users.sql
+       s_sql = std::fs::read_to_string(format!("db/{}/create-flx_roles.sql", state.db_type))
+              .expect("Failed to read SQL file")
+              .replace("\"", "");
+
+       log_output("QUERY", "POST", "generate/table/flx_roles", s_sql.clone(), true);
+
+       // execute sql
+       match &state.db.query(&s_sql).await {
+              Ok(_) => HttpResponse::Ok().json(WebResponse {
+                     success: true,
+                     message: "Generate Table users".to_string(),
+                     total_data: 1,
+                     data: Value::Null,
+              }),
+              Err(err) => HttpResponse::InternalServerError().json(WebResponse {
+                     success: false,
+                     message: format!("Error NCO-POST: {}", err),
+                     total_data: 0,
+                     data: Value::Null,
               }),
        };
 
 
+       // guery to flx_users where name = "Flexurio Admin"
+       // read sql from file db/mysql/create-flx_users.sql
+       s_sql = std::fs::read_to_string(format!("db/{}/select-flx_users-admin.sql", state.db_type))
+              .expect("Failed to read SQL file")
+              .replace("\"", "");
 
-       s_sql = format!(
-              "INSERT INTO flx_roles 
-              (id_users, endpoint, role, created_at) 
-              VALUES ({}, 'flx_users', 15, NOW())", 
-              id_user
-       ).replace("\"", "");
-       log_output("EXEC", "POST", "generate/table/users", s_sql.clone(), true);
-
-       // execute sql
-       match &state.db.query(&s_sql).await {
-              Ok(_) => HttpResponse::Ok().json(WebResponse {
-              success: true,
-              message: "Generate Table users".to_string(),
-              total_data: 1,
-              data: Value::Null,
-              }),
-              Err(err) => HttpResponse::InternalServerError().json(WebResponse {
-              success: false,
-              message: format!("Error NCO-POST: {}", err),
-              total_data: 0,
-              data: Value::Null,
-              }),
+       let mut id_user: i64 = match &state.db.query(&s_sql).await {
+              Ok(row) => {
+                     // check if row is empty
+                     if row.is_empty() {
+                     0                
+                     } else {
+                     row[0].get("id").and_then(|v| v.as_i64()).unwrap_or(0)
+                     }
+              },
+              Err(_) => 0,
        };
 
-       s_sql = format!(
-              "INSERT INTO flx_roles 
-              (id_users, endpoint, role, created_at) 
-              VALUES ({}, 'flx_roles', 15, NOW())", 
-              id_user
-       ).replace("\"", "");
-       
-       // execute sql
-       match &state.db.query(&s_sql).await {
-              Ok(_) => HttpResponse::Ok().json(WebResponse {
+       log_output("QUERY", "POST", "generate/table/users", s_sql.clone(), true);
+
+
+       if id_user == 0 {
+              id_user = 1;
+              // create string number
+              let random_pass = rand::rng().random_range(1000..9999).to_string();
+              let encrypt_password = encrypt(state.encrypt_key.clone(), random_pass.clone());
+
+              println!("==========================================");
+              println!("Your admin Password: {:?}", random_pass);
+              println!("==========================================");
+
+
+              // insert into test.users (id, email, phone, role, password, name, photo, email_verified, created_at, updated_at, enabled)
+              s_sql = std::fs::read_to_string(format!("db/{}/insert-flx_users-admin.sql", state.db_type))
+              .expect("Failed to read SQL file")
+              .replace("\"", "").
+              replace("{{password}}", &encrypt_password);
+
+              log_output("EXEC", "POST", "generate/table/users", s_sql.clone(), true);
+
+
+              // execute sql
+              match &state.db.query(&s_sql).await {
+                     Ok(_) => HttpResponse::Ok().json(WebResponse {
+                     success: true,
+                     message: "Generate Table users".to_string(),
+                     total_data: 1,
+                     data: Value::Null,
+                     }),
+                     Err(err) => HttpResponse::InternalServerError().json(WebResponse {
+                     success: false,
+                     message: format!("Error NCO-POST: {}", err),
+                     total_data: 0,
+                     data: Value::Null,
+                     }),
+              };
+
+
+
+              s_sql = format!(
+                     "INSERT INTO flx_roles 
+                     (id_users, endpoint, role, created_at) 
+                     VALUES ({}, 'flx_users', 15, NOW())", 
+                     id_user
+              ).replace("\"", "");
+              log_output("EXEC", "POST", "generate/table/users", s_sql.clone(), true);
+
+              // execute sql
+              match &state.db.query(&s_sql).await {
+                     Ok(_) => HttpResponse::Ok().json(WebResponse {
+                     success: true,
+                     message: "Generate Table users".to_string(),
+                     total_data: 1,
+                     data: Value::Null,
+                     }),
+                     Err(err) => HttpResponse::InternalServerError().json(WebResponse {
+                     success: false,
+                     message: format!("Error NCO-POST: {}", err),
+                     total_data: 0,
+                     data: Value::Null,
+                     }),
+              };
+
+              s_sql = format!(
+                     "INSERT INTO flx_roles 
+                     (id_users, endpoint, role, created_at) 
+                     VALUES ({}, 'flx_roles', 15, NOW())", 
+                     id_user
+              ).replace("\"", "");
+              
+              // execute sql
+              match &state.db.query(&s_sql).await {
+                     Ok(_) => HttpResponse::Ok().json(WebResponse {
+                     success: true,
+                     message: "Generate Table users".to_string(),
+                     total_data: 1,
+                     data: Value::Null,
+                     }),
+                     Err(err) => HttpResponse::InternalServerError().json(WebResponse {
+                     success: false,
+                     message: format!("Error NCO-POST: {}", err),
+                     total_data: 0,
+                     data: Value::Null,
+                     }),
+              };        
+       }
+
+
+
+       HttpResponse::Ok().json(WebResponse {
               success: true,
               message: "Generate Table users".to_string(),
               total_data: 1,
               data: Value::Null,
-              }),
-              Err(err) => HttpResponse::InternalServerError().json(WebResponse {
-              success: false,
-              message: format!("Error NCO-POST: {}", err),
-              total_data: 0,
-              data: Value::Null,
-              }),
-       };        
-}
-
-
-
-HttpResponse::Ok().json(WebResponse {
-       success: true,
-       message: "Generate Table users".to_string(),
-       total_data: 1,
-       data: Value::Null,
-})
+       })
 
 }
    
