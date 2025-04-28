@@ -482,6 +482,28 @@ pub async fn multipart_to_json(mut multipart: Multipart) -> Result<Value, actix_
     Ok(json_data)
 }
 
+pub fn sanitize_sql_input(input: String) -> String {
+    input
+        .replace("'", "`")       // escape single quotes (SQL standard)
+        .replace("--", "")        // remove SQL comment syntax
+        .replace(";", "")         // prevent query stacking
+        .replace("\"", "")        // remove double quotes
+        .replace("\\", "")        // prevent backslash escape (esp. in MySQL)
+        .replace("/*", "")        // remove block comment start
+        .replace("*/", "")        // remove block comment end
+        .replace("#", "")         // MySQL comment
+        .replace("`", "")         // MySQL identifier escape
+        .replace(" OR ", " ")     // remove logic operators
+        .replace(" or ", " ")
+        .replace(" AND ", " ")
+        .replace(" and ", " ")
+        .replace("=", "")         // remove equal signs
+        .replace("(", "")         // remove open parenthesis
+        .replace(")", "")         // remove close parenthesis
+        .replace("%", "")         // remove wildcards in LIKE
+        .replace("_", "")         // remove underscore wildcard
+        .replace("\u{0000}", "")  // remove null byte
+}
 
 
 
