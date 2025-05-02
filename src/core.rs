@@ -64,9 +64,6 @@ pub async fn login(state: web::Data<AppState>, req: actix_web::HttpRequest) -> i
            Err(_) => ("".to_string(), 0_i64, "".to_string()),
        };
    
-       println!("password_db: {:?}", password_db);
-       println!("id_user: {:?}", id_user);
-       println!("name: {:?}", name);
    
        let decrypt_password = decrypt(state.encrypt_key.clone(), password_db);
    
@@ -115,9 +112,16 @@ pub async fn register(state: Data<AppState>, multipart: Multipart) -> impl Respo
               });
        }
 
+       let password_value = &body["password"];
+       let password = if password_value.is_string() {
+              password_value.as_str().unwrap().to_string()
+       } else {
+              password_value.to_string()
+       };
+
        let encrypt_password = encrypt(
               state.encrypt_key.clone(),
-              body["password"].as_str().unwrap().to_string(),
+              password,
        );
 
        // insert into test.users (id, email, phone, role, password, name, photo, email_verified, created_at, updated_at, enabled)
