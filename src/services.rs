@@ -7,13 +7,14 @@ use actix_web::{
 use serde_json::{json, Value};
 
 use crate::{
-    crypt::is_encrypted_string, 
-    log::log_output, model::ParamJoin,
     auth::{check_access, get_user_info_from_token},
-    crypt::encrypt,
-    helpers::{filter_table_schema, generate_table, split_column_operator,validate_table_design, multipart_to_json, sanitize_sql_input},
-    model::{Column, TableSchema, WebResponse},
-    AppState,
+    crypt::{encrypt, is_encrypted_string},
+    helpers::{
+        convert_to_sql, extract_expressions, filter_table_schema, find_column_match, generate_table, multipart_to_json, sanitize_sql_input, split_column_operator, validate_table_design
+    },
+    log::log_output,
+    model::{Column, ParamJoin, TableSchema, WebResponse},
+    AppState
 };
 
 
@@ -616,27 +617,92 @@ pub async fn nocode_post(
         .map(|col| col.name.as_str())
         .collect();
 
+    
     // **3️⃣ Buat daftar nilai untuk INSERT**
     let mut insert_values: Vec<String> = filtered_columns
         .iter()
         .map(|col| {
 
-            println!("col: {:?}", col);
-            
+            if col.auto_increment {
+                // Jika kolom adalah auto_increment, kita tidak perlu memasukkan nilainya
+                return "XXX".to_string();
+            }
+
+            let mut value = String::new();
+            let mut isformula = false;
+
+            let post_columns: Vec<&str> = table_schema.post.columns.iter().map(|s| s.as_str()).collect();
+            let (exists, matched_string) = find_column_match(&post_columns, &col.name);
+            println!("col.name: {}", col.name);
+            println!("exists: {}, matched_string: {:?}", exists, matched_string);
+
+            // check if col.name is in table_schema.post.columns, and get column name from table_schema.post.columns
+            if exists && col.name != "id" {
+                // get column name from table_schema.post.columns
+                let mut colpost = matched_string.unwrap().to_string();
+                if colpost.contains("=") {
+                    isformula = true;
+                    let mut i = 0;
+                    let mut maxloop = 0;
+                    while i == 0 {
+                        let expressions = extract_expressions(&colpost);
+
+                        for expr in expressions {
+                            let expr_rplace = format!("{{{}}}", expr);
+                            if expr.contains("[") {
+                                let sql = convert_to_sql(&expr);
+                                colpost = colpost.replace(&expr_rplace, &sql);
+                                if !colpost.contains("{") {
+                                    i = 1;
+                                }
+                            } else {
+                                let colreq = expr.replace("request.", "");
+
+                                let value = body
+                                    .get(&colreq)
+                                    .map(|v| {
+                                        format!("{}", v)
+                                            .replace("\"", "")
+                                            .replace("null", "")
+                                    })
+                                    .unwrap_or_default();
+                                
+                                colpost = colpost.replace(&expr_rplace, &value);
+                                if !colpost.contains("{") {
+                                    i = 1;
+                                }
+
+                            }
+                        }
+                        maxloop += 1;
+                        if maxloop > 100 {
+                            println!("Max loop reached, breaking out of loop");
+                            break;
+                        }
+                        
+                    }
+
+                    value = colpost.replace(&(col.name.clone() + "="), "");
+
+                }                
+            }
+
+
             if col.name == "id" && !col.function.is_empty() {
                 // split col.function with "/"
                 function_id_split = col.function.split("/").map(|s| s.to_string()).collect();
             }
 
-
-            let mut value = body
-                .get(&col.name)
-                .map(|v| {
-                    format!("{}", v)
-                        .replace("\"", "")
-                        .replace("null", "")
-                })
-                .unwrap_or_default();
+            if !isformula {
+                value = body
+                    .get(&col.name)
+                    .map(|v| {
+                        format!("{}", v)
+                            .replace("\"", "")
+                            .replace("null", "")
+                    })
+                    .unwrap_or_default();
+            }            
 
             // check col.encrypt if true then encrypt value
             if col.encrypt {
@@ -656,11 +722,19 @@ pub async fn nocode_post(
 
             if value.parse::<i64>().is_ok() {
                 value // Jika angka, tidak pakai kutip
+            } else if isformula {
+                value.to_string() // Jika string, pakai kutip
             } else {
                 format!("'{}'", value) // Jika string, pakai kutip
             }
         })
         .collect();
+
+
+    // remove element "XXX" from insert_values
+    insert_values.retain(|v| v != "XXX");
+
+    println!("insert_values: {:?}", insert_values);
 
     if !function_id_split.is_empty() {
         // loop every function_id_split
@@ -932,6 +1006,7 @@ pub async fn nocode_generate_table(
     table_schemas: Vec<TableSchema>,
     req: actix_web::HttpRequest,
 ) -> impl Responder {
+    println!("Route: {}", route);
     let claims = get_user_info_from_token(req, state.clone()).unwrap();
     if !check_access(&claims, &route, "execute") {
         return HttpResponse::Unauthorized().json(WebResponse {

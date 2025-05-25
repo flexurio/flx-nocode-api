@@ -5,6 +5,7 @@ use std::fmt::Write;
 use actix_multipart::Multipart;
 use serde_json::{json, Value};
 use futures::StreamExt;
+use regex::Regex;
 
 
 use crate::{log::log_output, model::{Column, GetOperation, Index, JoinTable, Operation, OperationDelete, Patch, PrimaryKey, Redis, TableSchema, Trace}, ISDEBUG};
@@ -507,3 +508,50 @@ pub fn sanitize_sql_input(input: String) -> String {
 
 
 
+pub fn extract_expressions(input: &str) -> HashSet<String> {
+    let mut results = HashSet::new();
+
+    // Regex untuk ekspresi dalam kurung kurawal { ... }
+    let re_braces = Regex::new(r"\{([^{}]+)\}").unwrap();
+
+    for cap in re_braces.captures_iter(input) {
+        let expr = cap[1].to_string();
+        results.insert(expr.clone());
+
+        // Cek apakah di dalam ekspresi ada ekspresi lain, seperti [{...}]
+        let nested_expr = extract_expressions(&expr);
+        results.extend(nested_expr);
+    }
+
+    results
+}
+
+
+pub fn convert_to_sql(input: &str) -> String {
+    // Pastikan formatnya seperti products[1].price
+    let re = match regex::Regex::new(r"^(\w+)\[(\d+)\]\.(\w+)$") {
+        Ok(re) => re,
+        Err(_) => return "".to_string(),
+    };
+
+    if let Some(captures) = re.captures(input) {
+        let table = &captures[1];
+        let id = &captures[2];
+        let field = &captures[3];
+
+        format!("(SELECT {} FROM {} WHERE id = {})", field, table, id)
+    } else {
+        "".to_string()
+    }
+}
+
+pub fn find_column_match<'a>(columns: &'a [&str], target: &str) -> (bool, Option<&'a str>) {
+    for col in columns.iter() {
+        if let Some((name, _)) = col.split_once('=') {
+            if name == target {
+                return (true, Some(*col));
+            }
+        }
+    }
+    (false, None)
+}

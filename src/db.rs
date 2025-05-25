@@ -32,7 +32,7 @@ pub fn mysqlrows_to_json(rows: Vec<MySqlRow>) -> Vec<Value> {
             let type_info_debug = format!("{:?}", column.type_info()).to_uppercase();
             let is_unsigned = type_info_debug.contains("UNSIGNED");
 
-            let value = if type_info_debug.contains("LONGLONG") {
+            let value = if type_info_debug.contains("LONG") {
                 if is_unsigned {
                     match row.try_get::<Option<u64>, _>(name) {
                         Ok(Some(v)) => Value::Number(v.into()),
@@ -103,9 +103,20 @@ pub fn mysqlrows_to_json(rows: Vec<MySqlRow>) -> Vec<Value> {
                     .map(|dt| Value::String(dt.to_string()))
                     .unwrap_or(Value::Null)
             } else if type_info_debug.contains("TIMESTAMP") {
-                row.try_get::<chrono::NaiveDateTime, _>(name)
-                    .map(|dt| Value::String(dt.to_string()))
-                    .unwrap_or(Value::Null)
+                println!("Processing TIMESTAMP column: {}", name);
+                match row.try_get::<chrono::DateTime<chrono::Local>, _>(name) {
+                    Ok(dt) => Value::String(dt.to_rfc3339()), // atau dt.to_string()
+                    Err(e) => {
+                        eprintln!("Error saat ambil kolom {}: {}", name, e);
+                        match row.try_get::<chrono::NaiveDateTime, _>(name) {
+                            Ok(dt) => Value::String(dt.to_string()),
+                            Err(e) => {
+                                eprintln!("Error saat ambil kolom {}: {}", name, e);
+                                Value::Null
+                            }
+                        }
+                    }
+                }
             } else if type_info_debug.contains("TIME") {
                 row.try_get::<chrono::NaiveTime, _>(name)
                     .map(|t| Value::String(t.to_string()))
