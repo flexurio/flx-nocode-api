@@ -168,8 +168,7 @@ pub async fn nocode_get(
                     });
                 } else {
                     let value_str = value.as_str().unwrap_or("");
-                    let (column, operator, value) =
-                        split_column_operator(param, &table_schema.table, value_str);
+                    let (column, operator, value) = split_column_operator(param, &table_schema.table, value_str);
 
                     if value.parse::<i64>().is_ok() || value_str.contains("NULL") {
                         where_clause
