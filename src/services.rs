@@ -13,7 +13,6 @@ use crate::{
 };
 
 
-
 // NCO-GET
 pub async fn nocode_get(
     state: web::Data<AppState>,
@@ -681,7 +680,7 @@ pub async fn nocode_post(
                 value = 0.to_string();
             }
 
-            if value.parse::<i64>().is_ok() {
+            if col.type_data.contains("int") || col.type_data.contains("float") {
                 value // Jika angka, tidak pakai kutip
             } else if isformula {
                 value.to_string() // Jika string, pakai kutip
