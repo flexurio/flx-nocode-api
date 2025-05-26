@@ -3,6 +3,8 @@ use base64::Engine;
 use serde_json::{Map, Value};
 use sqlx::{mysql::MySqlRow, postgres::{PgRow, Postgres}, Column, MySqlPool, Pool, Row};
 
+use crate::{helpers::formula_replace, log::log_output};
+
 pub struct AppState {
     pub db: Arc<dyn DbRepository>,
     pub db_type: String,
@@ -165,6 +167,23 @@ impl DbRepository for MySqlRepo {
         Ok(row.0)
     }
 }
+
+
+pub async fn execute_sql_formula(db: &Arc<dyn DbRepository>, sql: String, body: &serde_json::Value, route: &str) {
+    let mut sql = sql.replace("SQL:", "");
+    sql = formula_replace(sql, body);
+    log_output("QUERY", "POST", route, sql.to_string(), true);
+    // Execute the SQL query
+    match db.query(&sql).await {
+        Ok(_) => {
+            println!("AFTER POST SQL query executed successfully");
+        },
+        Err(err) => {
+            println!("Error executing SQL query: {}", err);
+        }
+    }
+}
+
 
 pub struct PostgresRepo {
     pub pool: Pool<Postgres>,

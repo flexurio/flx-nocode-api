@@ -7,15 +7,11 @@ use actix_web::{
 use serde_json::{json, Value};
 
 use crate::{
-    auth::{check_access, get_user_info_from_token},
-    crypt::{encrypt, is_encrypted_string},
-    helpers::{
+    auth::{check_access, get_user_info_from_token}, crypt::{encrypt, is_encrypted_string}, db::execute_sql_formula, helpers::{
         filter_table_schema, find_column_match, formula_replace, generate_table, multipart_to_json, sanitize_sql_input, split_column_operator, validate_table_design
-    },
-    log::log_output,
-    model::{Column, ParamJoin, TableSchema, WebResponse},
-    AppState
+    }, log::log_output, model::{Column, ParamJoin, TableSchema, WebResponse}, AppState
 };
+
 
 
 // NCO-GET
@@ -578,6 +574,8 @@ pub async fn nocode_post(
 
     let body = multipart_to_json(multipart).await.unwrap();
 
+
+
     // Generate SQL query INSERT to table in variable route, from data structure table in table_schemas
     let table_schema = filter_table_schema(&table_schemas, route.clone()).await;
     if table_schema.table.is_empty() {
@@ -589,6 +587,11 @@ pub async fn nocode_post(
             data: Value::Null,
         });
     }
+
+    if table_schema.post.before.contains("SQL:"){
+        execute_sql_formula(&state.db, table_schema.post.before, &body, route.as_str()).await;
+    }
+
 
     let skip_columns: HashSet<&str> = [
         "created_at",
@@ -778,19 +781,9 @@ pub async fn nocode_post(
 
     match &state.db.query(&s_sql).await {
         Ok(_) => {
+
             if table_schema.post.after.contains("SQL:"){
-                let mut sql = table_schema.post.after.replace("SQL:", "");
-                sql = formula_replace(sql, &body);
-                log_output("QUERY", "POST", route.as_str(), sql.to_string(), true);
-                // Execute the SQL query
-                match &state.db.query(&sql).await {
-                    Ok(_) => {
-                        println!("AFTER POST SQL query executed successfully");
-                    },
-                    Err(err) => {
-                        println!("Error executing SQL query: {}", err);
-                    }
-                }
+                execute_sql_formula(&state.db, table_schema.post.after, &body, route.as_str()).await;
             }
 
             HttpResponse::Ok().json(WebResponse {
@@ -852,6 +845,11 @@ pub async fn nocode_put(
             data: Value::Null,
         });
     }
+
+    if table_schema.put.before.contains("SQL:"){
+        execute_sql_formula(&state.db, table_schema.put.before, &body, route.as_str()).await;
+    }
+
 
     let mut set_clause = "SET ".to_string();
 
@@ -916,12 +914,19 @@ pub async fn nocode_put(
     log_output("QUERY", "PUT", route.as_str(), s_sql.clone(), true);
 
     match &state.db.query(&s_sql).await {
-        Ok(_) => HttpResponse::Ok().json(WebResponse {
-            success: true,
-            message: "Data updated".to_string(),
-            total_data: 1,
-            data: Value::Null,
-        }),
+        Ok(_) => {
+
+            if table_schema.put.after.contains("SQL:"){
+                execute_sql_formula(&state.db, table_schema.put.after, &body, route.as_str()).await;
+            }
+
+            HttpResponse::Ok().json(WebResponse {
+                success: true,
+                message: "Data updated".to_string(),
+                total_data: 1,
+                data: Value::Null,
+            })
+        },
         Err(err) => HttpResponse::InternalServerError().json(WebResponse {
             success: false,
             message: format!("Error NCO-PUT: {}", err),
@@ -1061,7 +1066,6 @@ pub async fn nocode_generate_table(
 
     }
     
-
     if !err_message.is_empty() {
         HttpResponse::InternalServerError().json(WebResponse {
             success: false,
