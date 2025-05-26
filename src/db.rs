@@ -103,15 +103,12 @@ pub fn mysqlrows_to_json(rows: Vec<MySqlRow>) -> Vec<Value> {
                     .map(|dt| Value::String(dt.to_string()))
                     .unwrap_or(Value::Null)
             } else if type_info_debug.contains("TIMESTAMP") {
-                println!("Processing TIMESTAMP column: {}", name);
                 match row.try_get::<chrono::DateTime<chrono::Local>, _>(name) {
                     Ok(dt) => Value::String(dt.to_rfc3339()), // atau dt.to_string()
-                    Err(e) => {
-                        eprintln!("Error saat ambil kolom {}: {}", name, e);
+                    Err(_) => {
                         match row.try_get::<chrono::NaiveDateTime, _>(name) {
                             Ok(dt) => Value::String(dt.to_string()),
-                            Err(e) => {
-                                eprintln!("Error saat ambil kolom {}: {}", name, e);
+                            Err(_) => {
                                 Value::Null
                             }
                         }

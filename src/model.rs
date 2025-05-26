@@ -18,7 +18,7 @@ pub struct TableSchema {
     pub indexes: Vec<Index>,
     pub redis: Redis,
     pub get: GetOperation,
-    pub post: Operation,
+    pub post: OperationPost,
     pub put: Operation,
     pub del: OperationDelete,
     pub patch: Patch,
@@ -46,7 +46,7 @@ impl Default for TableSchema {
                 column_groups: vec![],
                 having: vec![],
             },
-            post: Operation { columns: vec![] },
+            post: OperationPost { columns: vec![], after: "".to_string() },
             put: Operation { columns: vec![] },
             del: OperationDelete { 
                 columns: vec![],
@@ -117,6 +117,11 @@ pub struct JoinTable {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Operation {
     pub columns: Vec<String>,
+}
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct OperationPost {
+    pub columns: Vec<String>,
+    pub after: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

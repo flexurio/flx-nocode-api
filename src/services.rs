@@ -10,7 +10,7 @@ use crate::{
     auth::{check_access, get_user_info_from_token},
     crypt::{encrypt, is_encrypted_string},
     helpers::{
-        convert_to_sql, extract_expressions, filter_table_schema, find_column_match, generate_table, multipart_to_json, sanitize_sql_input, split_column_operator, validate_table_design
+        filter_table_schema, find_column_match, formula_replace, generate_table, multipart_to_json, sanitize_sql_input, split_column_operator, validate_table_design
     },
     log::log_output,
     model::{Column, ParamJoin, TableSchema, WebResponse},
@@ -148,8 +148,6 @@ pub async fn nocode_get(
                 } else if param.contains("|") {
                     where_clause.push_str(" ( ");
                     let param_split: Vec<&str> = param.split("|").collect();
-
-                    println!("param_split: {:?}", param_split);
 
                     // loop every param_split
                     for (idx, param) in param_split.iter().enumerate() {
@@ -625,7 +623,7 @@ pub async fn nocode_post(
 
             if col.auto_increment {
                 // Jika kolom adalah auto_increment, kita tidak perlu memasukkan nilainya
-                return "XXX".to_string();
+                return "XXXAUTOINC".to_string();
             }
 
             let mut value = String::new();
@@ -633,56 +631,16 @@ pub async fn nocode_post(
 
             let post_columns: Vec<&str> = table_schema.post.columns.iter().map(|s| s.as_str()).collect();
             let (exists, matched_string) = find_column_match(&post_columns, &col.name);
-            println!("col.name: {}", col.name);
-            println!("exists: {}, matched_string: {:?}", exists, matched_string);
 
             // check if col.name is in table_schema.post.columns, and get column name from table_schema.post.columns
             if exists && col.name != "id" {
                 // get column name from table_schema.post.columns
-                let mut colpost = matched_string.unwrap().to_string();
-                if colpost.contains("=") {
+                let string_formula = matched_string.unwrap().to_string();
+                if string_formula.contains("=") {
                     isformula = true;
-                    let mut i = 0;
-                    let mut maxloop = 0;
-                    while i == 0 {
-                        let expressions = extract_expressions(&colpost);
 
-                        for expr in expressions {
-                            let expr_rplace = format!("{{{}}}", expr);
-                            if expr.contains("[") {
-                                let sql = convert_to_sql(&expr);
-                                colpost = colpost.replace(&expr_rplace, &sql);
-                                if !colpost.contains("{") {
-                                    i = 1;
-                                }
-                            } else {
-                                let colreq = expr.replace("request.", "");
-
-                                let value = body
-                                    .get(&colreq)
-                                    .map(|v| {
-                                        format!("{}", v)
-                                            .replace("\"", "")
-                                            .replace("null", "")
-                                    })
-                                    .unwrap_or_default();
-                                
-                                colpost = colpost.replace(&expr_rplace, &value);
-                                if !colpost.contains("{") {
-                                    i = 1;
-                                }
-
-                            }
-                        }
-                        maxloop += 1;
-                        if maxloop > 100 {
-                            println!("Max loop reached, breaking out of loop");
-                            break;
-                        }
-                        
-                    }
-
-                    value = colpost.replace(&(col.name.clone() + "="), "");
+                    value = formula_replace(string_formula, &body);
+                    value = value.replace(&(col.name.clone().to_string() + "="), "");
 
                 }                
             }
@@ -731,10 +689,8 @@ pub async fn nocode_post(
         .collect();
 
 
-    // remove element "XXX" from insert_values
-    insert_values.retain(|v| v != "XXX");
-
-    println!("insert_values: {:?}", insert_values);
+    // remove element "XXXAUTOINC" from insert_values
+    insert_values.retain(|v| v != "XXXAUTOINC");
 
     if !function_id_split.is_empty() {
         // loop every function_id_split
@@ -770,13 +726,13 @@ pub async fn nocode_post(
                     Ok(row) => row[0].get("max_id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
                     Err(_) => "0".to_string(),
                 };
-                println!("max_id: {:?}", max_id);
+
                 // get n char from right
                 let max_id_str: String = max_id.rsplit('/').next().unwrap_or("0").to_string();
-                println!("max_id_str: {:?}", max_id_str);
+
                 // remove leading zero
                 let _ = max_id_str.trim_start_matches('0');
-                println!("max_id_str: {:?}", max_id_str);
+
                 let max_id: i64 = max_id_str.parse().unwrap_or(0) + 1;
                 let max_id_str = format!("{:0>len$}", max_id, len = len_id);
                 id.push('/');
@@ -822,6 +778,21 @@ pub async fn nocode_post(
 
     match &state.db.query(&s_sql).await {
         Ok(_) => {
+            if table_schema.post.after.contains("SQL:"){
+                let mut sql = table_schema.post.after.replace("SQL:", "");
+                sql = formula_replace(sql, &body);
+                log_output("QUERY", "POST", route.as_str(), sql.to_string(), true);
+                // Execute the SQL query
+                match &state.db.query(&sql).await {
+                    Ok(_) => {
+                        println!("AFTER POST SQL query executed successfully");
+                    },
+                    Err(err) => {
+                        println!("Error executing SQL query: {}", err);
+                    }
+                }
+            }
+
             HttpResponse::Ok().json(WebResponse {
                 success: true,
                 message: "Data inserted".to_string(),

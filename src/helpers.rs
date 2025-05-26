@@ -8,7 +8,7 @@ use futures::StreamExt;
 use regex::Regex;
 
 
-use crate::{log::log_output, model::{Column, GetOperation, Index, JoinTable, Operation, OperationDelete, Patch, PrimaryKey, Redis, TableSchema, Trace}, ISDEBUG};
+use crate::{log::log_output, model::{Column, GetOperation, Index, JoinTable, Operation, OperationDelete, OperationPost, Patch, PrimaryKey, Redis, TableSchema, Trace}, ISDEBUG};
 
 pub fn cetak_label(host: String, port: u16) {
     println!("\n\n");
@@ -188,8 +188,9 @@ pub fn validate_table_design(design: TableSchema) -> TableSchema {
             column_groups: Vec::new(),
             having: Vec::new(),
         },
-        post: Operation {
+        post: OperationPost {
             columns: Vec::new(),
+            after: String::new(),
         },
         put: Operation {
             columns: Vec::new(),
@@ -554,4 +555,49 @@ pub fn find_column_match<'a>(columns: &'a [&str], target: &str) -> (bool, Option
         }
     }
     (false, None)
+}
+
+pub fn formula_replace(mut string_formula: String, body: &serde_json::Value) -> String {
+    let mut i = 0;
+    let mut maxloop = 0;
+
+    while i == 0 {
+        let expressions = extract_expressions(&string_formula);
+
+        for expr in expressions {
+            let expr_rplace = format!("{{{}}}", expr);
+            if expr.contains("[") {
+                let sql = convert_to_sql(&expr);
+                string_formula = string_formula.replace(&expr_rplace, &sql);
+                if !string_formula.contains("{") {
+                    i = 1;
+                }
+            } else {
+                let colreq = expr.replace("request.", "");
+
+                let value = body
+                    .get(&colreq)
+                    .map(|v| {
+                        format!("{}", v)
+                            .replace("\"", "")
+                            .replace("null", "")
+                    })
+                    .unwrap_or_default();
+                
+                string_formula = string_formula.replace(&expr_rplace, &value);
+                if !string_formula.contains("{") {
+                    i = 1;
+                }
+
+            }
+        }
+        maxloop += 1;
+        if maxloop > 100 {
+            println!("Max loop reached, breaking out of loop");
+            break;
+        }
+        
+    }
+    string_formula
+
 }
