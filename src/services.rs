@@ -1037,7 +1037,6 @@ pub async fn nocode_generate_table(
         }
     }
 
-    
     // execute sql_create_index
     // loop every sql_create_index
     for sql_create_index in sql_create_index.iter() {
@@ -1062,7 +1061,7 @@ pub async fn nocode_generate_table(
                     err_message, table_schema.table, err
                 );
             }
-        }        
+        }
 
     }
     
