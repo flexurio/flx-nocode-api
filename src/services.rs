@@ -21,7 +21,17 @@ pub async fn nocode_get(
     table_schemas: Vec<TableSchema>,
     req: actix_web::HttpRequest,
 ) -> impl Responder {
-    let claims = get_user_info_from_token(req, state.clone()).unwrap();
+    let claims = match get_user_info_from_token(req, state.clone()) {
+        Ok(c) => c,
+        Err(_) => {
+            return HttpResponse::Unauthorized().json(WebResponse {
+                success: false,
+                message: "Invalid token".to_string(),
+                total_data: 0,
+                data: Value::Null,
+            });
+        }
+    };
 
     if !check_access(&claims, &route, "read") {
         return HttpResponse::Unauthorized().json(WebResponse {
@@ -227,7 +237,6 @@ pub async fn nocode_get(
         where_clause = "".to_string();
     }
 
-    let table_schema = filter_table_schema(&table_schemas, route.clone()).await;
     let select_columns = table_schema.get.columns.join(", ");
 
 
@@ -315,7 +324,19 @@ pub async fn nocode_trace(
     table_schemas: Vec<TableSchema>,
     req: actix_web::HttpRequest,
 ) -> impl Responder {
-    let claims = get_user_info_from_token(req, state.clone()).unwrap();
+
+    let claims = match get_user_info_from_token(req, state.clone()) {
+        Ok(c) => c,
+        Err(_) => {
+            return HttpResponse::Unauthorized().json(WebResponse {
+                success: false,
+                message: "Invalid token".to_string(),
+                total_data: 0,
+                data: Value::Null,
+            });
+        }
+    };
+
     if !check_access(&claims, &route, "execute") {
         return HttpResponse::Unauthorized().json(WebResponse {
             success: false,
@@ -328,6 +349,8 @@ pub async fn nocode_trace(
     // get parameters value only allowed from table_schema.trace.parameters
     // loop every table_schema.trace.parameters
     let mut where_clause: String = "WHERE ".to_string();
+    
+
     let table_schema: TableSchema = filter_table_schema(&table_schemas, route.clone()).await;
     if table_schema.table.is_empty() {
         let message_error = format!("Entity {} on folder config/{}.json not found", route, route);
@@ -480,7 +503,18 @@ pub async fn nocode_delete(
     path: Path<String>,
     req: actix_web::HttpRequest,
 ) -> impl Responder {
-    let claims = get_user_info_from_token(req, state.clone()).unwrap();
+    let claims = match get_user_info_from_token(req, state.clone()) {
+        Ok(c) => c,
+        Err(_) => {
+            return HttpResponse::Unauthorized().json(WebResponse {
+                success: false,
+                message: "Invalid token".to_string(),
+                total_data: 0,
+                data: Value::Null,
+            });
+        }
+    };
+
     if !check_access(&claims, &route, "delete") {
         return HttpResponse::Unauthorized().json(WebResponse {
             success: false,
@@ -557,10 +591,22 @@ pub async fn nocode_post(
     req: actix_web::HttpRequest,
 ) -> impl Responder {
 
+    let claims = match get_user_info_from_token(req, state.clone()) {
+        Ok(c) => c,
+        Err(_) => {
+            return HttpResponse::Unauthorized().json(WebResponse {
+                success: false,
+                message: "Invalid token".to_string(),
+                total_data: 0,
+                data: Value::Null,
+            });
+        }
+    };
+
+
     let mut function_id_split: Vec<String> = Vec::new();
     let mut id: String = String::new();
 
-    let claims = get_user_info_from_token(req, state.clone()).unwrap();
     if !check_access(&claims, &route, "write") {
         return HttpResponse::Unauthorized().json(WebResponse {
             success: false,
@@ -811,7 +857,19 @@ pub async fn nocode_put(
     path: Path<String>,
     req: actix_web::HttpRequest,
 ) -> impl Responder {
-    let claims = get_user_info_from_token(req, state.clone()).unwrap();
+
+    let claims = match get_user_info_from_token(req, state.clone()) {
+        Ok(c) => c,
+        Err(_) => {
+            return HttpResponse::Unauthorized().json(WebResponse {
+                success: false,
+                message: "Invalid token".to_string(),
+                total_data: 0,
+                data: Value::Null,
+            });
+        }
+    };
+
     if !check_access(&claims, &route, "write") {
         return HttpResponse::Unauthorized().json(WebResponse {
             success: false,
@@ -941,7 +999,19 @@ pub async fn nocode_validate(
     mut table_schemas: Vec<TableSchema>,
     req: actix_web::HttpRequest,
 ) -> impl Responder {
-    let claims = get_user_info_from_token(req, state.clone()).unwrap();
+
+    let claims = match get_user_info_from_token(req, state.clone()) {
+        Ok(c) => c,
+        Err(_) => {
+            return HttpResponse::Unauthorized().json(WebResponse {
+                success: false,
+                message: "Invalid token".to_string(),
+                total_data: 0,
+                data: Value::Null,
+            });
+        }
+    };
+
     if !check_access(&claims, &route, "execute") {
         return HttpResponse::Unauthorized().json(WebResponse {
             success: false,
@@ -980,8 +1050,19 @@ pub async fn nocode_generate_table(
     table_schemas: Vec<TableSchema>,
     req: actix_web::HttpRequest,
 ) -> impl Responder {
-    println!("Route: {}", route);
-    let claims = get_user_info_from_token(req, state.clone()).unwrap();
+
+    let claims = match get_user_info_from_token(req, state.clone()) {
+        Ok(c) => c,
+        Err(_) => {
+            return HttpResponse::Unauthorized().json(WebResponse {
+                success: false,
+                message: "Invalid token".to_string(),
+                total_data: 0,
+                data: Value::Null,
+            });
+        }
+    };
+
     if !check_access(&claims, &route, "execute") {
         return HttpResponse::Unauthorized().json(WebResponse {
             success: false,
