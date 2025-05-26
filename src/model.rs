@@ -18,8 +18,8 @@ pub struct TableSchema {
     pub indexes: Vec<Index>,
     pub redis: Redis,
     pub get: GetOperation,
-    pub post: OperationPost,
-    pub put: Operation,
+    pub post: OperationPostPut,
+    pub put: OperationPostPut,
     pub del: OperationDelete,
     pub patch: Patch,
     pub trace: Trace,
@@ -46,8 +46,16 @@ impl Default for TableSchema {
                 column_groups: vec![],
                 having: vec![],
             },
-            post: OperationPost { columns: vec![], after: "".to_string() },
-            put: Operation { columns: vec![] },
+            post: OperationPostPut { 
+                before: "".to_string(),
+                columns: vec![], 
+                after: "".to_string(),
+            },
+            put: OperationPostPut { 
+                before: "".to_string(),
+                columns: vec![], 
+                after: "".to_string(),
+            },
             del: OperationDelete { 
                 columns: vec![],
                 type_delete: "soft".to_string()
@@ -119,7 +127,8 @@ pub struct Operation {
     pub columns: Vec<String>,
 }
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct OperationPost {
+pub struct OperationPostPut {
+    pub before: String,
     pub columns: Vec<String>,
     pub after: String,
 }

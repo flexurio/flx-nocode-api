@@ -8,7 +8,7 @@ use futures::StreamExt;
 use regex::Regex;
 
 
-use crate::{log::log_output, model::{Column, GetOperation, Index, JoinTable, Operation, OperationDelete, OperationPost, Patch, PrimaryKey, Redis, TableSchema, Trace}, ISDEBUG};
+use crate::{log::log_output, model::{Column, GetOperation, Index, JoinTable, OperationDelete, OperationPostPut, Patch, PrimaryKey, Redis, TableSchema, Trace}, ISDEBUG};
 
 pub fn cetak_label(host: String, port: u16) {
     println!("\n\n");
@@ -188,12 +188,15 @@ pub fn validate_table_design(design: TableSchema) -> TableSchema {
             column_groups: Vec::new(),
             having: Vec::new(),
         },
-        post: OperationPost {
+        post: OperationPostPut {
+            before: String::new(),
             columns: Vec::new(),
             after: String::new(),
         },
-        put: Operation {
+        put: OperationPostPut {
+            before: String::new(),
             columns: Vec::new(),
+            after: String::new(),
         },
         del: OperationDelete {
             columns: Vec::new(),
