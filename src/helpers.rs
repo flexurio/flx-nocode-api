@@ -130,6 +130,9 @@ pub fn generate_table(db_type:String, data: &TableSchema) -> (String, Vec<String
             } else if db_type == "postgres" {
                 auto_increment = " bigserial".to_string();
                 create_table_sql.push_str(&format!("  {} {},\n", col.name, auto_increment));
+            } else if db_type == "sqlite" {
+                auto_increment = " INTEGER PRIMARY KEY AUTOINCREMENT".to_string();
+                create_table_sql.push_str(&format!("  {} {},\n", col.name, auto_increment));
             } else {
                 create_table_sql.push_str(&format!("  {} {}{},\n", col.name, col.type_data, auto_increment));
             }
@@ -138,15 +141,22 @@ pub fn generate_table(db_type:String, data: &TableSchema) -> (String, Vec<String
         }
     }
 
-    let _ = writeln!(
-        create_table_sql,
-        "  PRIMARY KEY ({})\n);",
-        data.primary_key.columns.join(", ")
-    );
+    if db_type == "sqlite" {
+        // remove the last comma and newline
+        if create_table_sql.ends_with(",\n") {
+            create_table_sql.truncate(create_table_sql.len() - 2);
+        }
+        create_table_sql.push_str(");\n");
+    } else {
+        let _ = writeln!(
+            create_table_sql,
+            "  PRIMARY KEY ({})\n);",
+            data.primary_key.columns.join(", ")
+        );
+    }
 
     // create variable to store multipe query create index Vec<String>
     let mut create_index_sql_vec = Vec::new();
-
 
     for idx in &data.indexes {
         if idx.columns.is_empty() {

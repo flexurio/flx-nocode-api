@@ -1091,13 +1091,6 @@ pub async fn nocode_generate_table(
         sql_create_table.clone(),
         true
     );
-    log_output(
-        "QUERY",
-        "GENERATE INDEX",
-        route.clone().as_str(),
-        sql_create_index.clone().join("\n"),
-        true
-    );
 
     // execute sql_create_table
     match &state.db.query(&sql_create_table).await
