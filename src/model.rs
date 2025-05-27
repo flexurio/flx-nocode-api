@@ -45,6 +45,7 @@ impl Default for TableSchema {
                 join_tables: vec![],
                 column_groups: vec![],
                 having: vec![],
+                order_by: vec![],
             },
             post: OperationPostPut { 
                 before: "".to_string(),
@@ -112,6 +113,7 @@ pub struct GetOperation {
     pub join_tables: Vec<JoinTable>,
     pub column_groups: Vec<String>,
     pub having: Vec<String>,
+    pub order_by: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

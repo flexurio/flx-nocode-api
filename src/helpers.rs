@@ -187,6 +187,7 @@ pub fn validate_table_design(design: TableSchema) -> TableSchema {
             join_tables: Vec::new(),
             column_groups: Vec::new(),
             having: Vec::new(),
+            order_by: Vec::new(),
         },
         post: OperationPostPut {
             before: String::new(),

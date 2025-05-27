@@ -45,18 +45,18 @@ pub async fn nocode_get(
 
     // get parameters value only allowed from table_schemas.get.parameters
     // loop every table_schemas.get.parameters
+    let table_schema: TableSchema = filter_table_schema(&table_schemas, route.clone()).await;
     let mut where_clause: String = "WHERE ".to_string();
     let mut limit_clause: String = "LIMIT ".to_string();
     let mut i_limit = 100;
     let mut pagination_clause: String = "".to_string();
     let mut i_page = 1;
     let mut order_clause: String = "ORDER BY ".to_string();
-    let mut order_column = "id".to_string();
+    let mut order_column = table_schema.get.order_by.clone().join(", ");
     let mut order_type = "ASC".to_string();
     let mut group_clause: String = "GROUP BY ".to_string();
     let mut having_clause: String = "HAVING ".to_string();
     let mut paramjoins: Vec<ParamJoin> = Vec::new();
-    let table_schema: TableSchema = filter_table_schema(&table_schemas, route.clone()).await;
 
 
     log_output(
