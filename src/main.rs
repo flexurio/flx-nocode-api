@@ -18,18 +18,27 @@ use std::fs;
 use std::fs::{File, create_dir_all};
 use std::process::exit;
 
-mod db;
-use db::{AppState, QueryConvertor};
-use db::DbRepository;
-use db::MySqlRepo;
-use db::PostgresRepo;
+mod database;
+use database::{
+    state::{AppState, QueryConvertor, DbRepository},
+    mysql::MySqlRepo,
+    postgres::PostgresRepo,
+    sqlite::SqliteRepo,
+};
 use std::sync::Arc;
 
-mod services;
-use services::{
-    nocode_delete, nocode_generate_table, nocode_get, nocode_post,
-    nocode_put, nocode_trace, nocode_validate,
+mod nocode;
+use nocode::{
+    get::select,
+    post::insert,
+    delete::delete,
+    put::update,
+    validate::check_table_design,
+    generate::create_table,
+    trace::process,
 };
+
+
 
 mod core;
 use core::{generate_users, login, register};
@@ -203,7 +212,7 @@ async fn main() -> std::io::Result<()> {
             println!("url: {}", url);
             println!("Connecting to SQLite at {}", url);
             let pool = sqlx::SqlitePool::connect(&url).await.unwrap();
-            Arc::new(db::SqliteRepo { pool })
+            Arc::new(SqliteRepo { pool })
         },
         _ => panic!("Unsupported DB_TYPE: {}", db_type),
     };
@@ -382,7 +391,7 @@ async fn main() -> std::io::Result<()> {
                                 move |state: web::Data<AppState>,
                                       parameters: web::Query<Value>,
                                       req: actix_web::HttpRequest| {
-                                    nocode_get(
+                                    select(
                                         state,
                                         parameters,
                                         route_get.clone(),
@@ -396,7 +405,7 @@ async fn main() -> std::io::Result<()> {
                                 move |state: web::Data<AppState>,
                                       multipart: Multipart,
                                       req: actix_web::HttpRequest| {
-                                    nocode_post(
+                                    insert(
                                         state,
                                         route_post.clone(),
                                         SCHEMAS.clone(),
@@ -410,7 +419,7 @@ async fn main() -> std::io::Result<()> {
                                 move |state: web::Data<AppState>,
                                       parameters: web::Query<Value>,
                                       req: actix_web::HttpRequest| {
-                                    nocode_trace(
+                                    process(
                                         state,
                                         parameters,
                                         route_query.clone(),
@@ -453,7 +462,7 @@ async fn main() -> std::io::Result<()> {
                                 move |state: web::Data<AppState>,
                                       path: Path<String>,
                                       req: actix_web::HttpRequest| {
-                                    nocode_delete(
+                                    delete(
                                         state,
                                         route_delete.clone(),
                                         SCHEMAS.clone(),
@@ -468,7 +477,7 @@ async fn main() -> std::io::Result<()> {
                                     multipart: Multipart,
                                     path: Path<String>,
                                     req: actix_web::HttpRequest| {
-                                    nocode_put(
+                                    update(
                                         state,
                                         route_put.clone(),
                                         SCHEMAS.clone(),
@@ -497,7 +506,7 @@ async fn main() -> std::io::Result<()> {
                         web::resource(format!("validate/{}", &*route_validate)).route(
                             web::get().to(
                                 move |state: web::Data<AppState>, req: actix_web::HttpRequest| {
-                                    nocode_validate(
+                                    check_table_design(
                                         state,
                                         route_validate.clone(),
                                         SCHEMAS.clone(),
@@ -526,7 +535,7 @@ async fn main() -> std::io::Result<()> {
                             web::resource(format!("generate/table/{}", &*route_generate_table)).route(
                                 web::post().to(
                                     move |state: web::Data<AppState>, req: actix_web::HttpRequest| {
-                                        nocode_generate_table(
+                                        create_table(
                                             state,
                                             route_generate_table.clone(),
                                             SCHEMAS.clone(),

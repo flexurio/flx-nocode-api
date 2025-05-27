@@ -9,7 +9,7 @@ use rand::Rng;
 use serde_json::{json, Value};
 
 use crate::{
-    auth::create_token, crypt::{decrypt, encrypt}, db::concat_column_values, helpers::multipart_to_json, log::log_output, model::WebResponse, AppState
+    auth::create_token, crypt::{decrypt, encrypt}, database::state::concat_column_values, helpers::multipart_to_json, log::log_output, model::WebResponse, AppState
 };
 
 

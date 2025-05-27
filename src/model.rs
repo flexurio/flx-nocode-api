@@ -1,4 +1,6 @@
+
 use serde::{Deserialize, Serialize};
+
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Config {
@@ -173,3 +175,4 @@ pub struct Log {
     pub message: String,
     pub timestamp: String,
 }
+
