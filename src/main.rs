@@ -284,17 +284,13 @@ async fn main() -> std::io::Result<()> {
             .configure(|cfg: &mut web::ServiceConfig| {
                 // end point for static files
                 cfg.service(Files::new("/static", "./static").show_files_listing());
-                log_output(
-                    "CORE ENDPOINT",
-                    "METHOD",
-                    "GET",
+                log_output("CORE ENDPOINT","METHOD", "GET",
                     format!(
                         "http://{}:{}/{}",
                         host.red(),
                         port.clone().to_string().green(),
                         "static".purple()
-                    ),
-                    false
+                    ),false
                 );
 
                 // end point for login
@@ -303,17 +299,13 @@ async fn main() -> std::io::Result<()> {
                         login(state, req)
                     },
                 )));
-                log_output(
-                    "CORE ENDPOINT",
-                    "METHOD",
-                    "POST",
+                log_output("CORE ENDPOINT","METHOD","POST",
                     format!(
                         "http://{}:{}/{}",
                         host.red(),
                         port.clone().to_string().green(),
                         "login".purple()
-                    ),
-                    false
+                    ),false
                 );
 
                 // end point for register
@@ -322,9 +314,7 @@ async fn main() -> std::io::Result<()> {
                         register(state, multipart)
                     },
                 )));
-                log_output(
-                    "CORE ENDPOINT",
-                    "METHOD",
+                log_output("CORE ENDPOINT","METHOD",
                     "POST",
                     format!(
                         "http://{}:{}/{}",
@@ -347,41 +337,29 @@ async fn main() -> std::io::Result<()> {
                     let route_validate = route.to_owned();
                     let route_generate_table = route.to_owned();
 
-                    log_output(
-                        "ENDPOINT",
-                        "METHOD",
-                        "GET",
+                    log_output("ENDPOINT","METHOD","GET",
                         format!(
                             "http://{}:{}/{}",
                             host.red(),
                             port.clone().to_string().green(),
                             route_get.clone().purple()
-                        ),
-                        false 
+                        ),false 
                     );
-                    log_output(
-                        "ENDPOINT",
-                        "METHOD",
-                        "POST",
+                    log_output("ENDPOINT","METHOD","POST",
                         format!(
                             "http://{}:{}/{}",
                             host.red(),
                             port.clone().to_string().green(),
                             route_get.clone().purple()
-                        ),
-                        false
+                        ),false
                     );
-                    log_output(
-                        "ENDPOINT",
-                        "METHOD",
-                        "TRACE",
+                    log_output("ENDPOINT","METHOD","TRACE",
                         format!(
                             "http://{}:{}/{}",
                             host.red(),
                             port.clone().to_string().green(),
                             route_get.clone().purple()
-                        ),
-                        false
+                        ),false
                     );
 
                     cfg.service(
@@ -430,29 +408,21 @@ async fn main() -> std::io::Result<()> {
                             )),
                     );
 
-                    log_output(
-                        "ENDPOINT",
-                        "METHOD",
-                        "DELETE",
+                    log_output("ENDPOINT","METHOD","DELETE",
                         format!(
                             "http://{}:{}/{}",
                             host.red(),
                             port.clone().to_string().green(),
                             route_delete.clone().purple()
-                        ),
-                        false
+                        ),false
                     );
-                    log_output(
-                        "ENDPOINT",
-                        "METHOD",
-                        "PUT",
+                    log_output("ENDPOINT","METHOD","PUT",
                         format!(
                             "http://{}:{}/{}",
                             host.red(),
                             port.clone().to_string().green(),
                             route_delete.clone().purple()
-                        ),
-                        false
+                        ),false
                     );
 
                     cfg.service(
@@ -489,17 +459,13 @@ async fn main() -> std::io::Result<()> {
                             )),
                     );
 
-                    log_output(
-                        "ENDPOINT",
-                        "METHOD",
-                        "GET",
+                    log_output("ENDPOINT","METHOD","GET",
                         format!(
                             "http://{}:{}/{}/{}",
                             host.red(),
                             port.clone().to_string().green(),
                             "validate".yellow(),
-                            route_validate.clone().purple()
-                        ),
+                            route_validate.clone().purple()),
                         false
                     );
                     cfg.service(
@@ -518,10 +484,7 @@ async fn main() -> std::io::Result<()> {
                     );
 
                     if route_generate_table != "flx_users" && route_generate_table != "flx_roles" {
-                        log_output(
-                            "ENDPOINT",
-                            "METHOD",
-                            "POST",
+                        log_output("ENDPOINT","METHOD", "POST",
                             format!(
                                 "http://{}:{}/{}/{}",
                                 host.red(),
