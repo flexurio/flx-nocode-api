@@ -1,0 +1,1 @@
+SELECT id, name, CAST(password as TEXT) as password FROM flx_users WHERE email = '{{email}}' AND enabled=True LIMIT 1;

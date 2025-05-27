@@ -158,7 +158,14 @@ async fn main() -> std::io::Result<()> {
             println!("Connecting to Postgres at {}", url);
             let pool = sqlx::PgPool::connect(&url).await.unwrap();
             Arc::new(PostgresRepo { pool })
-        }
+        },
+        "sqlite" => {
+            let url = env::var("SQLITE_URL").expect("SQLITE_URL must be set");
+            println!("url: {}", url);
+            println!("Connecting to SQLite at {}", url);
+            let pool = sqlx::SqlitePool::connect(&url).await.unwrap();
+            Arc::new(db::SqliteRepo { pool })
+        },
         _ => panic!("Unsupported DB_TYPE: {}", db_type),
     };
             
