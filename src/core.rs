@@ -13,9 +13,7 @@ use crate::{
 };
 
 
-pub async fn login(state: web::Data<AppState>, req: actix_web::HttpRequest) -> impl Responder {
-       println!("Masuk Login");
-   
+pub async fn login(state: web::Data<AppState>, req: actix_web::HttpRequest) -> impl Responder {   
        // get username password from req Authorization Basic
        let auth_split: Vec<&str> = req
            .headers()
@@ -41,9 +39,7 @@ pub async fn login(state: web::Data<AppState>, req: actix_web::HttpRequest) -> i
        log_output("QUERY", "POST", "login", s_sql.clone(), true);
    
        let (password_db, id_user, name) = match &state.db.query(&s_sql).await {
-           Ok(row) =>  {
-               println!("row: {:?}", row);
-   
+           Ok(row) =>  {   
                let password = row[0].get("password")
                    .and_then(|v| v.as_str())
                    .unwrap_or("")

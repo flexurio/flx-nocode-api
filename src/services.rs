@@ -756,7 +756,6 @@ pub async fn nocode_post(
                 id.push('/');
                 id.push_str(&day);
             } else if function_id.contains("ID"){
-                println!("id: {:?}", id);
                 let mut id_find = id.clone();
                 id_find.remove(0);
 
@@ -878,7 +877,6 @@ pub async fn nocode_put(
     }
 
     let body = multipart_to_json(multipart).await.unwrap();
-    println!("body: {:?}", body);
     let mut id: String = path.into_inner();
 
     // check if id is number or string
