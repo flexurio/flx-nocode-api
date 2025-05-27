@@ -300,11 +300,7 @@ async fn main() -> std::io::Result<()> {
                     },
                 )));
                 log_output("CORE ENDPOINT","METHOD","POST",
-                    format!(
-                        "http://{}:{}/{}",
-                        host.red(),
-                        port.clone().to_string().green(),
-                        "login".purple()
+                    format!("http://{}:{}/{}",host.red(),port.clone().to_string().green(),"login".purple()
                     ),false
                 );
 
