@@ -16,6 +16,7 @@ use std::env;
 use std::fs;
 
 use std::fs::{File, create_dir_all};
+use std::process::exit;
 
 mod db;
 use db::{AppState, QueryConvertor};
@@ -151,18 +152,36 @@ async fn main() -> std::io::Result<()> {
     let db_type = env::var("DB_TYPE").unwrap_or_else(|_| "mysql".to_string());
     let db_repo: Arc<dyn DbRepository> = match db_type.as_str() {
         "mysql" => {
-            let url: String = env::var("MYSQL_URL").expect("MYSQL_URL must be set");
+            let url = match env::var("MYSQL_URL") {
+                Ok(url) => url,
+                Err(_) => {
+                    log_output("ERROR",".ENV","MYSQL_URL","Please set MYSQL_URL on .env file".to_string(),true);                    
+                    exit(1);
+                }
+            };
             let pool = sqlx::MySqlPool::connect(&url).await.unwrap();
             Arc::new(MySqlRepo { pool })
         }
         "postgres" => {
-            let url = env::var("POSTGRES_URL").expect("POSTGRES_URL must be set");
+            let url = match env::var("POSTGRES_URL") {
+                Ok(url) => url,
+                Err(_) => {
+                    log_output("ERROR",".ENV","POSTGRES_URL","Please set POSTGRES_URL on .env file".to_string(),true);                    
+                    exit(1);
+                }
+            };
             println!("Connecting to Postgres at {}", url);
             let pool = sqlx::PgPool::connect(&url).await.unwrap();
             Arc::new(PostgresRepo { pool })
         },
         "sqlite" => {
-            let url = env::var("SQLITE_URL").expect("SQLITE_URL must be set");
+            let url = match env::var("SQLITE_URL") {
+                Ok(url) => url,
+                Err(_) => {
+                    log_output("ERROR",".ENV","SQLITE_URL","Please set SQLITE_URL on .env file".to_string(),true);                    
+                    exit(1);
+                }
+            };
             let path_db = url.replace("sqlite://", "");
 
             let db_path = std::path::Path::new(&path_db);
