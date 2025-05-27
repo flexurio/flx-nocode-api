@@ -1,7 +1,7 @@
 use actix_files::Files;
 use actix_multipart::Multipart;
 use actix_web::dev::{Service, ServiceRequest};
-use actix_web::web::{Path, Query};
+use actix_web::web::Path;
 use actix_web::{web, App, HttpServer};
 use actix_cors::Cors;
 use auth::validate_token;
@@ -16,7 +16,6 @@ use std::env;
 use std::fs;
 
 use std::fs::{File, create_dir_all};
-use std::io::Result;
 
 mod db;
 use db::{AppState, QueryConvertor};
