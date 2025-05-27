@@ -921,14 +921,14 @@ pub async fn nocode_put(
                 if !value_x.is_empty() {
 
                     // find column properties in table_schemas.columns
-                    let column_properties = table_schema
+                    let col = table_schema
                         .columns
                         .iter()
                         .find(|col| col.name == *column)
                         .unwrap();
 
                     // check col.encrypt if true then encrypt value
-                    if column_properties.encrypt {
+                    if col.encrypt {
                         // check apakah value udah di encrypt
                         let is_encrypted = is_encrypted_string(value_x.clone().as_str());
                         if !is_encrypted {
@@ -940,11 +940,13 @@ pub async fn nocode_put(
                     }                    
 
                     // check if value from body is number
-                    if value_x.parse::<i64>().is_ok() {
+                    if col.type_data.contains("int") || col.type_data.contains("float") {
                         set_clause.push_str(&format!("{} = {}, ", column, value_x));
                     } else {
                         set_clause.push_str(&format!("{} = '{}', ", column, value_x));
                     }
+
+                    
                 }
             }
         }
