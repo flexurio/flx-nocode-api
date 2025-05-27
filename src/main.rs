@@ -1,7 +1,7 @@
 use actix_files::Files;
 use actix_multipart::Multipart;
 use actix_web::dev::{Service, ServiceRequest};
-use actix_web::web::Path;
+use actix_web::web::{Path, Query};
 use actix_web::{web, App, HttpServer};
 use actix_cors::Cors;
 use auth::validate_token;
@@ -16,7 +16,7 @@ use std::env;
 use std::fs;
 
 mod db;
-use db::AppState;
+use db::{AppState, QueryConvertor};
 use db::DbRepository;
 use db::MySqlRepo;
 use db::PostgresRepo;
@@ -168,12 +168,20 @@ async fn main() -> std::io::Result<()> {
         },
         _ => panic!("Unsupported DB_TYPE: {}", db_type),
     };
-            
+
+    let datetime_now = std::fs::read_to_string(format!("db/{}/datetime.sql", db_type))
+    .expect("Failed to read SQL file");
+
+    let query_convertor = QueryConvertor{
+        datetime_now: datetime_now.clone(),
+    };
+
     let app_state = web::Data::new(AppState {
         db: db_repo,
         db_type,
         secret: secret_key,
         encrypt_key,
+        query_convertor,
     });
 
     generate_users(app_state.clone()).await;

@@ -126,8 +126,8 @@ pub async fn register(state: Data<AppState>, multipart: Multipart) -> impl Respo
 
        // insert into test.users (id, email, phone, role, password, name, photo, email_verified, created_at, updated_at, enabled)
        let s_sql = format!(
-              "INSERT INTO flx_users (email, phone,  password, name, created_at, updated_at, enabled) VALUES ('{}', '{}', '{}', '{}', NOW(), NOW(), 1)",
-              body["email"], body["phone"], encrypt_password, body["name"]
+              "INSERT INTO flx_users (email, phone,  password, name, created_at, updated_at, enabled) VALUES ('{}', '{}', '{}', '{}', {}, {}, 1)",
+              body["email"], body["phone"], encrypt_password, body["name"], state.query_convertor.datetime_now, state.query_convertor.datetime_now
        ).replace("\"", "");
 
        log_output("QUERY", "POST", "register", s_sql.clone(), true);

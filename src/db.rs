@@ -6,11 +6,16 @@ use sqlx::SqlitePool;
 
 use crate::{helpers::formula_replace, log::log_output};
 
+pub struct QueryConvertor {
+    pub datetime_now: String,    
+}
+
 pub struct AppState {
     pub db: Arc<dyn DbRepository>,
     pub db_type: String,
     pub secret: String,
     pub encrypt_key: String,
+    pub query_convertor: QueryConvertor,
 }
 
 

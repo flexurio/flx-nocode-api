@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::{collections::HashSet, fmt::format, os::macos::raw::stat};
 use actix_multipart::Multipart;
 use actix_web::{
     web::{self, Data, Path},
@@ -437,11 +437,11 @@ pub async fn nocode_trace(
     for column in table_schema.trace.column_conflicts.iter() {
         conflict_clause.push_str(&format!("{}=VALUES({}), ", column, column));
     }
-    conflict_clause.push_str("updated_at=NOW(), deleted_at=null");
+    conflict_clause.push_str(format!("updated_at={}, deleted_at=null", state.query_convertor.datetime_now).as_str());
 
     let table_schema = filter_table_schema(&table_schemas, route.clone()).await;
     let mut select_columns = table_schema.trace.column_selects.join(", ");
-    select_columns.push_str(", NOW() as created_at");
+    select_columns.push_str(format!(", {} as created_at", state.query_convertor.datetime_now).as_str());
     let joins: Vec<String> = table_schema
         .trace
         .join_tables
@@ -526,7 +526,6 @@ pub async fn nocode_delete(
 
     let mut id: String = path.into_inner();
 
-    // create query UPDATE sql from table in variable route and structure table in table_schemas where id = id, set deleted_at = NOW(), deleted_by_id = 1
     let table_schema = filter_table_schema(&table_schemas, route.clone()).await;
     if table_schema.table.is_empty() {
         let message_error = format!("Entity {} on folder config/{}.json not found", route, route);
@@ -550,10 +549,9 @@ pub async fn nocode_delete(
     let mut s_sql = "".to_string();
 
     if type_delete == "soft" {
-        // create query UPDATE sql from table in variable route and structure table in table_schemas where id = id, set deleted_at = NOW(), deleted_by_id = 1
         s_sql = format!(
-            "UPDATE {} SET deleted_at = NOW(), deleted_by_id = {} WHERE id = {}",
-            table_schema.table, claims.id, id
+            "UPDATE {} SET deleted_at = {}, deleted_by_id = {} WHERE id = {}",
+            table_schema.table, state.query_convertor.datetime_now, claims.id, id
         );
     } else if type_delete == "hard" {
         // create query DELETE sql from table in variable route and structure table in table_schemas where id = id
@@ -805,7 +803,7 @@ pub async fn nocode_post(
 
     // **Tambahkan created_at**
     insert_columns.push("created_at"); 
-    insert_values.push("NOW()".to_string());
+    insert_values.push(state.query_convertor.datetime_now.clone());
 
     // **Tambahkan created_by_id**
     insert_columns.push("created_by_id");
@@ -955,7 +953,7 @@ pub async fn nocode_put(
     }
 
     // add updated_at to set_clause
-    set_clause.push_str("updated_at = NOW(), ");
+    set_clause.push_str(&format!("updated_at = {}, ", state.query_convertor.datetime_now));
     set_clause.push_str(&format!("updated_by_id = {}, ", claims.id));
 
     // remove last ", " from set_clause
