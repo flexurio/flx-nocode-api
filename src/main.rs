@@ -15,6 +15,9 @@ use serde_json::{from_str, Value};
 use std::env;
 use std::fs;
 
+use std::fs::{File, create_dir_all};
+use std::io::Result;
+
 mod db;
 use db::{AppState, QueryConvertor};
 use db::DbRepository;
@@ -161,6 +164,24 @@ async fn main() -> std::io::Result<()> {
         },
         "sqlite" => {
             let url = env::var("SQLITE_URL").expect("SQLITE_URL must be set");
+            let path_db = url.replace("sqlite://", "");
+
+            let db_path = std::path::Path::new(&path_db);
+
+            // Buat folder 'data' jika belum ada
+            if let Some(parent) = db_path.parent() {
+                create_dir_all(parent)?;
+            }
+
+            // Cek apakah file sudah ada
+            if db_path.exists() {
+                println!("File {} sudah ada.", db_path.display());
+            } else {
+                // Buat file baru
+                File::create(db_path)?;
+                println!("File {} berhasil dibuat.", db_path.display());
+            }            
+
             println!("url: {}", url);
             println!("Connecting to SQLite at {}", url);
             let pool = sqlx::SqlitePool::connect(&url).await.unwrap();
