@@ -82,19 +82,15 @@ static ROUTES: Lazy<Vec<String>> = Lazy::new(|| {
     let config_location = env::var("LOC_CONFIG").expect("LOC_CONFIG must be set");
     // let file_path = format!("{}/config/routes.json", env::current_dir().unwrap().display());
     // // Buat path ke file
-    let file_path = match env::current_dir() {
-        Ok(dir) => format!("{}/{}/routes.json", dir.display(), config_location),
-        Err(e) => {
-            println!("Not found : {}", e);
-            return Vec::new();
-        }
-    };
+
+    println!("{}", config_location.on_bright_blue());
+    let file_path = format!("{}/routes.json", config_location);
     
     // Baca isi file
     let content = match fs::read_to_string(&file_path) {
         Ok(content) => content,
         Err(_) => {
-            println!("ERROR : Can't read file {}", file_path.on_bright_red());
+            println!("ERROR 9081231287 : Can't read file {}", file_path.on_bright_red());
             return Vec::new();
         }
     };
@@ -107,7 +103,8 @@ static ROUTES: Lazy<Vec<String>> = Lazy::new(|| {
                 "Sorry, content of /{}/routes.json is not valid JSON, with ERROR Message : {}",
                 config_location, e
             );
-            return Vec::new();
+            // kill the program
+            exit(1);
         }
     };
 
@@ -117,8 +114,7 @@ static ROUTES: Lazy<Vec<String>> = Lazy::new(|| {
 static SCHEMAS: Lazy<Vec<TableSchema>> = Lazy::new(|| {
     let config_location = env::var("LOC_CONFIG").expect("LOC_CONFIG must be set");
     let config_dir = format!(
-        "{}/{}/entity",
-        env::current_dir().unwrap().display(),
+        "{}/entity",
         config_location
     );
     let mut schemas = Vec::new();
@@ -126,12 +122,15 @@ static SCHEMAS: Lazy<Vec<TableSchema>> = Lazy::new(|| {
     // loop every route in ROUTES
     for route in ROUTES.iter(){
         let file_path = format!("{}/{}.json", config_dir, route);
+
+        println!("path: {}", file_path.on_bright_blue());
         // Baca isi file
         let content = match fs::read_to_string(&file_path) {
             Ok(content) => content,
             Err(_) => {
-                println!("ERROR : Can't read file {}", file_path.on_bright_red());
-                return Vec::new();
+                println!("ERROR 908ihu76 : Can't read file {}", file_path.on_bright_red());
+                // kill the program
+                exit(1);
             }
         };
 
@@ -143,7 +142,8 @@ static SCHEMAS: Lazy<Vec<TableSchema>> = Lazy::new(|| {
                     "Sorry, content of /{}/entity/{}.json is not valid JSON, with ERROR Message : {}",
                     config_location, route, e
                 );
-                return Vec::new();
+                // kill the program
+                exit(1);
             }
         };
         schemas.push(schema);

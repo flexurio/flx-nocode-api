@@ -213,8 +213,12 @@ pub async fn select(
     }
 
     // check order by
-    order_clause.push_str(&format!("{} {} ", order_column, order_type));
-    order_clause = order_clause.replace("\"", "");
+    if order_column.is_empty() {
+        order_clause = "".to_string();
+    } else {
+        order_clause.push_str(&format!("{} {} ", order_column, order_type));
+        order_clause = order_clause.replace("\"", "");            
+    }
 
     // check limit
     limit_clause.push_str(&format!("{}", i_limit));
