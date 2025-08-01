@@ -41,8 +41,6 @@ pub async fn select(
     }
 
 
-    // get parameters value only allowed from table_schemas.get.parameters
-    // loop every table_schemas.get.parameters
     let table_schema: TableSchema = filter_table_schema(&table_schemas, route.clone()).await;
     let mut where_clause: String = "WHERE ".to_string();
     let mut limit_clause: String = "LIMIT ".to_string();
@@ -86,6 +84,8 @@ pub async fn select(
         true
     );
 
+    // get parameters value only allowed from table_schemas.get.parameters
+    // loop every table_schemas.get.parameters
 
     for param in table_schema.get.parameters.iter() {
         for (key, value) in parameters.clone().into_inner().as_object().unwrap().iter() {

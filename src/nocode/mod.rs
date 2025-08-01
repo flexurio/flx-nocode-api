@@ -5,3 +5,4 @@ pub mod put;
 pub mod generate;
 pub mod trace;
 pub mod validate;
+pub mod patch;

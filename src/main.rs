@@ -36,6 +36,7 @@ use nocode::{
     validate::check_table_design,
     generate::create_table,
     trace::process,
+    patch::process_sp,
 };
 
 
@@ -123,7 +124,6 @@ static SCHEMAS: Lazy<Vec<TableSchema>> = Lazy::new(|| {
     for route in ROUTES.iter(){
         let file_path = format!("{}/{}.json", config_dir, route);
 
-        println!("path: {}", file_path.on_bright_blue());
         // Baca isi file
         let content = match fs::read_to_string(&file_path) {
             Ok(content) => content,
@@ -247,6 +247,25 @@ async fn main() -> std::io::Result<()> {
     }
 
 
+    // check if any table name in SCHEMAS is double
+    let mut table_names = Vec::new();
+    for schema in SCHEMAS.iter() {
+        if table_names.contains(&schema.table) {
+            println!("--------------------------------------");
+            println!("{}",
+                format!(
+                    "ERROR 9081231287 : Table name '{}' is duplicated in config entity.",
+                    schema.table
+                ).on_red()
+            );
+            println!("--------------------------------------");
+            exit(1);
+        }
+        table_names.push(schema.table.clone());
+    }
+    
+
+
     let host: &str = "0.0.0.0";
     let port: u16 = env::var("PORT")
         .expect("PORT must be set")
@@ -326,12 +345,13 @@ async fn main() -> std::io::Result<()> {
                 // setup endpoint for each route
                 for route in ROUTES.iter() {
                     let route_get = route.clone();
-                    let route_query = route.to_owned();
-                    let route_post = route.to_owned();
-                    let route_delete = route.to_owned();
-                    let route_put = route.to_owned();
-                    let route_validate = route.to_owned();
-                    let route_generate_table = route.to_owned();
+                    let route_trace = route.clone();
+                    let route_patch = route.clone();
+                    let route_post = route.clone();
+                    let route_delete = route.clone();
+                    let route_put = route.clone();
+                    let route_validate = route.clone();
+                    let route_generate_table = route.clone();
 
                     log_output("ENDPOINT","METHOD","GET",
                         format!(
@@ -346,7 +366,7 @@ async fn main() -> std::io::Result<()> {
                             "http://{}:{}/{}",
                             host.red(),
                             port.clone().to_string().green(),
-                            route_get.clone().purple()
+                            route_post.clone().purple()
                         ),false
                     );
                     log_output("ENDPOINT","METHOD","TRACE",
@@ -354,7 +374,15 @@ async fn main() -> std::io::Result<()> {
                             "http://{}:{}/{}",
                             host.red(),
                             port.clone().to_string().green(),
-                            route_get.clone().purple()
+                            route_trace.clone().purple()
+                        ),false
+                    );
+                    log_output("ENDPOINT","METHOD","PATCH",
+                        format!(
+                            "http://{}:{}/{}",
+                            host.red(),
+                            port.clone().to_string().green(),
+                            route_patch.clone().purple()
                         ),false
                     );
 
@@ -396,7 +424,21 @@ async fn main() -> std::io::Result<()> {
                                     process(
                                         state,
                                         parameters,
-                                        route_query.clone(),
+                                        route_trace.clone(),
+                                        SCHEMAS.clone(),
+                                        req,
+                                    )
+                                },
+                            ))
+                            // register nocode_patch
+                            .route(web::patch().to(
+                                move |state: web::Data<AppState>,
+                                      parameters: web::Query<Value>,
+                                      req: actix_web::HttpRequest| {
+                                    process_sp(
+                                        state,
+                                        parameters,
+                                        route_patch.clone(),
                                         SCHEMAS.clone(),
                                         req,
                                     )
