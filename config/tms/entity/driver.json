@@ -1,0 +1,154 @@
+{
+        "table": "driver",
+        "primary_key": {
+            "columns": ["id"],
+            "auto_increment": true
+        },
+        "columns": [
+            {
+                "name": "id",
+                "auto_increment": true,
+                "nullable": false,
+                "function": "",
+                "type_data": "int"
+            },
+            {
+                "name": "id_travel",
+                "auto_increment": false,
+                "nullable": false,
+                "function": "",
+                "type_data": "int"
+            },
+            {
+                "name": "full_name",
+                "auto_increment": false,
+                "nullable": false,
+                "function": "",
+                "type_data": "varchar(255)"
+            },
+            {
+                "name": "nomor_telepon",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "varchar(20)"
+            },
+            {
+                "name": "nomor_sim",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "varchar(255)"
+            },
+            {
+                "name": "status",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "enum('available','assigned','off_duty')"
+            },
+            {
+                "name": "created_at",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "datetime"
+            },
+            {
+                "name": "updated_at",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "datetime"
+            },
+            {
+                "name": "deleted_at",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "datetime"
+            },
+            {
+                "name": "created_by_id",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "int"
+            },
+            {
+                "name": "updated_by_id",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "int"
+            },
+            {
+                "name": "deleted_by_id",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "int"
+            }
+        ],
+        "indexes": [
+            {
+                "name": "index_driver_travel",
+                "columns": ["id_travel"],
+                "unique": false
+            }
+        ],
+        "redis": {
+            "keys": ["id_travel", "full_name", "status"],
+            "ttl": 3600
+        },
+        "get": {
+            "columns": ["driver.id", "driver.full_name", "driver.nomor_telepon", "driver.nomor_sim", "driver.status", "travel.nama_travel as nama_travel", "driver.created_at", "driver.updated_at", "driver.deleted_at"],
+            "parameters": [
+                "full_name.like",
+                "status.eq",
+                "id_travel.eq",
+                "id.eq",
+                "deleted_at.is"
+            ],
+            "join_tables": [
+                {
+                    "table": "travel",
+                    "columns": ["id", "nama_travel"],
+                    "logical": "driver.id_travel = travel.id",
+                    "type_join": "inner"
+                }
+            ],
+            "column_groups": [],
+            "having": [],
+            "order_by": ["driver.id"]
+        },
+        "post": {
+            "columns": ["id_travel", "full_name", "nomor_telepon", "nomor_sim", "status"]
+        },
+        "put": {
+            "columns": ["id_travel", "full_name", "nomor_telepon", "nomor_sim", "status"]
+        },
+        "del": {
+            "columns": ["id"]
+        },
+        "trace": {
+            "insert_into": "",
+            "column_inserts": [],
+            "column_selects": [],
+            "parameters": [],
+            "join_tables": [
+                {
+                    "table": "",
+                    "columns": [],
+                    "logical": "",
+                    "type_join": ""
+                }
+            ],
+            "column_groups": [],
+            "column_conflicts": []
+        },
+        "patch": {
+            "pre_process_sp": "",
+            "parameters": []
+        }
+    }

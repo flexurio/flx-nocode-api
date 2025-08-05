@@ -1,0 +1,203 @@
+{
+        "table": "unit_mobil",
+        "primary_key": {
+            "columns": ["id"],
+            "auto_increment": true
+        },
+        "columns": [
+            {
+                "name": "id",
+                "auto_increment": true,
+                "nullable": false,
+                "function": "",
+                "type_data": "int"
+            },
+            {
+                "name": "nomor_plat",
+                "auto_increment": false,
+                "nullable": false,
+                "function": "",
+                "type_data": "varchar(20)"
+            },
+            {
+                "name": "id_mobil",
+                "auto_increment": false,
+                "nullable": false,
+                "function": "",
+                "type_data": "int"
+            },
+            {
+                "name": "is_available",
+                "auto_increment": false,
+                "nullable": false,
+                "function": "",
+                "type_data": "boolean"
+            },
+            {
+                "name": "imei",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "varchar(255)"
+            },
+            {
+                "name": "kota",
+                "auto_increment": false,
+                "nullable": false,
+                "function": "",
+                "type_data": "varchar(255)"
+            },
+            {
+                "name": "provinsi",
+                "auto_increment": false,
+                "nullable": false,
+                "function": "",
+                "type_data": "varchar(255)"
+            },
+            {
+                "name": "created_at",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "datetime"
+            },
+            {
+                "name": "updated_at",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "datetime"
+            },
+            {
+                "name": "deleted_at",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "datetime"
+            },
+            {
+                "name": "created_by_id",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "int"
+            },
+            {
+                "name": "updated_by_id",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "int"
+            },
+            {
+                "name": "deleted_by_id",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "int"
+            }
+        ],
+        "indexes": [
+            {
+                "name": "index_unit_mobil_nomor_plat",
+                "columns": ["nomor_plat"],
+                "unique": true
+            }
+        ],
+        "redis": {
+            "keys": [],
+            "ttl": 0
+        },
+        "get": {
+            "columns": [
+                "unit_mobil.*",
+                "model_mobil.merek",
+                "model_mobil.model",
+                "model_mobil.tahun",
+                "model_mobil.transmisi",
+                "model_mobil.jenis_bahan_bakar",
+                "model_mobil.jumlah_seat",
+                "model_mobil.jumlah_bagasi",
+                "model_mobil.deskripsi",
+                "model_mobil.daily_price",
+                "model_mobil.daily_driver_price",
+                "model_mobil.delivery_price"
+            ],
+            "parameters": [
+                "search",
+                "page",
+                "sort",
+                "ascending",
+                "limit",
+                "id_mobil.eq",
+                "is_available.eq",
+                "kota.eq",
+                "provinsi.eq",
+                "deleted_at.is"
+            ],
+            "join_tables": [
+                {
+                    "table": "model_mobil",
+                    "columns": [
+                        "merek",
+                        "model",
+                        "tahun",
+                        "transmisi",
+                        "jenis_bahan_bakar",
+                        "jumlah_seat",
+                        "jumlah_bagasi",
+                        "deskripsi",
+                        "daily_price",
+                        "daily_driver_price",
+                        "delivery_price"
+                    ],
+                    "logical": "unit_mobil.id_mobil = model_mobil.id",
+                    "type_join": "inner"
+                }
+            ],
+            "having": [],
+            "column_groups": [],
+            "order_by": ["id"]
+        },
+        "post": {
+            "columns": [
+                "nomor_plat",
+                "id_mobil",
+                "is_available",
+                "imei",
+                "kota",
+                "provinsi"
+            ]
+        },
+        "put": {
+            "columns": [
+                "is_available",
+                "imei",
+                "kota",
+                "provinsi"
+            ]
+        },
+        "del": {
+            "columns": ["id"]
+        },
+        "trace": {
+            "insert_into": "",
+            "column_inserts": [],
+            "column_selects": [],
+            "parameters": [],
+            "join_tables": [
+                {
+                    "table": "",
+                    "columns": [],
+                    "logical": "",
+                    "type_join": ""
+                }
+            ],
+            "column_groups": [],
+            "column_conflicts": []
+        },
+        "patch": {
+            "pre_process_sp": "",
+            "parameters": []
+        }
+    }

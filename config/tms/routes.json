@@ -1,0 +1,20 @@
+{
+        "routes" : [
+                "flx_users",
+                "flx_roles",
+                "travel",
+                "driver",
+                "travel_partnership_requests",
+                "model_mobil",
+                "kategori",
+                "metode_pembayaran_travel",
+                "kebijakan_travel",
+                "orders",
+                "order_detail",
+                "unit_mobil",
+                "unit_order",
+                "bukti_pembayaran",
+                "driver_assignment",
+                "gambar_mobil"
+        ]
+}

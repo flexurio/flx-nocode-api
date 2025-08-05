@@ -1,0 +1,10 @@
+{
+        "routes" : [
+                "flx_users",
+                "flx_roles",
+                "products",
+                "customers",
+                "sales",
+                "sales_items"
+        ]
+}

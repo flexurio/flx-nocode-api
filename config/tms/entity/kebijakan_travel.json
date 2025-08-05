@@ -1,0 +1,153 @@
+{
+        "table": "kebijakan_travel",
+        "primary_key": {
+            "columns": ["id"],
+            "auto_increment": true
+        },
+        "columns": [
+            {
+                "name": "id",
+                "auto_increment": true,
+                "nullable": false,
+                "function": "",
+                "type_data": "int"
+            },
+            {
+                "name": "id_travel",
+                "auto_increment": false,
+                "nullable": false,
+                "function": "",
+                "type_data": "int"
+            },
+            {
+                "name": "sebelum_rental",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "text"
+            },
+            {
+                "name": "saat_rental",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "text"
+            },
+            {
+                "name": "setelah_rental",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "text"
+            },
+            {
+                "name": "kebijakan_dan_syarat",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "text"
+            },
+            {
+                "name": "created_at",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "timestamp"
+            },
+            {
+                "name": "updated_at",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "timestamp"
+            },
+            {
+                "name": "deleted_at",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "timestamp"
+            },
+            {
+                "name": "created_by_id",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "int"
+            },
+            {
+                "name": "updated_by_id",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "int"
+            },
+            {
+                "name": "deleted_by_id",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "int"
+            }
+        ],
+        "indexes": [
+            {
+                "name": "index_kebijakan_travel_id_travel",
+                "columns": ["id_travel"],
+                "unique": true
+            }
+        ],
+        "redis": {
+            "keys": [],
+            "ttl": 0
+        },
+        "get": {
+            "columns": ["kebijakan_travel.*", "travel.nama_travel"],
+            "parameters": [
+                "search",
+                "page",
+                "id_travel.eq",
+                "deleted_at.is"
+            ],
+            "join_tables": [
+                {
+                    "table": "travel",
+                    "columns": ["nama_travel"],
+                    "logical": "kebijakan_travel.id_travel = travel.id",
+                    "type_join": "inner"
+                }
+            ],
+            "column_groups": [],
+            "having": [],
+            "order_by": ["kebijakan_travel.id"]
+        },
+        "post": {
+            "columns": ["id_travel", "sebelum_rental", "saat_rental", "setelah_rental", "kebijakan_dan_syarat"]
+        },
+        "put": {
+            "columns": ["sebelum_rental", "saat_rental", "setelah_rental", "kebijakan_dan_syarat"]
+        },
+        "del": {
+            "columns": ["id"]
+        },
+        "trace": {
+            "insert_into": "",
+            "column_inserts": [],
+            "column_selects": [],
+            "parameters": [],
+            "join_tables": [
+                {
+                    "table": "",
+                    "columns": [],
+                    "logical": "",
+                    "type_join": ""
+                }
+            ],
+            "column_groups": [],
+            "column_conflicts": []
+        },
+        "patch": {
+            "pre_process_sp": "",
+            "parameters": []
+        }
+    }

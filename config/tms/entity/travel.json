@@ -1,0 +1,176 @@
+{
+        "table": "travel",
+        "primary_key": {
+            "columns": ["id"],
+            "auto_increment": true
+        },
+        "columns": [
+            {
+                "name": "id",
+                "auto_increment": true,
+                "nullable": false,
+                "function": "",
+                "type_data": "int"
+            },
+            {
+                "name": "nama_travel",
+                "auto_increment": false,
+                "nullable": false,
+                "function": "",
+                "type_data": "varchar(255)"
+            },
+            {
+                "name": "deskripsi",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "text"
+            },
+            {
+                "name": "alamat",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "text"
+            },
+            {
+                "name": "kota",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "varchar(255)"
+            },
+            {
+                "name": "provinsi",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "varchar(255)"
+            },
+            {
+                "name": "profile_picture",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "varchar(255)"
+            },
+            {
+                "name": "total_orders",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "int"
+            },
+            {
+                "name": "total_kendaraan",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "int"
+            },
+            {
+                "name": "is_star_rental",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "boolean"
+            },
+            {
+                "name": "created_at",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "datetime"
+            },
+            {
+                "name": "updated_at",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "datetime"
+            },
+            {
+                "name": "deleted_at",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "datetime"
+            },
+            {
+                "name": "created_by_id",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "int"
+            },
+            {
+                "name": "updated_by_id",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "int"
+            },
+            {
+                "name": "deleted_by_id",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "int"
+            }
+        ],
+        "indexes": [
+            {
+                "name": "index_travel_nama",
+                "columns": ["nama_travel"],
+                "unique": false
+            }
+        ],
+        "redis": {
+            "keys": ["nama_travel", "kota", "provinsi"],
+            "ttl": 3600
+        },
+        "get": {
+            "columns": ["travel.id", "travel.nama_travel", "travel.deskripsi", "travel.alamat", "travel.kota", "travel.provinsi", "travel.profile_picture", "travel.total_orders", "travel.total_kendaraan", "travel.is_star_rental", "travel.created_at", "travel.updated_at", "travel.deleted_at"],
+            "parameters": [
+                "nama_travel.like",
+                "kota.eq",
+                "provinsi.eq",
+                "is_star_rental.eq",
+                "id.eq",
+                "deleted_at.is"
+            ],
+            "join_tables": [],
+            "column_groups": [],
+            "having": [],
+            "order_by": ["travel.id"]
+        },
+        "post": {
+            "columns": ["nama_travel", "deskripsi", "alamat", "kota", "provinsi", "profile_picture", "is_star_rental"]
+        },
+        "put": {
+            "columns": ["nama_travel", "deskripsi", "alamat", "kota", "provinsi", "profile_picture", "is_star_rental"]
+        },
+        "del": {
+            "columns": ["id"]
+        },
+        "trace": {
+            "insert_into": "",
+            "column_inserts": [],
+            "column_selects": [],
+            "parameters": [],
+            "join_tables": [
+                {
+                    "table": "",
+                    "columns": [],
+                    "logical": "",
+                    "type_join": ""
+                }
+            ],
+            "column_groups": [],
+            "column_conflicts": []
+        },
+        "patch": {
+            "pre_process_sp": "",
+            "parameters": []
+        }
+    }

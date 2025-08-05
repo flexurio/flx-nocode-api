@@ -1,0 +1,231 @@
+{
+        "table": "unit_order",
+        "primary_key": {
+            "columns": ["id"],
+            "auto_increment": true
+        },
+        "columns": [
+            {
+                "name": "id",
+                "auto_increment": true,
+                "nullable": false,
+                "function": "",
+                "type_data": "int"
+            },
+            {
+                "name": "id_order_detail",
+                "auto_increment": false,
+                "nullable": false,
+                "function": "",
+                "type_data": "int"
+            },
+            {
+                "name": "id_unit_mobil",
+                "auto_increment": false,
+                "nullable": false,
+                "function": "",
+                "type_data": "int"
+            },
+            {
+                "name": "id_driver_assignment",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "int"
+            },
+            {
+                "name": "start_datetime",
+                "auto_increment": false,
+                "nullable": false,
+                "function": "",
+                "type_data": "datetime"
+            },
+            {
+                "name": "end_datetime",
+                "auto_increment": false,
+                "nullable": false,
+                "function": "",
+                "type_data": "datetime"
+            },
+            {
+                "name": "created_at",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "datetime"
+            },
+            {
+                "name": "updated_at",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "datetime"
+            },
+            {
+                "name": "deleted_at",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "datetime"
+            },
+            {
+                "name": "created_by_id",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "int"
+            },
+            {
+                "name": "updated_by_id",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "int"
+            },
+            {
+                "name": "deleted_by_id",
+                "auto_increment": false,
+                "nullable": true,
+                "function": "",
+                "type_data": "int"
+            }
+        ],
+        "indexes": [
+            {
+                "name": "index_unit_order_id_order_detail",
+                "columns": ["id_order_detail"],
+                "unique": false
+            }
+        ],
+        "redis": {
+            "keys": [],
+            "ttl": 0
+        },
+        "get": {
+            "columns": [
+                "unit_order.id",
+                "order_detail.start_datetime",
+                "order_detail.end_datetime",
+                "unit_mobil.nomor_plat",
+                "model_mobil.merek",
+                "model_mobil.model",
+                "model_mobil.tahun",
+                "driver.full_name as nama_driver"
+            ],
+            "parameters": [
+                "search",
+                "page",
+                "sort",
+                "ascending",
+                "limit",
+                "id_order_detail.eq",
+                "id_unit_mobil.eq",
+                "id_driver_assignment.eq",
+                "start_datetime.lte",
+                "start_datetime.gte",
+                "end_datetime.gte",
+                "end_datetime.lte",
+                "deleted_at.is"
+            ],
+            "join_tables": [
+                {
+                    "table": "order_detail",
+                    "columns": [],
+                    "logical": "unit_order.id_order_detail = order_detail.id",
+                    "type_join": "left"
+                },
+                {
+                    "table": "unit_mobil",
+                    "columns": ["nomor_plat"],
+                    "logical": "unit_order.id_unit_mobil = unit_mobil.id",
+                    "type_join": "inner"
+                },
+                {
+                    "table": "model_mobil",
+                    "columns": ["merek", "model", "tahun"],
+                    "logical": "unit_mobil.id_mobil = model_mobil.id",
+                    "type_join": "inner"
+                },
+                {
+                    "table": "driver_assignment",
+                    "columns": [],
+                    "logical": "unit_order.id_driver_assignment = driver_assignment.id",
+                    "type_join": "left"
+                },
+                {
+                    "table": "driver",
+                    "columns": ["full_name"],
+                    "logical": "driver_assignment.id_driver = driver.id",
+                    "type_join": "left"
+                }
+            ],
+            "having": [],
+            "column_groups": [],
+            "order_by": ["id"]
+        },
+        "post": {
+            "columns": [
+                "id_order_detail",
+                "id_unit_mobil",
+                "id_driver_assignment",
+                "start_datetime",
+                "end_datetime"
+            ]
+        },
+        "put": {
+            "columns": [
+                "id_order_detail",
+                "id_unit_mobil",
+                "id_driver_assignment",
+                "start_datetime",
+                "end_datetime"
+            ]
+        },
+        "del": {
+            "columns": ["id"]
+        },
+        "trace": {
+            "insert_into": "unit_order",
+            "column_inserts": [
+                "id_order_detail", 
+                "id_unit_mobil", 
+                "start_datetime",
+                "end_datetime"
+            ],
+            "column_selects": [
+                ":id_order_detail", 
+                "unit_mobil.id", 
+                ":start_datetime",
+                ":end_datetime"
+            ],
+            "parameters": [
+                "id_order_detail", 
+                "id_model_mobil",
+                "jumlah_unit",
+                "start_datetime",
+                "end_datetime"
+            ],
+            "join_tables": [
+                {
+                    "table": "unit_mobil",
+                    "columns": ["id"],
+                    "logical": "unit_mobil.id_mobil = :id_model_mobil AND unit_mobil.is_available = TRUE",
+                    "type_join": "inner"
+                },
+                {
+                    "table": "unit_order",
+                    "columns": [],
+                    "logical": "unit_order.id_unit_mobil = unit_mobil.id AND NOT (unit_order.start_datetime > :end_datetime OR unit_order.end_datetime < :start_datetime)",
+                    "type_join": "left"
+                }
+            ],
+            "column_groups": ["unit_mobil.id"],
+            "having": "COUNT(unit_order.id) = 0",
+            "limit": ":jumlah_unit",
+            "column_conflicts": []
+        },
+        "patch": {
+            "pre_process_sp": "",
+            "parameters": []
+        }
+    }
