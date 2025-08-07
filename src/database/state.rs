@@ -13,6 +13,7 @@ pub struct AppState {
     pub secret: String,
     pub encrypt_key: String,
     pub query_convertor: QueryConvertor,
+    pub whitelist_ips: Vec<String>,
 }
 
 

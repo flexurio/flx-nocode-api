@@ -27,6 +27,17 @@ pub fn validate_token(
     req: actix_web::HttpRequest,
     state: web::Data<AppState>,
 ) -> Result<web::Data<AppState>, HttpResponse> {
+    if is_ip_whitelisted(&req, &state.whitelist_ips) {
+        println!("IP is whitelisted, skipping token validation.");
+        // Anda bisa sesuaikan isi Claims berikut sesuai kebutuhan
+        return Ok(state);
+    }
+
+
+    println!("Validating token...");
+
+     // Cek apakah ada header Authorization
+
     if let Some(auth_header) = req.headers().get("Authorization") {
         if let Ok(auth_str) = auth_header.to_str() {
             if auth_str.starts_with("Bearer ") {
@@ -102,11 +113,35 @@ fn extract_token_claims(token: &str, secret: &[u8]) -> Result<Claims, jsonwebtok
     Ok(token_data.claims)
 }
 
+fn is_ip_whitelisted(req: &actix_web::HttpRequest, whitelist: &[String]) -> bool {
+    if let Some(peer_addr) = req.peer_addr() {
+        let ip = peer_addr.ip().to_string();
+        print!("Checking IP: {}", ip);
+        whitelist.contains(&ip)
+    } else {
+        false
+    }
+}
+
 // Contoh penggunaan
 pub fn get_user_info_from_token(
     req: actix_web::HttpRequest,
     state: web::Data<AppState>,
 ) -> Result<Claims, bool> {
+    if is_ip_whitelisted(&req, &state.whitelist_ips) {
+        println!("IP is whitelisted, returning default claims.");
+        // Anda bisa sesuaikan isi Claims berikut sesuai kebutuhan
+        return Ok(Claims {
+            id: 0,
+            nm: "whitelisted".to_string(),
+            exp: 0,
+            at: 0,
+            rl: "*/127".to_string(),
+            cs: "".to_string(),
+        });
+    }
+
+
     if let Some(auth_header) = req.headers().get("Authorization") {
         if let Ok(auth_str) = auth_header.to_str() {
             if auth_str.starts_with("Bearer ") {
@@ -162,8 +197,12 @@ pub fn check_access(claims: &Claims, route: &str, permission: &str) -> bool {
     for r in claims.get_roles().iter() {
         // split r by "/"
         let route_rol = r.split("/").collect::<Vec<&str>>();
-        if route_rol[0] == route {
-            role = route_rol[1].parse::<i8>().unwrap();
+
+        // Cek route spesifik atau wildcard
+        if route_rol[0] == route || route_rol[0] == "*" {
+            if let Ok(val) = route_rol[1].parse::<i8>() {
+                role = val;
+            }
         }
     }
 

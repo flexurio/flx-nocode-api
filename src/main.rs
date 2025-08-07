@@ -224,12 +224,20 @@ async fn main() -> std::io::Result<()> {
         datetime_now: datetime_now.clone(),
     };
 
+    let whitelist_ips: Vec<String> = env::var("WHITE_LIST_IP")
+        .unwrap_or_else(|_| "".to_string())
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+
     let app_state = web::Data::new(AppState {
         db: db_repo,
         db_type,
         secret: secret_key,
         encrypt_key,
         query_convertor,
+        whitelist_ips,
     });
 
     generate_users(app_state.clone()).await;
