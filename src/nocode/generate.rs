@@ -6,9 +6,7 @@ use serde_json::{Value};
 use std::fmt::Write;
 
 use crate::{
-    auth::{check_access, get_user_info_from_token}, helpers::{
-        filter_table_schema
-    }, log::log_output, model::{TableSchema, WebResponse}, AppState
+    auth::{check_access, get_user_info_from_token}, helpers::filter_table_schema, log::log_output, model::{TableSchema, WebResponse}, AppState
 };
 
 
@@ -19,28 +17,30 @@ pub async fn create_table(
     table_schemas: Vec<TableSchema>,
     req: actix_web::HttpRequest,
 ) -> impl Responder {
+    if !state.route_publics.contains(&route) {
 
-    let claims = match get_user_info_from_token(req, state.clone()) {
-        Ok(c) => c,
-        Err(_) => {
+        let claims = match get_user_info_from_token(req, state.clone()) {
+            Ok(c) => c,
+            Err(_) => {
+                return HttpResponse::Unauthorized().json(WebResponse {
+                    success: false,
+                    message: "Invalid token".to_string(),
+                    total_data: 0,
+                    data: Value::Null,
+                });
+            }
+        };
+
+        if !check_access(&claims, &route, "execute") {
             return HttpResponse::Unauthorized().json(WebResponse {
                 success: false,
-                message: "Invalid token".to_string(),
+                message: "Unauthorized".to_string(),
                 total_data: 0,
                 data: Value::Null,
             });
         }
-    };
-
-    if !check_access(&claims, &route, "execute") {
-        return HttpResponse::Unauthorized().json(WebResponse {
-            success: false,
-            message: "Unauthorized".to_string(),
-            total_data: 0,
-            data: Value::Null,
-        });
     }
-
+    
     let table_schema = filter_table_schema(&table_schemas, route.clone()).await;
     if table_schema.table.is_empty() {
         let message_error = format!("Entity {} on folder config/{}.json not found", route, route);

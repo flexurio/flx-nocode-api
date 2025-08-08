@@ -21,28 +21,28 @@ pub async fn process_sp(
     table_schemas: Vec<TableSchema>,
     req: actix_web::HttpRequest,
 ) -> impl Responder {
+    if !state.route_publics.contains(&route) {
+        let claims = match get_user_info_from_token(req, state.clone()) {
+            Ok(c) => c,
+            Err(_) => {
+                return HttpResponse::Unauthorized().json(WebResponse {
+                    success: false,
+                    message: "Invalid token".to_string(),
+                    total_data: 0,
+                    data: Value::Null,
+                });
+            }
+        };
 
-    let claims = match get_user_info_from_token(req, state.clone()) {
-        Ok(c) => c,
-        Err(_) => {
+        if !check_access(&claims, &route, "execute") {
             return HttpResponse::Unauthorized().json(WebResponse {
                 success: false,
-                message: "Invalid token".to_string(),
+                message: "Unauthorized".to_string(),
                 total_data: 0,
                 data: Value::Null,
             });
         }
-    };
-
-    if !check_access(&claims, &route, "execute") {
-        return HttpResponse::Unauthorized().json(WebResponse {
-            success: false,
-            message: "Unauthorized".to_string(),
-            total_data: 0,
-            data: Value::Null,
-        });
     }
-
     // get parameters value only allowed from table_schema.trace.parameters
     // loop every table_schema.trace.parameters
     

@@ -79,6 +79,40 @@ struct Claims {
 }
 
 // Static Routes for once initialization
+static ROUTE_PUBLICS: Lazy<Vec<String>> = Lazy::new(|| {
+    let config_location = env::var("LOC_CONFIG").expect("LOC_CONFIG must be set");
+    // let file_path = format!("{}/config/routes.json", env::current_dir().unwrap().display());
+    // // Buat path ke file
+
+    println!("{}", config_location.on_bright_blue());
+    let file_path = format!("{}/routes.json", config_location);
+    
+    // Baca isi file
+    let content = match fs::read_to_string(&file_path) {
+        Ok(content) => content,
+        Err(_) => {
+            println!("ERROR 9081231287 : Can't read file {}", file_path.on_bright_red());
+            return Vec::new();
+        }
+    };
+
+    // Parse JSON
+    let config: Config = match from_str(&content) {
+        Ok(config) => config,
+        Err(e) => {
+            println!(
+                "Sorry, content of /{}/routes.json is not valid JSON, with ERROR Message : {}",
+                config_location, e
+            );
+            // kill the program
+            exit(1);
+        }
+    };
+
+    config.route_publics.clone()
+});
+
+// Static Routes for once initialization
 static ROUTES: Lazy<Vec<String>> = Lazy::new(|| {
     let config_location = env::var("LOC_CONFIG").expect("LOC_CONFIG must be set");
     // let file_path = format!("{}/config/routes.json", env::current_dir().unwrap().display());
@@ -238,6 +272,7 @@ async fn main() -> std::io::Result<()> {
         encrypt_key,
         query_convertor,
         whitelist_ips,
+        route_publics:ROUTE_PUBLICS.to_vec(),
     });
 
     generate_users(app_state.clone()).await;

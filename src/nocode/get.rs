@@ -19,27 +19,28 @@ pub async fn select(
     table_schemas: Vec<TableSchema>,
     req: actix_web::HttpRequest,
 ) -> impl Responder {
-    let claims = match get_user_info_from_token(req, state.clone()) {
-        Ok(c) => c,
-        Err(_) => {
+    if !state.route_publics.contains(&route) {
+        let claims = match get_user_info_from_token(req, state.clone()) {
+            Ok(c) => c,
+            Err(_) => {
+                return HttpResponse::Unauthorized().json(WebResponse {
+                    success: false,
+                    message: "Invalid token".to_string(),
+                    total_data: 0,
+                    data: Value::Null,
+                });
+            }
+        };
+
+        if !check_access(&claims, &route, "read") {
             return HttpResponse::Unauthorized().json(WebResponse {
                 success: false,
-                message: "Invalid token".to_string(),
+                message: "Unauthorized".to_string(),
                 total_data: 0,
                 data: Value::Null,
             });
         }
-    };
-
-    if !check_access(&claims, &route, "read") {
-        return HttpResponse::Unauthorized().json(WebResponse {
-            success: false,
-            message: "Unauthorized".to_string(),
-            total_data: 0,
-            data: Value::Null,
-        });
     }
-
 
     let table_schema: TableSchema = filter_table_schema(&table_schemas, route.clone()).await;
     let mut where_clause: String = "WHERE ".to_string();

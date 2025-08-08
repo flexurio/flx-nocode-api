@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Config {
     pub routes: Vec<String>,
+    pub route_publics: Vec<String>,
 }
 
 pub struct ParamJoin {

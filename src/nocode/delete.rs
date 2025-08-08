@@ -5,7 +5,7 @@ use actix_web::{
 use serde_json::{Value};
 
 use crate::{
-    auth::{check_access, get_user_info_from_token}, helpers::
+    auth::{check_access, get_user_info_from_token, Claims}, helpers::
         filter_table_schema
     , log::log_output, model::{TableSchema, WebResponse}, AppState
 };
@@ -19,25 +19,28 @@ pub async fn delete(
     path: Path<String>,
     req: actix_web::HttpRequest,
 ) -> impl Responder {
-    let claims = match get_user_info_from_token(req, state.clone()) {
-        Ok(c) => c,
-        Err(_) => {
+    let mut claims = Claims::default();
+    if !state.route_publics.contains(&route) {
+        claims = match get_user_info_from_token(req, state.clone()) {
+            Ok(c) => c,
+            Err(_) => {
+                return HttpResponse::Unauthorized().json(WebResponse {
+                    success: false,
+                    message: "Invalid token".to_string(),
+                    total_data: 0,
+                    data: Value::Null,
+                });
+            }
+        };
+
+        if !check_access(&claims, &route, "delete") {
             return HttpResponse::Unauthorized().json(WebResponse {
                 success: false,
-                message: "Invalid token".to_string(),
+                message: "Unauthorized".to_string(),
                 total_data: 0,
                 data: Value::Null,
             });
         }
-    };
-
-    if !check_access(&claims, &route, "delete") {
-        return HttpResponse::Unauthorized().json(WebResponse {
-            success: false,
-            message: "Unauthorized".to_string(),
-            total_data: 0,
-            data: Value::Null,
-        });
     }
 
     let mut id: String = path.into_inner();

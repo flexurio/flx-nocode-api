@@ -22,6 +22,20 @@ impl Claims {
         }
 }
 
+// set default Claims
+impl Default for Claims {
+    fn default() -> Self {
+        Claims {
+            id: 0,
+            nm: "route_publics".to_string(),
+            exp: 0,
+            at: 0,
+            rl: "*/127".to_string(),
+            cs: "".to_string(),
+        }
+    }
+}
+
 // Middleware untuk verifikasi token
 pub fn validate_token(
     req: actix_web::HttpRequest,

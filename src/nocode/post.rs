@@ -7,7 +7,7 @@ use actix_web::{
 use serde_json::{Value};
 
 use crate::{
-    auth::{check_access, get_user_info_from_token}, crypt::{encrypt, is_encrypted_string}, database::state::{execute_sql_formula, formula_replace}, helpers::{
+    auth::{check_access, get_user_info_from_token, Claims}, crypt::{encrypt, is_encrypted_string}, database::state::{execute_sql_formula, formula_replace}, helpers::{
         filter_table_schema, find_column_match, multipart_to_json
     }, log::log_output, model::{Column, TableSchema, WebResponse}, AppState
 };
@@ -20,31 +20,35 @@ pub async fn insert(
     multipart: Multipart,
     req: actix_web::HttpRequest,
 ) -> impl Responder {
+    let mut claims = Claims::default();
+    if !state.route_publics.contains(&route) {
 
-    let claims = match get_user_info_from_token(req, state.clone()) {
-        Ok(c) => c,
-        Err(_) => {
+        claims = match get_user_info_from_token(req, state.clone()) {
+            Ok(c) => c,
+            Err(_) => {
+                return HttpResponse::Unauthorized().json(WebResponse {
+                    success: false,
+                    message: "Invalid token".to_string(),
+                    total_data: 0,
+                    data: Value::Null,
+                });
+            }
+        };
+
+
+
+        if !check_access(&claims, &route, "write") {
             return HttpResponse::Unauthorized().json(WebResponse {
                 success: false,
-                message: "Invalid token".to_string(),
+                message: "Unauthorized".to_string(),
                 total_data: 0,
                 data: Value::Null,
             });
         }
-    };
-
+    }
 
     let mut function_id_split: Vec<String> = Vec::new();
     let mut id: String = String::new();
-
-    if !check_access(&claims, &route, "write") {
-        return HttpResponse::Unauthorized().json(WebResponse {
-            success: false,
-            message: "Unauthorized".to_string(),
-            total_data: 0,
-            data: Value::Null,
-        });
-    }
 
     let body = multipart_to_json(multipart).await.unwrap();
 
