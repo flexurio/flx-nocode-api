@@ -320,19 +320,24 @@ async fn main() -> std::io::Result<()> {
     HttpServer::new(move || {
         App::new()
             .app_data(app_state.clone())
-            .wrap_fn(|req: ServiceRequest, srv| {
-                let whitelist = ["/login", "/register"];
-                // check if route contain in whitelist or not
-                if whitelist.contains(&req.path()) {
-                    return srv.call(req);
-                }
-                
-                let app_data = req
-                    .app_data::<web::Data<AppState>>()
-                    .expect("AppState missing");
-                match validate_token(req.request().clone(), app_data.clone()) {
-                    Ok(_) => srv.call(req),
-                    Err(e) => Box::pin(async move { Ok(req.into_response(e)) }),
+            .wrap_fn({
+                // clone AppState handle into middleware closure so it owns it (satisfies 'static)
+                let app_state = app_state.clone();
+                move |req: ServiceRequest, srv| {
+                    let whitelist = ["/login", "/register"];
+                    // check if route contain in whitelist or not
+                    let route = req.path().trim_start_matches('/').to_string();
+                    if whitelist.contains(&req.path()) || app_state.route_publics.contains(&route) {
+                        return srv.call(req);
+                    }
+
+                    let app_data = req
+                        .app_data::<web::Data<AppState>>()
+                        .expect("AppState missing");
+                    match validate_token(req.request().clone(), app_data.clone()) {
+                        Ok(_) => srv.call(req),
+                        Err(e) => Box::pin(async move { Ok(req.into_response(e)) }),
+                    }
                 }
             })
             .wrap(
