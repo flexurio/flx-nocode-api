@@ -1,6 +1,5 @@
 /target
 .env
-static
 release/flx-nocode-aarch64-apple-darwin
 release/flx-nocode-x86_64-apple-darwin
 release/flx-nocode-x86_64-pc-windows-gnu.exe
