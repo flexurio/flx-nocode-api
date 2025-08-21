@@ -1,0 +1,2334 @@
+# QUERY, POST generate/table/flx_users at 2025-08-21 21:45:23: 
+CREATE TABLE IF NOT EXISTS flx_users (
+       id             BIGINT signed AUTO_INCREMENT PRIMARY KEY,
+       email          VARCHAR(100) NOT NULL,
+       phone          VARCHAR(15) NOT NULL,
+       password       LONGTEXT NOT NULL,
+       name           VARCHAR(50) NOT NULL,
+       photo          VARCHAR(50) NULL,
+       email_verified BOOLEAN NOT NULL DEFAULT 0,
+       enabled        BOOLEAN DEFAULT 1 NULL,
+
+       created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+       updated_at    DATETIME null,
+       deleted_at    DATETIME null,
+       created_by_id bigint signed null,
+       updated_by_id bigint signed null,
+       deleted_by_id bigint signed null,
+
+       CONSTRAINT idx_user_email UNIQUE (email),
+       CONSTRAINT idx_user_phone UNIQUE (phone),
+       CONSTRAINT idx_user_enabled (enabled)
+);
+
+# QUERY, POST generate/table/flx_roles at 2025-08-21 21:45:24: 
+    CREATE TABLE IF NOT EXISTS flx_roles (
+        id            BIGINT AUTO_INCREMENT PRIMARY KEY,
+        id_users      BIGINT NOT NULL,
+        endpoint      VARCHAR(100) NOT NULL,
+        role          TINYINT NOT NULL,
+
+        created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at    DATETIME null,
+        deleted_at    DATETIME null,
+        created_by_id bigint unsigned null,
+        updated_by_id bigint unsigned null,
+        deleted_by_id bigint unsigned null,
+
+        CONSTRAINT idx_role_name UNIQUE (id_users, endpoint)
+    );
+# QUERY, POST generate/table/users at 2025-08-21 21:45:28: 
+SELECT id FROM flx_users WHERE email = 'admin';
+# CORE ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/static
+# CORE ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/login
+# CORE ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/register
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/flx_users
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/flx_roles
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/incentive_base_sales_category_products
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/incentive_base_sales_category_products
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/incentive_base_sales_category_products
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/incentive_base_sales_category_products
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/incentive_base_sales_category_products
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/incentive_base_sales_category_products
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/incentive_base_sales_category_products
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/incentive_base_sales_category_products
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/incentive_base_sales_products
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/incentive_base_sales_products
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/incentive_base_sales_products
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/incentive_base_sales_products
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/incentive_base_sales_products
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/incentive_base_sales_products
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/incentive_base_sales_products
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/incentive_base_sales_products
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/incentive_base_sales_structures
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/incentive_base_sales_structures
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/incentive_base_sales_structures
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/incentive_base_sales_structures
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/incentive_base_sales_structures
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/incentive_base_sales_structures
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/incentive_base_sales_structures
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/incentive_base_sales_structures
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/incentive_base_subordinate_structures
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/incentive_base_subordinate_structures
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/incentive_base_subordinate_structures
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/incentive_base_subordinate_structures
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/incentive_base_subordinate_structures
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/incentive_base_subordinate_structures
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/incentive_base_subordinate_structures
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/incentive_base_subordinate_structures
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/incentive_base_target_category_products
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/incentive_base_target_category_products
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/incentive_base_target_category_products
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/incentive_base_target_category_products
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/incentive_base_target_category_products
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/incentive_base_target_category_products
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/incentive_base_target_category_products
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/incentive_base_target_category_products
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/incentive_base_target_products
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/incentive_base_target_products
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/incentive_base_target_products
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/incentive_base_target_products
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/incentive_base_target_products
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/incentive_base_target_products
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/incentive_base_target_products
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/incentive_base_target_products
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/incentive_base_cn_customers
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/incentive_base_cn_customers
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/incentive_base_cn_customers
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/incentive_base_cn_customers
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/incentive_base_cn_customers
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/incentive_base_cn_customers
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/incentive_base_cn_customers
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/incentive_base_cn_customers
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/incentive_base_cn_discount_products
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/incentive_base_cn_discount_products
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/incentive_base_cn_discount_products
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/incentive_base_cn_discount_products
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/incentive_base_cn_discount_products
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/incentive_base_cn_discount_products
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/incentive_base_cn_discount_products
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/incentive_base_cn_discount_products
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/incentive_base_cn_customer_outlet_product_types
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/incentive_base_cn_customer_outlet_product_types
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/incentive_base_cn_customer_outlet_product_types
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/incentive_base_cn_customer_outlet_product_types
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/incentive_base_cn_customer_outlet_product_types
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/incentive_base_cn_customer_outlet_product_types
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/incentive_base_cn_customer_outlet_product_types
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/incentive_base_cn_customer_outlet_product_types
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/incentive_headers
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/incentive_headers
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/incentive_headers
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/incentive_headers
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/incentive_headers
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/incentive_headers
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/incentive_headers
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/incentive_headers
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/incentive_details
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/incentive_details
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/incentive_details
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/incentive_details
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/incentive_details
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/incentive_details
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/incentive_details
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/incentive_details
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/potential_customer_products
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/potential_customer_products
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/potential_customer_products
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/potential_customer_products
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/potential_customer_products
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/potential_customer_products
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/potential_customer_products
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/potential_customer_products
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/division_products
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/division_products
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/division_products
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/division_products
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/division_products
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/division_products
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/division_products
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/division_products
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/menus
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/menus
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/menus
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/menus
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/menus
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/menus
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/menus
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/menus
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/menu_users
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/menu_users
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/menu_users
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/menu_users
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/menu_users
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/menu_users
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/menu_users
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/menu_users
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/visit_flow_discount_proposals
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/visit_flow_discount_proposals
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/visit_flow_discount_proposals
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/visit_flow_discount_proposals
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/visit_flow_discount_proposals
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/visit_flow_discount_proposals
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/visit_flow_discount_proposals
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/visit_flow_discount_proposals
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/visit_flow_discount_proposal_estimations
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/visit_flow_discount_proposal_estimations
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/visit_flow_discount_proposal_estimations
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/visit_flow_discount_proposal_estimations
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/visit_flow_discount_proposal_estimations
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/visit_flow_discount_proposal_estimations
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/visit_flow_discount_proposal_estimations
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/visit_flow_discount_proposal_estimations
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/outlet_summarys
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/outlet_summarys
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/outlet_summarys
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/outlet_summarys
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/outlet_summarys
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/outlet_summarys
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/outlet_summarys
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/outlet_summarys
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/outlet_summary_up_sellings
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/outlet_summary_up_sellings
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/outlet_summary_up_sellings
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/outlet_summary_up_sellings
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/outlet_summary_up_sellings
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/outlet_summary_up_sellings
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/outlet_summary_up_sellings
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/outlet_summary_up_sellings
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/outlet_summary_cross_sellings
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/outlet_summary_cross_sellings
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/outlet_summary_cross_sellings
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/outlet_summary_cross_sellings
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/outlet_summary_cross_sellings
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/outlet_summary_cross_sellings
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/outlet_summary_cross_sellings
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/outlet_summary_cross_sellings
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/discount_proposal_budgets
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/discount_proposal_budgets
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/discount_proposal_budgets
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/discount_proposal_budgets
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/discount_proposal_budgets
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/discount_proposal_budgets
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/discount_proposal_budgets
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/discount_proposal_budgets
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/discount_proposal_budget_process
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/discount_proposal_budget_process
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/discount_proposal_budget_process
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/discount_proposal_budget_process
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/discount_proposal_budget_process
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/discount_proposal_budget_process
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/discount_proposal_budget_process
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/discount_proposal_budget_process
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/discount_proposal_configs
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/discount_proposal_configs
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/discount_proposal_configs
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/discount_proposal_configs
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/discount_proposal_configs
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/discount_proposal_configs
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/discount_proposal_configs
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/discount_proposal_configs
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/status_closings
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/status_closings
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/status_closings
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/status_closings
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/status_closings
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/status_closings
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/status_closings
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/status_closings
+# QUERY, POST generate/table/flx_users at 2025-08-21 21:48:58: 
+CREATE TABLE IF NOT EXISTS flx_users (
+       id             BIGINT signed AUTO_INCREMENT PRIMARY KEY,
+       email          VARCHAR(100) NOT NULL,
+       phone          VARCHAR(15) NOT NULL,
+       password       LONGTEXT NOT NULL,
+       name           VARCHAR(50) NOT NULL,
+       photo          VARCHAR(50) NULL,
+       email_verified BOOLEAN NOT NULL DEFAULT 0,
+       enabled        BOOLEAN DEFAULT 1 NULL,
+
+       created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+       updated_at    DATETIME null,
+       deleted_at    DATETIME null,
+       created_by_id bigint signed null,
+       updated_by_id bigint signed null,
+       deleted_by_id bigint signed null,
+
+       CONSTRAINT idx_user_email UNIQUE (email),
+       CONSTRAINT idx_user_phone UNIQUE (phone),
+       CONSTRAINT idx_user_enabled (enabled)
+);
+
+# QUERY, POST generate/table/flx_roles at 2025-08-21 21:48:58: 
+    CREATE TABLE IF NOT EXISTS flx_roles (
+        id            BIGINT AUTO_INCREMENT PRIMARY KEY,
+        id_users      BIGINT NOT NULL,
+        endpoint      VARCHAR(100) NOT NULL,
+        role          TINYINT NOT NULL,
+
+        created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at    DATETIME null,
+        deleted_at    DATETIME null,
+        created_by_id bigint unsigned null,
+        updated_by_id bigint unsigned null,
+        deleted_by_id bigint unsigned null,
+
+        CONSTRAINT idx_role_name UNIQUE (id_users, endpoint)
+    );
+# QUERY, POST generate/table/users at 2025-08-21 21:48:59: 
+SELECT id FROM flx_users WHERE email = 'admin';
+# CORE ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/static
+# CORE ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/login
+# CORE ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/register
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/flx_users
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/flx_roles
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/incentive_base_sales_category_products
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/incentive_base_sales_category_products
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/incentive_base_sales_category_products
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/incentive_base_sales_category_products
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/incentive_base_sales_category_products
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/incentive_base_sales_category_products
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/incentive_base_sales_category_products
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/incentive_base_sales_category_products
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/incentive_base_sales_products
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/incentive_base_sales_products
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/incentive_base_sales_products
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/incentive_base_sales_products
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/incentive_base_sales_products
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/incentive_base_sales_products
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/incentive_base_sales_products
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/incentive_base_sales_products
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/incentive_base_sales_structures
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/incentive_base_sales_structures
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/incentive_base_sales_structures
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/incentive_base_sales_structures
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/incentive_base_sales_structures
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/incentive_base_sales_structures
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/incentive_base_sales_structures
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/incentive_base_sales_structures
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/incentive_base_subordinate_structures
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/incentive_base_subordinate_structures
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/incentive_base_subordinate_structures
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/incentive_base_subordinate_structures
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/incentive_base_subordinate_structures
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/incentive_base_subordinate_structures
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/incentive_base_subordinate_structures
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/incentive_base_subordinate_structures
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/incentive_base_target_category_products
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/incentive_base_target_category_products
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/incentive_base_target_category_products
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/incentive_base_target_category_products
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/incentive_base_target_category_products
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/incentive_base_target_category_products
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/incentive_base_target_category_products
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/incentive_base_target_category_products
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/incentive_base_target_products
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/incentive_base_target_products
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/incentive_base_target_products
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/incentive_base_target_products
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/incentive_base_target_products
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/incentive_base_target_products
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/incentive_base_target_products
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/incentive_base_target_products
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/incentive_base_cn_customers
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/incentive_base_cn_customers
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/incentive_base_cn_customers
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/incentive_base_cn_customers
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/incentive_base_cn_customers
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/incentive_base_cn_customers
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/incentive_base_cn_customers
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/incentive_base_cn_customers
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/incentive_base_cn_discount_products
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/incentive_base_cn_discount_products
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/incentive_base_cn_discount_products
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/incentive_base_cn_discount_products
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/incentive_base_cn_discount_products
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/incentive_base_cn_discount_products
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/incentive_base_cn_discount_products
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/incentive_base_cn_discount_products
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/incentive_base_cn_customer_outlet_product_types
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/incentive_base_cn_customer_outlet_product_types
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/incentive_base_cn_customer_outlet_product_types
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/incentive_base_cn_customer_outlet_product_types
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/incentive_base_cn_customer_outlet_product_types
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/incentive_base_cn_customer_outlet_product_types
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/incentive_base_cn_customer_outlet_product_types
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/incentive_base_cn_customer_outlet_product_types
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/incentive_headers
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/incentive_headers
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/incentive_headers
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/incentive_headers
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/incentive_headers
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/incentive_headers
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/incentive_headers
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/incentive_headers
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/incentive_details
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/incentive_details
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/incentive_details
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/incentive_details
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/incentive_details
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/incentive_details
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/incentive_details
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/incentive_details
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/potential_customer_products
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/potential_customer_products
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/potential_customer_products
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/potential_customer_products
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/potential_customer_products
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/potential_customer_products
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/potential_customer_products
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/potential_customer_products
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/division_products
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/division_products
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/division_products
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/division_products
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/division_products
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/division_products
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/division_products
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/division_products
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/menus
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/menus
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/menus
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/menus
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/menus
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/menus
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/menus
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/menus
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/menu_users
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/menu_users
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/menu_users
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/menu_users
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/menu_users
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/menu_users
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/menu_users
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/menu_users
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/visit_flow_discount_proposals
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/visit_flow_discount_proposals
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/visit_flow_discount_proposals
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/visit_flow_discount_proposals
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/visit_flow_discount_proposals
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/visit_flow_discount_proposals
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/visit_flow_discount_proposals
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/visit_flow_discount_proposals
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/visit_flow_discount_proposal_estimations
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/visit_flow_discount_proposal_estimations
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/visit_flow_discount_proposal_estimations
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/visit_flow_discount_proposal_estimations
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/visit_flow_discount_proposal_estimations
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/visit_flow_discount_proposal_estimations
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/visit_flow_discount_proposal_estimations
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/visit_flow_discount_proposal_estimations
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/outlet_summarys
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/outlet_summarys
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/outlet_summarys
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/outlet_summarys
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/outlet_summarys
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/outlet_summarys
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/outlet_summarys
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/outlet_summarys
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/outlet_summary_up_sellings
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/outlet_summary_up_sellings
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/outlet_summary_up_sellings
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/outlet_summary_up_sellings
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/outlet_summary_up_sellings
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/outlet_summary_up_sellings
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/outlet_summary_up_sellings
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/outlet_summary_up_sellings
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/outlet_summary_cross_sellings
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/outlet_summary_cross_sellings
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/outlet_summary_cross_sellings
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/outlet_summary_cross_sellings
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/outlet_summary_cross_sellings
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/outlet_summary_cross_sellings
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/outlet_summary_cross_sellings
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/outlet_summary_cross_sellings
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/discount_proposal_budgets
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/discount_proposal_budgets
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/discount_proposal_budgets
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/discount_proposal_budgets
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/discount_proposal_budgets
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/discount_proposal_budgets
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/discount_proposal_budgets
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/discount_proposal_budgets
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/discount_proposal_budget_process
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/discount_proposal_budget_process
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/discount_proposal_budget_process
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/discount_proposal_budget_process
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/discount_proposal_budget_process
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/discount_proposal_budget_process
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/discount_proposal_budget_process
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/discount_proposal_budget_process
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/discount_proposal_configs
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/discount_proposal_configs
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/discount_proposal_configs
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/discount_proposal_configs
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/discount_proposal_configs
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/discount_proposal_configs
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/discount_proposal_configs
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/discount_proposal_configs
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/status_closings
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/status_closings
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/status_closings
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/status_closings
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/status_closings
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/status_closings
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/status_closings
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/status_closings
+# QUERY, POST generate/table/flx_users at 2025-08-21 21:49:35: 
+CREATE TABLE IF NOT EXISTS flx_users (
+       id             BIGINT signed AUTO_INCREMENT PRIMARY KEY,
+       email          VARCHAR(100) NOT NULL,
+       phone          VARCHAR(15) NOT NULL,
+       password       LONGTEXT NOT NULL,
+       name           VARCHAR(50) NOT NULL,
+       photo          VARCHAR(50) NULL,
+       email_verified BOOLEAN NOT NULL DEFAULT 0,
+       enabled        BOOLEAN DEFAULT 1 NULL,
+
+       created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+       updated_at    DATETIME null,
+       deleted_at    DATETIME null,
+       created_by_id bigint signed null,
+       updated_by_id bigint signed null,
+       deleted_by_id bigint signed null,
+
+       CONSTRAINT idx_user_email UNIQUE (email),
+       CONSTRAINT idx_user_phone UNIQUE (phone),
+       CONSTRAINT idx_user_enabled (enabled)
+);
+
+# QUERY, POST generate/table/flx_roles at 2025-08-21 21:49:36: 
+    CREATE TABLE IF NOT EXISTS flx_roles (
+        id            BIGINT AUTO_INCREMENT PRIMARY KEY,
+        id_users      BIGINT NOT NULL,
+        endpoint      VARCHAR(100) NOT NULL,
+        role          TINYINT NOT NULL,
+
+        created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at    DATETIME null,
+        deleted_at    DATETIME null,
+        created_by_id bigint unsigned null,
+        updated_by_id bigint unsigned null,
+        deleted_by_id bigint unsigned null,
+
+        CONSTRAINT idx_role_name UNIQUE (id_users, endpoint)
+    );
+# QUERY, POST generate/table/users at 2025-08-21 21:49:38: 
+SELECT id FROM flx_users WHERE email = 'admin';
+# CORE ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/static
+# CORE ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/login
+# CORE ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/register
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/flx_users
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/flx_roles
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/incentive_base_sales_category_products
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/incentive_base_sales_category_products
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/incentive_base_sales_category_products
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/incentive_base_sales_category_products
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/incentive_base_sales_category_products
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/incentive_base_sales_category_products
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/incentive_base_sales_category_products
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/incentive_base_sales_category_products
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/incentive_base_sales_products
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/incentive_base_sales_products
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/incentive_base_sales_products
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/incentive_base_sales_products
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/incentive_base_sales_products
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/incentive_base_sales_products
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/incentive_base_sales_products
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/incentive_base_sales_products
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/incentive_base_sales_structures
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/incentive_base_sales_structures
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/incentive_base_sales_structures
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/incentive_base_sales_structures
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/incentive_base_sales_structures
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/incentive_base_sales_structures
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/incentive_base_sales_structures
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/incentive_base_sales_structures
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/incentive_base_subordinate_structures
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/incentive_base_subordinate_structures
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/incentive_base_subordinate_structures
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/incentive_base_subordinate_structures
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/incentive_base_subordinate_structures
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/incentive_base_subordinate_structures
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/incentive_base_subordinate_structures
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/incentive_base_subordinate_structures
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/incentive_base_target_category_products
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/incentive_base_target_category_products
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/incentive_base_target_category_products
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/incentive_base_target_category_products
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/incentive_base_target_category_products
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/incentive_base_target_category_products
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/incentive_base_target_category_products
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/incentive_base_target_category_products
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/incentive_base_target_products
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/incentive_base_target_products
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/incentive_base_target_products
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/incentive_base_target_products
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/incentive_base_target_products
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/incentive_base_target_products
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/incentive_base_target_products
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/incentive_base_target_products
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/incentive_base_cn_customers
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/incentive_base_cn_customers
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/incentive_base_cn_customers
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/incentive_base_cn_customers
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/incentive_base_cn_customers
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/incentive_base_cn_customers
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/incentive_base_cn_customers
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/incentive_base_cn_customers
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/incentive_base_cn_discount_products
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/incentive_base_cn_discount_products
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/incentive_base_cn_discount_products
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/incentive_base_cn_discount_products
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/incentive_base_cn_discount_products
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/incentive_base_cn_discount_products
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/incentive_base_cn_discount_products
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/incentive_base_cn_discount_products
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/incentive_base_cn_customer_outlet_product_types
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/incentive_base_cn_customer_outlet_product_types
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/incentive_base_cn_customer_outlet_product_types
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/incentive_base_cn_customer_outlet_product_types
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/incentive_base_cn_customer_outlet_product_types
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/incentive_base_cn_customer_outlet_product_types
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/incentive_base_cn_customer_outlet_product_types
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/incentive_base_cn_customer_outlet_product_types
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/incentive_headers
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/incentive_headers
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/incentive_headers
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/incentive_headers
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/incentive_headers
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/incentive_headers
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/incentive_headers
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/incentive_headers
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/incentive_details
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/incentive_details
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/incentive_details
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/incentive_details
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/incentive_details
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/incentive_details
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/incentive_details
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/incentive_details
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/potential_customer_products
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/potential_customer_products
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/potential_customer_products
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/potential_customer_products
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/potential_customer_products
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/potential_customer_products
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/potential_customer_products
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/potential_customer_products
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/division_products
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/division_products
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/division_products
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/division_products
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/division_products
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/division_products
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/division_products
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/division_products
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/menus
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/menus
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/menus
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/menus
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/menus
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/menus
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/menus
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/menus
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/menu_users
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/menu_users
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/menu_users
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/menu_users
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/menu_users
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/menu_users
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/menu_users
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/menu_users
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/visit_flow_discount_proposals
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/visit_flow_discount_proposals
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/visit_flow_discount_proposals
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/visit_flow_discount_proposals
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/visit_flow_discount_proposals
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/visit_flow_discount_proposals
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/visit_flow_discount_proposals
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/visit_flow_discount_proposals
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/visit_flow_discount_proposal_estimations
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/visit_flow_discount_proposal_estimations
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/visit_flow_discount_proposal_estimations
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/visit_flow_discount_proposal_estimations
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/visit_flow_discount_proposal_estimations
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/visit_flow_discount_proposal_estimations
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/visit_flow_discount_proposal_estimations
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/visit_flow_discount_proposal_estimations
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/outlet_summarys
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/outlet_summarys
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/outlet_summarys
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/outlet_summarys
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/outlet_summarys
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/outlet_summarys
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/outlet_summarys
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/outlet_summarys
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/outlet_summary_up_sellings
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/outlet_summary_up_sellings
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/outlet_summary_up_sellings
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/outlet_summary_up_sellings
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/outlet_summary_up_sellings
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/outlet_summary_up_sellings
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/outlet_summary_up_sellings
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/outlet_summary_up_sellings
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/outlet_summary_cross_sellings
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/outlet_summary_cross_sellings
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/outlet_summary_cross_sellings
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/outlet_summary_cross_sellings
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/outlet_summary_cross_sellings
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/outlet_summary_cross_sellings
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/outlet_summary_cross_sellings
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/outlet_summary_cross_sellings
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/discount_proposal_budgets
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/discount_proposal_budgets
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/discount_proposal_budgets
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/discount_proposal_budgets
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/discount_proposal_budgets
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/discount_proposal_budgets
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/discount_proposal_budgets
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/discount_proposal_budgets
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/discount_proposal_budget_process
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/discount_proposal_budget_process
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/discount_proposal_budget_process
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/discount_proposal_budget_process
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/discount_proposal_budget_process
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/discount_proposal_budget_process
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/discount_proposal_budget_process
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/discount_proposal_budget_process
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/discount_proposal_configs
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/discount_proposal_configs
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/discount_proposal_configs
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/discount_proposal_configs
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/discount_proposal_configs
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/discount_proposal_configs
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/discount_proposal_configs
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/discount_proposal_configs
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/status_closings
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/status_closings
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/status_closings
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/status_closings
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/status_closings
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/status_closings
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/status_closings
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/status_closings
+# QUERY, POST generate/table/flx_users at 2025-08-21 21:50:38: 
+CREATE TABLE IF NOT EXISTS flx_users (
+       id             BIGINT signed AUTO_INCREMENT PRIMARY KEY,
+       email          VARCHAR(100) NOT NULL,
+       phone          VARCHAR(15) NOT NULL,
+       password       LONGTEXT NOT NULL,
+       name           VARCHAR(50) NOT NULL,
+       photo          VARCHAR(50) NULL,
+       email_verified BOOLEAN NOT NULL DEFAULT 0,
+       enabled        BOOLEAN DEFAULT 1 NULL,
+
+       created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+       updated_at    DATETIME null,
+       deleted_at    DATETIME null,
+       created_by_id bigint signed null,
+       updated_by_id bigint signed null,
+       deleted_by_id bigint signed null,
+
+       CONSTRAINT idx_user_email UNIQUE (email),
+       CONSTRAINT idx_user_phone UNIQUE (phone),
+       CONSTRAINT idx_user_enabled (enabled)
+);
+
+# QUERY, POST generate/table/flx_roles at 2025-08-21 21:50:38: 
+    CREATE TABLE IF NOT EXISTS flx_roles (
+        id            BIGINT AUTO_INCREMENT PRIMARY KEY,
+        id_users      BIGINT NOT NULL,
+        endpoint      VARCHAR(100) NOT NULL,
+        role          TINYINT NOT NULL,
+
+        created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at    DATETIME null,
+        deleted_at    DATETIME null,
+        created_by_id bigint unsigned null,
+        updated_by_id bigint unsigned null,
+        deleted_by_id bigint unsigned null,
+
+        CONSTRAINT idx_role_name UNIQUE (id_users, endpoint)
+    );
+# QUERY, POST generate/table/flx_users at 2025-08-21 21:50:56: 
+CREATE TABLE IF NOT EXISTS flx_users (
+       id             BIGINT signed AUTO_INCREMENT PRIMARY KEY,
+       email          VARCHAR(100) NOT NULL,
+       phone          VARCHAR(15) NOT NULL,
+       password       LONGTEXT NOT NULL,
+       name           VARCHAR(50) NOT NULL,
+       photo          VARCHAR(50) NULL,
+       email_verified BOOLEAN NOT NULL DEFAULT 0,
+       enabled        BOOLEAN DEFAULT 1 NULL,
+
+       created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+       updated_at    DATETIME null,
+       deleted_at    DATETIME null,
+       created_by_id bigint signed null,
+       updated_by_id bigint signed null,
+       deleted_by_id bigint signed null,
+
+       CONSTRAINT idx_user_email UNIQUE (email),
+       CONSTRAINT idx_user_phone UNIQUE (phone),
+       CONSTRAINT idx_user_enabled (enabled)
+);
+
+# QUERY, POST generate/table/flx_roles at 2025-08-21 21:50:56: 
+    CREATE TABLE IF NOT EXISTS flx_roles (
+        id            BIGINT AUTO_INCREMENT PRIMARY KEY,
+        id_users      BIGINT NOT NULL,
+        endpoint      VARCHAR(100) NOT NULL,
+        role          TINYINT NOT NULL,
+
+        created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at    DATETIME null,
+        deleted_at    DATETIME null,
+        created_by_id bigint unsigned null,
+        updated_by_id bigint unsigned null,
+        deleted_by_id bigint unsigned null,
+
+        CONSTRAINT idx_role_name UNIQUE (id_users, endpoint)
+    );
+# QUERY, POST generate/table/users at 2025-08-21 21:50:57: 
+SELECT id FROM flx_users WHERE email = 'admin';
+# CORE ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/static
+# CORE ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/login
+# CORE ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/register
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/flx_users
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/flx_roles
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/incentive_base_sales_category_products
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/incentive_base_sales_category_products
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/incentive_base_sales_category_products
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/incentive_base_sales_category_products
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/incentive_base_sales_category_products
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/incentive_base_sales_category_products
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/incentive_base_sales_category_products
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/incentive_base_sales_category_products
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/incentive_base_sales_products
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/incentive_base_sales_products
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/incentive_base_sales_products
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/incentive_base_sales_products
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/incentive_base_sales_products
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/incentive_base_sales_products
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/incentive_base_sales_products
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/incentive_base_sales_products
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/incentive_base_sales_structures
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/incentive_base_sales_structures
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/incentive_base_sales_structures
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/incentive_base_sales_structures
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/incentive_base_sales_structures
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/incentive_base_sales_structures
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/incentive_base_sales_structures
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/incentive_base_sales_structures
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/incentive_base_subordinate_structures
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/incentive_base_subordinate_structures
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/incentive_base_subordinate_structures
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/incentive_base_subordinate_structures
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/incentive_base_subordinate_structures
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/incentive_base_subordinate_structures
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/incentive_base_subordinate_structures
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/incentive_base_subordinate_structures
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/incentive_base_target_category_products
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/incentive_base_target_category_products
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/incentive_base_target_category_products
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/incentive_base_target_category_products
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/incentive_base_target_category_products
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/incentive_base_target_category_products
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/incentive_base_target_category_products
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/incentive_base_target_category_products
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/incentive_base_target_products
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/incentive_base_target_products
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/incentive_base_target_products
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/incentive_base_target_products
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/incentive_base_target_products
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/incentive_base_target_products
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/incentive_base_target_products
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/incentive_base_target_products
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/incentive_base_cn_customers
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/incentive_base_cn_customers
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/incentive_base_cn_customers
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/incentive_base_cn_customers
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/incentive_base_cn_customers
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/incentive_base_cn_customers
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/incentive_base_cn_customers
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/incentive_base_cn_customers
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/incentive_base_cn_discount_products
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/incentive_base_cn_discount_products
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/incentive_base_cn_discount_products
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/incentive_base_cn_discount_products
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/incentive_base_cn_discount_products
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/incentive_base_cn_discount_products
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/incentive_base_cn_discount_products
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/incentive_base_cn_discount_products
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/incentive_base_cn_customer_outlet_product_types
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/incentive_base_cn_customer_outlet_product_types
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/incentive_base_cn_customer_outlet_product_types
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/incentive_base_cn_customer_outlet_product_types
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/incentive_base_cn_customer_outlet_product_types
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/incentive_base_cn_customer_outlet_product_types
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/incentive_base_cn_customer_outlet_product_types
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/incentive_base_cn_customer_outlet_product_types
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/incentive_headers
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/incentive_headers
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/incentive_headers
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/incentive_headers
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/incentive_headers
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/incentive_headers
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/incentive_headers
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/incentive_headers
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/incentive_details
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/incentive_details
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/incentive_details
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/incentive_details
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/incentive_details
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/incentive_details
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/incentive_details
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/incentive_details
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/potential_customer_products
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/potential_customer_products
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/potential_customer_products
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/potential_customer_products
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/potential_customer_products
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/potential_customer_products
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/potential_customer_products
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/potential_customer_products
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/division_products
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/division_products
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/division_products
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/division_products
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/division_products
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/division_products
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/division_products
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/division_products
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/menus
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/menus
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/menus
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/menus
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/menus
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/menus
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/menus
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/menus
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/menu_users
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/menu_users
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/menu_users
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/menu_users
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/menu_users
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/menu_users
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/menu_users
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/menu_users
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/visit_flow_discount_proposals
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/visit_flow_discount_proposals
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/visit_flow_discount_proposals
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/visit_flow_discount_proposals
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/visit_flow_discount_proposals
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/visit_flow_discount_proposals
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/visit_flow_discount_proposals
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/visit_flow_discount_proposals
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/visit_flow_discount_proposal_estimations
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/visit_flow_discount_proposal_estimations
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/visit_flow_discount_proposal_estimations
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/visit_flow_discount_proposal_estimations
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/visit_flow_discount_proposal_estimations
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/visit_flow_discount_proposal_estimations
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/visit_flow_discount_proposal_estimations
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/visit_flow_discount_proposal_estimations
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/outlet_summarys
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/outlet_summarys
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/outlet_summarys
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/outlet_summarys
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/outlet_summarys
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/outlet_summarys
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/outlet_summarys
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/outlet_summarys
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/outlet_summary_up_sellings
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/outlet_summary_up_sellings
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/outlet_summary_up_sellings
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/outlet_summary_up_sellings
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/outlet_summary_up_sellings
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/outlet_summary_up_sellings
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/outlet_summary_up_sellings
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/outlet_summary_up_sellings
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/outlet_summary_cross_sellings
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/outlet_summary_cross_sellings
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/outlet_summary_cross_sellings
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/outlet_summary_cross_sellings
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/outlet_summary_cross_sellings
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/outlet_summary_cross_sellings
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/outlet_summary_cross_sellings
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/outlet_summary_cross_sellings
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/discount_proposal_budgets
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/discount_proposal_budgets
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/discount_proposal_budgets
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/discount_proposal_budgets
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/discount_proposal_budgets
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/discount_proposal_budgets
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/discount_proposal_budgets
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/discount_proposal_budgets
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/discount_proposal_budget_process
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/discount_proposal_budget_process
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/discount_proposal_budget_process
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/discount_proposal_budget_process
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/discount_proposal_budget_process
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/discount_proposal_budget_process
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/discount_proposal_budget_process
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/discount_proposal_budget_process
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/discount_proposal_configs
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/discount_proposal_configs
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/discount_proposal_configs
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/discount_proposal_configs
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/discount_proposal_configs
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/discount_proposal_configs
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/discount_proposal_configs
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/discount_proposal_configs
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/status_closings
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/status_closings
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/status_closings
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/status_closings
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/status_closings
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/status_closings
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/status_closings
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/status_closings
+# QUERY, POST generate/table/flx_users at 2025-08-21 21:52:07: 
+CREATE TABLE IF NOT EXISTS flx_users (
+       id             BIGINT signed AUTO_INCREMENT PRIMARY KEY,
+       email          VARCHAR(100) NOT NULL,
+       phone          VARCHAR(15) NOT NULL,
+       password       LONGTEXT NOT NULL,
+       name           VARCHAR(50) NOT NULL,
+       photo          VARCHAR(50) NULL,
+       email_verified BOOLEAN NOT NULL DEFAULT 0,
+       enabled        BOOLEAN DEFAULT 1 NULL,
+
+       created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+       updated_at    DATETIME null,
+       deleted_at    DATETIME null,
+       created_by_id bigint signed null,
+       updated_by_id bigint signed null,
+       deleted_by_id bigint signed null,
+
+       CONSTRAINT idx_user_email UNIQUE (email),
+       CONSTRAINT idx_user_phone UNIQUE (phone),
+       CONSTRAINT idx_user_enabled (enabled)
+);
+
+# QUERY, POST generate/table/flx_roles at 2025-08-21 21:52:07: 
+    CREATE TABLE IF NOT EXISTS flx_roles (
+        id            BIGINT AUTO_INCREMENT PRIMARY KEY,
+        id_users      BIGINT NOT NULL,
+        endpoint      VARCHAR(100) NOT NULL,
+        role          TINYINT NOT NULL,
+
+        created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at    DATETIME null,
+        deleted_at    DATETIME null,
+        created_by_id bigint unsigned null,
+        updated_by_id bigint unsigned null,
+        deleted_by_id bigint unsigned null,
+
+        CONSTRAINT idx_role_name UNIQUE (id_users, endpoint)
+    );
+# QUERY, POST generate/table/users at 2025-08-21 21:52:08: 
+SELECT id FROM flx_users WHERE email = 'admin';
+# CORE ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/static
+# CORE ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/login
+# CORE ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/register
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/flx_users
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/flx_roles
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/incentive_base_sales_category_products
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/incentive_base_sales_category_products
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/incentive_base_sales_category_products
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/incentive_base_sales_category_products
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/incentive_base_sales_category_products
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/incentive_base_sales_category_products
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/incentive_base_sales_category_products
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/incentive_base_sales_category_products
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/incentive_base_sales_products
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/incentive_base_sales_products
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/incentive_base_sales_products
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/incentive_base_sales_products
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/incentive_base_sales_products
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/incentive_base_sales_products
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/incentive_base_sales_products
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/incentive_base_sales_products
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/incentive_base_sales_structures
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/incentive_base_sales_structures
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/incentive_base_sales_structures
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/incentive_base_sales_structures
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/incentive_base_sales_structures
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/incentive_base_sales_structures
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/incentive_base_sales_structures
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/incentive_base_sales_structures
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/incentive_base_subordinate_structures
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/incentive_base_subordinate_structures
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/incentive_base_subordinate_structures
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/incentive_base_subordinate_structures
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/incentive_base_subordinate_structures
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/incentive_base_subordinate_structures
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/incentive_base_subordinate_structures
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/incentive_base_subordinate_structures
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/incentive_base_target_category_products
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/incentive_base_target_category_products
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/incentive_base_target_category_products
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/incentive_base_target_category_products
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/incentive_base_target_category_products
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/incentive_base_target_category_products
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/incentive_base_target_category_products
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/incentive_base_target_category_products
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/incentive_base_target_products
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/incentive_base_target_products
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/incentive_base_target_products
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/incentive_base_target_products
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/incentive_base_target_products
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/incentive_base_target_products
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/incentive_base_target_products
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/incentive_base_target_products
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/incentive_base_cn_customers
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/incentive_base_cn_customers
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/incentive_base_cn_customers
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/incentive_base_cn_customers
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/incentive_base_cn_customers
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/incentive_base_cn_customers
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/incentive_base_cn_customers
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/incentive_base_cn_customers
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/incentive_base_cn_discount_products
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/incentive_base_cn_discount_products
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/incentive_base_cn_discount_products
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/incentive_base_cn_discount_products
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/incentive_base_cn_discount_products
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/incentive_base_cn_discount_products
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/incentive_base_cn_discount_products
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/incentive_base_cn_discount_products
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/incentive_base_cn_customer_outlet_product_types
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/incentive_base_cn_customer_outlet_product_types
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/incentive_base_cn_customer_outlet_product_types
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/incentive_base_cn_customer_outlet_product_types
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/incentive_base_cn_customer_outlet_product_types
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/incentive_base_cn_customer_outlet_product_types
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/incentive_base_cn_customer_outlet_product_types
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/incentive_base_cn_customer_outlet_product_types
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/incentive_headers
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/incentive_headers
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/incentive_headers
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/incentive_headers
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/incentive_headers
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/incentive_headers
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/incentive_headers
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/incentive_headers
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/incentive_details
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/incentive_details
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/incentive_details
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/incentive_details
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/incentive_details
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/incentive_details
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/incentive_details
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/incentive_details
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/potential_customer_products
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/potential_customer_products
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/potential_customer_products
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/potential_customer_products
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/potential_customer_products
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/potential_customer_products
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/potential_customer_products
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/potential_customer_products
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/division_products
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/division_products
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/division_products
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/division_products
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/division_products
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/division_products
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/division_products
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/division_products
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/menus
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/menus
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/menus
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/menus
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/menus
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/menus
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/menus
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/menus
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/menu_users
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/menu_users
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/menu_users
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/menu_users
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/menu_users
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/menu_users
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/menu_users
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/menu_users
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/visit_flow_discount_proposals
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/visit_flow_discount_proposals
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/visit_flow_discount_proposals
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/visit_flow_discount_proposals
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/visit_flow_discount_proposals
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/visit_flow_discount_proposals
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/visit_flow_discount_proposals
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/visit_flow_discount_proposals
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/visit_flow_discount_proposal_estimations
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/visit_flow_discount_proposal_estimations
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/visit_flow_discount_proposal_estimations
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/visit_flow_discount_proposal_estimations
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/visit_flow_discount_proposal_estimations
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/visit_flow_discount_proposal_estimations
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/visit_flow_discount_proposal_estimations
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/visit_flow_discount_proposal_estimations
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/outlet_summarys
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/outlet_summarys
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/outlet_summarys
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/outlet_summarys
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/outlet_summarys
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/outlet_summarys
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/outlet_summarys
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/outlet_summarys
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/outlet_summary_up_sellings
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/outlet_summary_up_sellings
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/outlet_summary_up_sellings
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/outlet_summary_up_sellings
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/outlet_summary_up_sellings
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/outlet_summary_up_sellings
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/outlet_summary_up_sellings
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/outlet_summary_up_sellings
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/outlet_summary_cross_sellings
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/outlet_summary_cross_sellings
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/outlet_summary_cross_sellings
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/outlet_summary_cross_sellings
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/outlet_summary_cross_sellings
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/outlet_summary_cross_sellings
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/outlet_summary_cross_sellings
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/outlet_summary_cross_sellings
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/discount_proposal_budgets
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/discount_proposal_budgets
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/discount_proposal_budgets
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/discount_proposal_budgets
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/discount_proposal_budgets
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/discount_proposal_budgets
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/discount_proposal_budgets
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/discount_proposal_budgets
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/discount_proposal_budget_process
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/discount_proposal_budget_process
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/discount_proposal_budget_process
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/discount_proposal_budget_process
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/discount_proposal_budget_process
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/discount_proposal_budget_process
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/discount_proposal_budget_process
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/discount_proposal_budget_process
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/discount_proposal_configs
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/discount_proposal_configs
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/discount_proposal_configs
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/discount_proposal_configs
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/discount_proposal_configs
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/discount_proposal_configs
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/discount_proposal_configs
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/discount_proposal_configs
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/status_closings
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/status_closings
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/status_closings
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/status_closings
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/status_closings
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/status_closings
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/status_closings
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/status_closings

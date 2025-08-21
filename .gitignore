@@ -6,3 +6,4 @@ release/flx-nocode-x86_64-pc-windows-gnu.exe
 release/*
 .DS_Store
 configmftl
+__MACOSX

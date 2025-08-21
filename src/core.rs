@@ -1,4 +1,6 @@
 
+use std::{error::Error, fs::File, io, path::Path};
+
 use actix_multipart::Multipart;
 use actix_web::{
     web::{self, Data},
@@ -6,6 +8,8 @@ use actix_web::{
 };
 use base64::{self, Engine};
 use rand::Rng;
+use reqwest::Client;
+use zip::ZipArchive;
 use serde_json::{json, Value};
 
 use crate::{
@@ -294,3 +298,87 @@ pub async fn generate_users(state: Data<AppState>) -> impl Responder {
 
 }
    
+
+#[derive(serde::Deserialize)]
+struct Release {
+    tag_name: String,
+}
+
+async fn get_latest_release() -> Result<String, Box<dyn Error + Send + Sync>> {
+    let url = "https://api.github.com/repos/flexurio/flx-nocode-api/releases/latest";
+
+    let client = Client::new();
+    let resp = client
+        .get(url)
+        .header("User-Agent", "flexurio-client") // GitHub butuh user-agent
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<Release>()
+        .await?;
+
+    Ok(resp.tag_name)
+}
+
+/// Download file zip dari URL dan simpan ke file lokal
+async fn download_file(url: String, output: &str) -> Result<(), Box<dyn Error + Send + Sync>> {
+    let client = Client::new();
+    let mut resp = client.get(url).send().await?.error_for_status()?;
+    let mut out = File::create(output)?;
+    while let Some(chunk) = resp.chunk().await? {
+        use std::io::Write;
+        out.write_all(&chunk)?;
+    }
+    Ok(())
+}
+
+/// Ekstrak file zip ke folder tujuan
+fn extract_zip(zip_path: &str, target_dir: &str) -> Result<(), Box<dyn Error + Send + Sync>> {
+    let file = File::open(zip_path)?;
+    let mut archive = ZipArchive::new(file)?;
+
+    for i in 0..archive.len() {
+        let mut file = archive.by_index(i)?;
+        let out_path = Path::new(target_dir).join(file.name());
+
+        if file.is_dir() {
+            std::fs::create_dir_all(&out_path)?;
+        } else {
+            if let Some(parent) = out_path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            let mut outfile = File::create(&out_path)?;
+            io::copy(&mut file, &mut outfile)?;
+        }
+    }
+
+    Ok(())
+}
+
+// Function create directory & get config
+pub(crate) async fn create_dir_and_get_config() -> Result<(), std::io::Error> {
+       // If db directory already exists, skip
+       if Path::new("db").exists() { return Ok(()); }
+
+       // get latest version from github release
+       let latest_version = get_latest_release().await.unwrap_or_else(|_| "v1.0.0".to_string());
+       let url = format!("https://github.com/flexurio/flx-nocode-api/releases/download/{}/db.zip", latest_version);
+       let zip_path = "db.zip";
+       let extract_to = "."; // current working directory
+
+       println!("Downloading...");
+       download_file(url, zip_path).await.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+
+       println!("Extracting...");
+       extract_zip(zip_path, extract_to).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+
+       // Ensure db directory now exists
+       if !Path::new("db").exists() {
+              return Err(std::io::Error::new(std::io::ErrorKind::NotFound, "db directory not found after extraction"));
+       }
+
+       // Clean up zip file
+       let _ = std::fs::remove_file(zip_path);
+
+       Ok(())
+}

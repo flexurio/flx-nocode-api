@@ -192,6 +192,15 @@ async fn main() -> std::io::Result<()> {
     dotenv().ok();
     let secret_key = env::var("SECRET_KEY").expect("SECRET_KEY must be set");
     let encrypt_key = env::var("ENCRYPT_KEY").expect("ENCRYPT_KEY must be set");
+
+    // Ensure db directory exists; download and extract config only if missing
+    let db_dir_path = std::path::Path::new("db");
+    if !db_dir_path.exists() {
+        if let Err(e) = core::create_dir_and_get_config().await {
+            eprintln!("Failed to initialize db directory: {}", e);
+        }
+    }
+
     let db_type = env::var("DB_TYPE").unwrap_or_else(|_| "mysql".to_string());
     let db_repo: Arc<dyn DbRepository> = match db_type.as_str() {
         "mysql" => {

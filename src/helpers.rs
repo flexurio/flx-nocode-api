@@ -156,6 +156,17 @@ pub async fn multipart_to_json(mut multipart: Multipart) -> Result<Value, actix_
             } else {
                 // save to disk
                 let file_path = format!("{}/{}", image_storage, filename);
+
+                println!("Saving file to: {}", file_path);
+
+                // create directory if not exists
+                if let Some(parent) = std::path::Path::new(&file_path).parent() {
+                    if !parent.exists() {
+                        println!("Creating directory: {}", parent.display());
+                    }
+                    std::fs::create_dir_all(parent)?;
+                }
+
                 std::fs::write(&file_path, &buffer)?;
                 let base_url =
                     std::env::var("BASE_URL").unwrap_or("http://localhost:8080".to_string());
