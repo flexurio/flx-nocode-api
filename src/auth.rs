@@ -170,9 +170,9 @@ pub fn get_user_info_from_token(
 }
 
 fn get_permissions(value: i8) -> Vec<&'static str> {
-    // 1 = DELETE
-    // 2 = WRITE
-    // 4 = READ
+    // 1 = DELETE / DELETE
+    // 2 = WRITE / ADD
+    // 4 = READ / SHOW
     // 8 = EXECUTE
     // 16 = OPEN/CLOSE
     // 32 = EXPORT

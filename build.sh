@@ -8,6 +8,8 @@ targets=(
   "aarch64-apple-darwin"
 )
 
+unset APPLE_APP_IDENTITY
+
 for target in "${targets[@]}"; do
   # check if target is not for apple
   echo "Building for $target..."
