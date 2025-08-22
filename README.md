@@ -151,6 +151,61 @@ Each `<route>.json` → `TableSchema` (see `src/model.rs`). Key sections:
 ### 5.3 Formula Placeholders
 Expressions like `{request.field}` inside `before/after` or formulas are replaced with request JSON values. Patterns like `{products[1].price}` produce sub‑queries `(SELECT price FROM products WHERE id = 1)`.
 
+### 5.4 POST/PUT hooks: using before and after
+
+The fields `post.before`, `post.after`, `put.before`, and `put.after` in `entity/<route>.json` let you run extra SQL before or after the main INSERT/UPDATE operation.
+
+- Where they run:
+  - `post.before` runs before the INSERT.
+  - `post.after` runs after a successful INSERT.
+  - `put.before` runs before the UPDATE.
+  - `put.after` runs after a successful UPDATE.
+- Must start with the `SQL:` prefix. Empty strings or values without `SQL:` are ignored.
+- Placeholders are automatically bound as parameters (SQL‑injection safe). You don’t need to place `?` manually.
+- Hooks are not executed in a single transaction with the main operation. If you need atomicity/rollback across all steps, use DB triggers or move logic into a stored procedure.
+- Hook errors are logged but do not roll back the main operation.
+
+Minimal example (entity `menus.json`):
+
+```json
+{
+  "post": {
+    "before": "SQL:UPDATE counters SET val = val + 1 WHERE name = 'menus'",
+    "after":  "SQL:INSERT INTO audit_logs(entity, action, user_id) VALUES('menus','CREATE',{request.created_by_id})",
+    "columns": ["name"]
+  },
+  "put": {
+    "before": "SQL:INSERT INTO audit_logs(entity, action, ref_id) VALUES('menus','BEFORE_UPDATE',{request.id})",
+    "after":  "SQL:INSERT INTO audit_logs(entity, action, ref_id) VALUES('menus','AFTER_UPDATE',{request.id})",
+    "columns": ["name"]
+  }
+}
+```
+
+Supported placeholders inside before/after:
+- `{request.field}` – value from the request body. Multipart/form‑data is supported. Text fields are read as strings; if the text contains valid JSON, it is parsed. Dotted paths are supported, e.g. `{request.user.id}` or `{request.items.0.price}`.
+- `{table[123].col}` – becomes a subquery: `(SELECT col FROM table WHERE id = 123)`.
+- `{table[{request.id}].col}` – subquery with a dynamic id from the request.
+
+More complete example:
+
+```json
+{
+  "post": {
+    "before": "SQL:UPDATE products SET stock = stock - {request.qty} WHERE id = {request.product_id}",
+    "after":  "SQL:INSERT INTO order_items(order_id, product_id, price) VALUES({request.order_id}, {request.product_id}, {products[{request.product_id}].price})",
+    "columns": ["order_id", "product_id", "qty"]
+  }
+}
+```
+
+Important notes:
+- For PUT, the path parameter `/:id` is not automatically available in hooks. If you need it in formulas, include `id` in the request body.
+- For POST with auto‑increment IDs, the newly generated ID is not available via `{request.*}`. If you need to reference the ID in `after`, use a custom ID pattern via `columns[].function` (POST) or provide the `id` yourself in the body.
+- The engine auto‑infers numeric vs string bindings. On PostgreSQL, `?` placeholders are converted to `$1,$2,...` internally.
+- Each hook is executed as a single statement. For multi‑step logic, prefer a stored procedure or DB‑side routine that encapsulates multiple statements.
+
+
 ---
 
 ## 6. Runtime Endpoints
