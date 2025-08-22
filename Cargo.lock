@@ -1205,7 +1205,7 @@ dependencies = [
 
 [[package]]
 name = "flexurio-api-nocode-v2"
-version = "0.1.3"
+version = "0.1.9"
 dependencies = [
  "actix",
  "actix-cors",
