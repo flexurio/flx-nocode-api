@@ -12,9 +12,8 @@ GITHUB_BASE="https://github.com/${REPO_OWNER}/${REPO_NAME}"
 
 # Installation targets (override via env if needed)
 INSTALL_BIN_DIR="${INSTALL_BIN_DIR:-$HOME/.local/bin}"
-FLEXURIO_HOME="${FLEXURIO_HOME:-$HOME/.flexurio}"
 
-mkdir -p "$INSTALL_BIN_DIR" "$FLEXURIO_HOME"
+mkdir -p "$INSTALL_BIN_DIR"
 
 log() { printf "[flexurio-install] %s\n" "$*"; }
 err() { printf "[flexurio-install][ERROR] %s\n" "$*" 1>&2; }
@@ -126,7 +125,7 @@ mv "$BIN_TEMP" "$TARGET_BIN_PATH"
 chmod +x "$TARGET_BIN_PATH"
 log "Installed core binary to: $TARGET_BIN_PATH"
 
-# Create wrapper command `flexurio` to ensure consistent working dir and env
+# Create wrapper command `flexurio` to ensure consistent env from current dir
 WRAPPER_PATH="$INSTALL_BIN_DIR/flexurio"
 cat > "$WRAPPER_PATH" <<'WRAP'
 #!/usr/bin/env bash
@@ -136,19 +135,40 @@ log() { printf "[flexurio] %s\n" "$*"; }
 err() { printf "[flexurio][ERROR] %s\n" "$*" 1>&2; }
 need_cmd(){ command -v "$1" >/dev/null 2>&1 || { err "Command '$1' is required"; exit 1; }; }
 
-FLEXURIO_HOME="${FLEXURIO_HOME:-$HOME/.flexurio}"
-mkdir -p "$FLEXURIO_HOME" "$FLEXURIO_HOME/logs" "$FLEXURIO_HOME/static"
+# Load environment from current directory if .env exists (safe parser)
+load_dotenv() {
+  local line raw key val
+  while IFS= read -r line || [ -n "$line" ]; do
+    # Trim leading/trailing spaces
+    raw="${line%%[[:space:]]*}"
+    # Skip comments and empty lines
+    [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
+    # Remove optional 'export '
+    line=${line#export }
+    # Only accept KEY=VALUE on a single line
+    if [[ "$line" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
+      key=${line%%=*}
+      val=${line#*=}
+      # Trim surrounding whitespace in val
+      val="${val%%[[:space:]]*}"
+      # Strip optional matching quotes
+      if [[ "$val" =~ ^\".*\"$ ]]; then
+        val=${val:1:${#val}-2}
+      elif [[ "$val" =~ ^\'.*\'$ ]]; then
+        val=${val:1:${#val}-2}
+      fi
+      export "$key=$val"
+    fi
+  done < .env
+}
 
-# Load per-user environment (exports vars)
-if [ -f "$FLEXURIO_HOME/.env" ]; then
-  set -a
-  . "$FLEXURIO_HOME/.env"
-  set +a
+if [ -f ".env" ]; then
+  load_dotenv
 fi
 
 # Sensible defaults if not set in .env
-: "${LOC_LOGGING:=$FLEXURIO_HOME/logs}"
-: "${LOC_STATIC:=$FLEXURIO_HOME/static}"
+: "${LOC_LOGGING:=logs}"
+: "${LOC_STATIC:=static}"
 
 BIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 EXEC="$BIN_DIR/flx-nocode"
@@ -219,9 +239,6 @@ if [ "${1:-}" = "--update" ] || [ "${1:-}" = "update" ] || [ "${1:-}" = "-U" ]; 
   exit 0
 fi
 
-# Always run the server from FLEXURIO_HOME so its relative paths (db/, config/) are stable
-cd "$FLEXURIO_HOME"
-
 if [ -z "$EXEC" ] || [ ! -x "$EXEC" ]; then
   err "flexurio wrapper: flx-nocode binary not found in PATH"
   exit 1
@@ -233,54 +250,7 @@ WRAP
 chmod +x "$WRAPPER_PATH"
 log "Installed wrapper command to: $WRAPPER_PATH"
 
-# Create default .env if missing
-ENV_FILE="$FLEXURIO_HOME/.env"
-if [ ! -f "$ENV_FILE" ]; then
-  log "Creating default environment at: $ENV_FILE"
-  # Generate random secrets
-  if command -v openssl >/dev/null 2>&1; then
-    SECRET_KEY=$(openssl rand -hex 32)
-    ENCRYPT_KEY=$(openssl rand -hex 32)
-  else
-    # Fallback: not cryptographically strong
-    SECRET_KEY=$(date +%s | md5)
-    ENCRYPT_KEY=$(date +%s | shasum | cut -d' ' -f1)
-  fi
-
-  cat > "$ENV_FILE" <<EOF
-# Flexurio environment
-DEBUG=false
-LOGGING=true
-PORT=8080
-UPLOAD_LIMIT_MB=10
-
-# Storage locations
-LOC_LOGGING="$FLEXURIO_HOME/logs"
-LOC_STATIC="$FLEXURIO_HOME/static"
-LOC_IMAGE=DB
-
-# Database (default: SQLite)
-DB_TYPE=sqlite
-SQLITE_URL="sqlite://$FLEXURIO_HOME/data.db"
-# For MySQL or Postgres, set instead:
-# DB_TYPE=mysql
-# MYSQL_URL="mysql://user:password@localhost:3306/dbname"
-# DB_TYPE=postgres
-# POSTGRES_URL="postgres://user:password@localhost:5432/dbname"
-
-# API
-CORS_ALLOW_ORIGINS=*
-
-# Security
-SECRET_KEY="$SECRET_KEY"
-ENCRYPT_KEY="$ENCRYPT_KEY"
-
-# Config location (default example copied by installer below)
-LOC_CONFIG="$FLEXURIO_HOME/config/example"
-EOF
-fi
-
-# Ensure PATH configured and auto-load .env in the detected shell
+# Ensure PATH configured in the detected shell
 SNIPPET_BEGIN="# >>> flexurio init >>>"
 SNIPPET_END="# <<< flexurio init <<<"
 
@@ -292,9 +262,7 @@ patch_rc() {
       log "Patching $rc_file to add PATH and env loader"
       {
         echo "$SNIPPET_BEGIN"
-        echo "export FLEXURIO_HOME=\"$FLEXURIO_HOME\""
         echo "export PATH=\"$INSTALL_BIN_DIR:\$PATH\""
-        echo "if [ -f \"$FLEXURIO_HOME/.env\" ]; then set -a; . \"$FLEXURIO_HOME/.env\"; set +a; fi"
         echo "$SNIPPET_END"
       } >> "$rc_file"
     else
@@ -304,9 +272,7 @@ patch_rc() {
     log "$rc_file not found; creating it with flexurio settings"
     {
       echo "$SNIPPET_BEGIN"
-      echo "export FLEXURIO_HOME=\"$FLEXURIO_HOME\""
       echo "export PATH=\"$INSTALL_BIN_DIR:\$PATH\""
-      echo "if [ -f \"$FLEXURIO_HOME/.env\" ]; then set -a; . \"$FLEXURIO_HOME/.env\"; set +a; fi"
       echo "$SNIPPET_END"
     } >> "$rc_file"
   fi
@@ -317,27 +283,6 @@ if [ -n "${RC_SECONDARY}" ]; then
   patch_rc "$RC_SECONDARY"
 fi
 
-# Download example config into FLEXURIO_HOME if missing
-if [ ! -d "$FLEXURIO_HOME/config/example" ]; then
-  log "Fetching example config into $FLEXURIO_HOME/config/example"
-  mkdir -p "$FLEXURIO_HOME/config"
-  ARCHIVE="$WORK_DIR/repo.zip"
-  curl -fSL "$GITHUB_BASE/archive/refs/heads/main.zip" -o "$ARCHIVE"
-  # Unzip only the config folder
-  if command -v unzip >/dev/null 2>&1; then
-    unzip -q "$ARCHIVE" -d "$WORK_DIR"
-    # Find extracted folder (name ends with repo name + branch)
-    SRC_DIR=$(find "$WORK_DIR" -maxdepth 1 -type d -name "${REPO_NAME}-main" -print -quit)
-    if [ -n "$SRC_DIR" ] && [ -d "$SRC_DIR/config/example" ]; then
-      cp -R "$SRC_DIR/config/example" "$FLEXURIO_HOME/config/"
-    else
-      err "Could not locate config/example in repository archive"
-    fi
-  else
-    err "'unzip' not found; skipping example config extraction"
-  fi
-fi
-
 log "Installation complete!"
 log "Next steps:"
 if [ -n "$RC_SECONDARY" ]; then
@@ -346,4 +291,3 @@ else
   log "  1) Reload your shell: 'source \"$RC_PRIMARY\"'"
 fi
 log "  2) Start the server from anywhere: 'flexurio'"
-log "     It will run in $FLEXURIO_HOME and keep its db/config/logs there."
