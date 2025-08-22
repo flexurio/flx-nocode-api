@@ -5,9 +5,12 @@ use actix_web::{
 use serde_json::{Value};
 
 use crate::{
-    auth::{check_access, get_user_info_from_token}, database::state::sanitize_sql_input, helpers::{
-        filter_table_schema, split_column_operator
-    }, log::log_output, model::{ParamJoin, TableSchema, WebResponse}, AppState
+    auth::{check_access, get_user_info_from_token},
+    database::state::{DbParam},
+    helpers::{ filter_table_schema, split_column_operator },
+    log::log_output,
+    model::{ParamJoin, TableSchema, WebResponse},
+    AppState
 };
 use std::sync::Arc;
 
@@ -55,6 +58,7 @@ pub async fn select(
     let mut group_clause: String = "GROUP BY ".to_string();
     let mut having_clause: String = "HAVING ".to_string();
     let mut paramjoins: Vec<ParamJoin> = Vec::new();
+    let mut bind_params: Vec<DbParam> = Vec::new();
 
 
     log_output(
@@ -100,7 +104,7 @@ pub async fn select(
 
                 // check if in PARAMS_PAGINATION then add to pagination_data
                 if param == "page" {
-                    i_page = value.as_str().unwrap().parse().unwrap();
+                    i_page = value.as_str().and_then(|s| s.parse::<i32>().ok()).filter(|v| *v > 0).unwrap_or(1);
                 } else if param == "sort" {
                     if value != "" {
                         let mut val = value.to_string();
@@ -111,23 +115,21 @@ pub async fn select(
                     let v = value.as_str().unwrap_or("");
                     order_type = if v.eq_ignore_ascii_case("true") { "ASC".into() } else { "DESC".into() };
                 } else if param == "limit" {
-                    i_limit = value.as_str().unwrap().parse().unwrap();
+                    i_limit = value.as_str().and_then(|s| s.parse::<i32>().ok()).map(|v| v.clamp(1, 1000)).unwrap_or(100);
                 } else if param == "redis" {
                     // check redis
                     println!("Redis: {}", value);
                 } else if param == "search" {
-                    let value_str = sanitize_sql_input(value.as_str().unwrap_or("").to_string());
+                    let value_str = value.as_str().unwrap_or("").to_string();
                     let mut search_clause = "( ".to_string();
 
                     for column in table_schema.primary_key.columns.iter() {
                         if column.contains(".") {
-                            search_clause
-                                .push_str(&format!("{} LIKE '%{}%' OR ", column, value_str));
+                            search_clause.push_str(&format!("{} LIKE ? OR ", column));
+                            bind_params.push(DbParam::Str(format!("%{}%", value_str)));
                         } else {
-                            search_clause.push_str(&format!(
-                                "{}.{} LIKE '%{}%' OR ",
-                                table_schema.table, column, value_str
-                            ));
+                            search_clause.push_str(&format!("{}.{} LIKE ? OR ", table_schema.table, column));
+                            bind_params.push(DbParam::Str(format!("%{}%", value_str)));
                         }
                     }
 
@@ -135,13 +137,11 @@ pub async fn select(
                     for index in table_schema.indexes.iter() {
                         for column in index.columns.iter() {
                             if column.contains(".") {
-                                search_clause
-                                    .push_str(&format!("{} LIKE '%{}%' OR ", column, value_str));
+                                search_clause.push_str(&format!("{} LIKE ? OR ", column));
+                                bind_params.push(DbParam::Str(format!("%{}%", value_str)));
                             } else {
-                                search_clause.push_str(&format!(
-                                    "{}.{} LIKE '%{}%' OR ",
-                                    table_schema.table, column, value_str
-                                ));
+                                search_clause.push_str(&format!("{}.{} LIKE ? OR ", table_schema.table, column));
+                                bind_params.push(DbParam::Str(format!("%{}%", value_str)));
                             }
                         }
                     }
@@ -155,16 +155,16 @@ pub async fn select(
 
                     // loop every param_split
                     for (idx, param) in param_split.iter().enumerate() {
-                        let value_str = sanitize_sql_input(value.as_str().unwrap_or("").to_string());
+                        let value_str = value.as_str().unwrap_or("").to_string();
                         let (column, operator, value) =
                             split_column_operator(param, &table_schema.table, &value_str);
 
                         if idx == 0 {
-                            where_clause
-                                .push_str(&format!("{} {} '{}' ", column, operator, value));
+                            where_clause.push_str(&format!("{} {} ? ", column, operator));
+                            bind_params.push(DbParam::Str(value));
                         } else {
-                            where_clause
-                                .push_str(&format!("OR {} {} '{}' ", column, operator, value));
+                            where_clause.push_str(&format!("OR {} {} ? ", column, operator));
+                            bind_params.push(DbParam::Str(value));
                         }
                     }
 
@@ -173,18 +173,24 @@ pub async fn select(
                     // add to paramjoins
                     paramjoins.push(ParamJoin {
                         name: param.to_string().replace(".eq", ""),
-                        value: sanitize_sql_input(value.as_str().unwrap_or("").to_string()),
+                        value: value.as_str().unwrap_or("").to_string(),
                     });
                 } else {
-                    let value_str = sanitize_sql_input(value.as_str().unwrap_or("").to_string());
+                    let value_str = value.as_str().unwrap_or("").to_string();
                     let (column, operator, value) = split_column_operator(param, &table_schema.table, &value_str);
 
-                    if value.parse::<i64>().is_ok() || value_str.contains("NULL") {
-                        where_clause
-                            .push_str(&format!("{} {} {} AND ", column, operator, value));
+                    if value_str.eq_ignore_ascii_case("NULL") {
+                        // special-case IS NULL / IS NOT NULL out of split_column_operator
+                        where_clause.push_str(&format!("{} {} NULL AND ", column, operator));
+                    } else if value.parse::<i64>().is_ok() {
+                        where_clause.push_str(&format!("{} {} ? AND ", column, operator));
+                        bind_params.push(DbParam::I64(value.parse().unwrap_or(0)));
+                    } else if value.parse::<f64>().is_ok() {
+                        where_clause.push_str(&format!("{} {} ? AND ", column, operator));
+                        bind_params.push(DbParam::F64(value.parse().unwrap_or(0.0)));
                     } else {
-                        where_clause
-                            .push_str(&format!("{} {} '{}' AND ", column, operator, value));
+                        where_clause.push_str(&format!("{} {} ? AND ", column, operator));
+                        bind_params.push(DbParam::Str(value));
                     }
                 }
             }
@@ -204,6 +210,7 @@ pub async fn select(
 
     // check having
     for having in table_schema.get.having.iter() {
+        // only allow literals or schema-defined expressions; do not inject user values here
         having_clause.push_str(&format!("{}, ", having));
     }
     if having_clause.len() > 7 {
@@ -217,8 +224,26 @@ pub async fn select(
     if order_column.is_empty() {
         order_clause = "".to_string();
     } else {
-        order_clause.push_str(&format!("{} {} ", order_column, order_type));
-        order_clause = order_clause.replace("\"", "");            
+        // Whitelist order columns against schema columns/indexes
+        let allowed_cols: Vec<&str> = table_schema
+            .get
+            .columns
+            .iter()
+            .map(|s| s.as_str())
+            .chain(table_schema.indexes.iter().flat_map(|idx| idx.columns.iter().map(|s| s.as_str())))
+            .collect();
+        let sanitized: String = order_column
+            .split(',')
+            .map(|c| c.trim())
+            .filter(|c| allowed_cols.contains(c))
+            .collect::<Vec<&str>>()
+            .join(", ");
+
+        if sanitized.is_empty() {
+            order_clause = "".to_string();
+        } else {
+            order_clause.push_str(&format!("{} {} ", sanitized, order_type));
+        }
     }
 
     // check limit
@@ -252,8 +277,13 @@ pub async fn select(
             // loop every paramjoins and replace join.logical string parameter with value
             let mut logical = join.logical.clone();
             for paramjoin in paramjoins.iter() {
-               let paramjoin_value = paramjoin.value.replace("'", "");
-                logical = logical.replace(&paramjoin.name, &paramjoin_value);
+                // Safe replacement limited to identifiers/known macros only; do not inject values containing SQL
+                let safe_val: String = paramjoin
+                    .value
+                    .chars()
+                    .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '.')
+                    .collect();
+                logical = logical.replace(&paramjoin.name, &safe_val);
             }
             format!(
                 "{} JOIN {} ON {}",
@@ -291,8 +321,8 @@ pub async fn select(
     );
 
     // get total data from 
-    let total_data:i32 = state.db.get_total_rows(&s_sql_total).await.unwrap_or(0);
-    let query_result = state.db.query(&s_sql).await;
+    let total_data:i32 = state.db.get_total_rows_with_params(&s_sql_total, bind_params.clone()).await.unwrap_or(0);
+    let query_result = state.db.query_with_params(&s_sql, bind_params).await;
     match query_result {
         Ok(res) => {
             let result = WebResponse {

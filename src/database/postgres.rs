@@ -2,7 +2,7 @@ use base64::Engine;
 use serde_json::{Map, Value};
 use sqlx::{postgres::{PgRow, Postgres}, Column, Pool, Row};
 
-use super::state::DbRepository;
+use super::state::{DbRepository, DbParam};
 
 
 
@@ -136,6 +136,67 @@ impl DbRepository for PostgresRepo {
         let row: (i32,) = sqlx::query_as(sql)
             .fetch_one(&self.pool)
             .await?;
+        Ok(row.0)
+    }
+
+    async fn query_with_params(&self, sql: &str, params: Vec<DbParam>) -> Result<Vec<Value>, anyhow::Error> {
+        // Convert '?' placeholders to PostgreSQL-style $1, $2, ...
+        let mut converted = String::with_capacity(sql.len());
+        let mut idx = 1;
+        for ch in sql.chars() {
+            if ch == '?' {
+                converted.push('$');
+                converted.push_str(&idx.to_string());
+                idx += 1;
+            } else {
+                converted.push(ch);
+            }
+        }
+
+        let mut q = sqlx::query(&converted);
+        for p in params {
+            q = match p {
+                DbParam::I64(v) => q.bind(v),
+                DbParam::F64(v) => q.bind(v),
+                DbParam::Str(v) => q.bind(v),
+                DbParam::Bool(v) => q.bind(v),
+                DbParam::Null => q.bind(Option::<i32>::None),
+            };
+        }
+        match q.fetch_all(&self.pool).await {
+            Ok(rows) => {
+                let rows: Vec<PgRow> = rows.into_iter().collect();
+                Ok(pgrows_to_json(rows))
+            },
+            Err(e) => Err(anyhow::anyhow!("Error executing query: {}", e)),
+        }
+    }
+
+    async fn get_total_rows_with_params(&self, sql: &str, params: Vec<DbParam>) -> Result<i32, anyhow::Error> {
+        // Convert '?' placeholders to PostgreSQL-style $1, $2, ...
+        let mut converted = String::with_capacity(sql.len());
+        let mut idx = 1;
+        for ch in sql.chars() {
+            if ch == '?' {
+                converted.push('$');
+                converted.push_str(&idx.to_string());
+                idx += 1;
+            } else {
+                converted.push(ch);
+            }
+        }
+
+        let mut q = sqlx::query_as::<_, (i32,)>(&converted);
+        for p in params {
+            q = match p {
+                DbParam::I64(v) => q.bind(v),
+                DbParam::F64(v) => q.bind(v),
+                DbParam::Str(v) => q.bind(v),
+                DbParam::Bool(v) => q.bind(v),
+                DbParam::Null => q.bind(Option::<i32>::None),
+            };
+        }
+        let row = q.fetch_one(&self.pool).await?;
         Ok(row.0)
     }
 }

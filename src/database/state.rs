@@ -18,10 +18,32 @@ pub struct AppState {
 }
 
 
+/// Simple cross-DB parameter type for binding values safely.
+#[derive(Debug, Clone)]
+pub enum DbParam {
+    I64(i64),
+    F64(f64),
+    Str(String),
+    Bool(bool),
+    Null,
+}
+
 #[async_trait::async_trait]
 pub trait DbRepository: Send + Sync {
     async fn query(&self, sql: &str) -> Result<Vec<Value>, anyhow::Error>;
     async fn get_total_rows(&self, sql: &str) -> Result<i32, anyhow::Error>;
+
+    // Parameterized variants for safer queries. SQL must contain placeholders
+    // appropriate for the target DB (MySQL/SQLite: `?`, Postgres: `$1,$2,...`).
+    async fn query_with_params(&self, sql: &str, _params: Vec<DbParam>) -> Result<Vec<Value>, anyhow::Error> {
+        // Default fallback calls non-parameterized method (not recommended).
+        // Implementations for each DB override this to bind safely.
+        self.query(sql).await
+    }
+
+    async fn get_total_rows_with_params(&self, sql: &str, _params: Vec<DbParam>) -> Result<i32, anyhow::Error> {
+        self.get_total_rows(sql).await
+    }
 }
 
 

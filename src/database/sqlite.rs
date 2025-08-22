@@ -3,7 +3,7 @@ use serde_json::{Map, Value};
 use sqlx::{sqlite::SqliteRow, Column, Row};
 use sqlx::SqlitePool;
 
-use super::state::DbRepository;
+use super::state::{DbRepository, DbParam};
 
 pub struct SqliteRepo {
     pub pool: SqlitePool,
@@ -92,6 +92,41 @@ impl DbRepository for SqliteRepo {
         let row: (i32,) = sqlx::query_as(sql)
             .fetch_one(&self.pool)
             .await?;
+        Ok(row.0)
+    }
+
+    async fn query_with_params(&self, sql: &str, params: Vec<DbParam>) -> Result<Vec<Value>, anyhow::Error> {
+        let mut q = sqlx::query(sql);
+        for p in params {
+            q = match p {
+                DbParam::I64(v) => q.bind(v),
+                DbParam::F64(v) => q.bind(v),
+                DbParam::Str(v) => q.bind(v),
+                DbParam::Bool(v) => q.bind(v),
+                DbParam::Null => q.bind(Option::<i32>::None),
+            };
+        }
+        match q.fetch_all(&self.pool).await {
+            Ok(rows) => {
+                let rows: Vec<SqliteRow> = rows.into_iter().collect();
+                Ok(sqliterows_to_json(rows))
+            },
+            Err(e) => Err(anyhow::anyhow!("Error executing query: {}", e)),
+        }
+    }
+
+    async fn get_total_rows_with_params(&self, sql: &str, params: Vec<DbParam>) -> Result<i32, anyhow::Error> {
+        let mut q = sqlx::query_as::<_, (i32,)>(sql);
+        for p in params {
+            q = match p {
+                DbParam::I64(v) => q.bind(v),
+                DbParam::F64(v) => q.bind(v),
+                DbParam::Str(v) => q.bind(v),
+                DbParam::Bool(v) => q.bind(v),
+                DbParam::Null => q.bind(Option::<i32>::None),
+            };
+        }
+        let row = q.fetch_one(&self.pool).await?;
         Ok(row.0)
     }
 }
