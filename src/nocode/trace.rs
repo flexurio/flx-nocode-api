@@ -50,7 +50,7 @@ pub async fn process(
     let mut where_clause: String = "WHERE ".to_string();
     
 
-    let table_schema: TableSchema = filter_table_schema(&*table_schemas, route.clone()).await;
+    let table_schema: TableSchema = filter_table_schema(&table_schemas, route.clone()).await;
     if table_schema.table.is_empty() {
         let message_error = format!("Entity {} on folder config/{}.json not found", route, route);
         return HttpResponse::FailedDependency().json(WebResponse {
@@ -138,7 +138,7 @@ pub async fn process(
     }
     conflict_clause.push_str(format!("updated_at={}, deleted_at=null", state.query_convertor.datetime_now).as_str());
 
-    let table_schema = filter_table_schema(&*table_schemas, route.clone()).await;
+    let table_schema = filter_table_schema(&table_schemas, route.clone()).await;
     let mut select_columns = table_schema.trace.column_selects.join(", ");
     select_columns.push_str(format!(", {} as created_at", state.query_convertor.datetime_now).as_str());
     let joins: Vec<String> = table_schema

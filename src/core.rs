@@ -18,27 +18,33 @@ use crate::{
 
 
 pub async fn login(state: web::Data<AppState>, req: actix_web::HttpRequest) -> impl Responder {   
-       // get username password from req Authorization Basic
-       let auth_split: Vec<&str> = req
-           .headers()
-           .get("Authorization")
-           .unwrap()
-           .to_str()
-           .unwrap()
-           .split(" ")
-           .collect();
-   
-       let auth_decoded = base64::engine::general_purpose::STANDARD
-           .decode(auth_split[1])
-           .unwrap();
-       let auth_str = String::from_utf8(auth_decoded).unwrap();
-       let auth_str_split: Vec<&str> = auth_str.split(":").collect();
+          // Parse Authorization Basic header safely
+          let Some(hdr) = req.headers().get("Authorization") else {
+                 return HttpResponse::Unauthorized().json(WebResponse { success: false, message: "Missing Authorization".into(), total_data: 0, data: Value::Null });
+          };
+              let Ok(hstr) = hdr.to_str() else {
+                     return HttpResponse::Unauthorized().json(WebResponse { success: false, message: "Invalid Authorization".into(), total_data: 0, data: Value::Null });
+              };
+              let Some(b64) = hstr.strip_prefix("Basic ") else {
+                     return HttpResponse::Unauthorized().json(WebResponse { success: false, message: "Expect Basic".into(), total_data: 0, data: Value::Null });
+              };
+              let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(b64) else {
+                     return HttpResponse::Unauthorized().json(WebResponse { success: false, message: "Invalid base64".into(), total_data: 0, data: Value::Null });
+              };
+              let Ok(pair) = String::from_utf8(bytes) else {
+                     return HttpResponse::Unauthorized().json(WebResponse { success: false, message: "Invalid credentials".into(), total_data: 0, data: Value::Null });
+              };
+              let mut parts = pair.splitn(2, ":");
+              let email = parts.next().unwrap_or("");
+              let pass_in = parts.next().unwrap_or("");
    
        // read sql from file db/mysql/create-flx_users.sql
-       let s_sql = std::fs::read_to_string(format!("db/{}/select-flx_users-login.sql", state.db_type))
-       .expect("Failed to read SQL file")
-       .replace("\"", "")
-       .replace("{{email}}", auth_str_split[0]);
+          let s_sql_tpl = match std::fs::read_to_string(format!("db/{}/select-flx_users-login.sql", state.db_type)) {
+                 Ok(s) => s,
+                 Err(_) => return HttpResponse::InternalServerError().json(WebResponse { success: false, message: "Login SQL missing".into(), total_data: 0, data: Value::Null }),
+          };
+          let email_safe = email.replace("'", "");
+          let s_sql = s_sql_tpl.replace("\"", "").replace("{{email}}", &email_safe);
    
        log_output("QUERY", "POST", "login", s_sql.clone(), true);
    
@@ -67,7 +73,7 @@ pub async fn login(state: web::Data<AppState>, req: actix_web::HttpRequest) -> i
    
        let decrypt_password = decrypt(state.encrypt_key.clone(), password_db);
    
-       if auth_str_split[1] != decrypt_password {
+       if pass_in != decrypt_password {
            return HttpResponse::Unauthorized().json(WebResponse {
                success: false,
                message: "Login Failed".to_string(),

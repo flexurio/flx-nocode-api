@@ -43,7 +43,7 @@ pub async fn select(
         }
     }
 
-    let table_schema: TableSchema = filter_table_schema(&*table_schemas, route.clone()).await;
+    let table_schema: TableSchema = filter_table_schema(&table_schemas, route.clone()).await;
     let mut where_clause: String = "WHERE ".to_string();
     let mut limit_clause: String = "LIMIT ".to_string();
     let mut i_limit = 100;
@@ -103,21 +103,20 @@ pub async fn select(
                     i_page = value.as_str().unwrap().parse().unwrap();
                 } else if param == "sort" {
                     if value != "" {
-                        order_column = value.to_string();
+                        let mut val = value.to_string();
+                        val = val.chars().filter(|c| c.is_alphanumeric() || *c == '.' || *c == ',' || *c == ' ').collect();
+                        order_column = val;
                     }
                 } else if param == "ascending" {
-                    if value != "true" {
-                        order_type = "ASC".to_string();
-                    } else {
-                        order_type = "DESC".to_string();
-                    }
+                    let v = value.as_str().unwrap_or("");
+                    order_type = if v.eq_ignore_ascii_case("true") { "ASC".into() } else { "DESC".into() };
                 } else if param == "limit" {
                     i_limit = value.as_str().unwrap().parse().unwrap();
                 } else if param == "redis" {
                     // check redis
                     println!("Redis: {}", value);
                 } else if param == "search" {
-                    let value_str = value.as_str().unwrap_or("");
+                    let value_str = sanitize_sql_input(value.as_str().unwrap_or("").to_string());
                     let mut search_clause = "( ".to_string();
 
                     for column in table_schema.primary_key.columns.iter() {
@@ -156,9 +155,9 @@ pub async fn select(
 
                     // loop every param_split
                     for (idx, param) in param_split.iter().enumerate() {
-                        let value_str = value.as_str().unwrap_or("");
+                        let value_str = sanitize_sql_input(value.as_str().unwrap_or("").to_string());
                         let (column, operator, value) =
-                            split_column_operator(param, &table_schema.table, value_str);
+                            split_column_operator(param, &table_schema.table, &value_str);
 
                         if idx == 0 {
                             where_clause
@@ -177,8 +176,8 @@ pub async fn select(
                         value: sanitize_sql_input(value.as_str().unwrap_or("").to_string()),
                     });
                 } else {
-                    let value_str = value.as_str().unwrap_or("");
-                    let (column, operator, value) = split_column_operator(param, &table_schema.table, value_str);
+                    let value_str = sanitize_sql_input(value.as_str().unwrap_or("").to_string());
+                    let (column, operator, value) = split_column_operator(param, &table_schema.table, &value_str);
 
                     if value.parse::<i64>().is_ok() || value_str.contains("NULL") {
                         where_clause

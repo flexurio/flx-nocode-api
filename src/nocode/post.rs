@@ -56,7 +56,7 @@ pub async fn insert(
 
 
     // Generate SQL query INSERT to table in variable route, from data structure table in table_schemas
-    let table_schema = filter_table_schema(&*table_schemas, route.clone()).await;
+    let table_schema = filter_table_schema(&table_schemas, route.clone()).await;
     if table_schema.table.is_empty() {
         let message_error = format!("Entity {} on folder config/{}.json not found", route, route);
         return HttpResponse::FailedDependency().json(WebResponse {

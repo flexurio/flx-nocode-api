@@ -154,30 +154,20 @@ pub async fn multipart_to_json(mut multipart: Multipart) -> Result<Value, actix_
                 let data_uri = format!("data:{};base64,{}", mime_type, base64_data);
                 json_data[field_name] = json!(data_uri);
             } else {
-                // save to disk
-                let file_path = format!("{}/{}", image_storage, filename);
+                // save to disk safely under LOC_STATIC/<LOC_IMAGE>
+                let safe_name = sanitize_filename::sanitize(filename);
+                let static_root = std::env::var("LOC_STATIC").unwrap_or_else(|_| "static".to_string());
+                let file_rel = format!("{}/{}", image_storage.trim_matches('/'), safe_name);
+                let file_path = std::path::Path::new(&static_root).join(&file_rel);
 
-                println!("Saving file to: {}", file_path);
-
-                // create directory if not exists
-                if let Some(parent) = std::path::Path::new(&file_path).parent() {
-                    if !parent.exists() {
-                        println!("Creating directory: {}", parent.display());
-                    }
+                if let Some(parent) = file_path.parent() {
                     std::fs::create_dir_all(parent)?;
                 }
 
                 std::fs::write(&file_path, &buffer)?;
-                let base_url =
-                    std::env::var("BASE_URL").unwrap_or("http://localhost:8080".to_string());
-                let url = format!("{}/{}", base_url, file_path);
-                log_output(
-                    "QUERY",
-                    "POST IMAGE",
-                    field_name.clone().as_str(),
-                    url.clone(),
-                    true
-                );
+                let base_url = std::env::var("BASE_URL").unwrap_or("http://localhost:8080".to_string());
+                let url = format!("{}/static/{}", base_url.trim_end_matches('/'), file_rel);
+                log_output("QUERY","POST IMAGE", field_name.clone().as_str(), url.clone(), true);
                 json_data[field_name] = json!(url);
             }
         } else {

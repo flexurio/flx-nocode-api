@@ -42,7 +42,6 @@ pub fn validate_token(
     state: web::Data<AppState>,
 ) -> Result<web::Data<AppState>, HttpResponse> {
     if is_ip_whitelisted(&req, &state.whitelist_ips) {
-        println!("IP is whitelisted, skipping token validation.");
         // Anda bisa sesuaikan isi Claims berikut sesuai kebutuhan
         return Ok(state);
     }
@@ -55,10 +54,12 @@ pub fn validate_token(
     if let Some(auth_header) = req.headers().get("Authorization") {
         if let Ok(auth_str) = auth_header.to_str() {
             if auth_str.starts_with("Bearer ") {
+                let mut validation = Validation::new(Algorithm::HS256);
+                validation.validate_exp = true;
                 match decode::<Claims>(
                     auth_str.trim_start_matches("Bearer "),
                     &DecodingKey::from_secret(state.secret.as_ref()),
-                    &Validation::new(Algorithm::HS256),
+                    &validation,
                 ) {
                     Ok(_) => return Ok(state), // Token valid, lanjutkan
                     Err(_) => return Err(HttpResponse::Unauthorized().json("Invalid token")),
@@ -129,9 +130,8 @@ fn extract_token_claims(token: &str, secret: &[u8]) -> Result<Claims, jsonwebtok
 
 fn is_ip_whitelisted(req: &actix_web::HttpRequest, whitelist: &[String]) -> bool {
     if let Some(peer_addr) = req.peer_addr() {
-        let ip = peer_addr.ip().to_string();
-        print!("Checking IP: {}", ip);
-        whitelist.contains(&ip)
+    let ip = peer_addr.ip().to_string();
+    whitelist.contains(&ip)
     } else {
         false
     }

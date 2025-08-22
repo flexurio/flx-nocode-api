@@ -104,7 +104,7 @@ static ROUTE_PUBLICS: Lazy<Vec<String>> = Lazy::new(|| CONFIG.route_publics.clon
 static ROUTES: Lazy<Vec<String>> = Lazy::new(|| CONFIG.routes.clone());
 
 static SCHEMAS: Lazy<Arc<Vec<TableSchema>>> = Lazy::new(|| {
-    let config_location = env::var("LOC_CONFIG").unwrap_or_else(|_| "config".to_string());
+    let config_location = env::var("LOC_CONFIG").unwrap_or_else(|_| "config/example".to_string());
     let config_dir = format!(
         "{}/entity",
         config_location
@@ -151,7 +151,7 @@ async fn main() -> std::io::Result<()> {
     let encrypt_key = env::var("ENCRYPT_KEY").expect("ENCRYPT_KEY must be set");
 
     // Ensure static directory
-    let static_storage = std::env::var("LOC_STATIC").unwrap();
+    let static_storage = std::env::var("LOC_STATIC").unwrap_or_else(|_| "static".to_string());
     // check if directory exists
     if !std::path::Path::new(&static_storage).exists() {
         std::fs::create_dir_all(&static_storage)?;
@@ -305,8 +305,36 @@ async fn main() -> std::io::Result<()> {
     cetak_label(host.to_string(), port);
 
     HttpServer::new(move || {
+        // Build CORS policy from env
+        let cors = match env::var("CORS_ALLOW_ORIGINS") {
+            Ok(val) if !val.trim().is_empty() => {
+                let mut c = Cors::default()
+                    .allow_any_method()
+                    .allow_any_header()
+                    .supports_credentials()
+                    .max_age(3600);
+                for origin in val.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+                    c = c.allowed_origin(origin);
+                }
+                c
+            }
+            _ => Cors::default()
+                .allow_any_origin()
+                .allow_any_method()
+                .allow_any_header()
+                .max_age(3600),
+        };
+
         App::new()
             .app_data(app_state.clone())
+            .app_data(
+                web::PayloadConfig::new(
+                    env::var("UPLOAD_LIMIT_MB").ok()
+                        .and_then(|s| s.parse::<usize>().ok())
+                        .map(|mb| mb * 1024 * 1024)
+                        .unwrap_or(10 * 1024 * 1024)
+                )
+            )
             .wrap_fn({
                 // clone AppState handle into middleware closure so it owns it (satisfies 'static)
                 let app_state = app_state.clone();
@@ -326,16 +354,9 @@ async fn main() -> std::io::Result<()> {
                     }
                 }
             })
-            .wrap(
-                Cors::default()
-                    .allow_any_origin()  // Mengizinkan semua origin (bisa disesuaikan)
-                    .allow_any_method()  // Mengizinkan semua HTTP methods
-                    .allow_any_header()  // Mengizinkan semua header
-                    .supports_credentials()  // Mengizinkan credentials
-                    .max_age(3600)  // Cache preflight request selama 1 jam
-            )
+            .wrap(cors)
             .configure(|cfg: &mut web::ServiceConfig| {
-                let static_loc = std::env::var("LOC_STATIC").unwrap();
+                let static_loc = std::env::var("LOC_STATIC").unwrap_or_else(|_| "static".to_string());
                 // end point for static files (disable directory listing in prod)
                 let static_files = Files::new("/static", static_loc);
                 if *ISDEBUG {
