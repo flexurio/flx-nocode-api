@@ -52,7 +52,10 @@ pub async fn login(state: web::Data<AppState>, req: actix_web::HttpRequest) -> i
        // Use parameter placeholder and bind email safely (backends handle Postgres placeholder conversion)
          let s_sql = s_sql_tpl
                 .replace("\"", "")
+                .replace("'{{email}}'", "?")
                 .replace("{{email}}", "?");
+       
+       println!("s_sql: {}", s_sql);
    
        log_output("QUERY", "POST", "login", s_sql.clone(), true);
    
@@ -71,12 +74,7 @@ pub async fn login(state: web::Data<AppState>, req: actix_web::HttpRequest) -> i
                      Err(_) => ("".to_string(), 0_i64, "".to_string()),
           };
    
-       println!("password_db : {}", password_db);
-   
        let decrypt_password = decrypt(state.encrypt_key.clone(), password_db);
-
-       println!("decrypt_password : {}", decrypt_password);
-       println!("pass_in : {}", pass_in);
    
        if pass_in != decrypt_password {
            return HttpResponse::Unauthorized().json(WebResponse {
