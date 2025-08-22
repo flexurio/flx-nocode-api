@@ -174,7 +174,6 @@ async fn main() -> std::io::Result<()> {
                     exit(1);
                 }
             };
-            println!("Connecting to Postgres at {}", url);
             let pool = sqlx::PgPool::connect(&url).await.unwrap();
             Arc::new(PostgresRepo { pool })
         },
