@@ -8,6 +8,108 @@ Declarative, database‑driven REST endpoints generated from JSON configuration.
 
 ---
 
+## Instalasi & Cara Pakai (Bahasa Indonesia)
+
+Panduan singkat untuk memasang dan menjalankan Flexurio No‑Code API di macOS/Linux, menggunakan skrip installer bawaan atau Docker, serta cara login dan mengakses endpoint.
+
+### Persyaratan
+- macOS atau Linux (Windows bisa via WSL).
+- Database: MySQL/PostgreSQL/SQLite (disarankan mulai dari SQLite untuk coba cepat).
+- Rust toolchain hanya jika ingin build dari source (opsional).
+
+### 1) Instal dengan Flexurio Installer (opsional, memudahkan)
+- Jalankan `install-flexurio.sh` untuk memasang binary ke `~/.local/bin` dan membuat perintah `flexurio`.
+- Setelah selesai, reload shell Anda (contoh: `source ~/.zshrc`).
+- Perintah `flexurio` akan otomatis membaca file `.env` pada direktori kerja saat dijalankan.
+
+Catatan: Skrip menentukan arsitektur OS dan mengunduh binary rilis terbaru dari GitHub sesuai platform Anda.
+
+### 2) Siapkan konfigurasi `.env`
+- Salin file contoh: `cp env .env` lalu edit nilainya.
+- Minimal isi yang perlu disesuaikan:
+  - `DB_TYPE` dan URL koneksinya (contoh cepat: `DB_TYPE=sqlite` dan `SQLITE_URL=sqlite://data.db`).
+  - `SECRET_KEY` untuk tanda tangan JWT, dan `ENCRYPT_KEY` untuk enkripsi kolom.
+  - `LOC_CONFIG` menunjuk ke profil konfigurasi, misalnya `config/example`, `config/pos`, atau `config/tms`.
+- Hindari duplikasi kunci di `.env` (pilih satu `DB_TYPE` saja dan satu URL yang sesuai).
+
+Contoh minimal (SQLite, cepat coba jalan):
+
+```
+DB_TYPE=sqlite
+SQLITE_URL=sqlite://data.db
+LOC_CONFIG="config/example"
+SECRET_KEY=ganti_dengan_rahasia_panjang
+ENCRYPT_KEY=ganti_juga_rahasia
+PORT=8080
+DEBUG=True
+LOGGING=True
+LOC_STATIC=static
+LOC_IMAGE=images
+LOC_LOGGING=static/log
+```
+
+### 3) Jalankan server
+Pilih salah satu cara:
+- Dengan installer: masuk ke folder proyek yang berisi `.env`, lalu jalankan `flexurio`.
+- Dengan binary rilis: pakai file di folder `release/` yang sesuai OS Anda dan jalankan.
+- Build dari source: `cargo build --release` lalu jalankan `./target/release/flexurio-api-nocode-v2`.
+
+Pada start pertama:
+- Aplikasi memastikan tabel inti (`flx_users`, `flx_roles`) ada. Jika belum, akan dibuat.
+- Jika admin belum ada, sistem akan membuat user admin default dengan email `admin` dan password acak 4 digit, yang dicetak di console: "Your admin Password: 1234". Simpan password ini.
+
+### 4) Menjalankan via Docker (opsional)
+Gunakan `docker-compose.yaml` sebagai acuan. Sesuaikan volume untuk path lokal Anda. Contoh untuk macOS dari root proyek:
+
+```
+services:
+  rust-app:
+    build: .
+    container_name: flexurio-api-nocode-v2
+    restart: always
+    ports:
+      - "2121:8080"    # akses di http://localhost:2121
+    volumes:
+      - "./static:/app/static"
+      - "./config:/app/config"
+      - "./.env:/app/.env"
+```
+
+### 5) Struktur konfigurasi (LOC_CONFIG)
+- `routes.json` berisi daftar route yang diaktifkan dan yang bersifat publik.
+- Folder `entity/` berisi file `<route>.json` yang mendeskripsikan skema tabel dan perilaku CRUD.
+- Pilih profil contoh di `config/example`, `config/pos`, atau `config/tms`, atau buat sendiri.
+
+Langkah umum menambah route baru:
+1. Tambahkan nama route ke array `routes` di `LOC_CONFIG/routes.json`.
+2. Buat `LOC_CONFIG/entity/<route>.json` sesuai tabel yang diinginkan.
+3. (Opsional) Panggil `POST /generate/table/<route>` bila tabel fisik belum ada.
+4. Validasi skema dengan `GET /validate/<route>`.
+
+### 6) Login dan otorisasi
+- Endpoint login: `POST /login` memakai header Authorization Basic (`Basic base64(email:password)`).
+- Admin default: email `admin`, password dicetak saat start pertama (lihat log console).
+- Setelah login, Anda akan menerima JWT. Sertakan pada request selanjutnya: `Authorization: Bearer <token>`.
+- Endpoint publik dapat diatur di `route_publics` pada `routes.json`. IP whitelist via `WHITE_LIST_IP`.
+
+### 7) Akses endpoint data
+Untuk setiap `route` yang aktif:
+- `GET /<route>`: baca data (mendukung parameter query sesuai definisi skema).
+- `POST /<route>`: tambah data (mendukung multipart/form‑data untuk upload file).
+- `PUT /<route>/:id` dan `DELETE /<route>/:id`.
+- `PATCH /<route>` dan `TRACE /<route>` untuk alur khusus (stored procedure/pipeline) sesuai skema.
+- `GET /validate/<route>` untuk validasi skema.
+
+Tips:
+- Untuk operasi tambahan sebelum/sesudah INSERT/UPDATE, gunakan `post.before`, `post.after`, `put.before`, `put.after` di file skema dengan awalan `SQL:`.
+- Gunakan placeholder seperti `{request.field}` agar nilai di‑binding aman (anti SQL injection).
+
+### 8) Integrasi dengan Flexurio
+- Repository ini adalah engine No‑Code API milik Flexurio. Untuk contoh konfigurasi nyata, lihat profil di `config/pos`, `config/tms`, atau `configmftl`.
+- Gunakan `CUSTOME_JWT_QUERY` di `.env` untuk menambah klaim kustom pada JWT setelah login.
+
+Jika butuh bantuan, buka issue di GitHub atau hubungi tim Flexurio.
+
 ## 1. Overview
 
 Flexurio No‑Code API lets you stand up secure, multi‑database REST endpoints by describing each entity (table) in a JSON schema. At startup the engine:

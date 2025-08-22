@@ -165,6 +165,15 @@ async fn main() -> std::io::Result<()> {
     let secret_key = env::var("SECRET_KEY").expect("SECRET_KEY must be set");
     let encrypt_key = env::var("ENCRYPT_KEY").expect("ENCRYPT_KEY must be set");
 
+    // Check config folder
+    let config_location = env::var("LOC_CONFIG").unwrap_or_else(|_| "config".to_string());
+    if !std::path::Path::new(&config_location).exists() {
+        if let Err(e) = core::create_dir_and_get_config(&config_location).await {
+            eprintln!("Failed to initialize config directory: {}", e);
+        }
+
+    }
+
     // Ensure static directory
     let static_storage = std::env::var("LOC_STATIC").unwrap_or_else(|_| "static".to_string());
     // check if directory exists
@@ -186,7 +195,7 @@ async fn main() -> std::io::Result<()> {
     let current_dir = env::current_dir()?;
     let db_dir_path = current_dir.join("db");
     if !db_dir_path.exists() {
-        if let Err(e) = core::create_dir_and_get_config().await {
+        if let Err(e) = core::create_dir_and_get_db().await {
             eprintln!("Failed to initialize db directory: {}", e);
         }
     }

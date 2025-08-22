@@ -367,8 +367,40 @@ fn extract_zip(zip_path: &str, target_dir: &str) -> Result<(), Box<dyn Error + S
     Ok(())
 }
 
+
 // Function create directory & get config
-pub(crate) async fn create_dir_and_get_config() -> Result<(), std::io::Error> {
+pub(crate) async fn create_dir_and_get_config(conf: &str) -> Result<(), std::io::Error> {
+       // If db directory already exists, skip
+       if Path::new(conf).exists() { return Ok(()); }
+
+       // get latest version from github release
+       let latest_version = get_latest_release().await.unwrap_or_else(|_| "v1.0.0".to_string());
+       let url = format!("https://github.com/flexurio/flx-nocode-api/releases/download/{}/config.zip", latest_version);
+       let zip_path = "config.zip";
+       let extract_to = "."; // current working directory
+
+       println!("Downloading...");
+       download_file(url, zip_path).await.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+
+       println!("Extracting...");
+       extract_zip(zip_path, extract_to).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+
+       // move config to <conf>
+       std::fs::rename(format!("{}/config", extract_to), conf)?;
+
+       // Ensure config directory now exists
+       if !Path::new(conf).exists() {
+              return Err(std::io::Error::new(std::io::ErrorKind::NotFound, "config directory not found after extraction"));
+       }
+
+       // Clean up zip file
+       let _ = std::fs::remove_file(zip_path);
+
+       Ok(())
+}
+
+// Function create directory & get config
+pub(crate) async fn create_dir_and_get_db() -> Result<(), std::io::Error> {
        // If db directory already exists, skip
        if Path::new("db").exists() { return Ok(()); }
 
