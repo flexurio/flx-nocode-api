@@ -15,6 +15,7 @@ use std::fs;
 use std::fs::{File, create_dir_all};
 use std::sync::Arc;
 use std::process::exit;
+use std::collections::HashSet;
 // Load routes.json once and expose via CONFIG
 static CONFIG: Lazy<crate::model::Config> = Lazy::new(|| {
     let config_location = std::env::var("LOC_CONFIG").expect("LOC_CONFIG must be set");
@@ -211,8 +212,13 @@ async fn main() -> std::io::Result<()> {
         _ => panic!("Unsupported DB_TYPE: {}", db_type),
     };
 
-    let datetime_now = std::fs::read_to_string(format!("db/{}/datetime.sql", db_type))
-    .expect("Failed to read SQL file");
+    // Embed DB-specific datetime SQL to avoid runtime I/O
+    let datetime_now: String = match db_type.as_str() {
+        "mysql" => include_str!("../db/mysql/datetime.sql").to_string(),
+        "postgres" => include_str!("../db/postgres/datetime.sql").to_string(),
+        "sqlite" => include_str!("../db/sqlite/datetime.sql").to_string(),
+        _ => "CURRENT_TIMESTAMP".to_string(),
+    };
 
     let query_convertor = QueryConvertor{
         datetime_now: datetime_now.clone(),
@@ -251,9 +257,9 @@ async fn main() -> std::io::Result<()> {
 
 
     // check if any table name in SCHEMAS is double
-    let mut table_names = Vec::new();
+    let mut table_names: HashSet<String> = HashSet::new();
     for schema in SCHEMAS.iter() {
-        if table_names.contains(&schema.table) {
+        if !table_names.insert(schema.table.clone()) {
             println!("--------------------------------------");
             println!("{}",
                 format!(
@@ -264,7 +270,6 @@ async fn main() -> std::io::Result<()> {
             println!("--------------------------------------");
             exit(1);
         }
-        table_names.push(schema.table.clone());
     }
     
 
@@ -561,7 +566,6 @@ async fn main() -> std::io::Result<()> {
                 }
             })
     })
-    .workers(1)
     .bind((host, port))?
     .run()
     .await
