@@ -13,7 +13,13 @@ use zip::ZipArchive;
 use serde_json::{json, Value};
 
 use crate::{
-    auth::create_token, crypt::{decrypt, encrypt}, database::state::concat_column_values, helpers::multipart_to_json, log::log_output, model::WebResponse, AppState
+       auth::create_token,
+       crypt::{decrypt, encrypt},
+       database::state::DbParam,
+       helpers::multipart_to_json,
+       log::log_output,
+       model::WebResponse,
+       AppState
 };
 
 
@@ -39,39 +45,38 @@ pub async fn login(state: web::Data<AppState>, req: actix_web::HttpRequest) -> i
               let pass_in = parts.next().unwrap_or("");
    
        // read sql from file db/mysql/create-flx_users.sql
-          let s_sql_tpl = match std::fs::read_to_string(format!("db/{}/select-flx_users-login.sql", state.db_type)) {
+       let s_sql_tpl = match std::fs::read_to_string(format!("db/{}/select-flx_users-login.sql", state.db_type)) {
                  Ok(s) => s,
                  Err(_) => return HttpResponse::InternalServerError().json(WebResponse { success: false, message: "Login SQL missing".into(), total_data: 0, data: Value::Null }),
           };
-          let email_safe = email.replace("'", "");
-          let s_sql = s_sql_tpl.replace("\"", "").replace("{{email}}", &email_safe);
+       // Use parameter placeholder and bind email safely (backends handle Postgres placeholder conversion)
+         let s_sql = s_sql_tpl
+                .replace("\"", "")
+                .replace("{{email}}", "?");
    
        log_output("QUERY", "POST", "login", s_sql.clone(), true);
    
-       let (password_db, id_user, name) = match &state.db.query(&s_sql).await {
-           Ok(row) =>  {   
-               let password = row[0].get("password")
-                   .and_then(|v| v.as_str())
-                   .unwrap_or("")
-                   .to_string()
-                   .replace(" ", "");
+          let (password_db, id_user, name) = match &state.db.query_with_params(&s_sql, vec![DbParam::Str(email.to_string())]).await {
+                     Ok(rows) => {
+                            if let Some(row0) = rows.first() {
+                                   let password = row0.get("password").and_then(|v| v.as_str()).unwrap_or("").to_string().replace(" ", "");
+                                   let id = row0.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+                                   let name = row0.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                   (password, id, name)
+                            } else {
+                                   println!("No user found with email: {}", email);
+                                   ("".to_string(), 0_i64, "".to_string())
+                            }
+                     },
+                     Err(_) => ("".to_string(), 0_i64, "".to_string()),
+          };
    
-               let id = row[0].get("id")
-                   .and_then(|v| v.as_i64())
-                   .unwrap_or(0);
-       
-               let name = row[0].get("name")
-                   .and_then(|v| v.as_str())
-                   .unwrap_or("")
-                   .to_string();
-       
-               (password, id, name)
-           },
-           Err(_) => ("".to_string(), 0_i64, "".to_string()),
-       };
-   
+       println!("password_db : {}", password_db);
    
        let decrypt_password = decrypt(state.encrypt_key.clone(), password_db);
+
+       println!("decrypt_password : {}", decrypt_password);
+       println!("pass_in : {}", pass_in);
    
        if pass_in != decrypt_password {
            return HttpResponse::Unauthorized().json(WebResponse {
@@ -82,19 +87,16 @@ pub async fn login(state: web::Data<AppState>, req: actix_web::HttpRequest) -> i
            });
        }
    
-       // query to table flx_roles and save to variable roles
-       let s_sql = format!(
-           "SELECT CONCAT(endpoint,'/', role) as endpoint_role
-            FROM flx_roles
-            WHERE id_users = {}",
-           id_user
-       );
-   
-       log_output("QUERY", "POST", "flx_roles", s_sql.clone(), true);
-   
-       let roles = state.db.query(&s_sql).await.unwrap_or_default();
-   
-       let roles_data = concat_column_values(roles,"endpoint_role", ",");
+         // Cross-DB: avoid CONCAT differences; fetch endpoint & role and join in Rust
+         let s_sql = "SELECT endpoint, role FROM flx_roles WHERE id_users = ?".to_string();
+         log_output("QUERY", "POST", "flx_roles", s_sql.clone(), true);
+         let roles_rows = state.db.query_with_params(&s_sql, vec![DbParam::I64(id_user)]).await.unwrap_or_default();
+         let roles_data = roles_rows.into_iter().filter_map(|v| {
+                let obj = v.as_object()?;
+                let ep = obj.get("endpoint")?.as_str()?.to_string();
+                let rl = obj.get("role")?.as_i64().map(|n| n.to_string()).or_else(|| obj.get("role")?.as_str().map(|s| s.to_string()))?;
+                Some(format!("{}/{}", ep, rl))
+         }).collect::<Vec<_>>().join(",");
    
        let token = create_token(id_user, name, state.clone(), roles_data);
        HttpResponse::Ok().json(WebResponse {
@@ -132,14 +134,20 @@ pub async fn register(state: Data<AppState>, multipart: Multipart) -> impl Respo
 
        // insert into test.users (id, email, phone, role, password, name, photo, email_verified, created_at, updated_at, enabled)
        let s_sql = format!(
-              "INSERT INTO flx_users (email, phone,  password, name, created_at, updated_at, enabled) VALUES ('{}', '{}', '{}', '{}', {}, {}, 1)",
-              body["email"], body["phone"], encrypt_password, body["name"], state.query_convertor.datetime_now, state.query_convertor.datetime_now
-       ).replace("\"", "");
+              "INSERT INTO flx_users (email, phone, password, name, created_at, updated_at, enabled) VALUES (?, ?, ?, ?, {}, {}, 1)",
+              state.query_convertor.datetime_now,
+              state.query_convertor.datetime_now
+       );
 
        log_output("QUERY", "POST", "register", s_sql.clone(), true);
 
        // execute sql
-       match &state.db.query(&s_sql).await {
+       match &state.db.query_with_params(&s_sql, vec![
+              DbParam::Str(body["email"].to_string().trim_matches('"').to_string()),
+              DbParam::Str(body["phone"].to_string().trim_matches('"').to_string()),
+              DbParam::Str(encrypt_password),
+              DbParam::Str(body["name"].to_string().trim_matches('"').to_string()),
+       ]).await {
               Ok(_) => HttpResponse::Ok().json(WebResponse {
                      success: true,
                      message: "Register Success".to_string(),
