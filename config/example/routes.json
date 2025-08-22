@@ -8,6 +8,7 @@
         "route_publics": [
                 "flx_users",
                 "flx_roles",
+                "banks",
                 "bank_types"
         ]
 }

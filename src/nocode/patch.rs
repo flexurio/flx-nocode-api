@@ -5,9 +5,12 @@ use actix_web::{
 use serde_json::{Value};
 
 use crate::{
-    auth::{check_access, get_user_info_from_token}, helpers::{
-        filter_table_schema
-    }, log::log_output, model::{TableSchema, WebResponse}, AppState
+    auth::{check_access, get_user_info_from_token},
+    helpers::{ filter_table_schema },
+    database::state::DbParam,
+    log::log_output,
+    model::{TableSchema, WebResponse},
+    AppState
 };
 use std::sync::Arc;
 
@@ -60,12 +63,18 @@ pub async fn process_sp(
 
     // declare param_sp as Vec<String>
     let mut param_sp: Vec<String> = Vec::new();
+    let mut bind_params: Vec<DbParam> = Vec::new();
 
     for param in table_schema.patch.parameters.iter() {
         for (key, value) in parameters.clone().into_inner().as_object().unwrap().iter() {
             // check if param contain in key
             if key == param {
-                param_sp.push(value.to_string());
+                let s = value.to_string().trim_matches('"').to_string();
+                // Try parse numeric else treat as string
+                if let Ok(n) = s.parse::<i64>() { bind_params.push(DbParam::I64(n)); }
+                else if let Ok(f) = s.parse::<f64>() { bind_params.push(DbParam::F64(f)); }
+                else { bind_params.push(DbParam::Str(s)); }
+                param_sp.push("?".into());
             }
         }
     }
@@ -78,7 +87,7 @@ pub async fn process_sp(
 
     log_output("QUERY", "TRACE", route.as_str(), s_sql.clone(), true);
 
-    match &state.db.query(&s_sql).await {
+    match &state.db.query_with_params(&s_sql, bind_params).await {
         Ok(_) => HttpResponse::Ok().json(WebResponse {
             success: true,
             message: "Data inserted".to_string(),

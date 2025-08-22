@@ -5,9 +5,12 @@ use actix_web::{
 use serde_json::{Value};
 
 use crate::{
-    auth::{check_access, get_user_info_from_token, Claims}, helpers::
-        filter_table_schema
-    , log::log_output, model::{TableSchema, WebResponse}, AppState
+    auth::{check_access, get_user_info_from_token, Claims},
+    helpers:: filter_table_schema,
+    database::state::DbParam,
+    log::log_output,
+    model::{TableSchema, WebResponse},
+    AppState
 };
 use std::sync::Arc;
 
@@ -44,7 +47,7 @@ pub async fn delete(
         }
     }
 
-    let mut id: String = path.into_inner();
+    let id_raw: String = path.into_inner();
 
     let table_schema = filter_table_schema(&table_schemas, route.clone()).await;
     if table_schema.table.is_empty() {
@@ -57,33 +60,29 @@ pub async fn delete(
         });
     }
 
-    // check if id is number or string
-    id = if id.parse::<i64>().is_ok() {
-        id
-    } else {
-        format!("'{}'", id)
-    };
-
     // check table_schemas.delete.type_delete
     let type_delete = table_schema.del.type_delete.clone();
     let mut s_sql = "".to_string();
+    let mut bind_params: Vec<DbParam> = Vec::new();
 
     if type_delete == "soft" {
         s_sql = format!(
-            "UPDATE {} SET deleted_at = {}, deleted_by_id = {} WHERE id = {}",
-            table_schema.table, state.query_convertor.datetime_now, claims.id, id
+            "UPDATE {} SET deleted_at = {}, deleted_by_id = ? WHERE id = ?",
+            table_schema.table, state.query_convertor.datetime_now
         );
+        bind_params.push(DbParam::I64(claims.id));
     } else if type_delete == "hard" {
-        // create query DELETE sql from table in variable route and structure table in table_schemas where id = id
-        s_sql = format!(
-            "DELETE FROM {} WHERE id = {}",
-            table_schema.table, id
-        );
+        // create query DELETE sql parameterized by id
+        s_sql = format!("DELETE FROM {} WHERE id = ?", table_schema.table);
     }
+
+    // Bind id by type
+    if let Ok(n) = id_raw.parse::<i64>() { bind_params.push(DbParam::I64(n)); }
+    else { bind_params.push(DbParam::Str(id_raw)); }
 
     log_output("QUERY", "DELETE", route.as_str(), s_sql.clone(), true);
 
-    match &state.db.query(&s_sql).await {
+    match &state.db.query_with_params(&s_sql, bind_params).await {
         Ok(_) => HttpResponse::Ok().json(WebResponse {
             success: true,
             message: "Data deleted".to_string(),

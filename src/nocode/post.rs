@@ -7,9 +7,13 @@ use actix_web::{
 use serde_json::{Value};
 
 use crate::{
-    auth::{check_access, get_user_info_from_token, Claims}, crypt::{encrypt, is_encrypted_string}, database::state::{execute_sql_formula, formula_replace}, helpers::{
-        filter_table_schema, find_column_match, multipart_to_json
-    }, log::log_output, model::{Column, TableSchema, WebResponse}, AppState
+    auth::{check_access, get_user_info_from_token, Claims},
+    crypt::{encrypt, is_encrypted_string},
+    database::state::{execute_sql_formula, DbParam},
+    helpers::{ filter_table_schema, find_column_match, multipart_to_json, extract_expressions },
+    log::log_output,
+    model::{Column, TableSchema, WebResponse},
+    AppState
 };
 use std::sync::Arc;
 
@@ -98,77 +102,93 @@ pub async fn insert(
         .collect();
 
     
-    // **3️⃣ Buat daftar nilai untuk INSERT**
-    let mut insert_values: Vec<String> = filtered_columns
-        .iter()
-        .map(|col| {
-
-            if col.auto_increment {
-                // Jika kolom adalah auto_increment, kita tidak perlu memasukkan nilainya
-                return "XXXAUTOINC".to_string();
-            }
-
-            let mut value = String::new();
-            let mut isformula = false;
-
-            let post_columns: Vec<&str> = table_schema.post.columns.iter().map(|s| s.as_str()).collect();
-            let (exists, matched_string) = find_column_match(&post_columns, &col.name);
-
-            // check if col.name is in table_schema.post.columns, and get column name from table_schema.post.columns
-            if exists && col.name != "id" {
-                // get column name from table_schema.post.columns
-                let string_formula = matched_string.unwrap().to_string();
-                if string_formula.contains("=") {
-                    isformula = true;
-
-                    value = formula_replace(string_formula, &body);
-                    value = value.replace(&(col.name.clone().to_string() + "="), "");
-
-                }                
-            }
-
-
-            if col.name == "id" && !col.function.is_empty() {
-                // split col.function with "/"
-                function_id_split = col.function.split("/").map(|s| s.to_string()).collect();
-            }
-
-            if !isformula {
-                value = body
-                    .get(&col.name)
-                    .map(|v| {
-                        format!("{}", v)
-                            .replace("\"", "")
-                            .replace("null", "")
-                    })
+    // Helper: build formula with placeholders and collect params
+    fn build_formula_value(raw: &str, body: &Value) -> (String, Vec<DbParam>) {
+        // raw like: "col=CONCAT({request.x}, {table[1].f})". Caller will strip "col=".
+        let mut sql = raw.to_string();
+        let mut params: Vec<DbParam> = Vec::new();
+        let exprs = extract_expressions(&sql);
+        for expr in exprs.into_iter() {
+            let needle = format!("{{{}}}", expr);
+            if expr.contains('[') {
+                // table lookup, convert to SQL subselect
+                let sub = crate::database::state::convert_to_sql(&expr);
+                sql = sql.replace(&needle, &sub);
+            } else if let Some(stripped) = expr.strip_prefix("request.") {
+                // bind request value
+                let val = body
+                    .get(stripped)
+                    .map(|v| v.to_string().replace('"', "").replace("null", ""))
                     .unwrap_or_default();
-            }            
+                // Infer numeric
+                if let Ok(n) = val.parse::<i64>() { params.push(DbParam::I64(n)); }
+                else if let Ok(f) = val.parse::<f64>() { params.push(DbParam::F64(f)); }
+                else { params.push(DbParam::Str(val)); }
+                sql = sql.replace(&needle, "?");
+            } else {
+                // unknown placeholder, drop
+                sql = sql.replace(&needle, "");
+            }
+        }
+        (sql, params)
+    }
 
-            // check col.encrypt if true then encrypt value
+    // Param list for INSERT
+    let mut bind_params: Vec<DbParam> = Vec::new();
+
+    // **3️⃣ Buat daftar nilai untuk INSERT** (fragment SQL per kolom)
+    let mut insert_values: Vec<String> = Vec::new();
+    for col in filtered_columns.iter() {
+        if col.auto_increment { continue; }
+
+        let mut isformula = false;
+        let post_columns: Vec<&str> = table_schema.post.columns.iter().map(|s| s.as_str()).collect();
+        let (exists, matched_string) = find_column_match(&post_columns, &col.name);
+
+        if exists && col.name != "id" {
+            let string_formula = matched_string.unwrap().to_string();
+            if string_formula.contains('=') {
+                isformula = true;
+                // Remove leading "col=" part
+                let rhs = string_formula.replace(&format!("{}=", col.name), "");
+                let (frag, mut params) = build_formula_value(&rhs, &body);
+                insert_values.push(frag);
+                bind_params.append(&mut params);
+            }
+        }
+
+        if col.name == "id" && !col.function.is_empty() {
+            function_id_split = col.function.split("/").map(|s| s.to_string()).collect();
+        }
+
+        if !isformula {
+            // Ambil dari body dan bind sebagai param
+            let mut value = body
+                .get(&col.name)
+                .map(|v| v.to_string().replace('"', "").replace("null", ""))
+                .unwrap_or_default();
+
             if col.encrypt {
-                // check apakah value udah di encrypt
-                let is_encrypted = is_encrypted_string(value.clone().as_str());
+                let is_encrypted = is_encrypted_string(value.as_str());
                 if !is_encrypted {
-                    value = encrypt(
-                        state.encrypt_key.clone(),
-                        value.clone(),
-                    );
+                    value = encrypt(state.encrypt_key.clone(), value);
                 }
             }
 
-            if value.is_empty() {
-                value = 0.to_string();
-            }
+            if value.is_empty() { value = "0".into(); }
 
+            // push placeholder and param by type
             if col.type_data.contains("int") || col.type_data.contains("float") {
-                value // Jika angka, tidak pakai kutip
-            } else if isformula {
-                value.to_string() // Jika string, pakai kutip
+                if let Ok(n) = value.parse::<i64>() { bind_params.push(DbParam::I64(n)); }
+                else if let Ok(f) = value.parse::<f64>() { bind_params.push(DbParam::F64(f)); }
+                else { bind_params.push(DbParam::Str(value)); }
+                insert_values.push("?".into());
             } else {
-                format!("'{}'", value) // Jika string, pakai kutip
+                bind_params.push(DbParam::Str(value));
+                insert_values.push("?".into());
             }
-        })
-        .collect();
+        }
+    }
 
 
     // remove element "XXXAUTOINC" from insert_values
@@ -231,8 +251,9 @@ pub async fn insert(
         insert_columns.retain(|&x| x != "id");
         insert_columns.push("id"); 
         // remove first index from insert_values
-        insert_values.remove(0);
-        insert_values.push(format!("'{}'", id)); 
+    insert_values.remove(0);
+    insert_values.push("?".into());
+    bind_params.push(DbParam::Str(id));
 
 
     }
@@ -243,7 +264,8 @@ pub async fn insert(
 
     // **Tambahkan created_by_id**
     insert_columns.push("created_by_id");
-    insert_values.push(format!("{}", claims.id));
+    insert_values.push("?".into());
+    bind_params.push(DbParam::I64(claims.id));
 
 
 
@@ -257,7 +279,7 @@ pub async fn insert(
 
     log_output("QUERY", "POST", route.as_str(), s_sql.clone(), true);
 
-    match &state.db.query(&s_sql).await {
+    match &state.db.query_with_params(&s_sql, bind_params).await {
         Ok(_) => {
 
             if table_schema.post.after.contains("SQL:"){

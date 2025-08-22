@@ -6,9 +6,13 @@ use actix_web::{
 use serde_json::{Value};
 
 use crate::{
-    auth::{check_access, get_user_info_from_token, Claims}, crypt::{encrypt, is_encrypted_string}, database::state::execute_sql_formula, helpers::{
-        filter_table_schema, multipart_to_json
-    }, log::log_output, model::{TableSchema, WebResponse}, AppState
+    auth::{check_access, get_user_info_from_token, Claims},
+    crypt::{encrypt, is_encrypted_string},
+    database::state::{execute_sql_formula, DbParam},
+    helpers::{ filter_table_schema, multipart_to_json },
+    log::log_output,
+    model::{TableSchema, WebResponse},
+    AppState
 };
 use std::sync::Arc;
 
@@ -48,14 +52,7 @@ pub async fn update(
     }
 
     let body = multipart_to_json(multipart).await.unwrap();
-    let mut id: String = path.into_inner();
-
-    // check if id is number or string
-    id = if id.parse::<i64>().is_ok() {
-        id
-    } else {
-        format!("'{}'", id)
-    };
+    let id_raw: String = path.into_inner();
 
     // get body from request and compare with table_schemas.put.columns
     let table_schema = filter_table_schema(&table_schemas, route.clone()).await;
@@ -75,6 +72,7 @@ pub async fn update(
 
 
     let mut set_clause = "SET ".to_string();
+    let mut bind_params: Vec<DbParam> = Vec::new();
 
     // loop every column in table_schemas.put.columns
     for column in table_schema.put.columns.iter() {
@@ -112,9 +110,13 @@ pub async fn update(
 
                     // check if value from body is number
                     if col.type_data.contains("int") || col.type_data.contains("float") {
-                        set_clause.push_str(&format!("{} = {}, ", column, value_x));
+                        if let Ok(n) = value_x.parse::<i64>() { bind_params.push(DbParam::I64(n)); }
+                        else if let Ok(f) = value_x.parse::<f64>() { bind_params.push(DbParam::F64(f)); }
+                        else { bind_params.push(DbParam::Str(value_x)); }
+                        set_clause.push_str(&format!("{} = ?, ", column));
                     } else {
-                        set_clause.push_str(&format!("{} = '{}', ", column, value_x));
+                        bind_params.push(DbParam::Str(value_x));
+                        set_clause.push_str(&format!("{} = ?, ", column));
                     }
 
                     
@@ -125,20 +127,25 @@ pub async fn update(
 
     // add updated_at to set_clause
     set_clause.push_str(&format!("updated_at = {}, ", state.query_convertor.datetime_now));
-    set_clause.push_str(&format!("updated_by_id = {}, ", claims.id));
+    set_clause.push_str("updated_by_id = ?, ");
+    bind_params.push(DbParam::I64(claims.id));
 
     // remove last ", " from set_clause
     set_clause = set_clause[..set_clause.len() - 2].to_string();
 
     // create query UPDATE sql from table in variable route and structure table in table_schemas where id = id, set set_clause
     let s_sql = format!(
-        "UPDATE {} {} WHERE id = {}",
-        table_schema.table, set_clause, id
+        "UPDATE {} {} WHERE id = ?",
+        table_schema.table, set_clause
     );
+
+    // Bind id with type inference (int/str)
+    if let Ok(n) = id_raw.parse::<i64>() { bind_params.push(DbParam::I64(n)); }
+    else { bind_params.push(DbParam::Str(id_raw)); }
 
     log_output("QUERY", "PUT", route.as_str(), s_sql.clone(), true);
 
-    match &state.db.query(&s_sql).await {
+    match &state.db.query_with_params(&s_sql, bind_params).await {
         Ok(_) => {
 
             if table_schema.put.after.contains("SQL:"){
