@@ -1,7 +1,9 @@
 use std::sync::Arc;
-use serde_json::{Value};
+use serde_json::Value;
+use once_cell::sync::Lazy;
+use regex::Regex;
 
-use crate::{helpers::{extract_expressions}, log::log_output};
+use crate::{log::log_output};
 
 pub struct QueryConvertor {
     pub datetime_now: String,    
@@ -48,17 +50,12 @@ pub trait DbRepository: Send + Sync {
 
 
 pub async fn execute_sql_formula(db: &Arc<dyn DbRepository>, sql: String, body: &serde_json::Value, route: &str) {
-    let mut sql = sql.replace("SQL:", "");
-    sql = formula_replace(sql, body);
-    log_output("QUERY", "POST", route, sql.to_string(), true);
-    // Execute the SQL query
-    match db.query(&sql).await {
-        Ok(_) => {
-            println!("AFTER POST SQL query executed successfully");
-        },
-        Err(err) => {
-            println!("Error executing SQL query: {}", err);
-        }
+    // Build parameterized SQL and params safely, then execute.
+    let (built_sql, params) = build_sql_and_params_from_formula(&sql, body);
+    log_output("QUERY", "POST", route, built_sql.clone(), true);
+    match db.query_with_params(&built_sql, params).await {
+        Ok(_) => println!("AFTER POST SQL query executed successfully"),
+        Err(err) => println!("Error executing SQL query: {}", err),
     }
 }
 
@@ -86,6 +83,7 @@ pub fn concat_column_values(values: Vec<Value>, column_name: &str, separator: &s
 
 
 
+#[allow(dead_code)]
 pub fn sanitize_sql_input(input: String) -> String {
     input
         .replace("'", "`")       // escape single quotes (SQL standard)
@@ -130,47 +128,173 @@ pub fn convert_to_sql(input: &str) -> String {
 }
 
 
-pub fn formula_replace(mut string_formula: String, body: &serde_json::Value) -> String {
-    let mut i = 0;
-    let mut maxloop = 0;
+// Precompiled regexes for performance
+static RE_NESTED: Lazy<Regex> = Lazy::new(|| Regex::new(r"\{(\w+)\[\s*\{([^}]+)\}\s*\]\.(\w+)\}").unwrap());
+static RE_PLAIN: Lazy<Regex> = Lazy::new(|| Regex::new(r"\{(\w+)\[(\d+)\]\.(\w+)\}").unwrap());
+static RE_REQ: Lazy<Regex> = Lazy::new(|| Regex::new(r"\{request\.([^}]+)\}").unwrap());
+static RE_LEFTOVER: Lazy<Regex> = Lazy::new(|| Regex::new(r"\{[^}]+\}").unwrap());
 
-    while i == 0 {
-        let expressions = extract_expressions(&string_formula);
+/// Build parameterized SQL and params from a "SQL:" formula string.
+/// Supported placeholders:
+/// - {request.field} -> bound as a parameter
+/// - {table[<id>].col} or {table[{request.id}].col} -> expanded to subselect
+pub fn build_sql_and_params_from_formula(sql_formula: &str, body: &serde_json::Value) -> (String, Vec<DbParam>) {
+    // Strip optional prefix
+    let mut sql = sql_formula.trim().strip_prefix("SQL:").unwrap_or(sql_formula).to_string();
+    let mut params: Vec<DbParam> = Vec::new();
 
-        for expr in expressions {
-            let expr_rplace = format!("{{{}}}", expr);
-            if expr.contains("[") {
-                let sql = convert_to_sql(&expr);
-                string_formula = string_formula.replace(&expr_rplace, &sql);
-                if !string_formula.contains("{") {
-                    i = 1;
+    // Helper: get nested value by dotted path, e.g. "user.id" or "items.0.price"
+    fn get_by_path<'a>(root: &'a serde_json::Value, path: &str) -> Option<&'a serde_json::Value> {
+        let mut cur = root;
+        for part in path.split('.') {
+            if let Ok(idx) = part.parse::<usize>() {
+                match cur {
+                    serde_json::Value::Array(arr) => cur = arr.get(idx)?,
+                    _ => return None,
                 }
             } else {
-                let colreq = expr.replace("request.", "");
-
-                let value = body
-                    .get(&colreq)
-                    .map(|v| {
-                        format!("{}", v)
-                            .replace("\"", "")
-                            .replace("null", "")
-                    })
-                    .unwrap_or_default();
-                
-                string_formula = string_formula.replace(&expr_rplace, &value);
-                if !string_formula.contains("{") {
-                    i = 1;
+                match cur {
+                    serde_json::Value::Object(map) => cur = map.get(part)?,
+                    _ => return None,
                 }
-
             }
         }
-        maxloop += 1;
-        if maxloop > 100 {
-            println!("Max loop reached, breaking out of loop");
-            break;
-        }
-        
+        Some(cur)
     }
-    string_formula
 
+    // 1) Resolve nested subselects that include an inner {request.*}, deterministically.
+    // Example: {products[{request.product_id}].price}
+    while let Some(cap) = RE_NESTED.captures(&sql) {
+        let table = cap.get(1).unwrap().as_str();
+        let inner = cap.get(2).unwrap().as_str(); // e.g., request.product_id
+        let field = cap.get(3).unwrap().as_str();
+
+        // resolve inner value from body with dotted path support
+        let key = inner.strip_prefix("request.").unwrap_or(inner);
+        // Prefer numeric id, fallback to 0
+        let id_num: i64 = match get_by_path(body, key) {
+            Some(serde_json::Value::Number(n)) => n.as_i64().or_else(|| n.as_f64().map(|f| f as i64)).unwrap_or(0),
+            Some(serde_json::Value::String(s)) => s.parse::<i64>().unwrap_or(0),
+            Some(serde_json::Value::Bool(b)) => if *b { 1 } else { 0 },
+            Some(_) | None => 0,
+        };
+        let sub = format!("(SELECT {} FROM {} WHERE id = {})", field, table, id_num);
+        sql = RE_NESTED.replace(&sql, sub.as_str()).to_string();
+    }
+
+    // 2) Resolve plain subselects with numeric id: {table[123].field}
+    sql = RE_PLAIN
+        .replace_all(&sql, |caps: &regex::Captures| {
+            let table = &caps[1];
+            let id = &caps[2];
+            let field = &caps[3];
+            format!("(SELECT {} FROM {} WHERE id = {})", field, table, id)
+        })
+        .to_string();
+
+    // 3) Bind remaining {request.*} placeholders as parameters (left-to-right, single pass).
+    if RE_REQ.is_match(&sql) {
+        let mut new_sql = String::with_capacity(sql.len());
+        let mut last = 0usize;
+        for cap in RE_REQ.captures_iter(&sql) {
+            let full = cap.get(0).unwrap();
+            let key = cap.get(1).unwrap().as_str();
+
+            // push preceding literal SQL
+            new_sql.push_str(&sql[last..full.start()]);
+            // push placeholder
+            new_sql.push('?');
+            last = full.end();
+
+            // Infer type directly from JSON value (with dotted path)
+            match get_by_path(body, key) {
+                Some(serde_json::Value::Null) | None => params.push(DbParam::Null),
+                Some(serde_json::Value::Bool(b)) => params.push(DbParam::Bool(*b)),
+                Some(serde_json::Value::Number(n)) => {
+                    if let Some(i) = n.as_i64() { params.push(DbParam::I64(i)); }
+                    else if let Some(f) = n.as_f64() { params.push(DbParam::F64(f)); }
+                    else { params.push(DbParam::Str(n.to_string())); }
+                }
+                Some(serde_json::Value::String(s)) => {
+                    // try numeric first to reduce type mismatch on numeric columns
+                    if let Ok(i) = s.parse::<i64>() { params.push(DbParam::I64(i)); }
+                    else if let Ok(f) = s.parse::<f64>() { params.push(DbParam::F64(f)); }
+                    else { params.push(DbParam::Str(s.clone())); }
+                }
+                Some(_) => params.push(DbParam::Str(String::new())),
+            }
+        }
+        // push tail
+        new_sql.push_str(&sql[last..]);
+        sql = new_sql;
+    }
+
+    // 4) Remove any leftover braces content defensively (shouldn't remain).
+    if RE_LEFTOVER.is_match(&sql) {
+        sql = RE_LEFTOVER.replace_all(&sql, "").to_string();
+    }
+
+    (sql, params)
+}
+
+/// Legacy replacement used in older code paths. Prefer `build_sql_and_params_from_formula`.
+#[allow(dead_code)]
+pub fn formula_replace(mut string_formula: String, body: &serde_json::Value) -> String {
+    // 1) Resolve nested subselects first
+    while let Some(cap) = RE_NESTED.captures(&string_formula) {
+        let table = cap.get(1).unwrap().as_str();
+        let inner = cap.get(2).unwrap().as_str();
+        let field = cap.get(3).unwrap().as_str();
+        // support dotted path
+        let key = inner.strip_prefix("request.").unwrap_or(inner);
+        let raw = {
+            // local helper mirrors get_by_path for this legacy path
+            fn get<'a>(root: &'a serde_json::Value, path: &str) -> Option<&'a serde_json::Value> {
+                let mut cur = root;
+                for part in path.split('.') {
+                    if let Ok(idx) = part.parse::<usize>() {
+                        match cur {
+                            serde_json::Value::Array(arr) => cur = arr.get(idx)?,
+                            _ => return None,
+                        }
+                    } else {
+                        match cur {
+                            serde_json::Value::Object(map) => cur = map.get(part)?,
+                            _ => return None,
+                        }
+                    }
+                }
+                Some(cur)
+            }
+            get(body, key)
+                .map(|v| v.to_string().replace('"', "").replace("null", ""))
+                .unwrap_or_default()
+        };
+        let id_num: i64 = raw.parse::<i64>().unwrap_or(0);
+        let sub = format!("(SELECT {} FROM {} WHERE id = {})", field, table, id_num);
+        string_formula = RE_NESTED.replace(&string_formula, sub.as_str()).to_string();
+    }
+
+    // 2) Resolve plain subselects
+    string_formula = RE_PLAIN
+        .replace_all(&string_formula, |caps: &regex::Captures| {
+            let table = &caps[1];
+            let id = &caps[2];
+            let field = &caps[3];
+            format!("(SELECT {} FROM {} WHERE id = {})", field, table, id)
+        })
+        .to_string();
+
+    // 3) Replace request.* inline (legacy, non-parameterized)
+    string_formula = RE_REQ
+        .replace_all(&string_formula, |caps: &regex::Captures| {
+            let key = &caps[1];
+            body
+                .get(key)
+                .map(|v| v.to_string().replace('"', "").replace("null", ""))
+                .unwrap_or_default()
+        })
+        .to_string();
+
+    string_formula
 }
