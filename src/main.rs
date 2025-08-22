@@ -19,7 +19,6 @@ use std::collections::HashSet;
 // Load routes.json once and expose via CONFIG
 static CONFIG: Lazy<crate::model::Config> = Lazy::new(|| {
     let config_location = std::env::var("LOC_CONFIG").expect("LOC_CONFIG must be set");
-    println!("{}", config_location.on_bright_blue());
     let file_path = format!("{}/routes.json", config_location);
 
     let content = match std::fs::read_to_string(&file_path) {
@@ -75,14 +74,17 @@ use model::TableSchema;
 mod helpers;
 mod log;
 
+// Static whitelist for unauthenticated endpoints
+const ROUTE_WHITELIST: [&str; 2] = ["/login", "/register"];
+
 static ISDEBUG: Lazy<bool> = Lazy::new(|| match env::var("DEBUG") {
-    Ok(val) => val == "True",
+    Ok(val) => matches!(val.to_lowercase().as_str(), "1" | "true" | "yes"),
     Err(_) => false,
 });
 
 // create static ISLOGGING from env LOGGING
 static ISLOGGING: Lazy<bool> = Lazy::new(|| match env::var("LOGGING") {
-    Ok(val) => val == "True",
+    Ok(val) => matches!(val.to_lowercase().as_str(), "1" | "true" | "yes"),
     Err(_) => false,
 });
 
@@ -144,6 +146,23 @@ async fn main() -> std::io::Result<()> {
     dotenv().ok();
     let secret_key = env::var("SECRET_KEY").expect("SECRET_KEY must be set");
     let encrypt_key = env::var("ENCRYPT_KEY").expect("ENCRYPT_KEY must be set");
+
+    // Ensure static directory
+    let static_storage = std::env::var("LOC_STATIC").unwrap();
+    // check if directory exists
+    if !std::path::Path::new(&static_storage).exists() {
+        std::fs::create_dir_all(&static_storage)?;
+    }
+
+    // Ensure static directory
+    let image_storage = std::env::var("LOC_IMAGE").unwrap_or("DB".to_string());
+    if image_storage != "DB" {
+        let path_image = format!("{}/{}",static_storage,image_storage);
+        // check if directory exists
+        if !std::path::Path::new(&path_image).exists() {
+            std::fs::create_dir_all(&path_image)?;
+        }
+    }
 
     // Ensure db directory exists; download and extract config only if missing
     let current_dir = env::current_dir()?;
@@ -289,10 +308,9 @@ async fn main() -> std::io::Result<()> {
                 // clone AppState handle into middleware closure so it owns it (satisfies 'static)
                 let app_state = app_state.clone();
                 move |req: ServiceRequest, srv| {
-                    let whitelist = ["/login", "/register"];
                     // check if route contain in whitelist or not
                     let route = req.path().trim_start_matches('/').to_string();
-                    if whitelist.contains(&req.path()) || app_state.route_publics.contains(&route) {
+                    if ROUTE_WHITELIST.contains(&req.path()) || app_state.route_publics.contains(&route) {
                         return srv.call(req);
                     }
 
@@ -467,12 +485,12 @@ async fn main() -> std::io::Result<()> {
                             route_delete.clone().purple()
                         ),false
                     );
-                    log_output("ENDPOINT","METHOD","PUT",
+            log_output("ENDPOINT","METHOD","PUT",
                         format!(
                             "http://{}:{}/{}",
                             host.red(),
                             port.clone().to_string().green(),
-                            route_delete.clone().purple()
+                route_put.clone().purple()
                         ),false
                     );
 
