@@ -18,7 +18,10 @@ use std::process::exit;
 use std::collections::HashSet;
 // Load routes.json once and expose via CONFIG
 static CONFIG: Lazy<crate::model::Config> = Lazy::new(|| {
-    let config_location = std::env::var("LOC_CONFIG").expect("LOC_CONFIG must be set");
+    let config_location = std::env::var("LOC_CONFIG").unwrap_or_else(|_| {
+        println!("Warning: LOC_CONFIG not set, using default 'config/example'");
+        "config/example".to_string()
+    });
     let file_path = format!("{}/routes.json", config_location);
 
     let content = match std::fs::read_to_string(&file_path) {
@@ -101,7 +104,7 @@ static ROUTE_PUBLICS: Lazy<Vec<String>> = Lazy::new(|| CONFIG.route_publics.clon
 static ROUTES: Lazy<Vec<String>> = Lazy::new(|| CONFIG.routes.clone());
 
 static SCHEMAS: Lazy<Arc<Vec<TableSchema>>> = Lazy::new(|| {
-    let config_location = env::var("LOC_CONFIG").expect("LOC_CONFIG must be set");
+    let config_location = env::var("LOC_CONFIG").unwrap_or_else(|_| "config".to_string());
     let config_dir = format!(
         "{}/entity",
         config_location
@@ -295,9 +298,9 @@ async fn main() -> std::io::Result<()> {
 
     let host: &str = "0.0.0.0";
     let port: u16 = env::var("PORT")
-        .expect("PORT must be set")
-        .parse()
-        .expect("PORT must be a valid u16");
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(8080);
 
     cetak_label(host.to_string(), port);
 
@@ -332,8 +335,14 @@ async fn main() -> std::io::Result<()> {
                     .max_age(3600)  // Cache preflight request selama 1 jam
             )
             .configure(|cfg: &mut web::ServiceConfig| {
-                // end point for static files
-                cfg.service(Files::new("/static", "./static").show_files_listing());
+                let static_loc = std::env::var("LOC_STATIC").unwrap();
+                // end point for static files (disable directory listing in prod)
+                let static_files = Files::new("/static", static_loc);
+                if *ISDEBUG {
+                    cfg.service(static_files.show_files_listing());
+                } else {
+                    cfg.service(static_files);
+                }
                 log_output("CORE ENDPOINT","METHOD", "GET",
                     format!(
                         "http://{}:{}/{}",
