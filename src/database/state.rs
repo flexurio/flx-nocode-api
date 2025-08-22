@@ -4,6 +4,7 @@ use once_cell::sync::Lazy;
 use regex::Regex;
 
 use crate::{log::log_output};
+use anyhow::{anyhow, Result};
 
 pub struct QueryConvertor {
     pub datetime_now: String,    
@@ -51,15 +52,22 @@ pub trait DbRepository: Send + Sync {
 
 pub async fn execute_sql_formula(db: &Arc<dyn DbRepository>, sql: String, body: &serde_json::Value, route: &str) {
     // Build parameterized SQL and params safely, then execute.
-    let (built_sql, params) = build_sql_and_params_from_formula(&sql, body);
-    log_output("QUERY", "POST", route, built_sql.clone(), true);
-    match db.query_with_params(&built_sql, params).await {
-        Ok(_) => println!("AFTER POST SQL query executed successfully"),
-        Err(err) => println!("Error executing SQL query: {}", err),
+    match build_sql_and_params_from_formula(&sql, body) {
+        Ok((built_sql, params)) => {
+            log_output("QUERY", "POST", route, built_sql.clone(), true);
+            match db.query_with_params(&built_sql, params).await {
+                Ok(_) => println!("AFTER POST SQL query executed successfully"),
+                Err(err) => println!("Error executing SQL query: {}", err),
+            }
+        }
+        Err(e) => {
+            println!("Error building SQL formula for route {}: {}", route, e);
+        }
     }
 }
 
 
+#[allow(dead_code)]
 pub fn concat_column_values(values: Vec<Value>, column_name: &str, separator: &str) -> String {
     let mut result = Vec::new();
 
@@ -133,12 +141,13 @@ static RE_NESTED: Lazy<Regex> = Lazy::new(|| Regex::new(r"\{(\w+)\[\s*\{([^}]+)\
 static RE_PLAIN: Lazy<Regex> = Lazy::new(|| Regex::new(r"\{(\w+)\[(\d+)\]\.(\w+)\}").unwrap());
 static RE_REQ: Lazy<Regex> = Lazy::new(|| Regex::new(r"\{request\.([^}]+)\}").unwrap());
 static RE_LEFTOVER: Lazy<Regex> = Lazy::new(|| Regex::new(r"\{[^}]+\}").unwrap());
+static RE_IDENT: Lazy<Regex> = Lazy::new(|| Regex::new(r"^[A-Za-z_][A-Za-z0-9_]*$").unwrap());
 
 /// Build parameterized SQL and params from a "SQL:" formula string.
 /// Supported placeholders:
 /// - {request.field} -> bound as a parameter
 /// - {table[<id>].col} or {table[{request.id}].col} -> expanded to subselect
-pub fn build_sql_and_params_from_formula(sql_formula: &str, body: &serde_json::Value) -> (String, Vec<DbParam>) {
+pub fn build_sql_and_params_from_formula(sql_formula: &str, body: &serde_json::Value) -> Result<(String, Vec<DbParam>)> {
     // Strip optional prefix
     let mut sql = sql_formula.trim().strip_prefix("SQL:").unwrap_or(sql_formula).to_string();
     let mut params: Vec<DbParam> = Vec::new();
@@ -169,16 +178,31 @@ pub fn build_sql_and_params_from_formula(sql_formula: &str, body: &serde_json::V
         let inner = cap.get(2).unwrap().as_str(); // e.g., request.product_id
         let field = cap.get(3).unwrap().as_str();
 
+        // Validate identifiers strictly
+        if !RE_IDENT.is_match(table) || !RE_IDENT.is_match(field) {
+            return Err(anyhow!("Invalid identifier in formula: {}.{}", table, field));
+        }
+
         // resolve inner value from body with dotted path support
         let key = inner.strip_prefix("request.").unwrap_or(inner);
-        // Prefer numeric id, fallback to 0
-        let id_num: i64 = match get_by_path(body, key) {
-            Some(serde_json::Value::Number(n)) => n.as_i64().or_else(|| n.as_f64().map(|f| f as i64)).unwrap_or(0),
-            Some(serde_json::Value::String(s)) => s.parse::<i64>().unwrap_or(0),
-            Some(serde_json::Value::Bool(b)) => if *b { 1 } else { 0 },
-            Some(_) | None => 0,
+        // Prefer numeric id, fallback to NULL
+        let id_param = match get_by_path(body, key) {
+            Some(serde_json::Value::Number(n)) => {
+                if let Some(i) = n.as_i64() { DbParam::I64(i) }
+                else if let Some(f) = n.as_f64() { DbParam::F64(f) }
+                else { DbParam::Null }
+            }
+            Some(serde_json::Value::String(s)) => {
+                if let Ok(i) = s.parse::<i64>() { DbParam::I64(i) }
+                else if let Ok(f) = s.parse::<f64>() { DbParam::F64(f) }
+                else { DbParam::Null }
+            }
+            Some(serde_json::Value::Bool(b)) => if *b { DbParam::I64(1) } else { DbParam::I64(0) },
+            _ => DbParam::Null,
         };
-        let sub = format!("(SELECT {} FROM {} WHERE id = {})", field, table, id_num);
+        // Parameterize the id inside subselect
+        let sub = format!("(SELECT {} FROM {} WHERE id = ?)", field, table);
+        params.push(id_param);
         sql = RE_NESTED.replace(&sql, sub.as_str()).to_string();
     }
 
@@ -188,9 +212,48 @@ pub fn build_sql_and_params_from_formula(sql_formula: &str, body: &serde_json::V
             let table = &caps[1];
             let id = &caps[2];
             let field = &caps[3];
-            format!("(SELECT {} FROM {} WHERE id = {})", field, table, id)
+            if !RE_IDENT.is_match(table) || !RE_IDENT.is_match(field) {
+                return String::from("{__INVALID_IDENT__}");
+            }
+            // Parameterize numeric id as well
+            // We'll convert this literal to a placeholder and append the param below
+            format!("(SELECT {} FROM {} WHERE id = {{__ID_PLACEHOLDER__:{}}})", field, table, id)
         })
         .to_string();
+
+    if sql.contains("{__INVALID_IDENT__}") {
+        return Err(anyhow!("Invalid identifier in plain subselect formula"));
+    }
+
+    // Post-process RE_PLAIN replacements: find markers and turn them into '?' with params
+    // This avoids running regex with a closure that captures external vec
+    if sql.contains("{__ID_PLACEHOLDER__:") {
+        let mut out = String::with_capacity(sql.len());
+        let mut i = 0;
+        while let Some(start) = sql[i..].find("{__ID_PLACEHOLDER__:") {
+            let abs_start = i + start;
+            out.push_str(&sql[i..abs_start]);
+            // find closing '}'
+            if let Some(end_rel) = sql[abs_start..].find('}') {
+                let content = &sql[abs_start + "{__ID_PLACEHOLDER__:".len()..abs_start + end_rel];
+                // parse number safely
+                if let Ok(n) = content.parse::<i64>() {
+                    params.push(DbParam::I64(n));
+                } else if let Ok(f) = content.parse::<f64>() {
+                    params.push(DbParam::F64(f));
+                } else {
+                    return Err(anyhow!("Invalid numeric id in plain subselect: {}", content));
+                }
+                out.push('?');
+                i = abs_start + end_rel + 1;
+            } else {
+                // malformed marker, copy rest and break
+                return Err(anyhow!("Malformed ID placeholder in formula"));
+            }
+        }
+        if i < sql.len() { out.push_str(&sql[i..]); }
+        sql = out;
+    }
 
     // 3) Bind remaining {request.*} placeholders as parameters (left-to-right, single pass).
     if RE_REQ.is_match(&sql) {
@@ -231,10 +294,10 @@ pub fn build_sql_and_params_from_formula(sql_formula: &str, body: &serde_json::V
 
     // 4) Remove any leftover braces content defensively (shouldn't remain).
     if RE_LEFTOVER.is_match(&sql) {
-        sql = RE_LEFTOVER.replace_all(&sql, "").to_string();
+        return Err(anyhow!("Unresolved placeholder(s) remain in formula: {}", sql));
     }
 
-    (sql, params)
+    Ok((sql, params))
 }
 
 /// Legacy replacement used in older code paths. Prefer `build_sql_and_params_from_formula`.
