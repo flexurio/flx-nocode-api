@@ -10,14 +10,45 @@ use dotenv::dotenv;
 use helpers::cetak_label;
 use log::log_output;
 use once_cell::sync::Lazy;
-use serde::{Deserialize, Serialize};
-use serde_json::{from_str, Value};
-use std::env;
+use serde_json::Value;
 use std::fs;
-
 use std::fs::{File, create_dir_all};
+use std::sync::Arc;
 use std::process::exit;
+// Load routes.json once and expose via CONFIG
+static CONFIG: Lazy<crate::model::Config> = Lazy::new(|| {
+    let config_location = std::env::var("LOC_CONFIG").expect("LOC_CONFIG must be set");
+    println!("{}", config_location.on_bright_blue());
+    let file_path = format!("{}/routes.json", config_location);
 
+    let content = match std::fs::read_to_string(&file_path) {
+        Ok(content) => content,
+        Err(_) => {
+            println!(
+                "ERROR 9081231287 : Can't read file {}",
+                file_path.on_bright_red()
+            );
+            return crate::model::Config { routes: vec![], route_publics: vec![] };
+        }
+    };
+
+    match serde_json::from_str(&content) {
+        Ok(config) => config,
+        Err(e) => {
+            println!(
+                "Sorry, content of /{}/routes.json is not valid JSON, with ERROR Message : {}",
+                config_location, e
+            );
+            // kill the program
+            std::process::exit(1);
+        }
+    }
+});
+
+use std::env;
+
+mod auth;
+mod crypt;
 mod database;
 use database::{
     state::{AppState, QueryConvertor, DbRepository},
@@ -25,8 +56,6 @@ use database::{
     postgres::PostgresRepo,
     sqlite::SqliteRepo,
 };
-use std::sync::Arc;
-
 mod nocode;
 use nocode::{
     get::select,
@@ -38,18 +67,10 @@ use nocode::{
     trace::process,
     patch::process_sp,
 };
-
-
-
 mod core;
 use core::{generate_users, login, register};
-
-mod auth;
-mod crypt;
-
 mod model;
-use model::{Config, TableSchema};
-
+use model::TableSchema;
 mod helpers;
 mod log;
 
@@ -70,99 +91,11 @@ static LOC_LOGGING: Lazy<String> = Lazy::new(|| match env::var("LOC_LOGGING") {
     Err(_) => "logs".to_string(),
 });
 
-// Struktur untuk claims JWT
-#[derive(Debug, Serialize, Deserialize)]
-struct Claims {
-    sub: String,
-    exp: usize,
-    iat: usize,
-}
+// Static Routes for once initialization
+static ROUTE_PUBLICS: Lazy<Vec<String>> = Lazy::new(|| CONFIG.route_publics.clone());
 
 // Static Routes for once initialization
-static ROUTE_PUBLICS: Lazy<Vec<String>> = Lazy::new(|| {
-    let config_location = env::var("LOC_CONFIG").expect("LOC_CONFIG must be set");
-    // let file_path = format!("{}/config/routes.json", env::current_dir().unwrap().display());
-    // // Buat path ke file
-
-    println!("{}", config_location.on_bright_blue());
-    let current_dir = match env::current_dir() {
-        Ok(dir) => dir,
-        Err(e) => {
-            println!("ERROR: Failed to get current directory: {}", e);
-            return Vec::new();
-        }
-    };
-    let file_path = current_dir.join(config_location).to_string_lossy().to_string();
-
-    println!("File path A: {}", file_path.on_bright_blue());
-
-    // Baca isi file
-    let content = match fs::read_to_string(&file_path) {
-        Ok(content) => content,
-        Err(_) => {
-            println!("ERROR 9081231287-A : Can't read file {}", file_path.on_bright_red());
-            return Vec::new();
-        }
-    };
-
-    // Parse JSON
-    let config: Config = match from_str(&content) {
-        Ok(config) => config,
-        Err(e) => {
-            println!(
-                "Sorry, content of /{}/routes.json is not valid JSON, with ERROR Message : {}",
-                file_path, e
-            );
-            // kill the program
-            exit(1);
-        }
-    };
-
-    config.route_publics.clone()
-});
-
-// Static Routes for once initialization
-static ROUTES: Lazy<Vec<String>> = Lazy::new(|| {
-    let config_location = env::var("LOC_CONFIG").expect("LOC_CONFIG must be set");
-    // let file_path = format!("{}/config/routes.json", env::current_dir().unwrap().display());
-    // // Buat path ke file
-
-    println!("{}", config_location.on_bright_blue());
-    let current_dir = match env::current_dir() {
-        Ok(dir) => dir,
-        Err(e) => {
-            println!("ERROR: Failed to get current directory: {}", e);
-            return Vec::new();
-        }
-    };
-    let file_path = current_dir.join(config_location).join("routes.json").to_string_lossy().to_string();
-
-    println!("File path B: {}", file_path.on_bright_blue());
-    
-    // Baca isi file
-    let content = match fs::read_to_string(&file_path) {
-        Ok(content) => content,
-        Err(_) => {
-            println!("ERROR 9081231287 - B : Can't read file {}", file_path.on_bright_red());
-            return Vec::new();
-        }
-    };
-
-    // Parse JSON
-    let config: Config = match from_str(&content) {
-        Ok(config) => config,
-        Err(e) => {
-            println!(
-                "Sorry, content of /{}/routes.json is not valid JSON, with ERROR Message : {}",
-                file_path, e
-            );
-            // kill the program
-            exit(1);
-        }
-    };
-
-    config.routes.clone()
-});
+static ROUTES: Lazy<Vec<String>> = Lazy::new(|| CONFIG.routes.clone());
 
 static SCHEMAS: Lazy<Arc<Vec<TableSchema>>> = Lazy::new(|| {
     let config_location = env::var("LOC_CONFIG").expect("LOC_CONFIG must be set");
@@ -177,7 +110,7 @@ static SCHEMAS: Lazy<Arc<Vec<TableSchema>>> = Lazy::new(|| {
         let file_path = format!("{}/{}.json", config_dir, route);
 
         // Baca isi file
-        let content = match fs::read_to_string(&file_path) {
+    let content = match fs::read_to_string(&file_path) {
             Ok(content) => content,
             Err(_) => {
                 println!("ERROR 908ihu76 : Can't read file {}", file_path.on_bright_red());
@@ -187,7 +120,7 @@ static SCHEMAS: Lazy<Arc<Vec<TableSchema>>> = Lazy::new(|| {
         };
 
         // Parse JSON
-        let schema: TableSchema = match from_str(&content) {
+    let schema: TableSchema = match serde_json::from_str(&content) {
             Ok(schema) => schema,
             Err(e) => {
                 println!(
