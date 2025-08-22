@@ -1,0 +1,31 @@
+PORT=8080
+
+REDIS_HOST=103.24.106.202
+REDIS_PORT=20100
+REDIS_PASSWORD=
+REDIS_DB=1
+
+DB_TYPE=mysql
+MYSQL_URL=mysql://student_codeclass:XBawang2024@103.252.101.201:4422/test
+# MYSQL_URL=mysql://ridwan:ridwanMFTL123JKT@103.24.106.204:5721/WH_MF_PROD
+# DB_TYPE=postgres
+# POSTGRES_URL="postgres://flexurio_user:nocode.123@103.106.78.186:33003/flexurio_no_code_test"
+# MONGODB_URL=mongodb://Menara:Vneu2025@157.66.15.182:61011/flx_test
+# DB_TYPE=sqlite
+# SQLITE_URL=sqlite://data.db
+
+DEBUG=True
+LOGGING=True
+BASE_URL=http://localhost:8080
+SECRET_KEY=kljasdf0823hlkSDJfhukaysdf90123j_879123$kasdjy_12387jkhgasLIUjhbqwILUjklj
+ENCRYPT_KEY=sdf90kj234y<YUG7YJg278jhkjhui*60908kjhj_j56H4jhgjOYU5jhjkkjkl0uj2738123jhbm
+CUSTOME_JWT_QUERY="SELECT email FROM flx_users WHERE id = {:?}"
+
+LOC_CONFIG="config/example"
+LOC_STATIC=static    # location for static file that serve in http
+LOC_IMAGE=images     # location image file. Will set inside of static directory
+LOC_LOGGING=static/log
+
+
+WHITE_LIST_IP=192.168.0.0/24
+
