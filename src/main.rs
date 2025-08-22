@@ -16,6 +16,38 @@ use std::fs::{File, create_dir_all};
 use std::sync::Arc;
 use std::process::exit;
 use std::collections::HashSet;
+
+
+use std::env;
+
+mod auth;
+mod crypt;
+mod database;
+use database::{
+    state::{AppState, QueryConvertor, DbRepository},
+    mysql::MySqlRepo,
+    postgres::PostgresRepo,
+    sqlite::SqliteRepo,
+};
+mod nocode;
+use nocode::{
+    get::select,
+    post::insert,
+    delete::delete,
+    put::update,
+    validate::check_table_design,
+    generate::create_table,
+    trace::process,
+    patch::process_sp,
+};
+mod core;
+use core::{generate_users, login, register};
+mod model;
+use model::TableSchema;
+mod helpers;
+mod log;
+
+
 // Load routes.json once and expose via CONFIG
 static CONFIG: Lazy<crate::model::Config> = Lazy::new(|| {
     let config_location = std::env::var("LOC_CONFIG").unwrap_or_else(|_| {
@@ -47,35 +79,6 @@ static CONFIG: Lazy<crate::model::Config> = Lazy::new(|| {
         }
     }
 });
-
-use std::env;
-
-mod auth;
-mod crypt;
-mod database;
-use database::{
-    state::{AppState, QueryConvertor, DbRepository},
-    mysql::MySqlRepo,
-    postgres::PostgresRepo,
-    sqlite::SqliteRepo,
-};
-mod nocode;
-use nocode::{
-    get::select,
-    post::insert,
-    delete::delete,
-    put::update,
-    validate::check_table_design,
-    generate::create_table,
-    trace::process,
-    patch::process_sp,
-};
-mod core;
-use core::{generate_users, login, register};
-mod model;
-use model::TableSchema;
-mod helpers;
-mod log;
 
 // Static whitelist for unauthenticated endpoints
 const ROUTE_WHITELIST: [&str; 2] = ["/login", "/register"];
@@ -146,6 +149,14 @@ static SCHEMAS: Lazy<Arc<Vec<TableSchema>>> = Lazy::new(|| {
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
+    // check .env exit or not
+    if !std::path::Path::new(".env").exists() {
+        if let Err(e) = core::download_env_file().await {
+            eprintln!("Failed to download .env file: {}", e);
+            return Err(std::io::Error::new(std::io::ErrorKind::Other, e));
+        }
+    }
+
     dotenv().ok();
     let secret_key = env::var("SECRET_KEY").expect("SECRET_KEY must be set");
     let encrypt_key = env::var("ENCRYPT_KEY").expect("ENCRYPT_KEY must be set");

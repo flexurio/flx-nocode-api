@@ -1,0 +1,30 @@
+PORT=8080
+
+REDIS_HOST=
+REDIS_PORT=
+REDIS_PASSWORD=
+REDIS_DB=
+
+DB_TYPE=mysql
+MYSQL_URL=mysql://user:pass@host:port/db
+MYSQL_URL=mysql://user:pass@host:port/db
+DB_TYPE=postgres
+POSTGRES_URL=postgres://user:pass@host:port/db
+MONGODB_URL=mongodb://user:pass@host:port/db
+DB_TYPE=sqlite
+SQLITE_URL=sqlite://data.db
+
+DEBUG=True
+LOGGING=True
+BASE_URL=http://localhost:8080
+SECRET_KEY=your_secret_key_here
+ENCRYPT_KEY=your_encrypt_key_here
+CUSTOME_JWT_QUERY="SELECT email FROM flx_users WHERE id = {:?}"
+
+LOC_CONFIG=config
+LOC_STATIC=static    # location for static file that serve in http
+LOC_IMAGE=images     # location image file. Will set inside of static directory
+LOC_LOGGING=static/log
+
+
+WHITE_LIST_IP=192.168.0.0/24

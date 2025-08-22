@@ -394,3 +394,17 @@ pub(crate) async fn create_dir_and_get_config() -> Result<(), std::io::Error> {
 
        Ok(())
 }
+
+
+// function download .env from latest release github
+pub(crate) async fn download_env_file() -> Result<(), Box<dyn Error + Send + Sync>> {
+    let latest_version = get_latest_release().await?;
+    let url = format!("https://raw.githubusercontent.com/flexurio/flx-nocode-api/{}/env", latest_version);
+    let output_path = ".env";
+
+    println!("Downloading .env file from {}", url);
+    download_file(url, output_path).await?;
+
+    println!(".env file downloaded successfully.");
+    Ok(())
+}
