@@ -127,9 +127,13 @@
 
         },
         "post":{
+                "before":"",
+                "after":"",
                 "columns":["name", "bank_type_id", "foto"]
         },
         "put":{
+                "before":"",
+                "after":"",
                 "columns":["name", "bank_type_id", "foto"]
         },
         "del":{

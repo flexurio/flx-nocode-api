@@ -151,9 +151,13 @@
                 "order_by":["flx_users.id"]
         },
         "post":{
+                "before":"",
+                "after":"",
                 "columns":["email", "phone", "password", "name", "photo", "email_verified", "enabled"]
         },
         "put":{
+                "before":"",
+                "after":"",
                 "columns":["email", "phone", "password", "name", "photo", "email_verified", "enabled"]
         },
         "del":{

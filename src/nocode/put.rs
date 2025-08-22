@@ -10,6 +10,7 @@ use crate::{
         filter_table_schema, multipart_to_json
     }, log::log_output, model::{TableSchema, WebResponse}, AppState
 };
+use std::sync::Arc;
 
 
 
@@ -17,7 +18,7 @@ use crate::{
 pub async fn update(
     state: Data<AppState>,
     route: String,
-    table_schemas: Vec<TableSchema>,
+    table_schemas: Arc<Vec<TableSchema>>,
     multipart: Multipart,
     path: Path<String>,
     req: actix_web::HttpRequest,
@@ -57,7 +58,7 @@ pub async fn update(
     };
 
     // get body from request and compare with table_schemas.put.columns
-    let table_schema = filter_table_schema(&table_schemas, route.clone()).await;
+    let table_schema = filter_table_schema(&*table_schemas, route.clone()).await;
     if table_schema.table.is_empty() {
         let message_error = format!("Entity {} on folder config/{}.json not found", route, route);
         return HttpResponse::FailedDependency().json(WebResponse {

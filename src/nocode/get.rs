@@ -9,6 +9,7 @@ use crate::{
         filter_table_schema, split_column_operator
     }, log::log_output, model::{ParamJoin, TableSchema, WebResponse}, AppState
 };
+use std::sync::Arc;
 
 
 // NCO-GET
@@ -16,7 +17,7 @@ pub async fn select(
     state: web::Data<AppState>,
     parameters: web::Query<Value>,
     route: String,
-    table_schemas: Vec<TableSchema>,
+    table_schemas: Arc<Vec<TableSchema>>,
     req: actix_web::HttpRequest,
 ) -> impl Responder {
     if !state.route_publics.contains(&route) {
@@ -42,7 +43,7 @@ pub async fn select(
         }
     }
 
-    let table_schema: TableSchema = filter_table_schema(&table_schemas, route.clone()).await;
+    let table_schema: TableSchema = filter_table_schema(&*table_schemas, route.clone()).await;
     let mut where_clause: String = "WHERE ".to_string();
     let mut limit_clause: String = "LIMIT ".to_string();
     let mut i_limit = 100;

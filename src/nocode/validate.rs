@@ -10,6 +10,7 @@ use crate::{
     model::{Column, GetOperation, Index, JoinTable, OperationDelete, OperationPostPut, Patch, PrimaryKey, Redis, TableSchema, Trace, WebResponse}, 
     AppState
 };
+use std::sync::Arc;
 
 
 
@@ -18,7 +19,7 @@ use crate::{
 pub async fn check_table_design(
     state: Data<AppState>,
     route: String,
-    mut table_schemas: Vec<TableSchema>,
+    mut table_schemas: Arc<Vec<TableSchema>>,
     req: actix_web::HttpRequest,
 ) -> impl Responder {
     if !state.route_publics.contains(&route) {
@@ -45,7 +46,7 @@ pub async fn check_table_design(
     }
 
     // get table schema from table_schemas where table = route
-    let table_schema = filter_table_schema(&table_schemas, route.clone()).await;
+    let table_schema = filter_table_schema(&*table_schemas, route.clone()).await;
     if table_schema.table.is_empty() {
         let message_error = format!("Entity {} on folder config/{}.json not found", route, route);
         return HttpResponse::FailedDependency().json(WebResponse {
@@ -56,13 +57,13 @@ pub async fn check_table_design(
         });
     }
 
-    table_schemas = vec![validate_table_design(table_schema.clone())];
+    table_schemas = Arc::new(vec![validate_table_design(table_schema.clone())]);
 
     HttpResponse::Ok().json(WebResponse {
         success: true,
         message: "Table validated".to_string(),
         total_data: 1,
-        data: json!(table_schemas),
+    data: json!((*table_schemas).clone()),
     })
 }
 

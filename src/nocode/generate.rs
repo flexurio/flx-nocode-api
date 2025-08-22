@@ -8,13 +8,14 @@ use std::fmt::Write;
 use crate::{
     auth::{check_access, get_user_info_from_token}, helpers::filter_table_schema, log::log_output, model::{TableSchema, WebResponse}, AppState
 };
+use std::sync::Arc;
 
 
 // NCO-GENERATE-TABLE
 pub async fn create_table(
     state: web::Data<AppState>,
     route: String,
-    table_schemas: Vec<TableSchema>,
+    table_schemas: Arc<Vec<TableSchema>>,
     req: actix_web::HttpRequest,
 ) -> impl Responder {
     if !state.route_publics.contains(&route) {
@@ -41,7 +42,7 @@ pub async fn create_table(
         }
     }
     
-    let table_schema = filter_table_schema(&table_schemas, route.clone()).await;
+    let table_schema = filter_table_schema(&*table_schemas, route.clone()).await;
     if table_schema.table.is_empty() {
         let message_error = format!("Entity {} on folder config/{}.json not found", route, route);
         return HttpResponse::FailedDependency().json(WebResponse {

@@ -85,13 +85,22 @@ static ROUTE_PUBLICS: Lazy<Vec<String>> = Lazy::new(|| {
     // // Buat path ke file
 
     println!("{}", config_location.on_bright_blue());
-    let file_path = format!("{}/routes.json", config_location);
-    
+    let current_dir = match env::current_dir() {
+        Ok(dir) => dir,
+        Err(e) => {
+            println!("ERROR: Failed to get current directory: {}", e);
+            return Vec::new();
+        }
+    };
+    let file_path = current_dir.join(config_location).to_string_lossy().to_string();
+
+    println!("File path A: {}", file_path.on_bright_blue());
+
     // Baca isi file
     let content = match fs::read_to_string(&file_path) {
         Ok(content) => content,
         Err(_) => {
-            println!("ERROR 9081231287 : Can't read file {}", file_path.on_bright_red());
+            println!("ERROR 9081231287-A : Can't read file {}", file_path.on_bright_red());
             return Vec::new();
         }
     };
@@ -102,7 +111,7 @@ static ROUTE_PUBLICS: Lazy<Vec<String>> = Lazy::new(|| {
         Err(e) => {
             println!(
                 "Sorry, content of /{}/routes.json is not valid JSON, with ERROR Message : {}",
-                config_location, e
+                file_path, e
             );
             // kill the program
             exit(1);
@@ -119,13 +128,22 @@ static ROUTES: Lazy<Vec<String>> = Lazy::new(|| {
     // // Buat path ke file
 
     println!("{}", config_location.on_bright_blue());
-    let file_path = format!("{}/routes.json", config_location);
+    let current_dir = match env::current_dir() {
+        Ok(dir) => dir,
+        Err(e) => {
+            println!("ERROR: Failed to get current directory: {}", e);
+            return Vec::new();
+        }
+    };
+    let file_path = current_dir.join(config_location).join("routes.json").to_string_lossy().to_string();
+
+    println!("File path B: {}", file_path.on_bright_blue());
     
     // Baca isi file
     let content = match fs::read_to_string(&file_path) {
         Ok(content) => content,
         Err(_) => {
-            println!("ERROR 9081231287 : Can't read file {}", file_path.on_bright_red());
+            println!("ERROR 9081231287 - B : Can't read file {}", file_path.on_bright_red());
             return Vec::new();
         }
     };
@@ -136,7 +154,7 @@ static ROUTES: Lazy<Vec<String>> = Lazy::new(|| {
         Err(e) => {
             println!(
                 "Sorry, content of /{}/routes.json is not valid JSON, with ERROR Message : {}",
-                config_location, e
+                file_path, e
             );
             // kill the program
             exit(1);
@@ -146,7 +164,7 @@ static ROUTES: Lazy<Vec<String>> = Lazy::new(|| {
     config.routes.clone()
 });
 
-static SCHEMAS: Lazy<Vec<TableSchema>> = Lazy::new(|| {
+static SCHEMAS: Lazy<Arc<Vec<TableSchema>>> = Lazy::new(|| {
     let config_location = env::var("LOC_CONFIG").expect("LOC_CONFIG must be set");
     let config_dir = format!(
         "{}/entity",
@@ -184,7 +202,7 @@ static SCHEMAS: Lazy<Vec<TableSchema>> = Lazy::new(|| {
 
     }
 
-    schemas
+    Arc::new(schemas)
 });
 
 #[actix_web::main]
@@ -195,8 +213,7 @@ async fn main() -> std::io::Result<()> {
 
     // Ensure db directory exists; download and extract config only if missing
     let current_dir = env::current_dir()?;
-    let db_dir_string = format!("{}/db", current_dir.display());
-    let db_dir_path = std::path::Path::new(&db_dir_string);
+    let db_dir_path = current_dir.join("db");
     if !db_dir_path.exists() {
         if let Err(e) = core::create_dir_and_get_config().await {
             eprintln!("Failed to initialize db directory: {}", e);

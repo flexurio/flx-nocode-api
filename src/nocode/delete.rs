@@ -9,13 +9,14 @@ use crate::{
         filter_table_schema
     , log::log_output, model::{TableSchema, WebResponse}, AppState
 };
+use std::sync::Arc;
 
 
 // NCO-DELETE
 pub async fn delete(
     state: Data<AppState>,
     route: String,
-    table_schemas: Vec<TableSchema>,
+    table_schemas: Arc<Vec<TableSchema>>,
     path: Path<String>,
     req: actix_web::HttpRequest,
 ) -> impl Responder {
@@ -45,7 +46,7 @@ pub async fn delete(
 
     let mut id: String = path.into_inner();
 
-    let table_schema = filter_table_schema(&table_schemas, route.clone()).await;
+    let table_schema = filter_table_schema(&*table_schemas, route.clone()).await;
     if table_schema.table.is_empty() {
         let message_error = format!("Entity {} on folder config/{}.json not found", route, route);
         return HttpResponse::FailedDependency().json(WebResponse {

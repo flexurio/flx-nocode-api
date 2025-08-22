@@ -80,9 +80,13 @@
                 "order_by":["id"]
         },
         "post":{
+                "before":"",
+                "after":"",
                 "columns":["id_users", "endpoint", "role"]
         },
         "put":{
+                "before":"",
+                "after":"",
                 "columns":["id_users", "endpoint", "role"]
         },
         "del":{

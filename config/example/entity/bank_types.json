@@ -97,9 +97,13 @@
 
         },
         "post":{
+                "before":"",
+                "after":"",
                 "columns":["name"]
         },
         "put":{
+                "before":"",
+                "after":"",
                 "columns":["name"]
         },
         "del":{
