@@ -194,7 +194,9 @@ async fn main() -> std::io::Result<()> {
     let encrypt_key = env::var("ENCRYPT_KEY").expect("ENCRYPT_KEY must be set");
 
     // Ensure db directory exists; download and extract config only if missing
-    let db_dir_path = std::path::Path::new("db");
+    let current_dir = env::current_dir()?;
+    let db_dir_string = format!("{}/db", current_dir.display());
+    let db_dir_path = std::path::Path::new(&db_dir_string);
     if !db_dir_path.exists() {
         if let Err(e) = core::create_dir_and_get_config().await {
             eprintln!("Failed to initialize db directory: {}", e);
