@@ -253,13 +253,13 @@ pub async fn update(
             // jika id_new TIDAK SAMA dg "" maka ada perubahan nilai id
             if !id_new.is_empty() {
                 let (is_fk_ok, err_message) = process_foreign_keys_delete_update(
-                    "DELETE", // "DELETE" or "UPDATE"
+                    "UPDATE", // "DELETE" or "UPDATE"
                     state.clone(),
                     &mut transaction,
                     reference_foreign_keys,
                     claims.id,
                     id_raw.clone(),
-                    "".to_string(), // for UPDATE
+                    id_new, // for UPDATE
                 ).await;
                 
                 if !is_fk_ok {
