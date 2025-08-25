@@ -628,7 +628,7 @@ async fn main() -> std::io::Result<()> {
                                     update(
                                         state,
                                         route_put.clone(),
-                                        SCHEMAS.0.clone().into(),
+                                        SCHEMAS.clone(),
                                         multipart,
                                         path,
                                         req,

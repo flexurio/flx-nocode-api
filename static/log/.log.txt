@@ -33763,3 +33763,1967 @@ name.like, name.like|id.like, bank_type_id.eq, id.eq, name.eq, bank_types.name.e
 SELECT banks.id, banks.name, banks.created_at, banks.bank_type_id, bank_types.name as bank_type_name, banks.deleted_at, banks.foto FROM banks  INNER JOIN bank_types ON banks.bank_type_id = bank_types.id WHERE banks.id = ? AND banks.deleted_at IS NULL   ORDER BY banks.name ASC  LIMIT 20 OFFSET 0  
 # PARAMS, POST banks  at 2025-08-25 14:51:38: 
 [I64(62)]
+# QUERY, POST generate/table/flx_users at 2025-08-25 15:52:37: 
+CREATE TABLE IF NOT EXISTS flx_users (
+       id             BIGINT signed AUTO_INCREMENT PRIMARY KEY,
+       email          VARCHAR(100) NOT NULL,
+       phone          VARCHAR(15) NOT NULL,
+       password       LONGTEXT NOT NULL,
+       name           VARCHAR(50) NOT NULL,
+       photo          VARCHAR(50) NULL,
+       email_verified BOOLEAN NOT NULL DEFAULT 0,
+       enabled        BOOLEAN DEFAULT 1 NULL,
+
+       created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+       updated_at    DATETIME null,
+       deleted_at    DATETIME null,
+       created_by_id bigint signed null,
+       updated_by_id bigint signed null,
+       deleted_by_id bigint signed null,
+
+       CONSTRAINT idx_user_email UNIQUE (email),
+       CONSTRAINT idx_user_phone UNIQUE (phone),
+       CONSTRAINT idx_user_enabled (enabled)
+);
+
+# QUERY, POST generate/table/flx_roles at 2025-08-25 15:52:37: 
+    CREATE TABLE IF NOT EXISTS flx_roles (
+        id            BIGINT AUTO_INCREMENT PRIMARY KEY,
+        id_users      BIGINT NOT NULL,
+        endpoint      VARCHAR(100) NOT NULL,
+        role          TINYINT NOT NULL,
+
+        created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at    DATETIME null,
+        deleted_at    DATETIME null,
+        created_by_id bigint unsigned null,
+        updated_by_id bigint unsigned null,
+        deleted_by_id bigint unsigned null,
+
+        CONSTRAINT idx_role_name UNIQUE (id_users, endpoint)
+    );
+# QUERY, POST generate/table/users at 2025-08-25 15:52:37: 
+SELECT id FROM flx_users WHERE email = 'admin';
+# CORE ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/static
+# CORE ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/login
+# CORE ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/register
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/flx_users
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/flx_roles
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/banks
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/banks
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/bank_types
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/bank_types
+# CORE ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/static
+# CORE ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/login
+# CORE ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/register
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/flx_users
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/flx_roles
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/banks
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/banks
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/bank_types
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/bank_types
+# CORE ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/static
+# CORE ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/login
+# CORE ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/register
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/flx_users
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/flx_roles
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/banks
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/banks
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/bank_types
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/bank_types
+# CORE ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/static
+# CORE ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/login
+# CORE ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/register
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/flx_users
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/flx_roles
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/banks
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/banks
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/bank_types
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/bank_types
+# QUERY, POST generate/table/flx_users at 2025-08-25 16:06:48: 
+CREATE TABLE IF NOT EXISTS flx_users (
+       id             BIGINT signed AUTO_INCREMENT PRIMARY KEY,
+       email          VARCHAR(100) NOT NULL,
+       phone          VARCHAR(15) NOT NULL,
+       password       LONGTEXT NOT NULL,
+       name           VARCHAR(50) NOT NULL,
+       photo          VARCHAR(50) NULL,
+       email_verified BOOLEAN NOT NULL DEFAULT 0,
+       enabled        BOOLEAN DEFAULT 1 NULL,
+
+       created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+       updated_at    DATETIME null,
+       deleted_at    DATETIME null,
+       created_by_id bigint signed null,
+       updated_by_id bigint signed null,
+       deleted_by_id bigint signed null,
+
+       CONSTRAINT idx_user_email UNIQUE (email),
+       CONSTRAINT idx_user_phone UNIQUE (phone),
+       CONSTRAINT idx_user_enabled (enabled)
+);
+
+# QUERY, POST generate/table/flx_roles at 2025-08-25 16:06:48: 
+    CREATE TABLE IF NOT EXISTS flx_roles (
+        id            BIGINT AUTO_INCREMENT PRIMARY KEY,
+        id_users      BIGINT NOT NULL,
+        endpoint      VARCHAR(100) NOT NULL,
+        role          TINYINT NOT NULL,
+
+        created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at    DATETIME null,
+        deleted_at    DATETIME null,
+        created_by_id bigint unsigned null,
+        updated_by_id bigint unsigned null,
+        deleted_by_id bigint unsigned null,
+
+        CONSTRAINT idx_role_name UNIQUE (id_users, endpoint)
+    );
+# QUERY, POST generate/table/users at 2025-08-25 16:06:49: 
+SELECT id FROM flx_users WHERE email = 'admin';
+# CORE ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/static
+# CORE ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/login
+# CORE ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/register
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/flx_users
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/flx_roles
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/banks
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/banks
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/bank_types
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/bank_types
+# CORE ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/static
+# CORE ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/login
+# CORE ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/register
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/flx_users
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/flx_roles
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/banks
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/banks
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/bank_types
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/bank_types
+# CORE ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/static
+# CORE ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/login
+# CORE ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/register
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/flx_users
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/flx_roles
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/banks
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/banks
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/bank_types
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/bank_types
+# CORE ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/static
+# CORE ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/login
+# CORE ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/register
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/flx_users
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/flx_roles
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/banks
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/banks
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/bank_types
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/bank_types
+# CONFIGURATION, FILTERED PARAMETERS filter_table_schema at 2025-08-25 16:07:50: 
+["name.like","name.like|id.like","bank_type_id.eq","id.eq","name.eq","bank_types.name.eq","deleted_at.is","banks.deleted_at","page","sort","ascending","limit","search","redis"]
+# CONFIGURATION, PARAMETERS ON ROUTES TableSchema at 2025-08-25 16:07:50: 
+name.like, name.like|id.like, bank_type_id.eq, id.eq, name.eq, bank_types.name.eq, deleted_at.is, banks.deleted_at, page, sort, ascending, limit, search, redis
+# QUERY, GET banks at 2025-08-25 16:07:50: 
+SELECT banks.id, banks.name, banks.created_at, banks.bank_type_id, bank_types.name as bank_type_name, banks.deleted_at, banks.foto FROM banks  INNER JOIN bank_types ON banks.bank_type_id = bank_types.id WHERE banks.id = ? AND banks.deleted_at IS NULL   ORDER BY banks.name ASC  LIMIT 20 OFFSET 0  
+# PARAMS, POST banks  at 2025-08-25 16:07:50: 
+[I64(62)]
+# CONFIGURATION, FILTERED PARAMETERS filter_table_schema at 2025-08-25 16:07:54: 
+["name.like","name.like|id.like","bank_type_id.eq","id.eq","name.eq","bank_types.name.eq","deleted_at.is","banks.deleted_at","page","sort","ascending","limit","search","redis"]
+# CONFIGURATION, PARAMETERS ON ROUTES TableSchema at 2025-08-25 16:07:54: 
+name.like, name.like|id.like, bank_type_id.eq, id.eq, name.eq, bank_types.name.eq, deleted_at.is, banks.deleted_at, page, sort, ascending, limit, search, redis
+# QUERY, GET banks at 2025-08-25 16:07:54: 
+SELECT banks.id, banks.name, banks.created_at, banks.bank_type_id, bank_types.name as bank_type_name, banks.deleted_at, banks.foto FROM banks  INNER JOIN bank_types ON banks.bank_type_id = bank_types.id WHERE banks.deleted_at IS NULL   ORDER BY banks.name ASC  LIMIT 20 OFFSET 0  
+# PARAMS, POST banks  at 2025-08-25 16:07:54: 
+[]
+# CONFIGURATION, FILTERED PARAMETERS filter_table_schema at 2025-08-25 16:08:16: 
+["name.like","name.like|id.like","bank_type_id.eq","id.eq","name.eq","bank_types.name.eq","deleted_at.is","banks.deleted_at","page","sort","ascending","limit","search","redis"]
+# CONFIGURATION, PARAMETERS ON ROUTES TableSchema at 2025-08-25 16:08:16: 
+name.like, name.like|id.like, bank_type_id.eq, id.eq, name.eq, bank_types.name.eq, deleted_at.is, banks.deleted_at, page, sort, ascending, limit, search, redis
+# QUERY, GET banks at 2025-08-25 16:08:16: 
+SELECT banks.id, banks.name, banks.created_at, banks.bank_type_id, bank_types.name as bank_type_name, banks.deleted_at, banks.foto FROM banks  INNER JOIN bank_types ON banks.bank_type_id = bank_types.id WHERE banks.deleted_at IS NULL   ORDER BY banks.name ASC  LIMIT 20 OFFSET 0  
+# PARAMS, POST banks  at 2025-08-25 16:08:16: 
+[]
+# CONFIGURATION, FILTERED PARAMETERS filter_table_schema at 2025-08-25 16:08:19: 
+["name.like","name.like|id.like","bank_type_id.eq","id.eq","name.eq","bank_types.name.eq","deleted_at.is","banks.deleted_at","page","sort","ascending","limit","search","redis"]
+# CONFIGURATION, PARAMETERS ON ROUTES TableSchema at 2025-08-25 16:08:19: 
+name.like, name.like|id.like, bank_type_id.eq, id.eq, name.eq, bank_types.name.eq, deleted_at.is, banks.deleted_at, page, sort, ascending, limit, search, redis
+# QUERY, GET banks at 2025-08-25 16:08:19: 
+SELECT banks.id, banks.name, banks.created_at, banks.bank_type_id, bank_types.name as bank_type_name, banks.deleted_at, banks.foto FROM banks  INNER JOIN bank_types ON banks.bank_type_id = bank_types.id WHERE banks.deleted_at IS NULL   ORDER BY banks.name ASC  LIMIT 20 OFFSET 0  
+# PARAMS, POST banks  at 2025-08-25 16:08:19: 
+[]
+# CONFIGURATION, FILTERED PARAMETERS filter_table_schema at 2025-08-25 16:08:33: 
+["name.like","name.like|id.like","id.eq","name.eq","deleted_at.is","bank_types.deleted_at","page","sort","ascending","limit","search","redis"]
+# CONFIGURATION, PARAMETERS ON ROUTES TableSchema at 2025-08-25 16:08:33: 
+name.like, name.like|id.like, id.eq, name.eq, deleted_at.is, bank_types.deleted_at, page, sort, ascending, limit, search, redis
+# QUERY, GET bank_types at 2025-08-25 16:08:33: 
+SELECT id, name, created_at FROM bank_types  WHERE bank_types.id = ? AND bank_types.deleted_at IS NULL   ORDER BY id ASC  LIMIT 100 OFFSET 0  
+# PARAMS, POST bank_types at 2025-08-25 16:08:33: 
+[Str("BT/2025/03/003")]
+# CONFIGURATION, FILTERED PARAMETERS filter_table_schema at 2025-08-25 16:08:34: 
+["name.like","name.like|id.like","id.eq","name.eq","deleted_at.is","bank_types.deleted_at","page","sort","ascending","limit","search","redis"]
+# CONFIGURATION, PARAMETERS ON ROUTES TableSchema at 2025-08-25 16:08:34: 
+name.like, name.like|id.like, id.eq, name.eq, deleted_at.is, bank_types.deleted_at, page, sort, ascending, limit, search, redis
+# QUERY, GET bank_types at 2025-08-25 16:08:34: 
+SELECT id, name, created_at FROM bank_types  WHERE bank_types.id = ? AND bank_types.deleted_at IS NULL   ORDER BY id ASC  LIMIT 100 OFFSET 0  
+# PARAMS, POST bank_types at 2025-08-25 16:08:34: 
+[Str("BT/2025/03/003")]
+# QUERY, PUT bank_types at 2025-08-25 16:10:30: 
+UPDATE bank_types SET name = ?, updated_at = NOW(), updated_by_id = ? WHERE id = ?
+# CONFIGURATION, FILTERED PARAMETERS filter_table_schema at 2025-08-25 16:10:44: 
+["name.like","name.like|id.like","bank_type_id.eq","id.eq","name.eq","bank_types.name.eq","deleted_at.is","banks.deleted_at","page","sort","ascending","limit","search","redis"]
+# CONFIGURATION, PARAMETERS ON ROUTES TableSchema at 2025-08-25 16:10:44: 
+name.like, name.like|id.like, bank_type_id.eq, id.eq, name.eq, bank_types.name.eq, deleted_at.is, banks.deleted_at, page, sort, ascending, limit, search, redis
+# QUERY, GET banks at 2025-08-25 16:10:44: 
+SELECT banks.id, banks.name, banks.created_at, banks.bank_type_id, bank_types.name as bank_type_name, banks.deleted_at, banks.foto FROM banks  INNER JOIN bank_types ON banks.bank_type_id = bank_types.id WHERE banks.deleted_at IS NULL   ORDER BY banks.name ASC  LIMIT 20 OFFSET 0  
+# PARAMS, POST banks  at 2025-08-25 16:10:44: 
+[]
+# CONFIGURATION, FILTERED PARAMETERS filter_table_schema at 2025-08-25 16:11:36: 
+["name.like","name.like|id.like","id.eq","name.eq","deleted_at.is","bank_types.deleted_at","page","sort","ascending","limit","search","redis"]
+# CONFIGURATION, PARAMETERS ON ROUTES TableSchema at 2025-08-25 16:11:36: 
+name.like, name.like|id.like, id.eq, name.eq, deleted_at.is, bank_types.deleted_at, page, sort, ascending, limit, search, redis
+# QUERY, GET bank_types at 2025-08-25 16:11:36: 
+SELECT id, name, created_at FROM bank_types  WHERE ( bank_types.id LIKE ? OR bank_types.name LIKE ? ) AND bank_types.deleted_at IS NULL    LIMIT 10 OFFSET 0  
+# PARAMS, POST bank_types at 2025-08-25 16:11:36: 
+[Str("%%"), Str("%%")]
+# QUERY, POST generate/table/flx_users at 2025-08-25 16:12:01: 
+CREATE TABLE IF NOT EXISTS flx_users (
+       id             BIGINT signed AUTO_INCREMENT PRIMARY KEY,
+       email          VARCHAR(100) NOT NULL,
+       phone          VARCHAR(15) NOT NULL,
+       password       LONGTEXT NOT NULL,
+       name           VARCHAR(50) NOT NULL,
+       photo          VARCHAR(50) NULL,
+       email_verified BOOLEAN NOT NULL DEFAULT 0,
+       enabled        BOOLEAN DEFAULT 1 NULL,
+
+       created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+       updated_at    DATETIME null,
+       deleted_at    DATETIME null,
+       created_by_id bigint signed null,
+       updated_by_id bigint signed null,
+       deleted_by_id bigint signed null,
+
+       CONSTRAINT idx_user_email UNIQUE (email),
+       CONSTRAINT idx_user_phone UNIQUE (phone),
+       CONSTRAINT idx_user_enabled (enabled)
+);
+
+# QUERY, POST generate/table/flx_roles at 2025-08-25 16:12:01: 
+    CREATE TABLE IF NOT EXISTS flx_roles (
+        id            BIGINT AUTO_INCREMENT PRIMARY KEY,
+        id_users      BIGINT NOT NULL,
+        endpoint      VARCHAR(100) NOT NULL,
+        role          TINYINT NOT NULL,
+
+        created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at    DATETIME null,
+        deleted_at    DATETIME null,
+        created_by_id bigint unsigned null,
+        updated_by_id bigint unsigned null,
+        deleted_by_id bigint unsigned null,
+
+        CONSTRAINT idx_role_name UNIQUE (id_users, endpoint)
+    );
+# QUERY, POST generate/table/users at 2025-08-25 16:12:01: 
+SELECT id FROM flx_users WHERE email = 'admin';
+# CORE ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/static
+# CORE ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/login
+# CORE ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/register
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/flx_users
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/flx_roles
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/banks
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/banks
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/bank_types
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/bank_types
+# CORE ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/static
+# CORE ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/login
+# CORE ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/register
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/flx_users
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/flx_roles
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/banks
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/banks
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/bank_types
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/bank_types
+# CORE ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/static
+# CORE ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/login
+# CORE ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/register
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/flx_users
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/flx_roles
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/banks
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/banks
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/bank_types
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/bank_types
+# CORE ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/static
+# CORE ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/login
+# CORE ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/register
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/flx_users
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/flx_roles
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/banks
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/banks
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/bank_types
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/bank_types
+# QUERY, PUT bank_types at 2025-08-25 16:12:04: 
+UPDATE bank_types SET name = ?, updated_at = NOW(), updated_by_id = ? WHERE id = ?
+# QUERY, PUT bank_types at 2025-08-25 16:12:10: 
+UPDATE bank_types SET name = ?, updated_at = NOW(), updated_by_id = ? WHERE id = ?
+# QUERY, POST generate/table/flx_users at 2025-08-25 16:12:37: 
+CREATE TABLE IF NOT EXISTS flx_users (
+       id             BIGINT signed AUTO_INCREMENT PRIMARY KEY,
+       email          VARCHAR(100) NOT NULL,
+       phone          VARCHAR(15) NOT NULL,
+       password       LONGTEXT NOT NULL,
+       name           VARCHAR(50) NOT NULL,
+       photo          VARCHAR(50) NULL,
+       email_verified BOOLEAN NOT NULL DEFAULT 0,
+       enabled        BOOLEAN DEFAULT 1 NULL,
+
+       created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+       updated_at    DATETIME null,
+       deleted_at    DATETIME null,
+       created_by_id bigint signed null,
+       updated_by_id bigint signed null,
+       deleted_by_id bigint signed null,
+
+       CONSTRAINT idx_user_email UNIQUE (email),
+       CONSTRAINT idx_user_phone UNIQUE (phone),
+       CONSTRAINT idx_user_enabled (enabled)
+);
+
+# QUERY, POST generate/table/flx_roles at 2025-08-25 16:12:38: 
+    CREATE TABLE IF NOT EXISTS flx_roles (
+        id            BIGINT AUTO_INCREMENT PRIMARY KEY,
+        id_users      BIGINT NOT NULL,
+        endpoint      VARCHAR(100) NOT NULL,
+        role          TINYINT NOT NULL,
+
+        created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at    DATETIME null,
+        deleted_at    DATETIME null,
+        created_by_id bigint unsigned null,
+        updated_by_id bigint unsigned null,
+        deleted_by_id bigint unsigned null,
+
+        CONSTRAINT idx_role_name UNIQUE (id_users, endpoint)
+    );
+# QUERY, POST generate/table/users at 2025-08-25 16:12:38: 
+SELECT id FROM flx_users WHERE email = 'admin';
+# CORE ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/static
+# CORE ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/login
+# CORE ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/register
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/flx_users
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/flx_roles
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/banks
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/banks
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/bank_types
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/bank_types
+# CORE ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/static
+# CORE ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/login
+# CORE ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/register
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/flx_users
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/flx_roles
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/banks
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/banks
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/bank_types
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/bank_types
+# CORE ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/static
+# CORE ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/login
+# CORE ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/register
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/flx_users
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/flx_roles
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/banks
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/banks
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/bank_types
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/bank_types
+# CORE ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/static
+# CORE ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/login
+# CORE ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/register
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/flx_users
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/flx_roles
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/banks
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/banks
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/bank_types
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/bank_types
+# QUERY, PUT bank_types at 2025-08-25 16:12:40: 
+UPDATE bank_types SET name = ?, updated_at = NOW(), updated_by_id = ? WHERE id = ?
+# PARAM, PUT bank_types at 2025-08-25 16:12:40: 
+[Str("UPDATE FK"), I64(0), Str("BT/2025/03/003")]
+# CONFIGURATION, FILTERED PARAMETERS filter_table_schema at 2025-08-25 16:13:16: 
+["name.like","name.like|id.like","id.eq","name.eq","deleted_at.is","bank_types.deleted_at","page","sort","ascending","limit","search","redis"]
+# CONFIGURATION, PARAMETERS ON ROUTES TableSchema at 2025-08-25 16:13:16: 
+name.like, name.like|id.like, id.eq, name.eq, deleted_at.is, bank_types.deleted_at, page, sort, ascending, limit, search, redis
+# QUERY, GET bank_types at 2025-08-25 16:13:16: 
+SELECT id, name, created_at FROM bank_types  WHERE ( bank_types.id LIKE ? OR bank_types.name LIKE ? ) AND bank_types.deleted_at IS NULL    LIMIT 10 OFFSET 0  
+# PARAMS, POST bank_types at 2025-08-25 16:13:16: 
+[Str("%%"), Str("%%")]
+# QUERY, POST generate/table/flx_users at 2025-08-25 16:18:50: 
+CREATE TABLE IF NOT EXISTS flx_users (
+       id             BIGINT signed AUTO_INCREMENT PRIMARY KEY,
+       email          VARCHAR(100) NOT NULL,
+       phone          VARCHAR(15) NOT NULL,
+       password       LONGTEXT NOT NULL,
+       name           VARCHAR(50) NOT NULL,
+       photo          VARCHAR(50) NULL,
+       email_verified BOOLEAN NOT NULL DEFAULT 0,
+       enabled        BOOLEAN DEFAULT 1 NULL,
+
+       created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+       updated_at    DATETIME null,
+       deleted_at    DATETIME null,
+       created_by_id bigint signed null,
+       updated_by_id bigint signed null,
+       deleted_by_id bigint signed null,
+
+       CONSTRAINT idx_user_email UNIQUE (email),
+       CONSTRAINT idx_user_phone UNIQUE (phone),
+       CONSTRAINT idx_user_enabled (enabled)
+);
+
+# QUERY, POST generate/table/flx_roles at 2025-08-25 16:18:50: 
+    CREATE TABLE IF NOT EXISTS flx_roles (
+        id            BIGINT AUTO_INCREMENT PRIMARY KEY,
+        id_users      BIGINT NOT NULL,
+        endpoint      VARCHAR(100) NOT NULL,
+        role          TINYINT NOT NULL,
+
+        created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at    DATETIME null,
+        deleted_at    DATETIME null,
+        created_by_id bigint unsigned null,
+        updated_by_id bigint unsigned null,
+        deleted_by_id bigint unsigned null,
+
+        CONSTRAINT idx_role_name UNIQUE (id_users, endpoint)
+    );
+# QUERY, POST generate/table/users at 2025-08-25 16:18:50: 
+SELECT id FROM flx_users WHERE email = 'admin';
+# CORE ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/static
+# CORE ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/login
+# CORE ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/register
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/flx_users
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/flx_roles
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/banks
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/banks
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/bank_types
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/bank_types
+# CORE ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/static
+# CORE ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/login
+# CORE ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/register
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/flx_users
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/flx_roles
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/banks
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/banks
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/bank_types
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/bank_types
+# CORE ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/static
+# CORE ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/login
+# CORE ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/register
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/flx_users
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/flx_roles
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/banks
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/banks
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/bank_types
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/bank_types
+# CORE ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/static
+# CORE ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/login
+# CORE ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/register
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/flx_users
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/flx_roles
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/banks
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/banks
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/bank_types
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/bank_types
+# CONFIGURATION, FILTERED PARAMETERS filter_table_schema at 2025-08-25 16:18:52: 
+["name.like","name.like|id.like","id.eq","name.eq","deleted_at.is","bank_types.deleted_at","page","sort","ascending","limit","search","redis"]
+# CONFIGURATION, PARAMETERS ON ROUTES TableSchema at 2025-08-25 16:18:52: 
+name.like, name.like|id.like, id.eq, name.eq, deleted_at.is, bank_types.deleted_at, page, sort, ascending, limit, search, redis
+# QUERY, GET bank_types at 2025-08-25 16:18:52: 
+SELECT id, name, created_at FROM bank_types  WHERE ( bank_types.id LIKE ? OR bank_types.name LIKE ? ) AND bank_types.deleted_at IS NULL    LIMIT 10 OFFSET 0  
+# PARAMS, POST bank_types at 2025-08-25 16:18:52: 
+[Str("%%"), Str("%%")]
+# QUERY, PUT bank_types at 2025-08-25 16:19:16: 
+UPDATE bank_types SET name = ?, id = ?, updated_at = NOW(), updated_by_id = ? WHERE id = ?
+# PARAM, PUT bank_types at 2025-08-25 16:19:16: 
+[Str("UPDATE FK"), Str("BT/2025/03/212"), I64(0), Str("BT/2025/03/003")]
+# FOREIGN KEY, DELETE QUERY  at 2025-08-25 16:19:16: 
+UPDATE banks SET bank_type_id = ?, updated_at = NOW(), updated_by_id = ? WHERE bank_type_id = ?
+# FOREIGN KEY, DELETE PARAM  at 2025-08-25 16:19:16: 
+[Str("BT/2025/03/212"), I64(0), Str("BT/2025/03/003")]
+# SUCCESS, FOREIGN KEY DELETE bank_types at 2025-08-25 16:19:16: 
+UPDATE banks SET bank_type_id = ?, updated_at = NOW(), updated_by_id = ? WHERE bank_type_id = ?
+# CONFIGURATION, FILTERED PARAMETERS filter_table_schema at 2025-08-25 16:19:49: 
+["name.like","name.like|id.like","id.eq","name.eq","deleted_at.is","bank_types.deleted_at","page","sort","ascending","limit","search","redis"]
+# CONFIGURATION, PARAMETERS ON ROUTES TableSchema at 2025-08-25 16:19:49: 
+name.like, name.like|id.like, id.eq, name.eq, deleted_at.is, bank_types.deleted_at, page, sort, ascending, limit, search, redis
+# QUERY, GET bank_types at 2025-08-25 16:19:49: 
+SELECT id, name, created_at FROM bank_types  WHERE ( bank_types.id LIKE ? OR bank_types.name LIKE ? ) AND bank_types.deleted_at IS NULL    LIMIT 10 OFFSET 0  
+# PARAMS, POST bank_types at 2025-08-25 16:19:49: 
+[Str("%%"), Str("%%")]
+# CONFIGURATION, FILTERED PARAMETERS filter_table_schema at 2025-08-25 16:19:56: 
+["name.like","name.like|id.like","bank_type_id.eq","id.eq","name.eq","bank_types.name.eq","deleted_at.is","banks.deleted_at","page","sort","ascending","limit","search","redis"]
+# CONFIGURATION, PARAMETERS ON ROUTES TableSchema at 2025-08-25 16:19:56: 
+name.like, name.like|id.like, bank_type_id.eq, id.eq, name.eq, bank_types.name.eq, deleted_at.is, banks.deleted_at, page, sort, ascending, limit, search, redis
+# QUERY, GET banks at 2025-08-25 16:19:56: 
+SELECT banks.id, banks.name, banks.created_at, banks.bank_type_id, bank_types.name as bank_type_name, banks.deleted_at, banks.foto FROM banks  INNER JOIN bank_types ON banks.bank_type_id = bank_types.id WHERE banks.deleted_at IS NULL   ORDER BY banks.name ASC  LIMIT 20 OFFSET 0  
+# PARAMS, POST banks  at 2025-08-25 16:19:56: 
+[]
+# QUERY, POST generate/table/flx_users at 2025-08-25 16:23:01: 
+CREATE TABLE IF NOT EXISTS flx_users (
+       id             BIGINT signed AUTO_INCREMENT PRIMARY KEY,
+       email          VARCHAR(100) NOT NULL,
+       phone          VARCHAR(15) NOT NULL,
+       password       LONGTEXT NOT NULL,
+       name           VARCHAR(50) NOT NULL,
+       photo          VARCHAR(50) NULL,
+       email_verified BOOLEAN NOT NULL DEFAULT 0,
+       enabled        BOOLEAN DEFAULT 1 NULL,
+
+       created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+       updated_at    DATETIME null,
+       deleted_at    DATETIME null,
+       created_by_id bigint signed null,
+       updated_by_id bigint signed null,
+       deleted_by_id bigint signed null,
+
+       CONSTRAINT idx_user_email UNIQUE (email),
+       CONSTRAINT idx_user_phone UNIQUE (phone),
+       CONSTRAINT idx_user_enabled (enabled)
+);
+
+# QUERY, POST generate/table/flx_roles at 2025-08-25 16:23:01: 
+    CREATE TABLE IF NOT EXISTS flx_roles (
+        id            BIGINT AUTO_INCREMENT PRIMARY KEY,
+        id_users      BIGINT NOT NULL,
+        endpoint      VARCHAR(100) NOT NULL,
+        role          TINYINT NOT NULL,
+
+        created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at    DATETIME null,
+        deleted_at    DATETIME null,
+        created_by_id bigint unsigned null,
+        updated_by_id bigint unsigned null,
+        deleted_by_id bigint unsigned null,
+
+        CONSTRAINT idx_role_name UNIQUE (id_users, endpoint)
+    );
+# QUERY, POST generate/table/users at 2025-08-25 16:23:01: 
+SELECT id FROM flx_users WHERE email = 'admin';
+# CORE ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/static
+# CORE ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/login
+# CORE ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/register
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/flx_users
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/flx_roles
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/banks
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/banks
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/bank_types
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/bank_types
+# CORE ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/static
+# CORE ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/login
+# CORE ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/register
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/flx_users
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/flx_roles
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/banks
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/banks
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/bank_types
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/bank_types
+# CORE ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/static
+# CORE ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/login
+# CORE ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/register
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/flx_users
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/flx_roles
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/banks
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/banks
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/bank_types
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/bank_types
+# CORE ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/static
+# CORE ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/login
+# CORE ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/register
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/flx_users
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/flx_users
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/flx_roles
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/flx_roles
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/banks
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/banks
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/banks
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD TRACE  at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD PATCH  at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD DELETE at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD PUT    at : 
+http://0.0.0.0:8080/bank_types
+# ENDPOINT, METHOD GET    at : 
+http://0.0.0.0:8080/validate/bank_types
+# ENDPOINT, METHOD POST   at : 
+http://0.0.0.0:8080/generate/table/bank_types
+# QUERY, PUT bank_types at 2025-08-25 16:23:07: 
+UPDATE bank_types SET name = ?, id = ?, updated_at = NOW(), updated_by_id = ? WHERE id = ?
+# PARAM, PUT bank_types at 2025-08-25 16:23:07: 
+[Str("UPDATE FK"), Str("BT/2025/03/212"), I64(0), Str("BT/2025/03/003")]
+# FOREIGN KEY, UPDATE QUERY  at 2025-08-25 16:23:07: 
+UPDATE banks SET bank_type_id = ?, updated_at = NOW(), updated_by_id = ? WHERE bank_type_id = ?
+# FOREIGN KEY, UPDATE PARAM  at 2025-08-25 16:23:07: 
+[Str("BT/2025/03/212"), I64(0), Str("BT/2025/03/003")]
+# SUCCESS, FOREIGN KEY UPDATE bank_types at 2025-08-25 16:23:07: 
+UPDATE banks SET bank_type_id = ?, updated_at = NOW(), updated_by_id = ? WHERE bank_type_id = ?
+# CONFIGURATION, FILTERED PARAMETERS filter_table_schema at 2025-08-25 16:23:14: 
+["name.like","name.like|id.like","bank_type_id.eq","id.eq","name.eq","bank_types.name.eq","deleted_at.is","banks.deleted_at","page","sort","ascending","limit","search","redis"]
+# CONFIGURATION, PARAMETERS ON ROUTES TableSchema at 2025-08-25 16:23:14: 
+name.like, name.like|id.like, bank_type_id.eq, id.eq, name.eq, bank_types.name.eq, deleted_at.is, banks.deleted_at, page, sort, ascending, limit, search, redis
+# QUERY, GET banks at 2025-08-25 16:23:14: 
+SELECT banks.id, banks.name, banks.created_at, banks.bank_type_id, bank_types.name as bank_type_name, banks.deleted_at, banks.foto FROM banks  INNER JOIN bank_types ON banks.bank_type_id = bank_types.id WHERE banks.deleted_at IS NULL   ORDER BY banks.name ASC  LIMIT 20 OFFSET 0  
+# PARAMS, POST banks  at 2025-08-25 16:23:14: 
+[]
