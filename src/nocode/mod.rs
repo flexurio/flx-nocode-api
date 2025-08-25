@@ -6,3 +6,4 @@ pub mod generate;
 pub mod trace;
 pub mod validate;
 pub mod patch;
+pub mod foreign_key;
