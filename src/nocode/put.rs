@@ -8,9 +8,9 @@ use serde_json::{Value};
 use crate::{
     auth::{check_access, get_user_info_from_token, Claims},
     crypt::{encrypt, is_encrypted_string},
-    database::state::{execute_sql_formula, DbParam},
+    database::state::{execute_sql_formula_with_transaction, DbParam},
     helpers::{ filter_table_schema, multipart_to_json },
-    log::{self, log_output},
+    log::{log_output},
     model::{ReferenceForeignKey, TableSchema, WebResponse},
     AppState
 };
@@ -67,7 +67,7 @@ pub async fn update(
     let id_raw: String = path.into_inner();
 
     // get body from request and compare with table_schemas.put.columns
-    let table_schema = filter_table_schema(&table_schemas, route.clone()).await;
+    let table_schema = filter_table_schema(table_schemas, route.clone()).await;
     if table_schema.table.is_empty() {
         let message_error = format!("Entity {} on folder config/{}.json not found", route, route);
         return HttpResponse::FailedDependency().json(WebResponse {
@@ -76,17 +76,6 @@ pub async fn update(
             total_data: 0,
             data: Value::Null,
         });
-    }
-
-    if table_schema.put.pre_process.contains("SQL:"){
-        if let Err(err) = execute_sql_formula(&state.db, table_schema.put.pre_process, &body, route.as_str()).await {
-            return HttpResponse::InternalServerError().json(WebResponse {
-                success: false,
-                message: format!("Error in pre-process: {}", err),
-                total_data: 0,
-                data: Value::Null,
-            });
-        }
     }
 
 
@@ -171,6 +160,7 @@ pub async fn update(
 
     log_output("QUERY", "PUT", route.as_str(), s_sql.clone(), true);
     log_output("PARAM", "PUT", route.as_str(), format!("{:?}", bind_params), true);
+    
     // Begin transaction
     let mut transaction = match state.db.begin_transaction().await {
         Ok(tx) => tx,
@@ -185,13 +175,25 @@ pub async fn update(
     };
 
 
+    if table_schema.put.pre_process.contains("SQL:"){
+        if let Err(err) = execute_sql_formula_with_transaction(&mut transaction, table_schema.put.pre_process, &body, route.as_str()).await {
+            return HttpResponse::InternalServerError().json(WebResponse {
+                success: false,
+                message: format!("Error in pre-process: {}", err),
+                total_data: 0,
+                data: Value::Null,
+            });
+        }
+    }
+
     match transaction.query_with_params(&s_sql, bind_params).await {
         Ok(_) => {
             // process reference_foreign_keys delete
             let mut failed_fk_operations = Vec::new();
 
             if table_schema.put.post_process.contains("SQL:"){
-                if let Err(err) = execute_sql_formula(&state.db, table_schema.put.post_process, &body, route.as_str()).await {
+                if let Err(err) = execute_sql_formula_with_transaction(&mut transaction, table_schema.put.post_process, &body, route.as_str()).await {
+                    let _= transaction.rollback().await;
                     // Rollback transaction if post-process SQL fails
                     return HttpResponse::InternalServerError().json(WebResponse {
                         success: false,

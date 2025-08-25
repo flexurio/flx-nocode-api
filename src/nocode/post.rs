@@ -178,7 +178,7 @@ pub async fn insert(
             function_id_split = col.function.split("/").map(|s| s.to_string()).collect();
         }
 
-        if !isformula && !(col.name == "id" && !col.function.is_empty()) {
+        if !isformula && (col.name != "id" || col.function.is_empty()) {
             // Ambil dari body dan bind sebagai param
             let mut value = body
                 .get(&col.name)
