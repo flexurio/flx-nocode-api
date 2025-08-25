@@ -6,7 +6,7 @@ use actix_web::{
 use serde_json::{Value};
 
 use crate::{
-    auth::{check_access, get_user_info_from_token, Claims}, crypt::{encrypt, is_encrypted_string}, database::state::{execute_sql_formula, execute_sql_formula_with_transaction, DbParam}, helpers::{ filter_table_schema, multipart_to_json }, log::log_output, model::{ReferenceForeignKey, TableSchema, WebResponse}, nocode::foreign_key::check_data_foreign_key, AppState
+    auth::{check_access, get_user_info_from_token, Claims}, crypt::{encrypt, is_encrypted_string}, database::state::{execute_sql_formula, execute_sql_formula_with_transaction, DbParam}, helpers::{ filter_table_schema, multipart_to_json }, log::log_output, model::{ReferenceForeignKey, TableSchema, WebResponse}, nocode::foreign_key::{check_data_foreign_key, process_foreign_keys_delete_update}, AppState
 };
 use std::sync::Arc;
 
@@ -236,8 +236,6 @@ pub async fn update(
 
     match transaction.query_with_params(&s_sql, bind_params).await {
         Ok(_) => {
-            // process reference_foreign_keys delete
-            let mut failed_fk_operations = Vec::new();
 
             if table_schema.put.post_process.contains("SQL:"){
                 if let Err(err) = execute_sql_formula_with_transaction(&mut transaction, table_schema.put.post_process, &body, route.as_str()).await {
@@ -254,84 +252,47 @@ pub async fn update(
 
             // jika id_new TIDAK SAMA dg "" maka ada perubahan nilai id
             if !id_new.is_empty() {
-
-                for fk in reference_foreign_keys.iter() {
-                    let data_table_update = fk.on_update_action.clone();
-                    let mut bind_params_fk: Vec<DbParam> = Vec::new();
-                    let s_sql_fk = format!(
-                        "UPDATE {} SET {} = ?, updated_at = {}, updated_by_id = ? WHERE {} = ?",
-                        data_table_update.table, fk.on_update_action.column, state.query_converter.datetime_now, fk.on_update_action.column
-                    );
-
-                    // isikan bind_params_fk id_new 
-                    if let Ok(n) = id_new.clone().parse::<i64>() { 
-                        bind_params_fk.push(DbParam::I64(n)); 
-                    } else { 
-                        bind_params_fk.push(DbParam::Str(id_new.clone())); 
-                    }
-
-                    // isikan bind_params_fk updated_by_id 
-                    bind_params_fk.push(DbParam::I64(claims.id));
-
-                    // isikan bind_params_fk id lama 
-                    if let Ok(n) = id_raw.clone().parse::<i64>() { 
-                        bind_params_fk.push(DbParam::I64(n)); 
-                    } else { 
-                        bind_params_fk.push(DbParam::Str(id_raw.clone())); 
-                    }
-
-                    log_output("FOREIGN KEY", "UPDATE", "QUERY", s_sql_fk.clone(), true);
-                    log_output(
-                        "FOREIGN KEY",
-                        "UPDATE",
-                        "PARAM",
-                        format!("{:?}", bind_params_fk),
-                        true,
-                    );
-
-                    match transaction.query_with_params(&s_sql_fk, bind_params_fk).await {
-                        Ok(_) => {
-                            log_output("SUCCESS", "FOREIGN KEY UPDATE", route.as_str(), s_sql_fk.clone(), true);
-                        },
-                        Err(err) => {
-                            log_output("ERR QUERY", "UPDATE", route.as_str(), err.to_string(), false);
-                            failed_fk_operations.push(format!("Failed to delete from {}: {}", data_table_update.table, err));
-                        },
-                    }
+                let (is_fk_ok, err_message) = process_foreign_keys_delete_update(
+                    "DELETE", // "DELETE" or "UPDATE"
+                    state.clone(),
+                    &mut transaction,
+                    reference_foreign_keys,
+                    claims.id,
+                    id_raw.clone(),
+                    "".to_string(), // for UPDATE
+                ).await;
+                
+                if !is_fk_ok {
+                    let _ = transaction.rollback().await;
+                    return HttpResponse::InternalServerError().json(WebResponse {
+                        success: false,
+                        message: format!("Transaction rolled back due to foreign key failures: {}", err_message),
+                        total_data: 0,
+                        data: Value::Null,
+                    });
                 }
-
             }
 
-           if failed_fk_operations.is_empty() {
-                // Commit transaction if all operations succeeded
-                match transaction.commit().await {
-                    Ok(_) => {
-                        HttpResponse::Ok().json(WebResponse {
-                            success: true,
-                            message: "Data updated".to_string(),
-                            total_data: 1,
-                            data: Value::Null,
-                        })
-                    },
-                    Err(err) => {
-                        HttpResponse::InternalServerError().json(WebResponse {
-                            success: false,
-                            message: format!("Error committing transaction: {}", err),
-                            total_data: 0,
-                            data: Value::Null,
-                        })
-                    }
+            // Commit transaction if all operations succeeded
+            match transaction.commit().await {
+                Ok(_) => {
+                    HttpResponse::Ok().json(WebResponse {
+                        success: true,
+                        message: "Data deleted successfully".to_string(),
+                        total_data: 1,
+                        data: Value::Null,
+                    })
+                },
+                Err(err) => {
+                    HttpResponse::InternalServerError().json(WebResponse {
+                        success: false,
+                        message: format!("Error committing transaction: {}", err),
+                        total_data: 0,
+                        data: Value::Null,
+                    })
                 }
-            } else {
-                // Rollback transaction due to foreign key failures
-                let _ = transaction.rollback().await;
-                HttpResponse::InternalServerError().json(WebResponse {
-                    success: false,
-                    message: format!("Transaction rolled back due to foreign key failures: {}", failed_fk_operations.join("; ")),
-                    total_data: 0,
-                    data: Value::Null,
-                })
             }
+
         },
         Err(err) => {
             let _ = transaction.rollback().await;
