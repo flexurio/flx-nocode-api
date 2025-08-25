@@ -1,8 +1,8 @@
 use base64::Engine;
 use serde_json::{Map, Value};
-use sqlx::{postgres::{PgRow, Postgres}, Column, Pool, Row};
+use sqlx::{postgres::{PgRow, Postgres}, Column, Pool, Row, Transaction};
 
-use super::state::{DbRepository, DbParam};
+use super::state::{DbRepository, DbParam, DbTransaction};
 
 
 
@@ -200,5 +200,58 @@ impl DbRepository for PostgresRepo {
         Ok(row.0)
     }
 
+    async fn begin_transaction(&self) -> Result<Box<dyn DbTransaction>, anyhow::Error> {
+        let tx = self.pool.begin().await?;
+        Ok(Box::new(PostgresTransaction { tx }))
+    }
+}
+
+pub struct PostgresTransaction {
+    tx: Transaction<'static, Postgres>,
+}
+
+#[async_trait::async_trait]
+impl DbTransaction for PostgresTransaction {
+    async fn query_with_params(&mut self, sql: &str, params: Vec<DbParam>) -> Result<Vec<Value>, anyhow::Error> {
+        // Convert '?' placeholders to PostgreSQL-style $1, $2, ...
+        let mut converted = String::with_capacity(sql.len());
+        let mut idx = 1;
+        for ch in sql.chars() {
+            if ch == '?' {
+                converted.push('$');
+                converted.push_str(&idx.to_string());
+                idx += 1;
+            } else {
+                converted.push(ch);
+            }
+        }
+
+        let mut q = sqlx::query(&converted);
+        for p in params {
+            q = match p {
+                DbParam::I64(v) => q.bind(v),
+                DbParam::F64(v) => q.bind(v),
+                DbParam::Str(v) => q.bind(v),
+                DbParam::Bool(v) => q.bind(v),
+                DbParam::Null => q.bind(Option::<i32>::None),
+            };
+        }
+
+        match q.fetch_all(&mut *self.tx).await {
+            Ok(rows) => {
+                let rows: Vec<PgRow> = rows.into_iter().collect();
+                Ok(pgrows_to_json(rows))
+            },
+            Err(e) => Err(anyhow::anyhow!("Error executing query: {}", e)),
+        }
+    }
+
+    async fn commit(self: Box<Self>) -> Result<(), anyhow::Error> {
+        self.tx.commit().await.map_err(|e| anyhow::anyhow!("Transaction commit failed: {}", e))
+    }
+
+    async fn rollback(self: Box<Self>) -> Result<(), anyhow::Error> {
+        self.tx.rollback().await.map_err(|e| anyhow::anyhow!("Transaction rollback failed: {}", e))
+    }
 }
 

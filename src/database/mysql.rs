@@ -1,9 +1,9 @@
 
 use base64::Engine;
 use serde_json::{Map, Value};
-use sqlx::{mysql::MySqlRow, Column, MySqlPool, Row};
+use sqlx::{mysql::{MySqlRow, MySql}, Column, MySqlPool, Row, Transaction};
 
-use super::state::{DbRepository, DbParam};
+use super::state::{DbRepository, DbParam, DbTransaction};
 
 
 
@@ -248,4 +248,44 @@ impl DbRepository for MySqlRepo {
         Ok(row.0)
     }
 
+    async fn begin_transaction(&self) -> Result<Box<dyn DbTransaction>, anyhow::Error> {
+        let tx = self.pool.begin().await?;
+        Ok(Box::new(MySqlTransaction { tx }))
+    }
+}
+
+pub struct MySqlTransaction {
+    tx: Transaction<'static, MySql>,
+}
+
+#[async_trait::async_trait]
+impl DbTransaction for MySqlTransaction {
+    async fn query_with_params(&mut self, sql: &str, params: Vec<DbParam>) -> Result<Vec<Value>, anyhow::Error> {
+        let mut q = sqlx::query(sql);
+        for p in params {
+            q = match p {
+                DbParam::I64(v) => q.bind(v),
+                DbParam::F64(v) => q.bind(v),
+                DbParam::Str(v) => q.bind(v),
+                DbParam::Bool(v) => q.bind(v),
+                DbParam::Null => q.bind(Option::<i32>::None),
+            };
+        }
+
+        match q.fetch_all(&mut *self.tx).await {
+            Ok(rows) => {
+                let rows: Vec<MySqlRow> = rows.into_iter().collect();
+                Ok(mysqlrows_to_json(rows))
+            },
+            Err(e) => Err(anyhow::anyhow!("Error executing query: {}", e)),
+        }
+    }
+
+    async fn commit(self: Box<Self>) -> Result<(), anyhow::Error> {
+        self.tx.commit().await.map_err(|e| anyhow::anyhow!("Transaction commit failed: {}", e))
+    }
+
+    async fn rollback(self: Box<Self>) -> Result<(), anyhow::Error> {
+        self.tx.rollback().await.map_err(|e| anyhow::anyhow!("Transaction rollback failed: {}", e))
+    }
 }

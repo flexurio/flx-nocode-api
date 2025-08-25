@@ -6,7 +6,7 @@ use regex::Regex;
 use crate::{log::log_output};
 use anyhow::{anyhow, Result};
 
-pub struct QueryConvertor {
+pub struct QueryConverter {
     pub datetime_now: String,    
 }
 
@@ -15,7 +15,7 @@ pub struct AppState {
     pub db_type: String,
     pub secret: String,
     pub encrypt_key: String,
-    pub query_convertor: QueryConvertor,
+    pub query_converter: QueryConverter,
     pub whitelist_ips: Vec<String>,
     pub route_publics: Vec<String>,
 }
@@ -48,6 +48,15 @@ pub trait DbRepository: Send + Sync {
         self.get_total_rows(sql).await
     }
 
+    // Transaction support
+    async fn begin_transaction(&self) -> Result<Box<dyn DbTransaction>, anyhow::Error>;
+}
+
+#[async_trait::async_trait]
+pub trait DbTransaction: Send + Sync {
+    async fn query_with_params(&mut self, sql: &str, params: Vec<DbParam>) -> Result<Vec<Value>, anyhow::Error>;
+    async fn commit(self: Box<Self>) -> Result<(), anyhow::Error>;
+    async fn rollback(self: Box<Self>) -> Result<(), anyhow::Error>;
 }
 
 

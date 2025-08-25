@@ -1,9 +1,9 @@
 use base64::Engine;
 use serde_json::{Map, Value};
-use sqlx::{sqlite::SqliteRow, Column, Row};
+use sqlx::{sqlite::{SqliteRow, Sqlite}, Column, Row, Transaction};
 use sqlx::SqlitePool;
 
-use super::state::{DbRepository, DbParam};
+use super::state::{DbRepository, DbParam, DbTransaction};
 
 pub struct SqliteRepo {
     pub pool: SqlitePool,
@@ -130,4 +130,44 @@ impl DbRepository for SqliteRepo {
         Ok(row.0)
     }
 
+    async fn begin_transaction(&self) -> Result<Box<dyn DbTransaction>, anyhow::Error> {
+        let tx = self.pool.begin().await?;
+        Ok(Box::new(SqliteTransaction { tx }))
+    }
+}
+
+pub struct SqliteTransaction {
+    tx: Transaction<'static, Sqlite>,
+}
+
+#[async_trait::async_trait]
+impl DbTransaction for SqliteTransaction {
+    async fn query_with_params(&mut self, sql: &str, params: Vec<DbParam>) -> Result<Vec<Value>, anyhow::Error> {
+        let mut q = sqlx::query(sql);
+        for p in params {
+            q = match p {
+                DbParam::I64(v) => q.bind(v),
+                DbParam::F64(v) => q.bind(v),
+                DbParam::Str(v) => q.bind(v),
+                DbParam::Bool(v) => q.bind(v),
+                DbParam::Null => q.bind(Option::<i32>::None),
+            };
+        }
+
+        match q.fetch_all(&mut *self.tx).await {
+            Ok(rows) => {
+                let rows: Vec<SqliteRow> = rows.into_iter().collect();
+                Ok(sqliterows_to_json(rows))
+            },
+            Err(e) => Err(anyhow::anyhow!("Error executing query: {}", e)),
+        }
+    }
+
+    async fn commit(self: Box<Self>) -> Result<(), anyhow::Error> {
+        self.tx.commit().await.map_err(|e| anyhow::anyhow!("Transaction commit failed: {}", e))
+    }
+
+    async fn rollback(self: Box<Self>) -> Result<(), anyhow::Error> {
+        self.tx.rollback().await.map_err(|e| anyhow::anyhow!("Transaction rollback failed: {}", e))
+    }
 }

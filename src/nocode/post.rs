@@ -276,7 +276,7 @@ pub async fn insert(
 
     // **Tambahkan created_at**
     insert_columns.push("created_at"); 
-    insert_values.push(state.query_convertor.datetime_now.clone());
+    insert_values.push(state.query_converter.datetime_now.clone());
 
     // **Tambahkan created_by_id**
     insert_columns.push("created_by_id");

@@ -136,11 +136,11 @@ pub async fn process(
     for column in table_schema.trace.column_conflicts.iter() {
         conflict_clause.push_str(&format!("{}=VALUES({}), ", column, column));
     }
-    conflict_clause.push_str(format!("updated_at={}, deleted_at=null", state.query_convertor.datetime_now).as_str());
+    conflict_clause.push_str(format!("updated_at={}, deleted_at=null", state.query_converter.datetime_now).as_str());
 
     let table_schema = filter_table_schema(&table_schemas, route.clone()).await;
     let mut select_columns = table_schema.trace.column_selects.join(", ");
-    select_columns.push_str(format!(", {} as created_at", state.query_convertor.datetime_now).as_str());
+    select_columns.push_str(format!(", {} as created_at", state.query_converter.datetime_now).as_str());
     let joins: Vec<String> = table_schema
         .trace
         .join_tables

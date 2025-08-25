@@ -24,7 +24,7 @@ mod auth;
 mod crypt;
 mod database;
 use database::{
-    state::{AppState, QueryConvertor, DbRepository},
+    state::{AppState, QueryConverter, DbRepository},
     mysql::MySqlRepo,
     postgres::PostgresRepo,
     sqlite::SqliteRepo,
@@ -147,11 +147,13 @@ static SCHEMAS: Lazy<Arc<(Vec<TableSchema>, Vec<ReferenceForeignKey>)>> = Lazy::
                         table: schema.table.clone(),
                         column: fk.column.clone(),
                         action: fk.on_delete.clone(),
+                        type_delete: schema.del.type_delete.clone(), // soft or hard
                     },
                     on_update_action: ReferenceForeignKeyAction{
                         table: schema.table.clone(),
                         column: fk.column.clone(),
                         action: fk.on_update.clone(),
+                        type_delete: "soft".to_string(), // on_update always soft
                     },
                 });
             }
@@ -309,7 +311,7 @@ async fn main() -> std::io::Result<()> {
         _ => "CURRENT_TIMESTAMP".to_string(),
     };
 
-    let query_convertor = QueryConvertor{
+    let query_converter = QueryConverter{
         datetime_now: datetime_now.clone(),
     };
 
@@ -325,7 +327,7 @@ async fn main() -> std::io::Result<()> {
         db_type,
         secret: secret_key,
         encrypt_key,
-        query_convertor,
+        query_converter,
         whitelist_ips,
         route_publics:ROUTE_PUBLICS.to_vec(),
     });

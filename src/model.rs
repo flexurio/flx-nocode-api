@@ -36,6 +36,7 @@ pub struct ReferenceForeignKeyAction {
     pub table: String,
     pub column: String,
     pub action: String, // "cascade", "restrict", "set null", "no action"
+    pub type_delete: String, // soft or hard
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

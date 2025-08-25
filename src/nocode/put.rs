@@ -143,7 +143,7 @@ pub async fn update(
     }
 
     // add updated_at to set_clause
-    set_clause.push_str(&format!("updated_at = {}, ", state.query_convertor.datetime_now));
+    set_clause.push_str(&format!("updated_at = {}, ", state.query_converter.datetime_now));
     set_clause.push_str("updated_by_id = ?, ");
     bind_params.push(DbParam::I64(claims.id));
 
