@@ -5,24 +5,21 @@ use actix_web::{
 use serde_json::{Value};
 
 use crate::{
-    auth::{check_access, get_user_info_from_token, Claims},
-    helpers:: filter_table_schema,
-    database::state::DbParam,
-    log::log_output,
-    model::{TableSchema, WebResponse},
-    AppState
+    auth::{check_access, get_user_info_from_token, Claims}, database::state::DbParam, helpers:: filter_table_schema, log::log_output, model::{ReferenceForeignKey, TableSchema, WebResponse}, AppState
 };
-use std::sync::Arc;
+use std::{sync::Arc};
 
 
 // NCO-DELETE
 pub async fn delete(
     state: Data<AppState>,
     route: String,
-    table_schemas: Arc<Vec<TableSchema>>,
+    schemas: Arc<(Vec<TableSchema>, Vec<ReferenceForeignKey>)>,
     path: Path<String>,
     req: actix_web::HttpRequest,
 ) -> impl Responder {
+    let table_schemas = &schemas.0;
+    let reference_foreign_keys = &schemas.1;
     let mut claims = Claims::default();
     if !state.route_publics.contains(&route) {
         claims = match get_user_info_from_token(req, state.clone()) {
@@ -49,7 +46,7 @@ pub async fn delete(
 
     let id_raw: String = path.into_inner();
 
-    let table_schema = filter_table_schema(&table_schemas, route.clone()).await;
+    let table_schema = filter_table_schema(table_schemas, route.clone()).await;
     if table_schema.table.is_empty() {
         let message_error = format!("Entity {} on folder config/{}.json not found", route, route);
         return HttpResponse::FailedDependency().json(WebResponse {
@@ -82,19 +79,54 @@ pub async fn delete(
 
     log_output("QUERY", "DELETE", route.as_str(), s_sql.clone(), true);
 
-    match &state.db.query_with_params(&s_sql, bind_params).await {
-        Ok(_) => HttpResponse::Ok().json(WebResponse {
-            success: true,
-            message: "Data deleted".to_string(),
-            total_data: 1,
-            data: Value::Null,
-        }),
-        Err(err) => HttpResponse::InternalServerError().json(WebResponse {
-            success: false,
-            message: format!("Error NCO-DELETE: {}", err),
-            total_data: 0,
-            data: Value::Null,
-        }),
+    match &state.db.query_with_params(&s_sql, bind_params.clone()).await {
+        Ok(_) => {
+            
+            // process reference_foreign_keys delete
+            let mut failed_fk_operations = Vec::new();
+            
+            for fk in reference_foreign_keys.iter() {
+                let data_table_delete = fk.on_delete_action.clone();
+                let s_sql_fk = format!("DELETE FROM {} WHERE {} = ?", data_table_delete.table, data_table_delete.column);
+                log_output("FOREIGN KEY", "DELETE", route.as_str(), s_sql_fk.clone(), true);
+                
+                match &state.db.query_with_params(&s_sql_fk, bind_params.clone()).await {
+                    Ok(_) => {
+                        log_output("SUCCESS", "FOREIGN KEY DELETE", route.as_str(), s_sql_fk.clone(), true);
+                    },
+                    Err(err) => {
+                        log_output("ERR QUERY", "DELETE", route.as_str(), err.to_string(), false);
+                        failed_fk_operations.push(format!("Failed to delete from {}: {}", data_table_delete.table, err));
+                    },
+                }
+            }
+
+            if failed_fk_operations.is_empty() {
+                HttpResponse::Ok().json(WebResponse {
+                    success: true,
+                    message: "Data deleted successfully".to_string(),
+                    total_data: 1,
+                    data: Value::Null,
+                })
+            } else {
+                // Some foreign key operations failed, but main delete succeeded
+                // This is a partial success scenario
+                HttpResponse::Ok().json(WebResponse {
+                    success: true,
+                    message: format!("Main delete succeeded, but some related data deletions failed: {}", failed_fk_operations.join("; ")),
+                    total_data: 1,
+                    data: Value::Null,
+                })
+            }
+        },
+        Err(err) => {
+            HttpResponse::InternalServerError().json(WebResponse {
+                success: false,
+                message: format!("Error NCO-DELETE: {}", err),
+                total_data: 0,
+                data: Value::Null,
+            })
+        },
     }
 }
 

@@ -35,7 +35,13 @@ pub fn log_to_file(message: &str) {
         }
     };
     // Regex untuk mendeteksi karakter ANSI escape
-    let ansi_escape = Regex::new(r"\x1B\[[0-9;]*[mK]").unwrap();
+    let ansi_escape = match Regex::new(r"\x1B\[[0-9;]*[mK]") {
+        Ok(regex) => regex,
+        Err(e) => {
+            eprintln!("Failed to compile ANSI regex: {}", e);
+            return;
+        }
+    };
     let clean_message = ansi_escape.replace_all(message, "").to_string();    
     if let Err(e) = writeln!(file, "{}", clean_message) {
         eprintln!("Failed to write to log file: {}", e);

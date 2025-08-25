@@ -44,6 +44,8 @@ mod core;
 use core::{generate_users, login, register};
 mod model;
 use model::TableSchema;
+
+use crate::model::{ReferenceForeignKey, ReferenceForeignKeyAction};
 mod helpers;
 mod log;
 
@@ -51,17 +53,18 @@ mod log;
 // Load routes.json once and expose via CONFIG
 static CONFIG: Lazy<crate::model::Config> = Lazy::new(|| {
     let config_location = std::env::var("LOC_CONFIG").unwrap_or_else(|_| {
-        println!("Warning: LOC_CONFIG not set, using default 'config/example'");
+        eprintln!("Warning: LOC_CONFIG not set, using default 'config/example'");
         "config/example".to_string()
     });
     let file_path = format!("{}/routes.json", config_location);
 
     let content = match std::fs::read_to_string(&file_path) {
         Ok(content) => content,
-        Err(_) => {
-            println!(
-                "ERROR 9081231287 : Can't read file {}",
-                file_path.on_bright_red()
+        Err(e) => {
+            eprintln!(
+                "ERROR 9081231287 : Can't read file {} - {}",
+                file_path.on_bright_red(),
+                e
             );
             return crate::model::Config { routes: vec![], route_publics: vec![] };
         }
@@ -70,11 +73,10 @@ static CONFIG: Lazy<crate::model::Config> = Lazy::new(|| {
     match serde_json::from_str(&content) {
         Ok(config) => config,
         Err(e) => {
-            println!(
+            eprintln!(
                 "Sorry, content of /{}/routes.json is not valid JSON, with ERROR Message : {}",
                 config_location, e
             );
-            // kill the program
             std::process::exit(1);
         }
     }
@@ -106,45 +108,65 @@ static ROUTE_PUBLICS: Lazy<Vec<String>> = Lazy::new(|| CONFIG.route_publics.clon
 // Static Routes for once initialization
 static ROUTES: Lazy<Vec<String>> = Lazy::new(|| CONFIG.routes.clone());
 
-static SCHEMAS: Lazy<Arc<Vec<TableSchema>>> = Lazy::new(|| {
+static SCHEMAS: Lazy<Arc<(Vec<TableSchema>, Vec<ReferenceForeignKey>)>> = Lazy::new(|| {
     let config_location = env::var("LOC_CONFIG").unwrap_or_else(|_| "config/example".to_string());
-    let config_dir = format!(
-        "{}/entity",
-        config_location
-    );
-    let mut schemas = Vec::new();
+    let config_dir = format!("{}/entity", config_location);
+    let mut schemas = Vec::with_capacity(ROUTES.len()); // Pre-allocate capacity
+    let mut ref_foreign_keys: Vec<ReferenceForeignKey> = Vec::with_capacity(ROUTES.len());
 
-    // loop every route in ROUTES
-    for route in ROUTES.iter(){
+    for route in ROUTES.iter() {
         let file_path = format!("{}/{}.json", config_dir, route);
 
-        // Baca isi file
-    let content = match fs::read_to_string(&file_path) {
+        let content = match fs::read_to_string(&file_path) {
             Ok(content) => content,
-            Err(_) => {
-                println!("ERROR 908ihu76 : Can't read file {}", file_path.on_bright_red());
-                // kill the program
+            Err(e) => {
+                eprintln!("ERROR 908ihu76 : Can't read file {} - {}", file_path.on_bright_red(), e);
                 exit(1);
             }
         };
 
-        // Parse JSON
-    let schema: TableSchema = match serde_json::from_str(&content) {
+        let schema: TableSchema = match serde_json::from_str(&content) {
             Ok(schema) => schema,
             Err(e) => {
-                println!(
+                eprintln!(
                     "Sorry, content of /{}/entity/{}.json is not valid JSON, with ERROR Message : {}",
                     config_location, route, e
                 );
-                // kill the program
                 exit(1);
             }
         };
-        schemas.push(schema);
 
+        // check if schema.foreign_keys is not empty
+        if !schema.foreign_keys.is_empty() {
+            // loop througt all schema.foreign_keys
+            for fk in schema.foreign_keys.iter() {
+                ref_foreign_keys.push(ReferenceForeignKey{
+                    table: fk.reference_table.clone(),
+                    column: fk.reference_column.clone(),
+                    on_delete_action: ReferenceForeignKeyAction{
+                        table: schema.table.clone(),
+                        column: fk.column.clone(),
+                        action: fk.on_delete.clone(),
+                    },
+                    on_update_action: ReferenceForeignKeyAction{
+                        table: schema.table.clone(),
+                        column: fk.column.clone(),
+                        action: fk.on_update.clone(),
+                    },
+                });
+            }
+        }
+
+        schemas.push(schema);
     }
 
-    Arc::new(schemas)
+    // Shrink to fit to reduce memory overhead
+    schemas.shrink_to_fit();
+
+    println!("=========================");
+    println!("ref_foreign_keys: {:?}", ref_foreign_keys);
+
+    Arc::new((schemas, ref_foreign_keys))
 });
 
 #[actix_web::main]
@@ -210,7 +232,15 @@ async fn main() -> std::io::Result<()> {
                     exit(1);
                 }
             };
-            let pool = sqlx::MySqlPool::connect(&url).await.unwrap();
+            
+            // Optimized MySQL connection pool
+            let pool = sqlx::MySqlPool::connect(&url)
+                .await
+                .map_err(|e| {
+                    eprintln!("Failed to connect to MySQL: {}", e);
+                    std::io::Error::new(std::io::ErrorKind::ConnectionRefused, e)
+                })?;
+            
             Arc::new(MySqlRepo { pool })
         }
         "postgres" => {
@@ -221,7 +251,15 @@ async fn main() -> std::io::Result<()> {
                     exit(1);
                 }
             };
-            let pool = sqlx::PgPool::connect(&url).await.unwrap();
+            
+            // Optimized PostgreSQL connection pool
+            let pool = sqlx::PgPool::connect(&url)
+                .await
+                .map_err(|e| {
+                    eprintln!("Failed to connect to PostgreSQL: {}", e);
+                    std::io::Error::new(std::io::ErrorKind::ConnectionRefused, e)
+                })?;
+            
             Arc::new(PostgresRepo { pool })
         },
         "sqlite" => {
@@ -233,29 +271,34 @@ async fn main() -> std::io::Result<()> {
                 }
             };
             let path_db = url.replace("sqlite://", "");
-
             let db_path = std::path::Path::new(&path_db);
 
-            // Buat folder 'data' jika belum ada
             if let Some(parent) = db_path.parent() {
                 create_dir_all(parent)?;
             }
 
-            // Cek apakah file sudah ada
-            if db_path.exists() {
-                println!("File {} sudah ada.", db_path.display());
-            } else {
-                // Buat file baru
+            if !db_path.exists() {
                 File::create(db_path)?;
                 println!("File {} berhasil dibuat.", db_path.display());
-            }            
+            }
 
-            println!("url: {}", url);
-            println!("Connecting to SQLite at {}", url);
-            let pool = sqlx::SqlitePool::connect(&url).await.unwrap();
+            // Optimized SQLite connection
+            let pool = sqlx::SqlitePool::connect(&url)
+                .await
+                .map_err(|e| {
+                    eprintln!("Failed to connect to SQLite: {}", e);
+                    std::io::Error::new(std::io::ErrorKind::ConnectionRefused, e)
+                })?;
+            
             Arc::new(SqliteRepo { pool })
         },
-        _ => panic!("Unsupported DB_TYPE: {}", db_type),
+        _ => {
+            eprintln!("Unsupported DB_TYPE: {}", db_type);
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("Unsupported DB_TYPE: {}", db_type)
+            ));
+        }
     };
 
     // Embed DB-specific datetime SQL to avoid runtime I/O
@@ -304,7 +347,7 @@ async fn main() -> std::io::Result<()> {
 
     // check if any table name in SCHEMAS is double
     let mut table_names: HashSet<String> = HashSet::new();
-    for schema in SCHEMAS.iter() {
+    for schema in SCHEMAS.0.iter() {
         if !table_names.insert(schema.table.clone()) {
             println!("--------------------------------------");
             println!("{}",
@@ -358,6 +401,16 @@ async fn main() -> std::io::Result<()> {
                         .map(|mb| mb * 1024 * 1024)
                         .unwrap_or(10 * 1024 * 1024)
                 )
+            )
+            .app_data(
+                web::JsonConfig::default()
+                    .limit(4096) // Limit JSON payload to 4KB for security
+                    .error_handler(|err, _req| {
+                        actix_web::error::InternalError::from_response(
+                            format!("JSON error: {}", err),
+                            actix_web::HttpResponse::BadRequest().json("Invalid JSON payload")
+                        ).into()
+                    })
             )
             .wrap_fn({
                 // clone AppState handle into middleware closure so it owns it (satisfies 'static)
@@ -482,7 +535,7 @@ async fn main() -> std::io::Result<()> {
                                         state,
                                         parameters,
                                         route_get.clone(),
-                                        SCHEMAS.clone(),
+                                        SCHEMAS.0.clone().into(),
                                         req,
                                     )
                                 },
@@ -495,7 +548,7 @@ async fn main() -> std::io::Result<()> {
                                     insert(
                                         state,
                                         route_post.clone(),
-                                        SCHEMAS.clone(),
+                                        SCHEMAS.0.clone().into(),
                                         multipart,
                                         req,
                                     )
@@ -510,7 +563,7 @@ async fn main() -> std::io::Result<()> {
                                         state,
                                         parameters,
                                         route_trace.clone(),
-                                        SCHEMAS.clone(),
+                                        SCHEMAS.0.clone().into(),
                                         req,
                                     )
                                 },
@@ -524,7 +577,7 @@ async fn main() -> std::io::Result<()> {
                                         state,
                                         parameters,
                                         route_patch.clone(),
-                                        SCHEMAS.clone(),
+                                        SCHEMAS.0.clone().into(),
                                         req,
                                     )
                                 },
@@ -573,7 +626,7 @@ async fn main() -> std::io::Result<()> {
                                     update(
                                         state,
                                         route_put.clone(),
-                                        SCHEMAS.clone(),
+                                        SCHEMAS.0.clone().into(),
                                         multipart,
                                         path,
                                         req,
@@ -598,7 +651,7 @@ async fn main() -> std::io::Result<()> {
                                     check_table_design(
                                         state,
                                         route_validate.clone(),
-                                        SCHEMAS.clone(),
+                                        SCHEMAS.0.clone().into(),
                                         req,
                                     )
                                 },
@@ -624,7 +677,7 @@ async fn main() -> std::io::Result<()> {
                                         create_table(
                                             state,
                                             route_generate_table.clone(),
-                                            SCHEMAS.clone(),
+                                            SCHEMAS.0.clone().into(),
                                             req,
                                         )
                                     },
@@ -638,7 +691,20 @@ async fn main() -> std::io::Result<()> {
                 }
             })
     })
-    .bind((host, port))?
+    .workers(
+        env::var("ACTIX_WORKERS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1)
+    )
+    .max_connections(25000) // Limit concurrent connections
+    .client_request_timeout(std::time::Duration::from_secs(30)) // 30 second timeout
+    .client_disconnect_timeout(std::time::Duration::from_secs(5)) // 5 second disconnect timeout
+    .bind((host, port))
+    .map_err(|e| {
+        eprintln!("Failed to bind to {}:{} - {}", host, port, e);
+        e
+    })?
     .run()
     .await
 }

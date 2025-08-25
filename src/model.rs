@@ -14,10 +14,36 @@ pub struct ParamJoin {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ForeignKey {
+    pub column: String,
+    pub reference_table: String,
+    pub reference_column: String,
+    pub on_delete: String, // "cascade", "restrict", "set null", "no action"
+    pub on_update: String, // "cascade", "restrict", "set null", "no action"
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+// create struct pivot ForeingKey to triger action in reference table
+pub struct ReferenceForeignKey{
+    pub table: String,
+    pub column: String,
+    pub on_delete_action: ReferenceForeignKeyAction,
+    pub on_update_action: ReferenceForeignKeyAction,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ReferenceForeignKeyAction {
+    pub table: String,
+    pub column: String,
+    pub action: String, // "cascade", "restrict", "set null", "no action"
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct TableSchema {
     pub table: String,
     pub primary_key: PrimaryKey,
     pub columns: Vec<Column>,
+    pub foreign_keys: Vec<ForeignKey>,
     pub indexes: Vec<Index>,
     pub redis: Redis,
     pub get: GetOperation,
@@ -37,6 +63,7 @@ impl Default for TableSchema {
                 columns: vec![],
             },
             columns: vec![],
+            foreign_keys: vec![],
             indexes: vec![],
             redis: Redis {
                 keys: vec![],
@@ -51,18 +78,23 @@ impl Default for TableSchema {
                 order_by: vec![],
             },
             post: OperationPostPut { 
-                before: "".to_string(),
+                validate_data: "".to_string(),
+                pre_process: "".to_string(),
                 columns: vec![], 
-                after: "".to_string(),
+                post_process: "".to_string(),
             },
             put: OperationPostPut { 
-                before: "".to_string(),
+                validate_data: "".to_string(),
+                pre_process: "".to_string(),
                 columns: vec![], 
-                after: "".to_string(),
+                post_process: "".to_string(),
             },
             del: OperationDelete { 
+                validate_data: "".to_string(),
+                pre_process: "".to_string(),
                 columns: vec![],
-                type_delete: "soft".to_string()
+                type_delete: "soft".to_string(),
+                post_process: "".to_string(),
             },
             patch: Patch {
                 pre_process_sp: "".to_string(),
@@ -133,15 +165,19 @@ pub struct Operation {
 }
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct OperationPostPut {
-    pub before: String,
+    pub validate_data: String,
+    pub pre_process: String,
     pub columns: Vec<String>,
-    pub after: String,
+    pub post_process: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct OperationDelete {
+    pub validate_data: String,
+    pub pre_process: String,
     pub columns: Vec<String>,
     pub type_delete: String,
+    pub post_process: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

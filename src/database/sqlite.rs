@@ -129,4 +129,5 @@ impl DbRepository for SqliteRepo {
         let row = q.fetch_one(&self.pool).await?;
         Ok(row.0)
     }
+
 }

@@ -20,7 +20,13 @@ pub fn encrypt(key: String, plaintext: String) -> String {
     let nonce = Nonce::from_slice(&iv);
 
     // Enkripsi plaintext
-    let ciphertext = cipher.encrypt(nonce, plaintext.as_bytes()).unwrap();
+    let ciphertext = match cipher.encrypt(nonce, plaintext.as_bytes()) {
+        Ok(encrypted) => encrypted,
+        Err(e) => {
+            eprintln!("Encryption failed: {}", e);
+            return String::new();
+        }
+    };
 
     // Gabungkan IV dan ciphertext
     let mut encrypted_data = Vec::new();

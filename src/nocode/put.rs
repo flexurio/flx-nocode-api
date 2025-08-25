@@ -51,7 +51,17 @@ pub async fn update(
         }
     }
 
-    let body = multipart_to_json(multipart).await.unwrap();
+    let body = match multipart_to_json(multipart).await {
+        Ok(json) => json,
+        Err(e) => {
+            return HttpResponse::BadRequest().json(WebResponse {
+                success: false,
+                message: format!("Failed to parse multipart data: {}", e),
+                total_data: 0,
+                data: Value::Null,
+            });
+        }
+    };
     let id_raw: String = path.into_inner();
 
     // get body from request and compare with table_schemas.put.columns
@@ -66,8 +76,15 @@ pub async fn update(
         });
     }
 
-    if table_schema.put.before.contains("SQL:"){
-        execute_sql_formula(&state.db, table_schema.put.before, &body, route.as_str()).await;
+    if table_schema.put.pre_process.contains("SQL:"){
+        if let Err(err) = execute_sql_formula(&state.db, table_schema.put.pre_process, &body, route.as_str()).await {
+            return HttpResponse::InternalServerError().json(WebResponse {
+                success: false,
+                message: format!("Error in pre-process: {}", err),
+                total_data: 0,
+                data: Value::Null,
+            });
+        }
     }
 
 
@@ -77,7 +94,7 @@ pub async fn update(
     // loop every column in table_schemas.put.columns
     for column in table_schema.put.columns.iter() {
         // loop every key and value in body
-        for (key, value) in body.as_object().unwrap().iter() {
+        for (key, value) in body.as_object().unwrap_or(&serde_json::Map::new()).iter() {
             // check if key from body is equal to column
             if key == column {
 
@@ -148,9 +165,18 @@ pub async fn update(
     match &state.db.query_with_params(&s_sql, bind_params).await {
         Ok(_) => {
 
-            if table_schema.put.after.contains("SQL:"){
-                execute_sql_formula(&state.db, table_schema.put.after, &body, route.as_str()).await;
+            if table_schema.put.post_process.contains("SQL:"){
+                if let Err(err) = execute_sql_formula(&state.db, table_schema.put.post_process, &body, route.as_str()).await {
+                    // Rollback transaction if post-process SQL fails
+                    return HttpResponse::InternalServerError().json(WebResponse {
+                        success: false,
+                        message: format!("Error executing post-process SQL: {}", err),
+                        total_data: 0,
+                        data: Value::Null,
+                    });
+                }
             }
+
 
             HttpResponse::Ok().json(WebResponse {
                 success: true,
@@ -159,11 +185,14 @@ pub async fn update(
                 data: Value::Null,
             })
         },
-        Err(err) => HttpResponse::InternalServerError().json(WebResponse {
-            success: false,
-            message: format!("Error NCO-PUT: {}", err),
-            total_data: 0,
-            data: Value::Null,
-        }),
+        Err(err) => {
+            
+            HttpResponse::InternalServerError().json(WebResponse {
+                success: false,
+                message: format!("Error NCO-PUT: {}", err),
+                total_data: 0,
+                data: Value::Null,
+            })
+        },
     }
 }

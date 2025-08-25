@@ -64,7 +64,7 @@ pub async fn process(
     let mut is_deleted_at = true;
 
     for param in table_schema.trace.parameters.iter() {
-        for (key, value) in parameters.clone().into_inner().as_object().unwrap().iter() {
+        for (key, value) in parameters.clone().into_inner().as_object().unwrap_or(&serde_json::Map::new()).iter() {
             if key.contains("deleted_at") {
                 is_deleted_at = false;
             }
@@ -178,18 +178,24 @@ pub async fn process(
     log_output("QUERY", "TRACE", route.as_str(), s_sql.clone(), true);
 
     match &state.db.query(&s_sql).await {
-        Ok(_) => HttpResponse::Ok().json(WebResponse {
-            success: true,
-            message: "Data inserted".to_string(),
-            total_data: 1,
-            data: Value::Null,
-        }),
+        Ok(_) => {
+            // Commit transaction
+            HttpResponse::Ok().json(WebResponse {
+                success: true,
+                message: "Data inserted".to_string(),
+                total_data: 1,
+                data: Value::Null,
+            })
+        },
 
-        Err(err) => HttpResponse::InternalServerError().json(WebResponse {
-            success: false,
-            message: format!("Error NCO-TRACE: {}", err),
-            total_data: 0,
-            data: Value::Null,
-        }),
+        Err(err) => {
+            
+            HttpResponse::InternalServerError().json(WebResponse {
+                success: false,
+                message: format!("Error NCO-TRACE: {}", err),
+                total_data: 0,
+                data: Value::Null,
+            })
+        },
     }
 }

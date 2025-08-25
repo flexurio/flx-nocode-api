@@ -36,38 +36,41 @@ impl Default for Claims {
     }
 }
 
-// Middleware untuk verifikasi token
+// Middleware untuk verifikasi token dengan optimized validation
 pub fn validate_token(
     req: actix_web::HttpRequest,
     state: web::Data<AppState>,
 ) -> Result<web::Data<AppState>, HttpResponse> {
+    // Fast path: check IP whitelist first to avoid expensive token operations
     if is_ip_whitelisted(&req, &state.whitelist_ips) {
-        // Anda bisa sesuaikan isi Claims berikut sesuai kebutuhan
         return Ok(state);
     }
 
+    // Extract Authorization header once
+    let auth_header = match req.headers().get("Authorization") {
+        Some(header) => match header.to_str() {
+            Ok(auth_str) if auth_str.starts_with("Bearer ") => auth_str,
+            _ => return Err(HttpResponse::Unauthorized().json("Invalid Authorization header format")),
+        },
+        None => return Err(HttpResponse::Unauthorized().json("Missing Authorization header")),
+    };
 
-    println!("Validating token...");
-
-     // Cek apakah ada header Authorization
-
-    if let Some(auth_header) = req.headers().get("Authorization") {
-        if let Ok(auth_str) = auth_header.to_str() {
-            if auth_str.starts_with("Bearer ") {
-                let mut validation = Validation::new(Algorithm::HS256);
-                validation.validate_exp = true;
-                match decode::<Claims>(
-                    auth_str.trim_start_matches("Bearer "),
-                    &DecodingKey::from_secret(state.secret.as_ref()),
-                    &validation,
-                ) {
-                    Ok(_) => return Ok(state), // Token valid, lanjutkan
-                    Err(_) => return Err(HttpResponse::Unauthorized().json("Invalid token")),
-                }
-            }
+    // Create validation config once
+    let mut validation = Validation::new(Algorithm::HS256);
+    validation.validate_exp = true;
+    validation.leeway = 30; // Allow 30 seconds clock skew
+    
+    match decode::<Claims>(
+        auth_header.trim_start_matches("Bearer "),
+        &DecodingKey::from_secret(state.secret.as_ref()),
+        &validation,
+    ) {
+        Ok(_) => Ok(state),
+        Err(e) => {
+            eprintln!("Token validation failed: {}", e);
+            Err(HttpResponse::Unauthorized().json("Invalid or expired token"))
         }
     }
-    Err(HttpResponse::Unauthorized().json("Missing or invalid Authorization header"))
 }
 
 
@@ -79,21 +82,23 @@ pub async fn create_token(id_user: i64, name: String, state: web::Data<AppState>
         .timestamp() as usize;
 
     let query = env::var("CUSTOME_JWT_QUERY");
-    let mut addjwt = "".to_string();
-    if query.is_ok() {
-        let mut sql_query = query.unwrap();
+    let mut addjwt = String::new();
+    if let Ok(mut sql_query) = query {
         sql_query = sql_query.to_lowercase();
 
         if !sql_query.is_empty() {
-
             sql_query = sql_query.replace("{:?}", &id_user.to_string());
 
-            addjwt = state.db.query(&sql_query).await.unwrap().first()
-                .and_then(|value| value.as_str().map(|s| s.to_string()))
-                .unwrap_or_default();
-
+            addjwt = match state.db.query(&sql_query).await {
+                Ok(results) => results.first()
+                    .and_then(|value| value.as_str().map(|s| s.to_string()))
+                    .unwrap_or_default(),
+                Err(e) => {
+                    eprintln!("Error executing custom JWT query: {}", e);
+                    String::new()
+                }
+            };
         }
-
     }
 
 
@@ -106,12 +111,17 @@ pub async fn create_token(id_user: i64, name: String, state: web::Data<AppState>
         cs: addjwt,
     };
 
-    encode(
+    match encode(
         &Header::default(),
         &claims,
         &EncodingKey::from_secret(state.secret.as_ref()),
-    )
-    .unwrap()
+    ) {
+        Ok(token) => token,
+        Err(e) => {
+            eprintln!("Failed to create JWT token: {}", e);
+            String::new()
+        }
+    }
 }
 
 // Function untuk mengekstrak claims dari token

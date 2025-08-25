@@ -55,7 +55,17 @@ pub async fn insert(
     let mut function_id_split: Vec<String> = Vec::new();
     let mut id: String = String::new();
 
-    let body = multipart_to_json(multipart).await.unwrap();
+    let body = match multipart_to_json(multipart).await {
+        Ok(json) => json,
+        Err(e) => {
+            return HttpResponse::BadRequest().json(WebResponse {
+                success: false,
+                message: format!("Failed to parse multipart data: {}", e),
+                total_data: 0,
+                data: Value::Null,
+            });
+        }
+    };
 
 
 
@@ -71,8 +81,15 @@ pub async fn insert(
         });
     }
 
-    if table_schema.post.before.contains("SQL:"){
-        execute_sql_formula(&state.db, table_schema.post.before, &body, route.as_str()).await;
+    if table_schema.post.pre_process.contains("SQL:"){
+        if let Err(err) = execute_sql_formula(&state.db, table_schema.post.pre_process, &body, route.as_str()).await {
+            return HttpResponse::InternalServerError().json(WebResponse {
+                success: false,
+                message: format!("Error in pre-process: {}", err),
+                total_data: 0,
+                data: Value::Null,
+            });
+        }
     }
 
 
@@ -146,7 +163,7 @@ pub async fn insert(
         let (exists, matched_string) = find_column_match(&post_columns, &col.name);
 
         if exists && col.name != "id" {
-            let string_formula = matched_string.unwrap().to_string();
+            let string_formula = matched_string.unwrap_or("").to_string();
             if string_formula.contains('=') {
                 isformula = true;
                 // Remove leading "col=" part
@@ -161,7 +178,7 @@ pub async fn insert(
             function_id_split = col.function.split("/").map(|s| s.to_string()).collect();
         }
 
-        if !isformula {
+        if !isformula && !(col.name == "id" && !col.function.is_empty()) {
             // Ambil dari body dan bind sebagai param
             let mut value = body
                 .get(&col.name)
@@ -250,10 +267,9 @@ pub async fn insert(
         // remove id from insert_columns
         insert_columns.retain(|&x| x != "id");
         insert_columns.push("id"); 
-        // remove first index from insert_values
-    insert_values.remove(0);
-    insert_values.push("?".into());
-    bind_params.push(DbParam::Str(id));
+        // add id parameter
+        insert_values.push("?".into());
+        bind_params.push(DbParam::Str(id));
 
 
     }
@@ -278,13 +294,23 @@ pub async fn insert(
     );
 
     log_output("QUERY", "POST", route.as_str(), s_sql.clone(), true);
+    log_output("PARAMS", "POST", route.as_str(), format!("{:?}", bind_params), true);
 
     match &state.db.query_with_params(&s_sql, bind_params).await {
         Ok(_) => {
 
-            if table_schema.post.after.contains("SQL:"){
-                execute_sql_formula(&state.db, table_schema.post.after, &body, route.as_str()).await;
+            if table_schema.post.post_process.contains("SQL:"){
+                if let Err(err) = execute_sql_formula(&state.db, table_schema.post.post_process, &body, route.as_str()).await {
+                    // Rollback transaction if post-process SQL fails
+                    return HttpResponse::InternalServerError().json(WebResponse {
+                        success: false,
+                        message: format!("Error executing post-process SQL: {}", err),
+                        total_data: 0,
+                        data: Value::Null,
+                    });
+                }
             }
+
 
             HttpResponse::Ok().json(WebResponse {
                 success: true,

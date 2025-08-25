@@ -12,10 +12,11 @@ pub struct MySqlRepo {
 }
 
 pub fn mysqlrows_to_json(rows: Vec<MySqlRow>) -> Vec<Value> {
-    let mut json_array = Vec::new();
+    // Pre-allocate with exact capacity to avoid reallocations
+    let mut json_array = Vec::with_capacity(rows.len());
 
     for row in rows {
-        let mut obj = Map::new();
+        let mut obj = Map::with_capacity(row.columns().len()); // Pre-allocate columns
 
         for column in row.columns() {
             let name = column.name();
@@ -31,7 +32,7 @@ pub fn mysqlrows_to_json(rows: Vec<MySqlRow>) -> Vec<Value> {
                         Ok(Some(v)) => Value::Number(v.into()),
                         Ok(None) => Value::Null,
                         Err(e) => {
-                            println!("Failed to get {} as Option<u64>: {:?}", name, e);
+                            eprintln!("Failed to get {} as Option<u64>: {:?}", name, e);
                             Value::Null
                         }
                     }
@@ -40,7 +41,7 @@ pub fn mysqlrows_to_json(rows: Vec<MySqlRow>) -> Vec<Value> {
                         Ok(Some(v)) => Value::Number(v.into()),
                         Ok(None) => Value::Null,
                         Err(e) => {
-                            println!("Failed to get {} as Option<i64>: {:?}", name, e);
+                            eprintln!("Failed to get {} as Option<i64>: {:?}", name, e);
                             Value::Null
                         }
                     }
@@ -57,7 +58,7 @@ pub fn mysqlrows_to_json(rows: Vec<MySqlRow>) -> Vec<Value> {
                     },
                     Ok(None) => Value::Null,
                     Err(e) => {
-                        println!("VARSTRING with BINARY flag - Failed to get {} as Option<Vec<u8>>: {:?}, {} \n", name, e, type_info_debug);
+                        eprintln!("VARSTRING with BINARY flag - Failed to get {} as Option<Vec<u8>>: {:?}, {} \n", name, e, type_info_debug);
                         Value::Null
                     }
                 }
@@ -68,7 +69,7 @@ pub fn mysqlrows_to_json(rows: Vec<MySqlRow>) -> Vec<Value> {
                         Ok(Some(v)) => Value::String(v),
                         Ok(None) => Value::Null,
                         Err(e) => {
-                            println!("VARSTRING Failed to get {} as Option<String>: {:?}, {} \n", name, e, type_info_debug);
+                            eprintln!("VARSTRING Failed to get {} as Option<String>: {:?}, {} \n", name, e, type_info_debug);
                             Value::Null
                         }
                     }
@@ -79,7 +80,7 @@ pub fn mysqlrows_to_json(rows: Vec<MySqlRow>) -> Vec<Value> {
                     Ok(Some(dt)) => Value::String(dt.to_string()),
                     Ok(None) => Value::Null,
                     Err(e) => {
-                        println!("DATETIME Failed to get {} as Option<chrono::NaiveDateTime>: {:?}, {} \n", name, e, type_info_debug);
+                        eprintln!("DATETIME Failed to get {} as Option<chrono::NaiveDateTime>: {:?}, {} \n", name, e, type_info_debug);
                         Value::Null
                     }
                 }
@@ -90,7 +91,7 @@ pub fn mysqlrows_to_json(rows: Vec<MySqlRow>) -> Vec<Value> {
                         match row.try_get::<chrono::NaiveDateTime, _>(name) {
                             Ok(dt) => Value::String(dt.to_string()),
                             Err(e) => {
-                                println!("TIMESTAMP Failed to get {} as chrono types: {:?}, {} \n", name, e, type_info_debug);
+                                eprintln!("TIMESTAMP Failed to get {} as chrono types: {:?}, {} \n", name, e, type_info_debug);
                                 Value::Null
                             }
                         }
@@ -101,7 +102,7 @@ pub fn mysqlrows_to_json(rows: Vec<MySqlRow>) -> Vec<Value> {
                     Ok(Some(t)) => Value::String(t.to_string()),
                     Ok(None) => Value::Null,
                     Err(e) => {
-                        println!("TIME Failed to get {} as Option<chrono::NaiveTime>: {:?}, {} \n", name, e, type_info_debug);
+                        eprintln!("TIME Failed to get {} as Option<chrono::NaiveTime>: {:?}, {} \n", name, e, type_info_debug);
                         Value::Null
                     }
                 }
@@ -111,7 +112,7 @@ pub fn mysqlrows_to_json(rows: Vec<MySqlRow>) -> Vec<Value> {
                     Ok(Some(v)) => Value::String(base64::engine::general_purpose::STANDARD.encode(v)),
                     Ok(None) => Value::Null,
                     Err(e) => {
-                        println!("VARBINARY / BINARY Failed to get {} as Option<Vec<u8>> (VARBINARY): {:?}, {} \n", name, e, type_info_debug);
+                        eprintln!("VARBINARY / BINARY Failed to get {} as Option<Vec<u8>> (VARBINARY): {:?}, {} \n", name, e, type_info_debug);
                         Value::Null
                     }
                 }
@@ -121,7 +122,7 @@ pub fn mysqlrows_to_json(rows: Vec<MySqlRow>) -> Vec<Value> {
                     Ok(Some(v)) => Value::String(base64::engine::general_purpose::STANDARD.encode(v)),
                     Ok(None) => Value::Null,
                     Err(e) => {
-                        println!("Failed to get {} as Option<Vec<u8>>: {:?}", name, e);
+                        eprintln!("Failed to get {} as Option<Vec<u8>>: {:?}", name, e);
                         Value::Null
                     }
                 }
@@ -130,7 +131,7 @@ pub fn mysqlrows_to_json(rows: Vec<MySqlRow>) -> Vec<Value> {
                     Ok(Some(v)) => serde_json::Number::from_f64(v).map(Value::Number).unwrap_or(Value::Null),
                     Ok(None) => Value::Null,
                     Err(e) => {
-                        println!("Failed to get {} as Option<f64>: {:?}", name, e);
+                        eprintln!("Failed to get {} as Option<f64>: {:?}", name, e);
                         Value::Null
                     }
                 }
@@ -140,7 +141,7 @@ pub fn mysqlrows_to_json(rows: Vec<MySqlRow>) -> Vec<Value> {
                     Ok(Some(v)) => Value::Number(v.into()),
                     Ok(None) => Value::Null,
                     Err(e) => {
-                        println!("Failed to get {} as Option<i32>: {:?}", name, e);
+                        eprintln!("Failed to get {} as Option<i32>: {:?}", name, e);
                         Value::Null
                     }
                 }
@@ -152,11 +153,11 @@ pub fn mysqlrows_to_json(rows: Vec<MySqlRow>) -> Vec<Value> {
                     .unwrap_or(Value::Null)
             } else {
                 // fallback default string conversion
-                println!("Unknown column type for {}: {}", name, type_info_debug);
+                eprintln!("Unknown column type for {}: {}", name, type_info_debug);
                 row.try_get::<String, _>(name)
                     .map(Value::String)
                     .unwrap_or_else(|e| {
-                        println!("Failed to get {} as String (fallback): {:?}", name, e);
+                        eprintln!("Failed to get {} as String (fallback): {:?}", name, e);
                         // Try as binary data if string fails
                         row.try_get::<Option<Vec<u8>>, _>(name)
                             .map(|opt_bytes| {
@@ -175,6 +176,8 @@ pub fn mysqlrows_to_json(rows: Vec<MySqlRow>) -> Vec<Value> {
         json_array.push(Value::Object(obj));
     }
 
+    // Shrink to fit to reclaim unused memory
+    json_array.shrink_to_fit();
     json_array
 }
 
@@ -244,4 +247,5 @@ impl DbRepository for MySqlRepo {
         let row = q.fetch_one(&self.pool).await?;
         Ok(row.0)
     }
+
 }

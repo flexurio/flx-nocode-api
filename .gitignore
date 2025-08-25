@@ -7,3 +7,4 @@ release/*
 .DS_Store
 configmftl
 __MACOSX
+static

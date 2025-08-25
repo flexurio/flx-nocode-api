@@ -66,7 +66,7 @@ pub async fn process_sp(
     let mut bind_params: Vec<DbParam> = Vec::new();
 
     for param in table_schema.patch.parameters.iter() {
-        for (key, value) in parameters.clone().into_inner().as_object().unwrap().iter() {
+        for (key, value) in parameters.clone().into_inner().as_object().unwrap_or(&serde_json::Map::new()).iter() {
             // check if param contain in key
             if key == param {
                 let s = value.to_string().trim_matches('"').to_string();
@@ -85,22 +85,27 @@ pub async fn process_sp(
         param_sp.join(", ")
     );
 
-    log_output("QUERY", "TRACE", route.as_str(), s_sql.clone(), true);
+    log_output("QUERY", "PATCH", route.as_str(), s_sql.clone(), true);
 
     match &state.db.query_with_params(&s_sql, bind_params).await {
-        Ok(_) => HttpResponse::Ok().json(WebResponse {
-            success: true,
-            message: "Data inserted".to_string(),
-            total_data: 1,
-            data: Value::Null,
-        }),
+        Ok(_) => {
+            HttpResponse::Ok().json(WebResponse {
+                success: true,
+                message: "Stored procedure executed".to_string(),
+                total_data: 1,
+                data: Value::Null,
+            })
+        },
 
-        Err(err) => HttpResponse::InternalServerError().json(WebResponse {
-            success: false,
-            message: format!("Error NCO-TRACE: {}", err),
-            total_data: 0,
-            data: Value::Null,
-        }),
+        Err(err) => {
+            
+            HttpResponse::InternalServerError().json(WebResponse {
+                success: false,
+                message: format!("Error NCO-PATCH: {}", err),
+                total_data: 0,
+                data: Value::Null,
+            })
+        },
     }
 
 }

@@ -199,5 +199,6 @@ impl DbRepository for PostgresRepo {
         let row = q.fetch_one(&self.pool).await?;
         Ok(row.0)
     }
+
 }
 

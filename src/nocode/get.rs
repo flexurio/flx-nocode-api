@@ -50,7 +50,7 @@ pub async fn select(
     let mut where_clause: String = "WHERE ".to_string();
     let mut limit_clause: String = "LIMIT ".to_string();
     let mut i_limit = 100;
-    let mut pagination_clause: String = "".to_string();
+    let mut pagination_clause = String::new();
     let mut i_page = 1;
     let mut order_clause: String = "ORDER BY ".to_string();
     let mut order_column = table_schema.get.order_by.clone().join(", ");
@@ -91,10 +91,22 @@ pub async fn select(
     );
 
     // get parameters value only allowed from table_schemas.get.parameters
-    // loop every table_schemas.get.parameters
+    // Pre-convert to object once for efficiency
+    let params_obj = parameters.clone().into_inner();
+    let params_map = match params_obj.as_object() {
+        Some(map) => map,
+        None => {
+            return HttpResponse::BadRequest().json(WebResponse {
+                success: false,
+                message: "Invalid parameters format".to_string(),
+                total_data: 0,
+                data: Value::Null,
+            });
+        }
+    };
 
-    for param in table_schema.get.parameters.iter() {
-        for (key, value) in parameters.clone().into_inner().as_object().unwrap().iter() {
+    for param in &table_schema.get.parameters {
+        for (key, value) in params_map {
             if key.contains("deleted_at") {
                 is_deleted_at = false;
             }
@@ -313,6 +325,7 @@ pub async fn select(
     );
 
     log_output("QUERY", "GET", route.as_str(), s_sql.clone(), true);
+    log_output("PARAMS", "POST", route.as_str(), format!("{:?}", bind_params), true);
 
     // get query without WHERE and ORDER BY. to get total data in table
     let s_sql_total = format!(

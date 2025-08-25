@@ -27,53 +27,39 @@ pub fn cetak_label(host: String, port: u16) {
 }
 
 // create function to get data from table_schemas where table is equal to route
-pub async fn filter_table_schema(table_schemas:&[TableSchema], route:String) -> TableSchema {
-        let mut result = Vec::new();
+pub async fn filter_table_schema(table_schemas: &[TableSchema], route: String) -> TableSchema {
+    // Use iterator for better performance instead of loop
+    if let Some(schema) = table_schemas.iter().find(|schema| {
+        let table_name = if schema.table.contains('.') {
+            schema.table.split('.').last().unwrap_or(&schema.table)
+        } else {
+            &schema.table
+        };
+        table_name == route
+    }) {
+        let mut table_schema_clone = schema.clone();
         
-
-        for table_schema in table_schemas {
-
-            // check if table_schema.table contains .
-            // if it does, split the string by . and get the last element
-            // if it does not, use the table_schema.table as is
-            let table_schema_table = if table_schema.table.contains('.') {
-                let table_schema_table_split: Vec<&str> = table_schema.table.split('.').collect();
-                table_schema_table_split[table_schema_table_split.len() - 1].to_string()
-            } else {
-                table_schema.table.clone()
-            };
-
-            if table_schema_table == route {
-                
-                // tambah parameter mandatory
-                let mut table_schema_clone = table_schema.clone();
-
-                let deleted_at_param = format!("{}.deleted_at", table_schema_clone.table);
-
-                let existing_params: HashSet<_> = table_schema_clone.get.parameters.iter().cloned().collect();
-                
-                if !existing_params.contains(&deleted_at_param) {
-                    table_schema_clone.get.parameters.push(deleted_at_param);
-                }
-            
-                let params_mandatory = &[
-                    "page", "sort", "ascending", "limit", "search", "redis",
-                ];
-                    
-                for param in params_mandatory {
-                    if !existing_params.contains(*param) {
-                        table_schema_clone.get.parameters.push(param.to_string());
-                    }
-                }
-                
-                result.push(table_schema_clone);
+        // Pre-calculate mandatory parameters
+        let deleted_at_param = format!("{}.deleted_at", table_schema_clone.table);
+        let params_mandatory = ["page", "sort", "ascending", "limit", "search", "redis"];
+        
+        // Use HashSet for O(1) lookup instead of O(n) contains
+        let existing_params: HashSet<String> = table_schema_clone.get.parameters.iter().cloned().collect();
+        
+        if !existing_params.contains(&deleted_at_param) {
+            table_schema_clone.get.parameters.push(deleted_at_param);
+        }
+        
+        for &param in &params_mandatory {
+            if !existing_params.contains(param) {
+                table_schema_clone.get.parameters.push(param.to_string());
             }
         }
-        if result.is_empty() {
-                TableSchema::default()
-        } else {
-            result[0].clone()
-        }
+        
+        table_schema_clone
+    } else {
+        TableSchema::default()
+    }
 }
 
 // create function to split column and operator
@@ -117,9 +103,11 @@ pub fn operator_query(symbol: &str) -> String {
         operator.to_string()
 }
 
-// create function convert MultiPart to Json
+// create function convert MultiPart to Json with security and memory optimizations
 pub async fn multipart_to_json(mut multipart: Multipart) -> Result<Value, actix_web::Error> {
     let mut json_data = json!({});
+    const MAX_FILE_SIZE: usize = 50 * 1024 * 1024; // 50MB limit
+    const MAX_FIELD_SIZE: usize = 1024 * 1024; // 1MB limit for text fields
 
     while let Some(item) = multipart.next().await {
         let mut field = item.map_err(actix_web::Error::from)?;
@@ -131,18 +119,29 @@ pub async fn multipart_to_json(mut multipart: Multipart) -> Result<Value, actix_
             .map(|name| name.to_string())
             .unwrap_or_else(|| "unnamed".to_string());
 
+        // Validate field name to prevent path traversal
+        if field_name.contains("..") || field_name.contains('/') || field_name.contains('\\') {
+            return Err(actix_web::error::ErrorBadRequest("Invalid field name"));
+        }
+
         if let Some(filename) = content_disposition
             .as_ref()
             .and_then(|cd| cd.get_filename())
         {
+            // File upload handling with size limit
             let mut buffer = Vec::new();
+            let mut total_size = 0usize;
+            
             while let Some(chunk) = field.next().await {
                 let data = chunk?;
+                total_size += data.len();
+                
+                if total_size > MAX_FILE_SIZE {
+                    return Err(actix_web::error::ErrorPayloadTooLarge("File too large"));
+                }
+                
                 buffer.extend_from_slice(&data);
             }
-
-            // check env IMAGE_STORAGE
-            // if IMAGE_STORAGE is DB than convert file to base64 else save to disk that defined in IMAGE_STORAGE
 
             let image_storage = std::env::var("LOC_IMAGE").unwrap_or("DB".to_string());
             if image_storage == "DB" {
@@ -151,6 +150,12 @@ pub async fn multipart_to_json(mut multipart: Multipart) -> Result<Value, actix_
                     .content_type()
                     .map(|t| t.to_string())
                     .unwrap_or("application/octet-stream".to_string());
+                
+                // Validate MIME type for security
+                if !is_safe_mime_type(&mime_type) {
+                    return Err(actix_web::error::ErrorBadRequest("Unsupported file type"));
+                }
+                
                 let data_uri = format!("data:{};base64,{}", mime_type, base64_data);
                 json_data[field_name] = json!(data_uri);
             } else {
@@ -159,6 +164,11 @@ pub async fn multipart_to_json(mut multipart: Multipart) -> Result<Value, actix_
                 let static_root = std::env::var("LOC_STATIC").unwrap_or_else(|_| "static".to_string());
                 let file_rel = format!("{}/{}", image_storage.trim_matches('/'), safe_name);
                 let file_path = std::path::Path::new(&static_root).join(&file_rel);
+
+                // Validate path to prevent directory traversal
+                if !file_path.starts_with(&static_root) {
+                    return Err(actix_web::error::ErrorBadRequest("Invalid file path"));
+                }
 
                 if let Some(parent) = file_path.parent() {
                     std::fs::create_dir_all(parent)?;
@@ -171,11 +181,21 @@ pub async fn multipart_to_json(mut multipart: Multipart) -> Result<Value, actix_
                 json_data[field_name] = json!(url);
             }
         } else {
+            // Text field handling with size limit
             let mut text_data = String::new();
+            let mut total_size = 0usize;
+            
             while let Some(chunk) = field.next().await {
                 let data = chunk?;
+                total_size += data.len();
+                
+                if total_size > MAX_FIELD_SIZE {
+                    return Err(actix_web::error::ErrorPayloadTooLarge("Field too large"));
+                }
+                
                 text_data.push_str(&String::from_utf8_lossy(&data));
             }
+            
             json_data[field_name] = match serde_json::from_str(&text_data) {
                 Ok(parsed) => parsed,
                 Err(_) => json!(text_data),
@@ -186,12 +206,30 @@ pub async fn multipart_to_json(mut multipart: Multipart) -> Result<Value, actix_
     Ok(json_data)
 }
 
+// Helper function to validate MIME types for security
+fn is_safe_mime_type(mime_type: &str) -> bool {
+    const ALLOWED_TYPES: &[&str] = &[
+        "image/jpeg", "image/png", "image/gif", "image/webp", "image/bmp",
+        "application/pdf", "text/plain", "application/json",
+        "application/msword", "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/vnd.ms-excel", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    ];
+    
+    ALLOWED_TYPES.contains(&mime_type)
+}
+
 
 pub fn extract_expressions(input: &str) -> HashSet<String> {
     let mut results = HashSet::new();
 
     // Regex untuk ekspresi dalam kurung kurawal { ... }
-    let re_braces = Regex::new(r"\{([^{}]+)\}").unwrap();
+    let re_braces = match Regex::new(r"\{([^{}]+)\}") {
+        Ok(regex) => regex,
+        Err(e) => {
+            eprintln!("Failed to compile regex: {}", e);
+            return results;
+        }
+    };
 
     for cap in re_braces.captures_iter(input) {
         let expr = cap[1].to_string();

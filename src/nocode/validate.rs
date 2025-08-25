@@ -76,6 +76,7 @@ pub fn validate_table_design(design: TableSchema) -> TableSchema {
             columns: Vec::new(),
         },
         columns: Vec::new(),
+        foreign_keys: Vec::new(),
         indexes: Vec::new(),
         redis: Redis {
             keys: Vec::new(),
@@ -90,18 +91,23 @@ pub fn validate_table_design(design: TableSchema) -> TableSchema {
             order_by: Vec::new(),
         },
         post: OperationPostPut {
-            before: String::new(),
+            validate_data: String::new(),
+            pre_process: String::new(),
             columns: Vec::new(),
-            after: String::new(),
+            post_process: String::new(),
         },
         put: OperationPostPut {
-            before: String::new(),
+            validate_data: String::new(),
+            pre_process: String::new(),
             columns: Vec::new(),
-            after: String::new(),
+            post_process: String::new(),
         },
         del: OperationDelete {
+            validate_data: String::new(),
+            pre_process: String::new(),
             columns: Vec::new(),
-            type_delete: "soft".to_string()
+            type_delete: "soft".to_string(),
+            post_process: String::new(),
         },
         patch: Patch {
             pre_process_sp: String::new(),

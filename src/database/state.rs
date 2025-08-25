@@ -47,21 +47,29 @@ pub trait DbRepository: Send + Sync {
     async fn get_total_rows_with_params(&self, sql: &str, _params: Vec<DbParam>) -> Result<i32, anyhow::Error> {
         self.get_total_rows(sql).await
     }
+
 }
 
 
-pub async fn execute_sql_formula(db: &Arc<dyn DbRepository>, sql: String, body: &serde_json::Value, route: &str) {
+pub async fn execute_sql_formula(db: &Arc<dyn DbRepository>, sql: String, body: &serde_json::Value, route: &str) -> Result<(), anyhow::Error> {
     // Build parameterized SQL and params safely, then execute.
     match build_sql_and_params_from_formula(&sql, body) {
         Ok((built_sql, params)) => {
-            log_output("QUERY", "POST", route, built_sql.clone(), true);
+            log_output("QUERY", "AFTER", route, built_sql.clone(), true);
             match db.query_with_params(&built_sql, params).await {
-                Ok(_) => println!("AFTER POST SQL query executed successfully"),
-                Err(err) => println!("Error executing SQL query: {}", err),
+                Ok(_) => {
+                    log_output("SUCCESS", "AFTER", route, "SQL formula executed successfully".to_string(), true);
+                    Ok(())
+                },
+                Err(err) => {
+                    log_output("ERROR", "AFTER", route, format!("Error executing SQL query: {}", err), false);
+                    Err(err)
+                }
             }
         }
         Err(e) => {
-            println!("Error building SQL formula for route {}: {}", route, e);
+            log_output("ERROR", "AFTER", route, format!("Error building SQL formula: {}", e), false);
+            Err(e)
         }
     }
 }
@@ -93,26 +101,32 @@ pub fn concat_column_values(values: Vec<Value>, column_name: &str, separator: &s
 
 #[allow(dead_code)]
 pub fn sanitize_sql_input(input: String) -> String {
-    input
-        .replace("'", "`")       // escape single quotes (SQL standard)
-        .replace("--", "")        // remove SQL comment syntax
-        .replace(";", "")         // prevent query stacking
-        .replace("\"", "")        // remove double quotes
-        .replace("\\", "")        // prevent backslash escape (esp. in MySQL)
-        .replace("/*", "")        // remove block comment start
-        .replace("*/", "")        // remove block comment end
-        .replace("#", "")         // MySQL comment
-        .replace("`", "")         // MySQL identifier escape
-        .replace(" OR ", " ")     // remove logic operators
-        .replace(" or ", " ")
-        .replace(" AND ", " ")
-        .replace(" and ", " ")
-        .replace("=", "")         // remove equal signs
-        .replace("(", "")         // remove open parenthesis
-        .replace(")", "")         // remove close parenthesis
-        .replace("%", "")         // remove wildcards in LIKE
-        .replace("_", "")         // remove underscore wildcard
-        .replace("\u{0000}", "")  // remove null byte
+    // More comprehensive SQL injection prevention
+    let dangerous_patterns = [
+        "--", "/*", "*/", ";", "\\", "xp_", "sp_", 
+        "exec", "execute", "select", "insert", "update", 
+        "delete", "drop", "create", "alter", "union"
+    ];
+    
+    let mut sanitized = input
+        .replace("'", "''")       // Proper SQL escape for single quotes
+        .replace("\"", "\"\"")    // Escape double quotes
+        .replace("\u{0000}", "")  // Remove null bytes
+        .replace("\r", "")        // Remove carriage returns
+        .replace("\n", " ");      // Replace newlines with spaces
+    
+    // Remove dangerous SQL keywords (case insensitive)
+    for pattern in dangerous_patterns {
+        sanitized = sanitized.replace(&pattern.to_lowercase(), "");
+        sanitized = sanitized.replace(&pattern.to_uppercase(), "");
+    }
+    
+    // Limit length to prevent buffer overflow attacks
+    if sanitized.len() > 1000 {
+        sanitized.truncate(1000);
+    }
+    
+    sanitized.trim().to_string()
 }
 
 
