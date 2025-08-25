@@ -185,7 +185,7 @@ pub async fn update(
                     if !is_valid {
                         return HttpResponse::BadRequest().json(WebResponse {
                             success: false,
-                            message: "Validation data is empty".to_string(),
+                            message: "Validation data from table is not valid. Please contact your administrator".to_string(),
                             total_data: 0,
                             data: Value::Null,
                         });
@@ -193,7 +193,7 @@ pub async fn update(
                 } else {
                     return HttpResponse::BadRequest().json(WebResponse {
                         success: false,
-                        message: "Validation data is empty".to_string(),
+                        message: "Validation data from table is empty. Please contact your administrator".to_string(),
                         total_data: 0,
                         data: Value::Null,
                     });

@@ -1,4 +1,4 @@
-use std::{collections::HashSet, os::macos::raw};
+use std::{collections::HashSet};
 use actix_multipart::Multipart;
 use actix_web::{
     web::Data,
@@ -310,7 +310,7 @@ pub async fn insert(
                     if !is_valid {
                         return HttpResponse::BadRequest().json(WebResponse {
                             success: false,
-                            message: "Validation data is empty".to_string(),
+                            message: "Validation data from table is not valid. Please contact your administrator".to_string(),
                             total_data: 0,
                             data: Value::Null,
                         });
@@ -318,7 +318,7 @@ pub async fn insert(
                 } else {
                     return HttpResponse::BadRequest().json(WebResponse {
                         success: false,
-                        message: "Validation data is empty".to_string(),
+                        message: "Validation data from table is empty. Please contact your administrator".to_string(),
                         total_data: 0,
                         data: Value::Null,
                     });
