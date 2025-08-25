@@ -60,29 +60,6 @@ pub trait DbTransaction: Send + Sync {
 }
 
 
-pub async fn execute_sql_formula(db: &Arc<dyn DbRepository>, sql: String, body: &serde_json::Value, route: &str) -> Result<(), anyhow::Error> {
-    // Build parameterized SQL and params safely, then execute.
-    match build_sql_and_params_from_formula(&sql, body) {
-        Ok((built_sql, params)) => {
-            log_output("QUERY", "AFTER", route, built_sql.clone(), true);
-            match db.query_with_params(&built_sql, params).await {
-                Ok(_) => {
-                    log_output("SUCCESS", "AFTER", route, "SQL formula executed successfully".to_string(), true);
-                    Ok(())
-                },
-                Err(err) => {
-                    log_output("ERROR", "AFTER", route, format!("Error executing SQL query: {}", err), false);
-                    Err(err)
-                }
-            }
-        }
-        Err(e) => {
-            log_output("ERROR", "AFTER", route, format!("Error building SQL formula: {}", e), false);
-            Err(e)
-        }
-    }
-}
-
 pub async fn execute_sql_formula_with_transaction(tx: &mut Box<dyn DbTransaction>, sql: String, body: &serde_json::Value, route: &str) -> Result<(), anyhow::Error> {
     // Build parameterized SQL and params safely, then execute within transaction.
     match build_sql_and_params_from_formula(&sql, body) {

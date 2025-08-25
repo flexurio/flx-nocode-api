@@ -177,9 +177,25 @@ pub async fn process(
 
     log_output("QUERY", "TRACE", route.as_str(), s_sql.clone(), true);
 
-    match &state.db.query(&s_sql).await {
+        // Begin transaction
+    let mut transaction = match state.db.begin_transaction().await {
+        Ok(tx) => tx,
+        Err(err) => {
+            return HttpResponse::InternalServerError().json(WebResponse {
+                success: false,
+                message: format!("Error starting transaction: {}", err),
+                total_data: 0,
+                data: Value::Null,
+            });
+        }
+    };
+
+
+
+    match transaction.query_with_params(&s_sql, [].to_vec()).await {
         Ok(_) => {
             // Commit transaction
+            transaction.commit().await.ok();
             HttpResponse::Ok().json(WebResponse {
                 success: true,
                 message: "Data inserted".to_string(),
@@ -189,7 +205,7 @@ pub async fn process(
         },
 
         Err(err) => {
-            
+            transaction.rollback().await.ok();
             HttpResponse::InternalServerError().json(WebResponse {
                 success: false,
                 message: format!("Error NCO-TRACE: {}", err),

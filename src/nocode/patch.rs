@@ -87,8 +87,22 @@ pub async fn process_sp(
 
     log_output("QUERY", "PATCH", route.as_str(), s_sql.clone(), true);
 
-    match &state.db.query_with_params(&s_sql, bind_params).await {
+    // Begin transaction
+    let mut transaction = match state.db.begin_transaction().await {
+        Ok(tx) => tx,
+        Err(err) => {
+            return HttpResponse::InternalServerError().json(WebResponse {
+                success: false,
+                message: format!("Error starting transaction: {}", err),
+                total_data: 0,
+                data: Value::Null,
+            });
+        }
+    };
+
+    match transaction.query_with_params(&s_sql, bind_params).await {
         Ok(_) => {
+            transaction.commit().await.ok();
             HttpResponse::Ok().json(WebResponse {
                 success: true,
                 message: "Stored procedure executed".to_string(),
@@ -98,7 +112,7 @@ pub async fn process_sp(
         },
 
         Err(err) => {
-            
+            transaction.rollback().await.ok();
             HttpResponse::InternalServerError().json(WebResponse {
                 success: false,
                 message: format!("Error NCO-PATCH: {}", err),

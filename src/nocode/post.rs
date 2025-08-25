@@ -9,8 +9,8 @@ use serde_json::{Value};
 use crate::{
     auth::{check_access, get_user_info_from_token, Claims},
     crypt::{encrypt, is_encrypted_string},
-    database::state::{execute_sql_formula, DbParam},
-    helpers::{ filter_table_schema, find_column_match, multipart_to_json, extract_expressions },
+    database::state::{execute_sql_formula_with_transaction, DbParam},
+    helpers::{ extract_expressions, filter_table_schema, find_column_match, multipart_to_json },
     log::log_output,
     model::{Column, TableSchema, WebResponse},
     AppState
@@ -81,16 +81,6 @@ pub async fn insert(
         });
     }
 
-    if table_schema.post.pre_process.contains("SQL:"){
-        if let Err(err) = execute_sql_formula(&state.db, table_schema.post.pre_process, &body, route.as_str()).await {
-            return HttpResponse::InternalServerError().json(WebResponse {
-                success: false,
-                message: format!("Error in pre-process: {}", err),
-                total_data: 0,
-                data: Value::Null,
-            });
-        }
-    }
 
 
     let skip_columns: HashSet<&str> = [
@@ -296,11 +286,38 @@ pub async fn insert(
     log_output("QUERY", "POST", route.as_str(), s_sql.clone(), true);
     log_output("PARAMS", "POST", route.as_str(), format!("{:?}", bind_params), true);
 
-    match &state.db.query_with_params(&s_sql, bind_params).await {
-        Ok(_) => {
+    // Begin transaction
+    let mut transaction = match state.db.begin_transaction().await {
+        Ok(tx) => tx,
+        Err(err) => {
+            return HttpResponse::InternalServerError().json(WebResponse {
+                success: false,
+                message: format!("Error starting transaction: {}", err),
+                total_data: 0,
+                data: Value::Null,
+            });
+        }
+    };
 
+
+    if table_schema.post.pre_process.contains("SQL:"){
+        if let Err(err) = execute_sql_formula_with_transaction(&mut transaction, table_schema.post.pre_process, &body, route.as_str()).await {
+            transaction.rollback().await.ok();
+            return HttpResponse::InternalServerError().json(WebResponse {
+                success: false,
+                message: format!("Error in pre-process: {}", err),
+                total_data: 0,
+                data: Value::Null,
+            });
+        }
+    }
+    
+
+    match transaction.query_with_params(&s_sql, bind_params).await {
+        Ok(_) => {
             if table_schema.post.post_process.contains("SQL:"){
-                if let Err(err) = execute_sql_formula(&state.db, table_schema.post.post_process, &body, route.as_str()).await {
+                if let Err(err) = execute_sql_formula_with_transaction(&mut transaction, table_schema.post.post_process, &body, route.as_str()).await {
+                    transaction.rollback().await.ok();
                     // Rollback transaction if post-process SQL fails
                     return HttpResponse::InternalServerError().json(WebResponse {
                         success: false,
@@ -310,8 +327,7 @@ pub async fn insert(
                     });
                 }
             }
-
-
+            transaction.commit().await.ok();
             HttpResponse::Ok().json(WebResponse {
                 success: true,
                 message: "Data inserted".to_string(),
@@ -320,6 +336,7 @@ pub async fn insert(
             })
         },
         Err(err) => {
+            transaction.rollback().await.ok();
             HttpResponse::InternalServerError().json(WebResponse {
                 success: false,
                 message: format!("Error NCO-POST: {}", err),
