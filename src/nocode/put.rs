@@ -6,13 +6,7 @@ use actix_web::{
 use serde_json::{Value};
 
 use crate::{
-    auth::{check_access, get_user_info_from_token, Claims},
-    crypt::{encrypt, is_encrypted_string},
-    database::state::{execute_sql_formula_with_transaction, DbParam},
-    helpers::{ filter_table_schema, multipart_to_json },
-    log::{log_output},
-    model::{ReferenceForeignKey, TableSchema, WebResponse},
-    AppState
+    auth::{check_access, get_user_info_from_token, Claims}, crypt::{encrypt, is_encrypted_string}, database::state::{execute_sql_formula_with_transaction, DbParam}, helpers::{ filter_table_schema, multipart_to_json }, log::log_output, model::{ReferenceForeignKey, TableSchema, WebResponse}, nocode::foreign_key::check_data, AppState
 };
 use std::sync::Arc;
 
@@ -102,6 +96,24 @@ pub async fn update(
                         // convert value to string
                         id_new = value_x.clone();
                     }
+
+                    // check if col.name is equal with foreign key column
+                    for fk in table_schema.foreign_keys.iter() {
+                        if fk.column == *column {
+                            // check if value is valid !
+                            let isok = check_data(&state, fk.reference_table.clone(), fk.reference_column.clone(), value_x.clone()).await;
+                            if !isok {
+                                log_output("ERROR", "CHECK FOREIGN KEY", "DATA", format!("Invalid foreign key value: {}", value_x), false);
+                                return HttpResponse::InternalServerError().json(WebResponse {
+                                    success: false,
+                                    message: format!("Invalid foreign key value: {} from table {}", value_x, fk.reference_table),
+                                    total_data: 0,
+                                    data: Value::Null,
+                                });                        
+                            }
+                        }
+                    }
+
 
                     // find column properties in table_schemas.columns
                     let col = table_schema

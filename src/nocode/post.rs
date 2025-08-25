@@ -7,13 +7,7 @@ use actix_web::{
 use serde_json::{Value};
 
 use crate::{
-    auth::{check_access, get_user_info_from_token, Claims},
-    crypt::{encrypt, is_encrypted_string},
-    database::state::{execute_sql_formula_with_transaction, DbParam},
-    helpers::{ extract_expressions, filter_table_schema, find_column_match, multipart_to_json },
-    log::log_output,
-    model::{Column, TableSchema, WebResponse},
-    AppState
+    auth::{check_access, get_user_info_from_token, Claims}, crypt::{encrypt, is_encrypted_string}, database::state::{execute_sql_formula_with_transaction, DbParam}, helpers::{ extract_expressions, filter_table_schema, find_column_match, multipart_to_json }, log::log_output, model::{Column, TableSchema, WebResponse}, nocode::foreign_key::check_data, AppState
 };
 use std::sync::Arc;
 
@@ -70,7 +64,7 @@ pub async fn insert(
 
 
     // Generate SQL query INSERT to table in variable route, from data structure table in table_schemas
-    let table_schema = filter_table_schema(&table_schemas, route.clone()).await;
+    let table_schema: TableSchema = filter_table_schema(&table_schemas, route.clone()).await;
     if table_schema.table.is_empty() {
         let message_error = format!("Entity {} on folder config/{}.json not found", route, route);
         return HttpResponse::FailedDependency().json(WebResponse {
@@ -152,6 +146,7 @@ pub async fn insert(
         let post_columns: Vec<&str> = table_schema.post.columns.iter().map(|s| s.as_str()).collect();
         let (exists, matched_string) = find_column_match(&post_columns, &col.name);
 
+
         if exists && col.name != "id" {
             let string_formula = matched_string.unwrap_or("").to_string();
             if string_formula.contains('=') {
@@ -169,11 +164,29 @@ pub async fn insert(
         }
 
         if !isformula && (col.name != "id" || col.function.is_empty()) {
+
             // Ambil dari body dan bind sebagai param
             let mut value = body
                 .get(&col.name)
                 .map(|v| v.to_string().replace('"', "").replace("null", ""))
                 .unwrap_or_default();
+
+            // check if col.name is equal with foreign key column
+            for fk in table_schema.foreign_keys.iter() {
+                if fk.column == col.name {
+                    // check if value is valid !
+                    let isok = check_data(&state, fk.reference_table.clone(), fk.reference_column.clone(), value.clone()).await;
+                    if !isok {
+                        log_output("ERROR", "CHECK FOREIGN KEY", "DATA", format!("Invalid foreign key value: {}", value), false);
+                        return HttpResponse::InternalServerError().json(WebResponse {
+                            success: false,
+                            message: format!("Invalid foreign key value: {} from table {}", value, fk.reference_table),
+                            total_data: 0,
+                            data: Value::Null,
+                        });                        
+                    }
+                }
+            }
 
             if col.encrypt {
                 let is_encrypted = is_encrypted_string(value.as_str());

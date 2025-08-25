@@ -1,4 +1,5 @@
 use actix_web::{web::Data};
+use serde::de::value;
 
 use crate::{database::state::{AppState, DbParam, DbTransaction}, log::log_output, model::ReferenceForeignKey};
 
@@ -96,4 +97,33 @@ pub(crate) async fn process_foreign_keys_delete_update(
        }
 
        (status_executed, error_message)
+}
+
+
+// create function to check master if column foreign key
+pub(crate) async fn check_data(
+       state: &Data<AppState>,
+       reference_table:String,
+       reference_column:String,
+       id_data:String
+) -> bool {
+       // query to table
+       let s_query = format!("SELECT 1 FROM {} WHERE {} = ?", reference_table, reference_column);
+       let mut bind_params_fk: Vec<DbParam> = Vec::new();
+
+       if let Ok(n) = id_data.clone().parse::<i64>() { 
+              bind_params_fk.push(DbParam::I64(n)); 
+       } else { 
+              bind_params_fk.push(DbParam::Str(id_data.clone())); 
+       }
+
+       match state.db.query_with_params(&s_query, bind_params_fk).await {
+              Ok(rows) => {
+                     !rows.is_empty()
+              },
+              Err(err) => {
+                     log_output("ERROR", "CHECK FOREIGN KEY", "QUERY", err.to_string(), false);
+                     false
+              },
+       }       
 }
