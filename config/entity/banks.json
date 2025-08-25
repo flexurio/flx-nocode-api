@@ -148,7 +148,6 @@
                 "columns":["name", "bank_type_id", "foto"]
         },
         "del":{
-                "validate_data":"",
                 "pre_process":"",
                 "post_process":"",
                 "columns":["id"],

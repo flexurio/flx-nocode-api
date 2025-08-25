@@ -91,7 +91,6 @@ impl Default for TableSchema {
                 post_process: "".to_string(),
             },
             del: OperationDelete { 
-                validate_data: "".to_string(),
                 pre_process: "".to_string(),
                 columns: vec![],
                 type_delete: "soft".to_string(),
@@ -174,7 +173,6 @@ pub struct OperationPostPut {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct OperationDelete {
-    pub validate_data: String,
     pub pre_process: String,
     pub columns: Vec<String>,
     pub type_delete: String,

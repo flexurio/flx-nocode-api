@@ -110,7 +110,6 @@
                 "columns":["name", "id"]
         },
         "del":{
-                "validate_data":"",
                 "pre_process":"",
                 "post_process":"",
                 "columns":["id"],

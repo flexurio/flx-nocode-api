@@ -103,7 +103,6 @@ pub fn validate_table_design(design: TableSchema) -> TableSchema {
             post_process: String::new(),
         },
         del: OperationDelete {
-            validate_data: String::new(),
             pre_process: String::new(),
             columns: Vec::new(),
             type_delete: "soft".to_string(),

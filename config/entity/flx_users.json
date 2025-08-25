@@ -164,7 +164,6 @@
                 "columns":["email", "phone", "password", "name", "photo", "email_verified", "enabled"]
         },
         "del":{
-                "validate_data":"",
                 "pre_process":"",
                 "post_process":"",
                 "columns":["id"],
