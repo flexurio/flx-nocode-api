@@ -1,5 +1,4 @@
 use actix_web::{web::Data};
-use serde::de::value;
 
 use crate::{database::state::{AppState, DbParam, DbTransaction}, log::log_output, model::ReferenceForeignKey};
 
@@ -101,7 +100,7 @@ pub(crate) async fn process_foreign_keys_delete_update(
 
 
 // create function to check master if column foreign key
-pub(crate) async fn check_data(
+pub(crate) async fn check_data_foreign_key(
        state: &Data<AppState>,
        reference_table:String,
        reference_column:String,

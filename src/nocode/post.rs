@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::{collections::HashSet, os::macos::raw};
 use actix_multipart::Multipart;
 use actix_web::{
     web::Data,
@@ -7,7 +7,7 @@ use actix_web::{
 use serde_json::{Value};
 
 use crate::{
-    auth::{check_access, get_user_info_from_token, Claims}, crypt::{encrypt, is_encrypted_string}, database::state::{execute_sql_formula_with_transaction, DbParam}, helpers::{ extract_expressions, filter_table_schema, find_column_match, multipart_to_json }, log::log_output, model::{Column, TableSchema, WebResponse}, nocode::foreign_key::check_data, AppState
+    auth::{check_access, get_user_info_from_token, Claims}, crypt::{encrypt, is_encrypted_string}, database::state::{execute_sql_formula, execute_sql_formula_with_transaction, DbParam}, helpers::{ extract_expressions, filter_table_schema, find_column_match, multipart_to_json }, log::log_output, model::{Column, TableSchema, WebResponse}, nocode::foreign_key::check_data_foreign_key, AppState
 };
 use std::sync::Arc;
 
@@ -175,7 +175,7 @@ pub async fn insert(
             for fk in table_schema.foreign_keys.iter() {
                 if fk.column == col.name {
                     // check if value is valid !
-                    let isok = check_data(&state, fk.reference_table.clone(), fk.reference_column.clone(), value.clone()).await;
+                    let isok = check_data_foreign_key(&state, fk.reference_table.clone(), fk.reference_column.clone(), value.clone()).await;
                     if !isok {
                         log_output("ERROR", "CHECK FOREIGN KEY", "DATA", format!("Invalid foreign key value: {}", value), false);
                         return HttpResponse::InternalServerError().json(WebResponse {
@@ -298,6 +298,42 @@ pub async fn insert(
 
     log_output("QUERY", "POST", route.as_str(), s_sql.clone(), true);
     log_output("PARAMS", "POST", route.as_str(), format!("{:?}", bind_params), true);
+
+
+    // check validation_data
+    if table_schema.post.validate_data.contains("SQL:"){
+        match execute_sql_formula(&state.db, table_schema.post.validate_data.clone(), &body, route.as_str()).await {
+            Ok(row) => {
+                // check data row
+                if !row.is_empty() {
+                    let is_valid = row[0].get(0).and_then(|v| v.as_bool()).unwrap_or(true);
+                    if !is_valid {
+                        return HttpResponse::BadRequest().json(WebResponse {
+                            success: false,
+                            message: "Validation data is empty".to_string(),
+                            total_data: 0,
+                            data: Value::Null,
+                        });
+                    }
+                } else {
+                    return HttpResponse::BadRequest().json(WebResponse {
+                        success: false,
+                        message: "Validation data is empty".to_string(),
+                        total_data: 0,
+                        data: Value::Null,
+                    });
+                }
+            }
+            Err(err) => {
+                return HttpResponse::BadRequest().json(WebResponse {
+                    success: false,
+                    message: format!("Error in validation_data: {}", err),
+                    total_data: 0,
+                    data: Value::Null,
+                });
+            }
+        }
+    }
 
     // Begin transaction
     let mut transaction = match state.db.begin_transaction().await {
