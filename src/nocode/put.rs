@@ -6,7 +6,7 @@ use actix_web::{
 use serde_json::{Value};
 
 use crate::{
-    auth::{check_access, get_user_info_from_token, Claims}, crypt::{encrypt, is_encrypted_string}, database::state::{execute_sql_formula_with_transaction, DbParam}, helpers::{ filter_table_schema, multipart_to_json }, log::log_output, model::{ReferenceForeignKey, TableSchema, WebResponse}, nocode::foreign_key::check_data_foreign_key, AppState
+    auth::{check_access, get_user_info_from_token, Claims}, crypt::{encrypt, is_encrypted_string}, database::state::{execute_sql_formula, execute_sql_formula_with_transaction, DbParam}, helpers::{ filter_table_schema, multipart_to_json }, log::log_output, model::{ReferenceForeignKey, TableSchema, WebResponse}, nocode::foreign_key::check_data_foreign_key, AppState
 };
 use std::sync::Arc;
 
@@ -173,6 +173,42 @@ pub async fn update(
     log_output("QUERY", "PUT", route.as_str(), s_sql.clone(), true);
     log_output("PARAM", "PUT", route.as_str(), format!("{:?}", bind_params), true);
     
+
+
+    // check validation_data
+    if table_schema.put.validate_data.contains("SQL:"){
+        match execute_sql_formula(&state.db, table_schema.put.validate_data.clone(), &body, route.as_str()).await {
+            Ok(row) => {
+                // check data row
+                if !row.is_empty() {
+                    let is_valid = row[0].get(0).and_then(|v| v.as_bool()).unwrap_or(true);
+                    if !is_valid {
+                        return HttpResponse::BadRequest().json(WebResponse {
+                            success: false,
+                            message: "Validation data is empty".to_string(),
+                            total_data: 0,
+                            data: Value::Null,
+                        });
+                    }
+                } else {
+                    return HttpResponse::BadRequest().json(WebResponse {
+                        success: false,
+                        message: "Validation data is empty".to_string(),
+                        total_data: 0,
+                        data: Value::Null,
+                    });
+                }
+            }
+            Err(err) => {
+                return HttpResponse::BadRequest().json(WebResponse {
+                    success: false,
+                    message: format!("Error in validation_data: {}", err),
+                    total_data: 0,
+                    data: Value::Null,
+                });
+            }
+        }
+    }    
     // Begin transaction
     let mut transaction = match state.db.begin_transaction().await {
         Ok(tx) => tx,
