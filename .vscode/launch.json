@@ -1,0 +1,16 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Debug: flexurio-api-nocode-v2",
+      "program": "${workspaceFolder}/target/debug/flexurio-api-nocode-v2",
+      "args": [],
+      "cwd": "${workspaceFolder}",
+      "envFile": "${workspaceFolder}/.env",
+      "terminal": "integrated",
+      "preLaunchTask": "cargo: build (debug)"
+    }
+  ]
+}

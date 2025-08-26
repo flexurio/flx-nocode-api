@@ -380,10 +380,10 @@ pub(crate) async fn create_dir_and_get_config(conf: &str) -> Result<(), std::io:
        let extract_to = "."; // current working directory
 
        println!("Downloading...");
-       download_file(url, zip_path).await.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+       download_file(url, zip_path).await.map_err(std::io::Error::other)?;
 
        println!("Extracting...");
-       extract_zip(zip_path, extract_to).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+       extract_zip(zip_path, extract_to).map_err(std::io::Error::other)?;
 
        // move config to <conf>
        std::fs::rename(format!("{}/config", extract_to), conf)?;
@@ -411,10 +411,10 @@ pub(crate) async fn create_dir_and_get_db() -> Result<(), std::io::Error> {
        let extract_to = "."; // current working directory
 
        println!("Downloading...");
-       download_file(url, zip_path).await.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+       download_file(url, zip_path).await.map_err(std::io::Error::other)?;
 
        println!("Extracting...");
-       extract_zip(zip_path, extract_to).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+       extract_zip(zip_path, extract_to).map_err(std::io::Error::other)?;
 
        // Ensure db directory now exists
        if !Path::new("db").exists() {

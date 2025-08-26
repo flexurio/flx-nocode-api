@@ -184,7 +184,7 @@ async fn main() -> std::io::Result<()> {
     if !std::path::Path::new(".env").exists() {
         if let Err(e) = core::download_env_file().await {
             eprintln!("Failed to download .env file: {}", e);
-            return Err(std::io::Error::new(std::io::ErrorKind::Other, e));
+            return Err(std::io::Error::other(e));
         } else {
             println!(".env file downloaded successfully.");
             println!("Please configure your .env file with the required settings.");

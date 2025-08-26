@@ -31,7 +31,7 @@ pub async fn filter_table_schema(table_schemas: &[TableSchema], route: String) -
     // Use iterator for better performance instead of loop
     if let Some(schema) = table_schemas.iter().find(|schema| {
         let table_name = if schema.table.contains('.') {
-            schema.table.split('.').last().unwrap_or(&schema.table)
+            schema.table.split('.').next_back().unwrap_or(&schema.table)
         } else {
             &schema.table
         };
