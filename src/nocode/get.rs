@@ -327,11 +327,20 @@ pub async fn select(
     log_output("QUERY", "GET", route.as_str(), s_sql.clone(), true);
     log_output("PARAMS", "POST", route.as_str(), format!("{:?}", bind_params), true);
 
-    // get query without WHERE and ORDER BY. to get total data in table
-    let s_sql_total = format!(
-        "SELECT COUNT(*) as total_data FROM {} {} {} {}",
-        table_schema.table, join_clause, where_clause, group_clause
-    );
+    // Build total count query:
+    // - Without GROUP BY: simple COUNT(*) over filtered set
+    // - With GROUP BY: count number of groups using a subquery, include HAVING
+    let s_sql_total = if group_clause.is_empty() && having_clause.is_empty() {
+        format!(
+            "SELECT COUNT(*) as total_data FROM {} {} {}",
+            table_schema.table, join_clause, where_clause
+        )
+    } else {
+        format!(
+            "SELECT COUNT(*) as total_data FROM (SELECT 1 FROM {} {} {} {} {}) AS _cnt",
+            table_schema.table, join_clause, where_clause, group_clause, having_clause
+        )
+    };
 
     // get total data from 
     let total_data:i32 = state.db.get_total_rows_with_params(&s_sql_total, bind_params.clone()).await.unwrap_or(0);
