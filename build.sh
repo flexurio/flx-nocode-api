@@ -24,7 +24,7 @@ for target in "${targets[@]}"; do
   fi
   
   # Lokasi file output (asumsi nama default dari Cargo.toml adalah 'flx-nocode')
-  default_output="target/$target/release/flexurio-api-nocode-v2$ext"
+  default_output="target/$target/release/flx-nocode-api$ext"
   new_output="release/flx-nocode-$target$ext"
   
   # Rename
