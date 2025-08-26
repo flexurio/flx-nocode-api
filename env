@@ -7,6 +7,8 @@ REDIS_PASSWORD=
 REDIS_DB=
 
 DB_TYPE=mysql
+MAX_POOL=10
+CONNECT_TIMEOUT=30
 MYSQL_URL=mysql://user:pass@host:port/db
 MYSQL_URL=mysql://user:pass@host:port/db
 DB_TYPE=postgres

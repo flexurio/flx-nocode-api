@@ -232,6 +232,9 @@ async fn main() -> std::io::Result<()> {
     }
 
     let db_type = env::var("DB_TYPE").unwrap_or_else(|_| "mysql".to_string());
+    // Pool configuration via env
+    let max_pool: u32 = env::var("MAX_POOL").ok().and_then(|s| s.parse().ok()).unwrap_or(10);
+    let acquire_secs: u64 = env::var("CONNECT_TIMEOUT").ok().and_then(|s| s.parse().ok()).unwrap_or(5);
     let db_repo: Arc<dyn DbRepository> = match db_type.as_str() {
         "mysql" => {
             let url = match env::var("MYSQL_URL") {
@@ -242,8 +245,11 @@ async fn main() -> std::io::Result<()> {
                 }
             };
             
-            // Optimized MySQL connection pool
-            let pool = sqlx::MySqlPool::connect(&url)
+            // Optimized MySQL connection pool with PoolOptions
+            let pool = sqlx::mysql::MySqlPoolOptions::new()
+                .max_connections(max_pool)
+                .acquire_timeout(std::time::Duration::from_secs(acquire_secs))
+                .connect(&url)
                 .await
                 .map_err(|e| {
                     eprintln!("Failed to connect to MySQL: {}", e);
@@ -261,8 +267,11 @@ async fn main() -> std::io::Result<()> {
                 }
             };
             
-            // Optimized PostgreSQL connection pool
-            let pool = sqlx::PgPool::connect(&url)
+            // Optimized PostgreSQL connection pool with PoolOptions
+            let pool = sqlx::postgres::PgPoolOptions::new()
+                .max_connections(max_pool)
+                .acquire_timeout(std::time::Duration::from_secs(acquire_secs))
+                .connect(&url)
                 .await
                 .map_err(|e| {
                     eprintln!("Failed to connect to PostgreSQL: {}", e);
@@ -291,8 +300,11 @@ async fn main() -> std::io::Result<()> {
                 println!("File {} berhasil dibuat.", db_path.display());
             }
 
-            // Optimized SQLite connection
-            let pool = sqlx::SqlitePool::connect(&url)
+            // Optimized SQLite connection with PoolOptions
+            let pool = sqlx::sqlite::SqlitePoolOptions::new()
+                .max_connections(max_pool)
+                .acquire_timeout(std::time::Duration::from_secs(acquire_secs))
+                .connect(&url)
                 .await
                 .map_err(|e| {
                     eprintln!("Failed to connect to SQLite: {}", e);
