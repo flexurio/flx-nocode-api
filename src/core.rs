@@ -55,8 +55,6 @@ pub async fn login(state: web::Data<AppState>, req: actix_web::HttpRequest) -> i
                 .replace("'{{email}}'", "?")
                 .replace("{{email}}", "?");
        
-       println!("s_sql: {}", s_sql);
-   
        log_output("QUERY", "POST", "login", s_sql.clone(), true);
    
           let (password_db, id_user, name) = match &state.db.query_with_params(&s_sql, vec![DbParam::Str(email.to_string())]).await {

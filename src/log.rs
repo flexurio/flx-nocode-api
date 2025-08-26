@@ -8,28 +8,18 @@ use std::io::Write;
 
 pub fn log_to_file(message: &str) {
     let file_path = LOC_LOGGING.clone() + "/.log.txt";
-    let mut file = match OpenOptions::new().create(true).append(true).open(&file_path) {
+    let path = std::path::Path::new(&file_path);
+    if let Some(parent) = path.parent() {
+        if !parent.exists() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                eprintln!("Failed to create log directory: {}", e);
+                return;
+            }
+        }
+    }
+    let mut file = match OpenOptions::new().create(true).append(true).open(path) {
         Ok(file) => file,
         Err(e) => {
-            // create directory if not exists
-            if let Some(parent) = std::path::Path::new(&file_path).parent() {
-                if !parent.exists() {
-                    if let Err(e) = std::fs::create_dir_all(parent) {
-                        eprintln!("Failed to create log directory: {}", e);
-                        return;
-                    }
-                }
-            }
-
-            // create log file if not exists
-            if let Some(parent) = std::path::Path::new(&file_path).parent() {
-                if !parent.exists() {
-                    if let Err(e) = std::fs::create_dir_all(parent) {
-                        eprintln!("Failed to create log directory: {}", e);
-                        return;
-                    }
-                }
-            }
             eprintln!("Failed to open log file: {}", e);
             return;
         }

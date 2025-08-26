@@ -2,7 +2,7 @@ use actix_files::Files;
 use actix_multipart::Multipart;
 use actix_web::dev::{Service, ServiceRequest};
 use actix_web::web::Path;
-use actix_web::{web, App, HttpServer};
+use actix_web::{web, App, HttpServer, HttpResponse};
 use actix_cors::Cors;
 use auth::validate_token;
 use colored::Colorize;
@@ -83,7 +83,7 @@ static CONFIG: Lazy<crate::model::Config> = Lazy::new(|| {
 });
 
 // Static whitelist for unauthenticated endpoints
-const ROUTE_WHITELIST: [&str; 2] = ["/login", "/register"];
+const ROUTE_WHITELIST: [&str; 3] = ["/login", "/register", "/healthz"];
 
 static ISDEBUG: Lazy<bool> = Lazy::new(|| match env::var("DEBUG") {
     Ok(val) => matches!(val.to_lowercase().as_str(), "1" | "true" | "yes"),
@@ -412,14 +412,22 @@ async fn main() -> std::io::Result<()> {
                 )
             )
             .app_data(
-                web::JsonConfig::default()
-                    .limit(4096) // Limit JSON payload to 4KB for security
-                    .error_handler(|err, _req| {
-                        actix_web::error::InternalError::from_response(
-                            format!("JSON error: {}", err),
-                            actix_web::HttpResponse::BadRequest().json("Invalid JSON payload")
-                        ).into()
-                    })
+                {
+                    let kb: usize = env::var("JSON_LIMIT_KB")
+                        .ok()
+                        .and_then(|s| s.parse().ok())
+                        .map(|n: usize| n.clamp(1, 1024 * 16))
+                        .unwrap_or(4096);
+                    let bytes = kb * 1024; // convert KB to bytes as required by Actix limit()
+                    web::JsonConfig::default()
+                        .limit(bytes)
+                        .error_handler(|err, _req| {
+                            actix_web::error::InternalError::from_response(
+                                format!("JSON error: {}", err),
+                                actix_web::HttpResponse::BadRequest().json("Invalid JSON payload")
+                            ).into()
+                        })
+                }
             )
             .wrap_fn({
                 // clone AppState handle into middleware closure so it owns it (satisfies 'static)
@@ -485,6 +493,27 @@ async fn main() -> std::io::Result<()> {
                         "register".purple()
                     ),
                     false
+                );
+
+                // health check endpoint (public)
+                cfg.service(web::resource("/healthz").route(web::get().to({
+                    let state = app_state.clone();
+                    move || {
+                        let state = state.clone();
+                        async move {
+                            let probe_sql = "SELECT 1";
+                            let db_ok = state.db.query(probe_sql).await.is_ok();
+                            let body = serde_json::json!({
+                                "status": "ok",
+                                "db": if db_ok { "up" } else { "down" },
+                                "db_type": state.db_type,
+                            });
+                            if db_ok { HttpResponse::Ok().json(body) } else { HttpResponse::ServiceUnavailable().json(body) }
+                        }
+                    }
+                })));
+                log_output("CORE ENDPOINT","METHOD","GET",
+                    format!("http://{}:{}/{}",host.red(),port.clone().to_string().green(),"healthz".purple()),false
                 );
 
                 println!("\n");
