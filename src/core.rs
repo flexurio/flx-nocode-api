@@ -21,9 +21,17 @@ use crate::{
        model::WebResponse,
        AppState
 };
+use crate::rate_limit::RL_WINDOW_LOGIN;
+use chrono::Local;
 
 
 pub async fn login(state: web::Data<AppState>, req: actix_web::HttpRequest) -> impl Responder {   
+                // Rate limit by IP (fixed window)
+                let ip_key = req.peer_addr().map(|a| a.ip().to_string()).unwrap_or_else(|| "unknown".into());
+                let limit: u32 = std::env::var("RATE_LIMIT_LOGIN_PER_MIN").ok().and_then(|s| s.parse().ok()).unwrap_or(10);
+                if !RL_WINDOW_LOGIN.check_and_increment(&format!("login:{}", ip_key), limit) {
+                       return HttpResponse::TooManyRequests().json(WebResponse { success: false, message: "Too many login attempts".into(), total_data: 0, data: Value::Null });
+                }
           // Parse Authorization Basic header safely
           let Some(hdr) = req.headers().get("Authorization") else {
                  return HttpResponse::Unauthorized().json(WebResponse { success: false, message: "Missing Authorization".into(), total_data: 0, data: Value::Null });

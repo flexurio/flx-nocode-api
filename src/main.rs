@@ -48,6 +48,8 @@ use model::TableSchema;
 use crate::model::{ReferenceForeignKey, ReferenceForeignKeyAction};
 mod helpers;
 mod log;
+mod audit;
+mod rate_limit;
 
 
 // Load routes.json once and expose via CONFIG

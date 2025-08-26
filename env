@@ -28,6 +28,10 @@ LOC_CONFIG=config
 LOC_STATIC=static    # location for static file that serve in http
 LOC_IMAGE=images     # location image file. Will set inside of static directory
 LOC_LOGGING=static/log
+LOC_AUDIT=static/log/audit/events.log # (atau path lain di luar static agar tidak terpublikasi)
+
+RATE_LIMIT_LOGIN_PER_MIN=3
+RATE_LIMIT_MUTATE_PER_MIN=10
 
 
 WHITE_LIST_IP=192.168.0.0/24

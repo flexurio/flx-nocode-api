@@ -12,6 +12,9 @@ use crate::{
     model::{TableSchema, WebResponse},
     AppState
 };
+use crate::rate_limit::RL_WINDOW_MUTATE;
+use crate::audit::{write_audit, AuditEntry};
+use chrono::Local;
 use std::sync::Arc;
 
 
@@ -26,7 +29,8 @@ pub async fn process_sp(
     req: actix_web::HttpRequest,
 ) -> impl Responder {
     if !state.route_publics.contains(&route) {
-        let claims = match get_user_info_from_token(req, state.clone()) {
+        let req_for_auth = req.clone();
+        let claims = match get_user_info_from_token(req_for_auth, state.clone()) {
             Ok(c) => c,
             Err(_) => {
                 return HttpResponse::Unauthorized().json(WebResponse {
@@ -47,6 +51,13 @@ pub async fn process_sp(
             });
         }
     }
+    // Rate-limit
+    let ip_key = req.clone().peer_addr().map(|a| a.ip().to_string()).unwrap_or_else(|| "unknown".into());
+    let limit: u32 = std::env::var("RATE_LIMIT_MUTATE_PER_MIN").ok().and_then(|s| s.parse().ok()).unwrap_or(120);
+    if !RL_WINDOW_MUTATE.check_and_increment(&format!("patch:{}:{}", route, ip_key), limit) {
+        return HttpResponse::TooManyRequests().json(WebResponse { success: false, message: "Too many requests".into(), total_data: 0, data: Value::Null });
+    }
+
     // get parameters value only allowed from table_schema.trace.parameters
     // loop every table_schema.trace.parameters
     
@@ -103,6 +114,15 @@ pub async fn process_sp(
     match transaction.query_with_params(&s_sql, bind_params).await {
         Ok(_) => {
             transaction.commit().await.ok();
+            // Audit
+            write_audit(&AuditEntry {
+                at: Local::now().to_rfc3339(),
+                actor_id: 0, // unknown actor from claims in this scope
+                action: "PATCH",
+                route: &route,
+                id: None,
+                ip: req.clone().peer_addr().map(|a| a.ip().to_string()).as_deref(),
+            });
             HttpResponse::Ok().json(WebResponse {
                 success: true,
                 message: "Stored procedure executed".to_string(),

@@ -7,6 +7,9 @@ use serde_json::{Value};
 use crate::{
     auth::{check_access, get_user_info_from_token, Claims}, database::state::DbParam, helpers:: filter_table_schema, log::log_output, model::{ReferenceForeignKey, TableSchema, WebResponse}, nocode::foreign_key::process_foreign_keys_delete_update, AppState
 };
+use crate::rate_limit::RL_WINDOW_MUTATE;
+use crate::audit::{write_audit, AuditEntry};
+use chrono::Local;
 use std::{sync::Arc};
 
 
@@ -22,7 +25,8 @@ pub async fn delete(
     let reference_foreign_keys = &schemas.1;
     let mut claims = Claims::default();
     if !state.route_publics.contains(&route) {
-        claims = match get_user_info_from_token(req, state.clone()) {
+        let req_for_auth = req.clone();
+        claims = match get_user_info_from_token(req_for_auth, state.clone()) {
             Ok(c) => c,
             Err(_) => {
                 return HttpResponse::Unauthorized().json(WebResponse {
@@ -45,6 +49,12 @@ pub async fn delete(
     }
 
     let id_raw: String = path.into_inner();
+    // Rate-limit
+    let ip_key = req.clone().peer_addr().map(|a| a.ip().to_string()).unwrap_or_else(|| "unknown".into());
+    let limit: u32 = std::env::var("RATE_LIMIT_MUTATE_PER_MIN").ok().and_then(|s| s.parse().ok()).unwrap_or(120);
+    if !RL_WINDOW_MUTATE.check_and_increment(&format!("delete:{}:{}", route, ip_key), limit) {
+        return HttpResponse::TooManyRequests().json(WebResponse { success: false, message: "Too many requests".into(), total_data: 0, data: Value::Null });
+    }
 
     let table_schema = filter_table_schema(table_schemas, route.clone()).await;
     if table_schema.table.is_empty() {
@@ -109,6 +119,15 @@ pub async fn delete(
                 // Commit transaction if all operations succeeded
                 match transaction.commit().await {
                     Ok(_) => {
+                        // Audit
+                        write_audit(&AuditEntry {
+                            at: Local::now().to_rfc3339(),
+                            actor_id: claims.id,
+                            action: "DELETE",
+                            route: &route,
+                            id: Some(&id_raw),
+                            ip: req.clone().peer_addr().map(|a| a.ip().to_string()).as_deref(),
+                        });
                         HttpResponse::Ok().json(WebResponse {
                             success: true,
                             message: "Data deleted successfully".to_string(),
