@@ -17,10 +17,18 @@ Quick guide to install and run the Flexurio No‑Code API on macOS/Linux using t
 - Database: MySQL/PostgreSQL/SQLite (recommended to start with SQLite for a quick try).
 - Rust toolchain only if you want to build from source (optional).
 
-### 1) Install with the Flexurio Installer (optional, convenient)
+### 1) Install Flexurio
+#### LINUX or MAC
 - Run `install-flexurio.sh` to install the binary into `~/.local/bin` and create the `flexurio` command.
 - After it finishes, reload your shell (e.g., `source ~/.zshrc`).
 - The `flexurio` command automatically reads the `.env` file in the current working directory when executed.
+
+#### WINDOWS
+- Open PowerShell in the repo folder and run:
+- Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+- Run .\install-flexurio.ps1
+- Open a new terminal, then run: flexurio
+
 
 Note: The script detects your OS architecture and downloads the latest release binary from GitHub for your platform.
 
