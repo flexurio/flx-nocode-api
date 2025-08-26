@@ -20,8 +20,16 @@ pub fn write_audit(entry: &AuditEntry<'_>) {
             let _ = std::fs::create_dir_all(parent);
         }
     }
-    let file_path = if path.is_dir() { path.join("events.log") } else { path.to_path_buf() };
-    if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(&file_path) {
+    let file_path = if path.is_dir() {
+        path.join("events.log")
+    } else {
+        path.to_path_buf()
+    };
+    if let Ok(mut f) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&file_path)
+    {
         if let Ok(json) = serde_json::to_string(entry) {
             let _ = writeln!(f, "{}", json);
         }

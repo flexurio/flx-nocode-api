@@ -1,6 +1,4 @@
-
 use serde::{Deserialize, Serialize};
-
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Config {
@@ -24,7 +22,7 @@ pub struct ForeignKey {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 // create struct pivot ForeingKey to triger action in reference table
-pub struct ReferenceForeignKey{
+pub struct ReferenceForeignKey {
     pub table: String,
     pub column: String,
     pub on_delete_action: ReferenceForeignKeyAction,
@@ -35,7 +33,7 @@ pub struct ReferenceForeignKey{
 pub struct ReferenceForeignKeyAction {
     pub table: String,
     pub column: String,
-    pub action: String, // "cascade", "restrict", "set null", "no action"
+    pub action: String,      // "cascade", "restrict", "set null", "no action"
     pub type_delete: String, // soft or hard
 }
 
@@ -60,9 +58,7 @@ impl Default for TableSchema {
     fn default() -> Self {
         TableSchema {
             table: "".to_string(),
-            primary_key: PrimaryKey {
-                columns: vec![],
-            },
+            primary_key: PrimaryKey { columns: vec![] },
             columns: vec![],
             foreign_keys: vec![],
             indexes: vec![],
@@ -78,19 +74,19 @@ impl Default for TableSchema {
                 having: vec![],
                 order_by: vec![],
             },
-            post: OperationPostPut { 
+            post: OperationPostPut {
                 validate_data: "".to_string(),
                 pre_process: "".to_string(),
-                columns: vec![], 
+                columns: vec![],
                 post_process: "".to_string(),
             },
-            put: OperationPostPut { 
+            put: OperationPostPut {
                 validate_data: "".to_string(),
                 pre_process: "".to_string(),
-                columns: vec![], 
+                columns: vec![],
                 post_process: "".to_string(),
             },
-            del: OperationDelete { 
+            del: OperationDelete {
                 pre_process: "".to_string(),
                 columns: vec![],
                 type_delete: "soft".to_string(),
@@ -115,7 +111,7 @@ impl Default for TableSchema {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct PrimaryKey {
-    pub columns: Vec<String>
+    pub columns: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -125,7 +121,7 @@ pub struct Column {
     pub nullable: bool,
     pub type_data: String,
     pub function: String,
-    pub encrypt: bool
+    pub encrypt: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -211,4 +207,3 @@ pub struct Log {
     pub message: String,
     pub timestamp: String,
 }
-

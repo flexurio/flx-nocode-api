@@ -1,9 +1,9 @@
+use actix_cors::Cors;
 use actix_files::Files;
 use actix_multipart::Multipart;
 use actix_web::dev::{Service, ServiceRequest};
 use actix_web::web::Path;
-use actix_web::{web, App, HttpServer, HttpResponse};
-use actix_cors::Cors;
+use actix_web::{web, App, HttpResponse, HttpServer};
 use auth::validate_token;
 use colored::Colorize;
 use dotenv::dotenv;
@@ -11,12 +11,11 @@ use helpers::cetak_label;
 use log::log_output;
 use once_cell::sync::Lazy;
 use serde_json::Value;
-use std::fs;
-use std::fs::{File, create_dir_all};
-use std::sync::Arc;
-use std::process::exit;
 use std::collections::HashSet;
-
+use std::fs;
+use std::fs::{create_dir_all, File};
+use std::process::exit;
+use std::sync::Arc;
 
 use std::env;
 
@@ -24,21 +23,15 @@ mod auth;
 mod crypt;
 mod database;
 use database::{
-    state::{AppState, QueryConverter, DbRepository},
     mysql::MySqlRepo,
     postgres::PostgresRepo,
     sqlite::SqliteRepo,
+    state::{AppState, DbRepository, QueryConverter},
 };
 mod nocode;
 use nocode::{
-    get::select,
-    post::insert,
-    delete::delete,
-    put::update,
-    validate::check_table_design,
-    generate::create_table,
-    trace::process,
-    patch::process_sp,
+    delete::delete, generate::create_table, get::select, patch::process_sp, post::insert,
+    put::update, trace::process, validate::check_table_design,
 };
 mod core;
 use core::{generate_users, login, register};
@@ -46,11 +39,10 @@ mod model;
 use model::TableSchema;
 
 use crate::model::{ReferenceForeignKey, ReferenceForeignKeyAction};
+mod audit;
 mod helpers;
 mod log;
-mod audit;
 mod rate_limit;
-
 
 // Load routes.json once and expose via CONFIG
 static CONFIG: Lazy<crate::model::Config> = Lazy::new(|| {
@@ -68,7 +60,10 @@ static CONFIG: Lazy<crate::model::Config> = Lazy::new(|| {
                 file_path.on_bright_red(),
                 e
             );
-            return crate::model::Config { routes: vec![], route_publics: vec![] };
+            return crate::model::Config {
+                routes: vec![],
+                route_publics: vec![],
+            };
         }
     };
 
@@ -123,7 +118,11 @@ static SCHEMAS: Lazy<Arc<(Vec<TableSchema>, Vec<ReferenceForeignKey>)>> = Lazy::
         let content = match fs::read_to_string(&file_path) {
             Ok(content) => content,
             Err(e) => {
-                eprintln!("ERROR 908ihu76 : Can't read file {} - {}", file_path.on_bright_red(), e);
+                eprintln!(
+                    "ERROR 908ihu76 : Can't read file {} - {}",
+                    file_path.on_bright_red(),
+                    e
+                );
                 exit(1);
             }
         };
@@ -152,16 +151,16 @@ static SCHEMAS: Lazy<Arc<(Vec<TableSchema>, Vec<ReferenceForeignKey>)>> = Lazy::
                     eprintln!("ERROR FK_Check Update : Foreign key on_update action '{}' is not supported", fk.on_update);
                     exit(1);
                 }
-                ref_foreign_keys.push(ReferenceForeignKey{
+                ref_foreign_keys.push(ReferenceForeignKey {
                     table: fk.reference_table.clone(),
                     column: fk.reference_column.clone(),
-                    on_delete_action: ReferenceForeignKeyAction{
+                    on_delete_action: ReferenceForeignKeyAction {
                         table: schema.table.clone(),
                         column: fk.column.clone(),
                         action: fk.on_delete.clone(),
                         type_delete: schema.del.type_delete.clone(), // soft or hard
                     },
-                    on_update_action: ReferenceForeignKeyAction{
+                    on_update_action: ReferenceForeignKeyAction {
                         table: schema.table.clone(),
                         column: fk.column.clone(),
                         action: fk.on_update.clone(),
@@ -174,7 +173,13 @@ static SCHEMAS: Lazy<Arc<(Vec<TableSchema>, Vec<ReferenceForeignKey>)>> = Lazy::
         schemas.push(schema);
     }
 
-    log_output("INFO","FOREING KEY","ref_foreign_keys",format!("{:?}", ref_foreign_keys),true);
+    log_output(
+        "INFO",
+        "FOREIGN KEY",
+        "ref_foreign_keys",
+        format!("{:?}", ref_foreign_keys),
+        true,
+    );
     // Shrink to fit to reduce memory overhead
     schemas.shrink_to_fit();
     Arc::new((schemas, ref_foreign_keys))
@@ -204,7 +209,6 @@ async fn main() -> std::io::Result<()> {
         if let Err(e) = core::create_dir_and_get_config(&config_location).await {
             eprintln!("Failed to initialize config directory: {}", e);
         }
-
     }
 
     // Ensure static directory
@@ -217,7 +221,7 @@ async fn main() -> std::io::Result<()> {
     // Ensure static directory
     let image_storage = std::env::var("LOC_IMAGE").unwrap_or("DB".to_string());
     if image_storage != "DB" {
-        let path_image = format!("{}/{}",static_storage,image_storage);
+        let path_image = format!("{}/{}", static_storage, image_storage);
         // check if directory exists
         if !std::path::Path::new(&path_image).exists() {
             std::fs::create_dir_all(&path_image)?;
@@ -235,18 +239,30 @@ async fn main() -> std::io::Result<()> {
 
     let db_type = env::var("DB_TYPE").unwrap_or_else(|_| "mysql".to_string());
     // Pool configuration via env
-    let max_pool: u32 = env::var("MAX_POOL").ok().and_then(|s| s.parse().ok()).unwrap_or(10);
-    let acquire_secs: u64 = env::var("CONNECT_TIMEOUT").ok().and_then(|s| s.parse().ok()).unwrap_or(5);
+    let max_pool: u32 = env::var("MAX_POOL")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(10);
+    let acquire_secs: u64 = env::var("CONNECT_TIMEOUT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(5);
     let db_repo: Arc<dyn DbRepository> = match db_type.as_str() {
         "mysql" => {
             let url = match env::var("MYSQL_URL") {
                 Ok(url) => url,
                 Err(_) => {
-                    log_output("ERROR",".ENV","MYSQL_URL","Please set MYSQL_URL on .env file".to_string(),true);                    
+                    log_output(
+                        "ERROR",
+                        ".ENV",
+                        "MYSQL_URL",
+                        "Please set MYSQL_URL on .env file".to_string(),
+                        true,
+                    );
                     exit(1);
                 }
             };
-            
+
             // Optimized MySQL connection pool with PoolOptions
             let pool = sqlx::mysql::MySqlPoolOptions::new()
                 .max_connections(max_pool)
@@ -257,18 +273,24 @@ async fn main() -> std::io::Result<()> {
                     eprintln!("Failed to connect to MySQL: {}", e);
                     std::io::Error::new(std::io::ErrorKind::ConnectionRefused, e)
                 })?;
-            
+
             Arc::new(MySqlRepo { pool })
         }
         "postgres" => {
             let url = match env::var("POSTGRES_URL") {
                 Ok(url) => url,
                 Err(_) => {
-                    log_output("ERROR",".ENV","POSTGRES_URL","Please set POSTGRES_URL on .env file".to_string(),true);                    
+                    log_output(
+                        "ERROR",
+                        ".ENV",
+                        "POSTGRES_URL",
+                        "Please set POSTGRES_URL on .env file".to_string(),
+                        true,
+                    );
                     exit(1);
                 }
             };
-            
+
             // Optimized PostgreSQL connection pool with PoolOptions
             let pool = sqlx::postgres::PgPoolOptions::new()
                 .max_connections(max_pool)
@@ -279,14 +301,20 @@ async fn main() -> std::io::Result<()> {
                     eprintln!("Failed to connect to PostgreSQL: {}", e);
                     std::io::Error::new(std::io::ErrorKind::ConnectionRefused, e)
                 })?;
-            
+
             Arc::new(PostgresRepo { pool })
-        },
+        }
         "sqlite" => {
             let url = match env::var("SQLITE_URL") {
                 Ok(url) => url,
                 Err(_) => {
-                    log_output("ERROR",".ENV","SQLITE_URL","Please set SQLITE_URL on .env file".to_string(),true);                    
+                    log_output(
+                        "ERROR",
+                        ".ENV",
+                        "SQLITE_URL",
+                        "Please set SQLITE_URL on .env file".to_string(),
+                        true,
+                    );
                     exit(1);
                 }
             };
@@ -312,14 +340,14 @@ async fn main() -> std::io::Result<()> {
                     eprintln!("Failed to connect to SQLite: {}", e);
                     std::io::Error::new(std::io::ErrorKind::ConnectionRefused, e)
                 })?;
-            
+
             Arc::new(SqliteRepo { pool })
-        },
+        }
         _ => {
             eprintln!("Unsupported DB_TYPE: {}", db_type);
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                format!("Unsupported DB_TYPE: {}", db_type)
+                format!("Unsupported DB_TYPE: {}", db_type),
             ));
         }
     };
@@ -332,7 +360,7 @@ async fn main() -> std::io::Result<()> {
         _ => "CURRENT_TIMESTAMP".to_string(),
     };
 
-    let query_converter = QueryConverter{
+    let query_converter = QueryConverter {
         datetime_now: datetime_now.clone(),
     };
 
@@ -350,7 +378,7 @@ async fn main() -> std::io::Result<()> {
         encrypt_key,
         query_converter,
         whitelist_ips,
-        route_publics:ROUTE_PUBLICS.to_vec(),
+        route_publics: ROUTE_PUBLICS.to_vec(),
     });
 
     generate_users(app_state.clone()).await;
@@ -367,24 +395,23 @@ async fn main() -> std::io::Result<()> {
         return Ok(());
     }
 
-
     // check if any table name in SCHEMAS is double
     let mut table_names: HashSet<String> = HashSet::new();
     for schema in SCHEMAS.0.iter() {
         if !table_names.insert(schema.table.clone()) {
             println!("--------------------------------------");
-            println!("{}",
+            println!(
+                "{}",
                 format!(
                     "ERROR 9081231287 : Table name '{}' is duplicated in config entity.",
                     schema.table
-                ).on_red()
+                )
+                .on_red()
             );
             println!("--------------------------------------");
             exit(1);
         }
     }
-    
-
 
     let host: &str = "0.0.0.0";
     let port: u16 = env::var("PORT")
@@ -417,39 +444,39 @@ async fn main() -> std::io::Result<()> {
 
         App::new()
             .app_data(app_state.clone())
-            .app_data(
-                web::PayloadConfig::new(
-                    env::var("UPLOAD_LIMIT_MB").ok()
-                        .and_then(|s| s.parse::<usize>().ok())
-                        .map(|mb| mb * 1024 * 1024)
-                        .unwrap_or(10 * 1024 * 1024)
-                )
-            )
-            .app_data(
-                {
-                    let kb: usize = env::var("JSON_LIMIT_KB")
-                        .ok()
-                        .and_then(|s| s.parse().ok())
-                        .map(|n: usize| n.clamp(1, 1024 * 16))
-                        .unwrap_or(4096);
-                    let bytes = kb * 1024; // convert KB to bytes as required by Actix limit()
-                    web::JsonConfig::default()
-                        .limit(bytes)
-                        .error_handler(|err, _req| {
-                            actix_web::error::InternalError::from_response(
-                                format!("JSON error: {}", err),
-                                actix_web::HttpResponse::BadRequest().json("Invalid JSON payload")
-                            ).into()
-                        })
-                }
-            )
+            .app_data(web::PayloadConfig::new(
+                env::var("UPLOAD_LIMIT_MB")
+                    .ok()
+                    .and_then(|s| s.parse::<usize>().ok())
+                    .map(|mb| mb * 1024 * 1024)
+                    .unwrap_or(10 * 1024 * 1024),
+            ))
+            .app_data({
+                let kb: usize = env::var("JSON_LIMIT_KB")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .map(|n: usize| n.clamp(1, 1024 * 16))
+                    .unwrap_or(4096);
+                let bytes = kb * 1024; // convert KB to bytes as required by Actix limit()
+                web::JsonConfig::default()
+                    .limit(bytes)
+                    .error_handler(|err, _req| {
+                        actix_web::error::InternalError::from_response(
+                            format!("JSON error: {}", err),
+                            actix_web::HttpResponse::BadRequest().json("Invalid JSON payload"),
+                        )
+                        .into()
+                    })
+            })
             .wrap_fn({
                 // clone AppState handle into middleware closure so it owns it (satisfies 'static)
                 let app_state = app_state.clone();
                 move |req: ServiceRequest, srv| {
                     // check if route contain in whitelist or not
                     let route = req.path().trim_start_matches('/').to_string();
-                    if ROUTE_WHITELIST.contains(&req.path()) || app_state.route_publics.contains(&route) {
+                    if ROUTE_WHITELIST.contains(&req.path())
+                        || app_state.route_publics.contains(&route)
+                    {
                         return srv.call(req);
                     }
 
@@ -464,7 +491,8 @@ async fn main() -> std::io::Result<()> {
             })
             .wrap(cors)
             .configure(|cfg: &mut web::ServiceConfig| {
-                let static_loc = std::env::var("LOC_STATIC").unwrap_or_else(|_| "static".to_string());
+                let static_loc =
+                    std::env::var("LOC_STATIC").unwrap_or_else(|_| "static".to_string());
                 // end point for static files (disable directory listing in prod)
                 let static_files = Files::new("/static", static_loc);
                 if *ISDEBUG {
@@ -472,13 +500,17 @@ async fn main() -> std::io::Result<()> {
                 } else {
                     cfg.service(static_files);
                 }
-                log_output("CORE ENDPOINT","METHOD", "GET",
+                log_output(
+                    "CORE ENDPOINT",
+                    "METHOD",
+                    "GET",
                     format!(
                         "http://{}:{}/{}",
                         host.red(),
                         port.clone().to_string().green(),
                         "static".purple()
-                    ),false
+                    ),
+                    false,
                 );
 
                 // end point for login
@@ -487,9 +519,17 @@ async fn main() -> std::io::Result<()> {
                         login(state, req)
                     },
                 )));
-                log_output("CORE ENDPOINT","METHOD","POST",
-                    format!("http://{}:{}/{}",host.red(),port.clone().to_string().green(),"login".purple()
-                    ),false
+                log_output(
+                    "CORE ENDPOINT",
+                    "METHOD",
+                    "POST",
+                    format!(
+                        "http://{}:{}/{}",
+                        host.red(),
+                        port.clone().to_string().green(),
+                        "login".purple()
+                    ),
+                    false,
                 );
 
                 // end point for register
@@ -498,7 +538,9 @@ async fn main() -> std::io::Result<()> {
                         register(state, multipart)
                     },
                 )));
-                log_output("CORE ENDPOINT","METHOD",
+                log_output(
+                    "CORE ENDPOINT",
+                    "METHOD",
                     "POST",
                     format!(
                         "http://{}:{}/{}",
@@ -506,7 +548,7 @@ async fn main() -> std::io::Result<()> {
                         port.clone().to_string().green(),
                         "register".purple()
                     ),
-                    false
+                    false,
                 );
 
                 // health check endpoint (public)
@@ -522,12 +564,25 @@ async fn main() -> std::io::Result<()> {
                                 "db": if db_ok { "up" } else { "down" },
                                 "db_type": state.db_type,
                             });
-                            if db_ok { HttpResponse::Ok().json(body) } else { HttpResponse::ServiceUnavailable().json(body) }
+                            if db_ok {
+                                HttpResponse::Ok().json(body)
+                            } else {
+                                HttpResponse::ServiceUnavailable().json(body)
+                            }
                         }
                     }
                 })));
-                log_output("CORE ENDPOINT","METHOD","GET",
-                    format!("http://{}:{}/{}",host.red(),port.clone().to_string().green(),"healthz".purple()),false
+                log_output(
+                    "CORE ENDPOINT",
+                    "METHOD",
+                    "GET",
+                    format!(
+                        "http://{}:{}/{}",
+                        host.red(),
+                        port.clone().to_string().green(),
+                        "healthz".purple()
+                    ),
+                    false,
                 );
 
                 println!("\n");
@@ -543,37 +598,53 @@ async fn main() -> std::io::Result<()> {
                     let route_validate = route.clone();
                     let route_generate_table = route.clone();
 
-                    log_output("ENDPOINT","METHOD","GET",
+                    log_output(
+                        "ENDPOINT",
+                        "METHOD",
+                        "GET",
                         format!(
                             "http://{}:{}/{}",
                             host.red(),
                             port.clone().to_string().green(),
                             route_get.clone().purple()
-                        ),false 
+                        ),
+                        false,
                     );
-                    log_output("ENDPOINT","METHOD","POST",
+                    log_output(
+                        "ENDPOINT",
+                        "METHOD",
+                        "POST",
                         format!(
                             "http://{}:{}/{}",
                             host.red(),
                             port.clone().to_string().green(),
                             route_post.clone().purple()
-                        ),false
+                        ),
+                        false,
                     );
-                    log_output("ENDPOINT","METHOD","TRACE",
+                    log_output(
+                        "ENDPOINT",
+                        "METHOD",
+                        "TRACE",
                         format!(
                             "http://{}:{}/{}",
                             host.red(),
                             port.clone().to_string().green(),
                             route_trace.clone().purple()
-                        ),false
+                        ),
+                        false,
                     );
-                    log_output("ENDPOINT","METHOD","PATCH",
+                    log_output(
+                        "ENDPOINT",
+                        "METHOD",
+                        "PATCH",
                         format!(
                             "http://{}:{}/{}",
                             host.red(),
                             port.clone().to_string().green(),
                             route_patch.clone().purple()
-                        ),false
+                        ),
+                        false,
                     );
 
                     cfg.service(
@@ -636,21 +707,29 @@ async fn main() -> std::io::Result<()> {
                             )),
                     );
 
-                    log_output("ENDPOINT","METHOD","DELETE",
+                    log_output(
+                        "ENDPOINT",
+                        "METHOD",
+                        "DELETE",
                         format!(
                             "http://{}:{}/{}",
                             host.red(),
                             port.clone().to_string().green(),
                             route_delete.clone().purple()
-                        ),false
+                        ),
+                        false,
                     );
-            log_output("ENDPOINT","METHOD","PUT",
+                    log_output(
+                        "ENDPOINT",
+                        "METHOD",
+                        "PUT",
                         format!(
                             "http://{}:{}/{}",
                             host.red(),
                             port.clone().to_string().green(),
-                route_put.clone().purple()
-                        ),false
+                            route_put.clone().purple()
+                        ),
+                        false,
                     );
 
                     cfg.service(
@@ -660,21 +739,15 @@ async fn main() -> std::io::Result<()> {
                                 move |state: web::Data<AppState>,
                                       path: Path<String>,
                                       req: actix_web::HttpRequest| {
-                                    delete(
-                                        state,
-                                        route_delete.clone(),
-                                        SCHEMAS.clone(),
-                                        path,
-                                        req,
-                                    )
+                                    delete(state, route_delete.clone(), SCHEMAS.clone(), path, req)
                                 },
                             ))
                             // register create_nocode
                             .route(web::put().to(
                                 move |state: web::Data<AppState>,
-                                    multipart: Multipart,
-                                    path: Path<String>,
-                                    req: actix_web::HttpRequest| {
+                                      multipart: Multipart,
+                                      path: Path<String>,
+                                      req: actix_web::HttpRequest| {
                                     update(
                                         state,
                                         route_put.clone(),
@@ -687,14 +760,18 @@ async fn main() -> std::io::Result<()> {
                             )),
                     );
 
-                    log_output("ENDPOINT","METHOD","GET",
+                    log_output(
+                        "ENDPOINT",
+                        "METHOD",
+                        "GET",
                         format!(
                             "http://{}:{}/{}/{}",
                             host.red(),
                             port.clone().to_string().green(),
                             "validate".yellow(),
-                            route_validate.clone().purple()),
-                        false
+                            route_validate.clone().purple()
+                        ),
+                        false,
                     );
                     cfg.service(
                         web::resource(format!("validate/{}", &*route_validate)).route(
@@ -712,7 +789,10 @@ async fn main() -> std::io::Result<()> {
                     );
 
                     if route_generate_table != "flx_users" && route_generate_table != "flx_roles" {
-                        log_output("ENDPOINT","METHOD", "POST",
+                        log_output(
+                            "ENDPOINT",
+                            "METHOD",
+                            "POST",
                             format!(
                                 "http://{}:{}/{}/{}",
                                 host.red(),
@@ -720,23 +800,21 @@ async fn main() -> std::io::Result<()> {
                                 "generate/table".yellow(),
                                 route_generate_table.clone().purple()
                             ),
-                            false
+                            false,
                         );
                         cfg.service(
-                            web::resource(format!("generate/table/{}", &*route_generate_table)).route(
-                                web::post().to(
-                                    move |state: web::Data<AppState>, req: actix_web::HttpRequest| {
-                                        create_table(
-                                            state,
-                                            route_generate_table.clone(),
-                                            SCHEMAS.0.clone().into(),
-                                            req,
-                                        )
-                                    },
-                                ),
-                            ),
+                            web::resource(format!("generate/table/{}", &*route_generate_table))
+                                .route(web::post().to(
+                                move |state: web::Data<AppState>, req: actix_web::HttpRequest| {
+                                    create_table(
+                                        state,
+                                        route_generate_table.clone(),
+                                        SCHEMAS.0.clone().into(),
+                                        req,
+                                    )
+                                },
+                            )),
                         );
-
                     }
 
                     println!("\n");
@@ -747,7 +825,7 @@ async fn main() -> std::io::Result<()> {
         env::var("ACTIX_WORKERS")
             .ok()
             .and_then(|s| s.parse().ok())
-            .unwrap_or(1)
+            .unwrap_or(1),
     )
     .max_connections(25000) // Limit concurrent connections
     .client_request_timeout(std::time::Duration::from_secs(30)) // 30 second timeout

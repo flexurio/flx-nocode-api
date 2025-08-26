@@ -2,16 +2,22 @@ use actix_web::{
     web::{Data, Path},
     HttpResponse, Responder,
 };
-use serde_json::{Value};
+use serde_json::Value;
 
-use crate::{
-    auth::{check_access, get_user_info_from_token, Claims}, database::state::DbParam, helpers:: filter_table_schema, log::log_output, model::{ReferenceForeignKey, TableSchema, WebResponse}, nocode::foreign_key::process_foreign_keys_delete_update, AppState
-};
-use crate::rate_limit::RL_WINDOW_MUTATE;
 use crate::audit::{write_audit, AuditEntry};
+use crate::helpers::get_client_ip;
+use crate::rate_limit::RL_WINDOW_MUTATE;
+use crate::{
+    auth::{check_access, get_user_info_from_token, Claims},
+    database::state::DbParam,
+    helpers::filter_table_schema,
+    log::log_output,
+    model::{ReferenceForeignKey, TableSchema, WebResponse},
+    nocode::foreign_key::process_foreign_keys_delete_update,
+    AppState,
+};
 use chrono::Local;
-use std::{sync::Arc};
-
+use std::sync::Arc;
 
 // NCO-DELETE
 pub async fn delete(
@@ -50,10 +56,18 @@ pub async fn delete(
 
     let id_raw: String = path.into_inner();
     // Rate-limit
-    let ip_key = req.clone().peer_addr().map(|a| a.ip().to_string()).unwrap_or_else(|| "unknown".into());
-    let limit: u32 = std::env::var("RATE_LIMIT_MUTATE_PER_MIN").ok().and_then(|s| s.parse().ok()).unwrap_or(120);
+    let ip_key = get_client_ip(&req);
+    let limit: u32 = std::env::var("RATE_LIMIT_MUTATE_PER_MIN")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(120);
     if !RL_WINDOW_MUTATE.check_and_increment(&format!("delete:{}:{}", route, ip_key), limit) {
-        return HttpResponse::TooManyRequests().json(WebResponse { success: false, message: "Too many requests".into(), total_data: 0, data: Value::Null });
+        return HttpResponse::TooManyRequests().json(WebResponse {
+            success: false,
+            message: "Too many requests".into(),
+            total_data: 0,
+            data: Value::Null,
+        });
     }
 
     let table_schema = filter_table_schema(table_schemas, route.clone()).await;
@@ -84,8 +98,11 @@ pub async fn delete(
     }
 
     // Bind id by type
-    if let Ok(n) = id_raw.clone().parse::<i64>() { bind_params.push(DbParam::I64(n)); }
-    else { bind_params.push(DbParam::Str(id_raw.clone())); }
+    if let Ok(n) = id_raw.clone().parse::<i64>() {
+        bind_params.push(DbParam::I64(n));
+    } else {
+        bind_params.push(DbParam::Str(id_raw.clone()));
+    }
 
     log_output("QUERY", "DELETE", route.as_str(), s_sql.clone(), true);
 
@@ -103,7 +120,10 @@ pub async fn delete(
     };
 
     // Execute main delete query
-    match transaction.query_with_params(&s_sql, bind_params.clone()).await {
+    match transaction
+        .query_with_params(&s_sql, bind_params.clone())
+        .await
+    {
         Ok(_) => {
             let (is_fk_ok, err_message) = process_foreign_keys_delete_update(
                 "DELETE", // "DELETE" or "UPDATE"
@@ -113,7 +133,8 @@ pub async fn delete(
                 claims.id,
                 id_raw.clone(),
                 "".to_string(), // for UPDATE
-            ).await;
+            )
+            .await;
 
             if is_fk_ok {
                 // Commit transaction if all operations succeeded
@@ -126,7 +147,7 @@ pub async fn delete(
                             action: "DELETE",
                             route: &route,
                             id: Some(&id_raw),
-                            ip: req.clone().peer_addr().map(|a| a.ip().to_string()).as_deref(),
+                            ip: Some(get_client_ip(&req)).as_deref(),
                         });
                         HttpResponse::Ok().json(WebResponse {
                             success: true,
@@ -134,27 +155,28 @@ pub async fn delete(
                             total_data: 1,
                             data: Value::Null,
                         })
-                    },
-                    Err(err) => {
-                        HttpResponse::InternalServerError().json(WebResponse {
-                            success: false,
-                            message: format!("Error committing transaction: {}", err),
-                            total_data: 0,
-                            data: Value::Null,
-                        })
                     }
+                    Err(err) => HttpResponse::InternalServerError().json(WebResponse {
+                        success: false,
+                        message: format!("Error committing transaction: {}", err),
+                        total_data: 0,
+                        data: Value::Null,
+                    }),
                 }
             } else {
                 // Rollback transaction due to foreign key failures
                 let _ = transaction.rollback().await;
                 HttpResponse::InternalServerError().json(WebResponse {
                     success: false,
-                    message: format!("Transaction rolled back due to foreign key failures: {}", err_message),
+                    message: format!(
+                        "Transaction rolled back due to foreign key failures: {}",
+                        err_message
+                    ),
                     total_data: 0,
                     data: Value::Null,
                 })
             }
-        },
+        }
         Err(err) => {
             // Rollback transaction due to main delete failure
             let _ = transaction.rollback().await;
@@ -164,7 +186,6 @@ pub async fn delete(
                 total_data: 0,
                 data: Value::Null,
             })
-        },
+        }
     }
 }
-

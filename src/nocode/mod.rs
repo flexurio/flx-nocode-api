@@ -1,9 +1,9 @@
-pub mod get;
-pub mod post;
 pub mod delete;
-pub mod put;
+pub mod foreign_key;
 pub mod generate;
+pub mod get;
+pub mod patch;
+pub mod post;
+pub mod put;
 pub mod trace;
 pub mod validate;
-pub mod patch;
-pub mod foreign_key;

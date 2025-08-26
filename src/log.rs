@@ -32,15 +32,13 @@ pub fn log_to_file(message: &str) {
             return;
         }
     };
-    let clean_message = ansi_escape.replace_all(message, "").to_string();    
+    let clean_message = ansi_escape.replace_all(message, "").to_string();
     if let Err(e) = writeln!(file, "{}", clean_message) {
         eprintln!("Failed to write to log file: {}", e);
     }
 }
 
-
-
-pub fn log_output(tipe:&str, title:&str, ssubtitle:&str, body:String, print_datetime:bool) {
+pub fn log_output(tipe: &str, title: &str, ssubtitle: &str, body: String, print_datetime: bool) {
     let mut subtitle = ssubtitle.to_string();
     let mut s_message_1 = "".to_string();
     if *ISDEBUG {
@@ -55,8 +53,14 @@ pub fn log_output(tipe:&str, title:&str, ssubtitle:&str, body:String, print_date
         if !print_datetime {
             s_datetime = "".to_string();
         }
-        
-        s_message_1 = format!("# {}, {} {} at {}: ",tipe.yellow(), title.cyan(), subtitle.blue(), s_datetime);
+
+        s_message_1 = format!(
+            "# {}, {} {} at {}: ",
+            tipe.yellow(),
+            title.cyan(),
+            subtitle.blue(),
+            s_datetime
+        );
         print!("{}", s_message_1);
         if tipe.contains("QUERY") {
             println!("\n");
@@ -71,5 +75,4 @@ pub fn log_output(tipe:&str, title:&str, ssubtitle:&str, body:String, print_date
         log_to_file(s_message_1.as_str());
         log_to_file(&body);
     }
-
 }

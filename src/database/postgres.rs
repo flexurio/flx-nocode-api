@@ -1,10 +1,11 @@
 use base64::Engine;
 use serde_json::{Map, Value};
-use sqlx::{postgres::{PgRow, Postgres}, Column, Pool, Row, Transaction};
+use sqlx::{
+    postgres::{PgRow, Postgres},
+    Column, Pool, Row, Transaction,
+};
 
-use super::state::{DbRepository, DbParam, DbTransaction};
-
-
+use super::state::{DbParam, DbRepository, DbTransaction};
 
 pub struct PostgresRepo {
     pub pool: Pool<Postgres>,
@@ -40,15 +41,20 @@ pub fn pgrows_to_json(rows: Vec<PgRow>) -> Vec<Value> {
                 }
             } else if type_info_debug.contains("FLOAT") || type_info_debug.contains("NUMERIC") {
                 match row.try_get::<Option<f64>, _>(name) {
-                    Ok(Some(v)) => serde_json::Number::from_f64(v).map(Value::Number).unwrap_or(Value::Null),
+                    Ok(Some(v)) => serde_json::Number::from_f64(v)
+                        .map(Value::Number)
+                        .unwrap_or(Value::Null),
                     Ok(None) => Value::Null,
                     Err(e) => {
                         println!("Failed to get {} as Option<f64>: {:?}", name, e);
                         Value::Null
                     }
                 }
-            } else if type_info_debug.contains("CHAR") || type_info_debug.contains("TEXT") 
-                || type_info_debug.contains("UUID") || type_info_debug.contains("VARCHAR") {
+            } else if type_info_debug.contains("CHAR")
+                || type_info_debug.contains("TEXT")
+                || type_info_debug.contains("UUID")
+                || type_info_debug.contains("VARCHAR")
+            {
                 match row.try_get::<Option<String>, _>(name) {
                     Ok(Some(v)) => Value::String(v),
                     Ok(None) => Value::Null,
@@ -59,7 +65,9 @@ pub fn pgrows_to_json(rows: Vec<PgRow>) -> Vec<Value> {
                 }
             } else if type_info_debug.contains("BYTEA") {
                 match row.try_get::<Option<Vec<u8>>, _>(name) {
-                    Ok(Some(v)) => Value::String(base64::engine::general_purpose::STANDARD.encode(v)),
+                    Ok(Some(v)) => {
+                        Value::String(base64::engine::general_purpose::STANDARD.encode(v))
+                    }
                     Ok(None) => Value::Null,
                     Err(e) => {
                         println!("Failed to get {} as Option<Vec<u8>>: {:?}", name, e);
@@ -80,17 +88,28 @@ pub fn pgrows_to_json(rows: Vec<PgRow>) -> Vec<Value> {
                     .ok()
                     .and_then(|opt| opt.and_then(|s| serde_json::from_str::<Value>(&s).ok()))
                     .unwrap_or(Value::Null)
-            } else if type_info_debug.contains("TIMESTAMPTZ") || type_info_debug.contains("TIMESTAMP") {
+            } else if type_info_debug.contains("TIMESTAMPTZ")
+                || type_info_debug.contains("TIMESTAMP")
+            {
                 row.try_get::<Option<chrono::NaiveDateTime>, _>(name)
-                    .map(|opt| opt.map(|dt| Value::String(dt.to_string())).unwrap_or(Value::Null))
+                    .map(|opt| {
+                        opt.map(|dt| Value::String(dt.to_string()))
+                            .unwrap_or(Value::Null)
+                    })
                     .unwrap_or(Value::Null)
             } else if type_info_debug.contains("DATE") {
                 row.try_get::<Option<chrono::NaiveDate>, _>(name)
-                    .map(|opt| opt.map(|d| Value::String(d.to_string())).unwrap_or(Value::Null))
+                    .map(|opt| {
+                        opt.map(|d| Value::String(d.to_string()))
+                            .unwrap_or(Value::Null)
+                    })
                     .unwrap_or(Value::Null)
             } else if type_info_debug.contains("TIME") {
                 row.try_get::<Option<chrono::NaiveTime>, _>(name)
-                    .map(|opt| opt.map(|t| Value::String(t.to_string())).unwrap_or(Value::Null))
+                    .map(|opt| {
+                        opt.map(|t| Value::String(t.to_string()))
+                            .unwrap_or(Value::Null)
+                    })
                     .unwrap_or(Value::Null)
             } else {
                 // fallback
@@ -108,14 +127,10 @@ pub fn pgrows_to_json(rows: Vec<PgRow>) -> Vec<Value> {
     json_array
 }
 
-
-
 #[async_trait::async_trait]
 impl DbRepository for PostgresRepo {
     async fn query(&self, sql: &str) -> Result<Vec<Value>, anyhow::Error> {
-        match sqlx::query(sql)
-            .fetch_all(&self.pool)
-            .await {
+        match sqlx::query(sql).fetch_all(&self.pool).await {
             Ok(rows) => {
                 // Jika berhasil, konversi hasilnya ke dalam JSON
                 let rows: Vec<PgRow> = rows.into_iter().collect();
@@ -126,20 +141,20 @@ impl DbRepository for PostgresRepo {
                 // Jika terjadi error, kembalikan error
                 return Err(anyhow::anyhow!("Error executing query: {}", e));
             }
-            
         }
     }
 
-
     async fn get_total_rows(&self, sql: &str) -> Result<i32, anyhow::Error> {
         // Menghitung total baris dari tabel PostgreSQL
-        let row: (i32,) = sqlx::query_as(sql)
-            .fetch_one(&self.pool)
-            .await?;
+        let row: (i32,) = sqlx::query_as(sql).fetch_one(&self.pool).await?;
         Ok(row.0)
     }
 
-    async fn query_with_params(&self, sql: &str, params: Vec<DbParam>) -> Result<Vec<Value>, anyhow::Error> {
+    async fn query_with_params(
+        &self,
+        sql: &str,
+        params: Vec<DbParam>,
+    ) -> Result<Vec<Value>, anyhow::Error> {
         // Convert '?' placeholders to PostgreSQL-style $1, $2, ...
         let mut converted = String::with_capacity(sql.len());
         let mut idx = 1;
@@ -167,12 +182,16 @@ impl DbRepository for PostgresRepo {
             Ok(rows) => {
                 let rows: Vec<PgRow> = rows.into_iter().collect();
                 Ok(pgrows_to_json(rows))
-            },
+            }
             Err(e) => Err(anyhow::anyhow!("Error executing query: {}", e)),
         }
     }
 
-    async fn get_total_rows_with_params(&self, sql: &str, params: Vec<DbParam>) -> Result<i32, anyhow::Error> {
+    async fn get_total_rows_with_params(
+        &self,
+        sql: &str,
+        params: Vec<DbParam>,
+    ) -> Result<i32, anyhow::Error> {
         // Convert '?' placeholders to PostgreSQL-style $1, $2, ...
         let mut converted = String::with_capacity(sql.len());
         let mut idx = 1;
@@ -212,7 +231,11 @@ pub struct PostgresTransaction {
 
 #[async_trait::async_trait]
 impl DbTransaction for PostgresTransaction {
-    async fn query_with_params(&mut self, sql: &str, params: Vec<DbParam>) -> Result<Vec<Value>, anyhow::Error> {
+    async fn query_with_params(
+        &mut self,
+        sql: &str,
+        params: Vec<DbParam>,
+    ) -> Result<Vec<Value>, anyhow::Error> {
         // Convert '?' placeholders to PostgreSQL-style $1, $2, ...
         let mut converted = String::with_capacity(sql.len());
         let mut idx = 1;
@@ -241,17 +264,22 @@ impl DbTransaction for PostgresTransaction {
             Ok(rows) => {
                 let rows: Vec<PgRow> = rows.into_iter().collect();
                 Ok(pgrows_to_json(rows))
-            },
+            }
             Err(e) => Err(anyhow::anyhow!("Error executing query: {}", e)),
         }
     }
 
     async fn commit(self: Box<Self>) -> Result<(), anyhow::Error> {
-        self.tx.commit().await.map_err(|e| anyhow::anyhow!("Transaction commit failed: {}", e))
+        self.tx
+            .commit()
+            .await
+            .map_err(|e| anyhow::anyhow!("Transaction commit failed: {}", e))
     }
 
     async fn rollback(self: Box<Self>) -> Result<(), anyhow::Error> {
-        self.tx.rollback().await.map_err(|e| anyhow::anyhow!("Transaction rollback failed: {}", e))
+        self.tx
+            .rollback()
+            .await
+            .map_err(|e| anyhow::anyhow!("Transaction rollback failed: {}", e))
     }
 }
-

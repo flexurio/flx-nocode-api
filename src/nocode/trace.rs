@@ -2,16 +2,16 @@ use actix_web::{
     web::{self},
     HttpResponse, Responder,
 };
-use serde_json::{Value};
+use serde_json::Value;
 
 use crate::{
-    auth::{check_access, get_user_info_from_token}, helpers::{
-        filter_table_schema, split_column_operator
-    }, log::log_output, model::{TableSchema, WebResponse}, AppState
+    auth::{check_access, get_user_info_from_token},
+    helpers::{filter_table_schema, split_column_operator},
+    log::log_output,
+    model::{TableSchema, WebResponse},
+    AppState,
 };
 use std::sync::Arc;
-
-
 
 // NCO-TRACE
 pub async fn process(
@@ -22,7 +22,6 @@ pub async fn process(
     req: actix_web::HttpRequest,
 ) -> impl Responder {
     if !state.route_publics.contains(&route) {
-
         let claims = match get_user_info_from_token(req, state.clone()) {
             Ok(c) => c,
             Err(_) => {
@@ -48,7 +47,6 @@ pub async fn process(
     // get parameters value only allowed from table_schema.trace.parameters
     // loop every table_schema.trace.parameters
     let mut where_clause: String = "WHERE ".to_string();
-    
 
     let table_schema: TableSchema = filter_table_schema(&table_schemas, route.clone()).await;
     if table_schema.table.is_empty() {
@@ -64,7 +62,13 @@ pub async fn process(
     let mut is_deleted_at = true;
 
     for param in table_schema.trace.parameters.iter() {
-        for (key, value) in parameters.clone().into_inner().as_object().unwrap_or(&serde_json::Map::new()).iter() {
+        for (key, value) in parameters
+            .clone()
+            .into_inner()
+            .as_object()
+            .unwrap_or(&serde_json::Map::new())
+            .iter()
+        {
             if key.contains("deleted_at") {
                 is_deleted_at = false;
             }
@@ -136,11 +140,18 @@ pub async fn process(
     for column in table_schema.trace.column_conflicts.iter() {
         conflict_clause.push_str(&format!("{}=VALUES({}), ", column, column));
     }
-    conflict_clause.push_str(format!("updated_at={}, deleted_at=null", state.query_converter.datetime_now).as_str());
+    conflict_clause.push_str(
+        format!(
+            "updated_at={}, deleted_at=null",
+            state.query_converter.datetime_now
+        )
+        .as_str(),
+    );
 
     let table_schema = filter_table_schema(&table_schemas, route.clone()).await;
     let mut select_columns = table_schema.trace.column_selects.join(", ");
-    select_columns.push_str(format!(", {} as created_at", state.query_converter.datetime_now).as_str());
+    select_columns
+        .push_str(format!(", {} as created_at", state.query_converter.datetime_now).as_str());
     let joins: Vec<String> = table_schema
         .trace
         .join_tables
@@ -177,7 +188,7 @@ pub async fn process(
 
     log_output("QUERY", "TRACE", route.as_str(), s_sql.clone(), true);
 
-        // Begin transaction
+    // Begin transaction
     let mut transaction = match state.db.begin_transaction().await {
         Ok(tx) => tx,
         Err(err) => {
@@ -190,8 +201,6 @@ pub async fn process(
         }
     };
 
-
-
     match transaction.query_with_params(&s_sql, [].to_vec()).await {
         Ok(_) => {
             // Commit transaction
@@ -202,7 +211,7 @@ pub async fn process(
                 total_data: 1,
                 data: Value::Null,
             })
-        },
+        }
 
         Err(err) => {
             transaction.rollback().await.ok();
@@ -212,6 +221,6 @@ pub async fn process(
                 total_data: 0,
                 data: Value::Null,
             })
-        },
+        }
     }
 }

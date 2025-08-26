@@ -2,18 +2,17 @@ use actix_web::{
     web::{self},
     HttpResponse, Responder,
 };
-use serde_json::{Value};
+use serde_json::Value;
 
 use crate::{
     auth::{check_access, get_user_info_from_token},
-    database::state::{DbParam},
-    helpers::{ filter_table_schema, split_column_operator },
+    database::state::DbParam,
+    helpers::{filter_table_schema, split_column_operator},
     log::log_output,
     model::{ParamJoin, TableSchema, WebResponse},
-    AppState
+    AppState,
 };
 use std::sync::Arc;
-
 
 // NCO-GET
 pub async fn select(
@@ -60,18 +59,20 @@ pub async fn select(
     let mut paramjoins: Vec<ParamJoin> = Vec::new();
     let mut bind_params: Vec<DbParam> = Vec::new();
 
-
     log_output(
         "CONFIGURATION",
         "FILTERED PARAMETERS",
         "filter_table_schema",
-        serde_json::to_string(&table_schema.get.parameters).unwrap_or_else(|_| "Failed to serialize TableSchema".to_string()),
-        true
+        serde_json::to_string(&table_schema.get.parameters)
+            .unwrap_or_else(|_| "Failed to serialize TableSchema".to_string()),
+        true,
     );
 
-
     if table_schema.table.is_empty() {
-        let message_error = format!("ER01(nocode_get): Entity {} on folder config/{}.json not found", route, route);
+        let message_error = format!(
+            "ER01(nocode_get): Entity {} on folder config/{}.json not found",
+            route, route
+        );
         return HttpResponse::FailedDependency().json(WebResponse {
             success: false,
             message: message_error,
@@ -87,7 +88,7 @@ pub async fn select(
         "PARAMETERS ON ROUTES",
         "TableSchema",
         table_schema.get.parameters.join(", "),
-        true
+        true,
     );
 
     // get parameters value only allowed from table_schemas.get.parameters
@@ -113,21 +114,35 @@ pub async fn select(
 
             // check if parameters contains key from table_schemas.get.parameters
             if param == key {
-
                 // check if in PARAMS_PAGINATION then add to pagination_data
                 if param == "page" {
-                    i_page = value.as_str().and_then(|s| s.parse::<i32>().ok()).filter(|v| *v > 0).unwrap_or(1);
+                    i_page = value
+                        .as_str()
+                        .and_then(|s| s.parse::<i32>().ok())
+                        .filter(|v| *v > 0)
+                        .unwrap_or(1);
                 } else if param == "sort" {
                     if value != "" {
                         let mut val = value.to_string();
-                        val = val.chars().filter(|c| c.is_alphanumeric() || *c == '.' || *c == ',' || *c == ' ').collect();
+                        val = val
+                            .chars()
+                            .filter(|c| c.is_alphanumeric() || *c == '.' || *c == ',' || *c == ' ')
+                            .collect();
                         order_column = val;
                     }
                 } else if param == "ascending" {
                     let v = value.as_str().unwrap_or("");
-                    order_type = if v.eq_ignore_ascii_case("true") { "ASC".into() } else { "DESC".into() };
+                    order_type = if v.eq_ignore_ascii_case("true") {
+                        "ASC".into()
+                    } else {
+                        "DESC".into()
+                    };
                 } else if param == "limit" {
-                    i_limit = value.as_str().and_then(|s| s.parse::<i32>().ok()).map(|v| v.clamp(1, 1000)).unwrap_or(100);
+                    i_limit = value
+                        .as_str()
+                        .and_then(|s| s.parse::<i32>().ok())
+                        .map(|v| v.clamp(1, 1000))
+                        .unwrap_or(100);
                 } else if param == "redis" {
                     // check redis
                     println!("Redis: {}", value);
@@ -140,7 +155,8 @@ pub async fn select(
                             search_clause.push_str(&format!("{} LIKE ? OR ", column));
                             bind_params.push(DbParam::Str(format!("%{}%", value_str)));
                         } else {
-                            search_clause.push_str(&format!("{}.{} LIKE ? OR ", table_schema.table, column));
+                            search_clause
+                                .push_str(&format!("{}.{} LIKE ? OR ", table_schema.table, column));
                             bind_params.push(DbParam::Str(format!("%{}%", value_str)));
                         }
                     }
@@ -152,7 +168,10 @@ pub async fn select(
                                 search_clause.push_str(&format!("{} LIKE ? OR ", column));
                                 bind_params.push(DbParam::Str(format!("%{}%", value_str)));
                             } else {
-                                search_clause.push_str(&format!("{}.{} LIKE ? OR ", table_schema.table, column));
+                                search_clause.push_str(&format!(
+                                    "{}.{} LIKE ? OR ",
+                                    table_schema.table, column
+                                ));
                                 bind_params.push(DbParam::Str(format!("%{}%", value_str)));
                             }
                         }
@@ -189,7 +208,8 @@ pub async fn select(
                     });
                 } else {
                     let value_str = value.as_str().unwrap_or("").to_string();
-                    let (column, operator, value) = split_column_operator(param, &table_schema.table, &value_str);
+                    let (column, operator, value) =
+                        split_column_operator(param, &table_schema.table, &value_str);
 
                     if value_str.eq_ignore_ascii_case("NULL") {
                         // special-case IS NULL / IS NOT NULL out of split_column_operator
@@ -242,7 +262,12 @@ pub async fn select(
             .columns
             .iter()
             .map(|s| s.as_str())
-            .chain(table_schema.indexes.iter().flat_map(|idx| idx.columns.iter().map(|s| s.as_str())))
+            .chain(
+                table_schema
+                    .indexes
+                    .iter()
+                    .flat_map(|idx| idx.columns.iter().map(|s| s.as_str())),
+            )
             .collect();
         let sanitized: String = order_column
             .split(',')
@@ -278,8 +303,6 @@ pub async fn select(
     }
 
     let select_columns = table_schema.get.columns.join(", ");
-
-
 
     let joins: Vec<String> = table_schema
         .get
@@ -325,7 +348,13 @@ pub async fn select(
     );
 
     log_output("QUERY", "GET", route.as_str(), s_sql.clone(), true);
-    log_output("PARAMS", "POST", route.as_str(), format!("{:?}", bind_params), true);
+    log_output(
+        "PARAMS",
+        "POST",
+        route.as_str(),
+        format!("{:?}", bind_params),
+        true,
+    );
 
     // Build total count query:
     // - Without GROUP BY: simple COUNT(*) over filtered set
@@ -342,8 +371,12 @@ pub async fn select(
         )
     };
 
-    // get total data from 
-    let total_data:i32 = state.db.get_total_rows_with_params(&s_sql_total, bind_params.clone()).await.unwrap_or(0);
+    // get total data from
+    let total_data: i32 = state
+        .db
+        .get_total_rows_with_params(&s_sql_total, bind_params.clone())
+        .await
+        .unwrap_or(0);
     let query_result = state.db.query_with_params(&s_sql, bind_params).await;
     match query_result {
         Ok(res) => {
@@ -355,7 +388,7 @@ pub async fn select(
             };
 
             HttpResponse::Ok().json(result)
-        },
+        }
         Err(e) => {
             let res = WebResponse {
                 success: false,
@@ -364,9 +397,6 @@ pub async fn select(
                 data: Value::Null,
             };
             HttpResponse::InternalServerError().json(res)
-    
-        },
+        }
     }
-
-
 }

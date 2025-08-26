@@ -1,16 +1,21 @@
-use std::{collections::HashSet};
 use actix_multipart::Multipart;
-use actix_web::{
-    web::Data,
-    HttpResponse, Responder,
-};
-use serde_json::{Value};
+use actix_web::{web::Data, HttpResponse, Responder};
+use serde_json::Value;
+use std::collections::HashSet;
 
-use crate::{
-    auth::{check_access, get_user_info_from_token, Claims}, crypt::{encrypt, is_encrypted_string}, database::state::{execute_sql_formula, execute_sql_formula_with_transaction, DbParam}, helpers::{ extract_expressions, filter_table_schema, find_column_match, multipart_to_json }, log::log_output, model::{Column, TableSchema, WebResponse}, nocode::foreign_key::check_data_foreign_key, AppState
-};
-use crate::rate_limit::RL_WINDOW_MUTATE;
 use crate::audit::{write_audit, AuditEntry};
+use crate::helpers::get_client_ip;
+use crate::rate_limit::RL_WINDOW_MUTATE;
+use crate::{
+    auth::{check_access, get_user_info_from_token, Claims},
+    crypt::{encrypt, is_encrypted_string},
+    database::state::{execute_sql_formula, execute_sql_formula_with_transaction, DbParam},
+    helpers::{extract_expressions, filter_table_schema, find_column_match, multipart_to_json},
+    log::log_output,
+    model::{Column, TableSchema, WebResponse},
+    nocode::foreign_key::check_data_foreign_key,
+    AppState,
+};
 use chrono::Local;
 use std::sync::Arc;
 
@@ -36,8 +41,6 @@ pub async fn insert(
                 });
             }
         };
-
-
 
         if !check_access(&claims, &route, "write") {
             return HttpResponse::Unauthorized().json(WebResponse {
@@ -65,13 +68,19 @@ pub async fn insert(
     };
 
     // Rate-limit per IP for mutations
-    let ip_key = req.clone().peer_addr().map(|a| a.ip().to_string()).unwrap_or_else(|| "unknown".into());
-    let limit: u32 = std::env::var("RATE_LIMIT_MUTATE_PER_MIN").ok().and_then(|s| s.parse().ok()).unwrap_or(120);
+    let ip_key = get_client_ip(&req);
+    let limit: u32 = std::env::var("RATE_LIMIT_MUTATE_PER_MIN")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(120);
     if !RL_WINDOW_MUTATE.check_and_increment(&format!("post:{}:{}", route, ip_key), limit) {
-        return HttpResponse::TooManyRequests().json(WebResponse { success: false, message: "Too many requests".into(), total_data: 0, data: Value::Null });
+        return HttpResponse::TooManyRequests().json(WebResponse {
+            success: false,
+            message: "Too many requests".into(),
+            total_data: 0,
+            data: Value::Null,
+        });
     }
-
-
 
     // Generate SQL query INSERT to table in variable route, from data structure table in table_schemas
     let table_schema: TableSchema = filter_table_schema(&table_schemas, route.clone()).await;
@@ -84,8 +93,6 @@ pub async fn insert(
             data: Value::Null,
         });
     }
-
-
 
     let skip_columns: HashSet<&str> = [
         "created_at",
@@ -112,7 +119,6 @@ pub async fn insert(
         .map(|col| col.name.as_str())
         .collect();
 
-    
     // Helper: build formula with placeholders and collect params
     fn build_formula_value(raw: &str, body: &Value) -> (String, Vec<DbParam>) {
         // raw like: "col=CONCAT({request.x}, {table[1].f})". Caller will strip "col=".
@@ -132,9 +138,13 @@ pub async fn insert(
                     .map(|v| v.to_string().replace('"', "").replace("null", ""))
                     .unwrap_or_default();
                 // Infer numeric
-                if let Ok(n) = val.parse::<i64>() { params.push(DbParam::I64(n)); }
-                else if let Ok(f) = val.parse::<f64>() { params.push(DbParam::F64(f)); }
-                else { params.push(DbParam::Str(val)); }
+                if let Ok(n) = val.parse::<i64>() {
+                    params.push(DbParam::I64(n));
+                } else if let Ok(f) = val.parse::<f64>() {
+                    params.push(DbParam::F64(f));
+                } else {
+                    params.push(DbParam::Str(val));
+                }
                 sql = sql.replace(&needle, "?");
             } else {
                 // unknown placeholder, drop
@@ -150,12 +160,18 @@ pub async fn insert(
     // **3️⃣ Buat daftar nilai untuk INSERT** (fragment SQL per kolom)
     let mut insert_values: Vec<String> = Vec::new();
     for col in filtered_columns.iter() {
-        if col.auto_increment { continue; }
+        if col.auto_increment {
+            continue;
+        }
 
         let mut isformula = false;
-        let post_columns: Vec<&str> = table_schema.post.columns.iter().map(|s| s.as_str()).collect();
+        let post_columns: Vec<&str> = table_schema
+            .post
+            .columns
+            .iter()
+            .map(|s| s.as_str())
+            .collect();
         let (exists, matched_string) = find_column_match(&post_columns, &col.name);
-
 
         if exists && col.name != "id" {
             let string_formula = matched_string.unwrap_or("").to_string();
@@ -174,7 +190,6 @@ pub async fn insert(
         }
 
         if !isformula && (col.name != "id" || col.function.is_empty()) {
-
             // Ambil dari body dan bind sebagai param
             let mut value = body
                 .get(&col.name)
@@ -185,15 +200,30 @@ pub async fn insert(
             for fk in table_schema.foreign_keys.iter() {
                 if fk.column == col.name {
                     // check if value is valid !
-                    let isok = check_data_foreign_key(&state, fk.reference_table.clone(), fk.reference_column.clone(), value.clone()).await;
+                    let isok = check_data_foreign_key(
+                        &state,
+                        fk.reference_table.clone(),
+                        fk.reference_column.clone(),
+                        value.clone(),
+                    )
+                    .await;
                     if !isok {
-                        log_output("ERROR", "CHECK FOREIGN KEY", "DATA", format!("Invalid foreign key value: {}", value), false);
+                        log_output(
+                            "ERROR",
+                            "CHECK FOREIGN KEY",
+                            "DATA",
+                            format!("Invalid foreign key value: {}", value),
+                            false,
+                        );
                         return HttpResponse::InternalServerError().json(WebResponse {
                             success: false,
-                            message: format!("Invalid foreign key value: {} from table {}", value, fk.reference_table),
+                            message: format!(
+                                "Invalid foreign key value: {} from table {}",
+                                value, fk.reference_table
+                            ),
                             total_data: 0,
                             data: Value::Null,
-                        });                        
+                        });
                     }
                 }
             }
@@ -205,13 +235,19 @@ pub async fn insert(
                 }
             }
 
-            if value.is_empty() { value = "0".into(); }
+            if value.is_empty() {
+                value = "0".into();
+            }
 
             // push placeholder and param by type
             if col.type_data.contains("int") || col.type_data.contains("float") {
-                if let Ok(n) = value.parse::<i64>() { bind_params.push(DbParam::I64(n)); }
-                else if let Ok(f) = value.parse::<f64>() { bind_params.push(DbParam::F64(f)); }
-                else { bind_params.push(DbParam::Str(value)); }
+                if let Ok(n) = value.parse::<i64>() {
+                    bind_params.push(DbParam::I64(n));
+                } else if let Ok(f) = value.parse::<f64>() {
+                    bind_params.push(DbParam::F64(f));
+                } else {
+                    bind_params.push(DbParam::Str(value));
+                }
                 insert_values.push("?".into());
             } else {
                 bind_params.push(DbParam::Str(value));
@@ -220,14 +256,13 @@ pub async fn insert(
         }
     }
 
-
     // remove element "XXXAUTOINC" from insert_values
     insert_values.retain(|v| v != "XXXAUTOINC");
 
     if !function_id_split.is_empty() {
         // loop every function_id_split
         for function_id in function_id_split.iter() {
-            if function_id == "%Y"{
+            if function_id == "%Y" {
                 // get year from now with format YYYY
                 let year = chrono::Utc::now().format("%Y").to_string();
                 id.push('/');
@@ -242,19 +277,25 @@ pub async fn insert(
                 let day = chrono::Utc::now().format("%d").to_string();
                 id.push('/');
                 id.push_str(&day);
-            } else if function_id.contains("ID"){
+            } else if function_id.contains("ID") {
                 let mut id_find = id.clone();
                 id_find.remove(0);
 
                 let s_append = function_id.replace("ID", "");
                 let len_id = s_append.len();
 
-
                 // get max id from table from column id with length len_id from left
-                let s_sql_max_id = format!("SELECT COALESCE(MAX(id),0) as max_id FROM {} WHERE id like '%{}%' ", table_schema.table, id_find);
+                let s_sql_max_id = format!(
+                    "SELECT COALESCE(MAX(id),0) as max_id FROM {} WHERE id like '%{}%' ",
+                    table_schema.table, id_find
+                );
                 log_output("QUERY", "GET", route.as_str(), s_sql_max_id.clone(), true);
                 let max_id: String = match &state.db.query(&s_sql_max_id).await {
-                    Ok(row) => row[0].get("max_id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                    Ok(row) => row[0]
+                        .get("max_id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
                     Err(_) => "0".to_string(),
                 };
 
@@ -279,25 +320,20 @@ pub async fn insert(
 
         // remove id from insert_columns
         insert_columns.retain(|&x| x != "id");
-        insert_columns.push("id"); 
+        insert_columns.push("id");
         // add id parameter
         insert_values.push("?".into());
         bind_params.push(DbParam::Str(id));
-
-
     }
 
     // **Tambahkan created_at**
-    insert_columns.push("created_at"); 
+    insert_columns.push("created_at");
     insert_values.push(state.query_converter.datetime_now.clone());
 
     // **Tambahkan created_by_id**
     insert_columns.push("created_by_id");
     insert_values.push("?".into());
     bind_params.push(DbParam::I64(claims.id));
-
-
-
 
     let s_sql = format!(
         "INSERT INTO {} ({}) VALUES ({})",
@@ -307,12 +343,24 @@ pub async fn insert(
     );
 
     log_output("QUERY", "POST", route.as_str(), s_sql.clone(), true);
-    log_output("PARAMS", "POST", route.as_str(), format!("{:?}", bind_params), true);
-
+    log_output(
+        "PARAMS",
+        "POST",
+        route.as_str(),
+        format!("{:?}", bind_params),
+        true,
+    );
 
     // check validation_data
-    if table_schema.post.validate_data.contains("SQL:"){
-        match execute_sql_formula(&state.db, table_schema.post.validate_data.clone(), &body, route.as_str()).await {
+    if table_schema.post.validate_data.contains("SQL:") {
+        match execute_sql_formula(
+            &state.db,
+            table_schema.post.validate_data.clone(),
+            &body,
+            route.as_str(),
+        )
+        .await
+        {
             Ok(row) => {
                 // check data row
                 if !row.is_empty() {
@@ -328,7 +376,9 @@ pub async fn insert(
                 } else {
                     return HttpResponse::BadRequest().json(WebResponse {
                         success: false,
-                        message: "Validation data from table is empty. Please contact your administrator".to_string(),
+                        message:
+                            "Validation data from table is empty. Please contact your administrator"
+                                .to_string(),
                         total_data: 0,
                         data: Value::Null,
                     });
@@ -358,9 +408,15 @@ pub async fn insert(
         }
     };
 
-
-    if table_schema.post.pre_process.contains("SQL:"){
-        if let Err(err) = execute_sql_formula_with_transaction(&mut transaction, table_schema.post.pre_process, &body, route.as_str()).await {
+    if table_schema.post.pre_process.contains("SQL:") {
+        if let Err(err) = execute_sql_formula_with_transaction(
+            &mut transaction,
+            table_schema.post.pre_process,
+            &body,
+            route.as_str(),
+        )
+        .await
+        {
             transaction.rollback().await.ok();
             return HttpResponse::InternalServerError().json(WebResponse {
                 success: false,
@@ -370,12 +426,18 @@ pub async fn insert(
             });
         }
     }
-    
 
     match transaction.query_with_params(&s_sql, bind_params).await {
         Ok(_) => {
-            if table_schema.post.post_process.contains("SQL:"){
-                if let Err(err) = execute_sql_formula_with_transaction(&mut transaction, table_schema.post.post_process, &body, route.as_str()).await {
+            if table_schema.post.post_process.contains("SQL:") {
+                if let Err(err) = execute_sql_formula_with_transaction(
+                    &mut transaction,
+                    table_schema.post.post_process,
+                    &body,
+                    route.as_str(),
+                )
+                .await
+                {
                     transaction.rollback().await.ok();
                     // Rollback transaction if post-process SQL fails
                     return HttpResponse::InternalServerError().json(WebResponse {
@@ -394,7 +456,7 @@ pub async fn insert(
                 action: "POST",
                 route: &route,
                 id: None,
-                ip: req.clone().peer_addr().map(|a| a.ip().to_string()).as_deref(),
+                ip: Some(get_client_ip(&req)).as_deref(),
             });
             HttpResponse::Ok().json(WebResponse {
                 success: true,
@@ -402,7 +464,7 @@ pub async fn insert(
                 total_data: 1,
                 data: Value::Null,
             })
-        },
+        }
         Err(err) => {
             transaction.rollback().await.ok();
             HttpResponse::InternalServerError().json(WebResponse {
@@ -411,7 +473,6 @@ pub async fn insert(
                 total_data: 0,
                 data: Value::Null,
             })
-        },
+        }
     }
 }
-

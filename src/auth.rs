@@ -5,7 +5,7 @@ use chrono::{Duration, Utc};
 use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
 
-use crate::AppState;
+use crate::{helpers::get_client_ip, AppState};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Claims {
@@ -18,8 +18,8 @@ pub struct Claims {
 }
 impl Claims {
     pub fn get_roles(&self) -> Vec<String> {
-            self.rl.split(",").map(|s| s.to_string()).collect()
-        }
+        self.rl.split(",").map(|s| s.to_string()).collect()
+    }
 }
 
 // set default Claims
@@ -50,7 +50,9 @@ pub fn validate_token(
     let auth_header = match req.headers().get("Authorization") {
         Some(header) => match header.to_str() {
             Ok(auth_str) if auth_str.starts_with("Bearer ") => auth_str,
-            _ => return Err(HttpResponse::Unauthorized().json("Invalid Authorization header format")),
+            _ => {
+                return Err(HttpResponse::Unauthorized().json("Invalid Authorization header format"))
+            }
         },
         None => return Err(HttpResponse::Unauthorized().json("Missing Authorization header")),
     };
@@ -59,7 +61,7 @@ pub fn validate_token(
     let mut validation = Validation::new(Algorithm::HS256);
     validation.validate_exp = true;
     validation.leeway = 30; // Allow 30 seconds clock skew
-    
+
     match decode::<Claims>(
         auth_header.trim_start_matches("Bearer "),
         &DecodingKey::from_secret(state.secret.as_ref()),
@@ -73,9 +75,13 @@ pub fn validate_token(
     }
 }
 
-
 // Handler untuk login dan generate token
-pub async fn create_token(id_user: i64, name: String, state: web::Data<AppState>, roles: String) -> String {
+pub async fn create_token(
+    id_user: i64,
+    name: String,
+    state: web::Data<AppState>,
+    roles: String,
+) -> String {
     let expiration = Utc::now()
         .checked_add_signed(Duration::days(1))
         .expect("valid timestamp")
@@ -90,7 +96,8 @@ pub async fn create_token(id_user: i64, name: String, state: web::Data<AppState>
             sql_query = sql_query.replace("{:?}", &id_user.to_string());
 
             addjwt = match state.db.query(&sql_query).await {
-                Ok(results) => results.first()
+                Ok(results) => results
+                    .first()
                     .and_then(|value| value.as_str().map(|s| s.to_string()))
                     .unwrap_or_default(),
                 Err(e) => {
@@ -100,7 +107,6 @@ pub async fn create_token(id_user: i64, name: String, state: web::Data<AppState>
             };
         }
     }
-
 
     let claims = Claims {
         id: id_user,
@@ -139,12 +145,8 @@ fn extract_token_claims(token: &str, secret: &[u8]) -> Result<Claims, jsonwebtok
 }
 
 fn is_ip_whitelisted(req: &actix_web::HttpRequest, whitelist: &[String]) -> bool {
-    if let Some(peer_addr) = req.peer_addr() {
-    let ip = peer_addr.ip().to_string();
+    let ip = get_client_ip(req);
     whitelist.contains(&ip)
-    } else {
-        false
-    }
 }
 
 // Contoh penggunaan
@@ -164,7 +166,6 @@ pub fn get_user_info_from_token(
             cs: "".to_string(),
         });
     }
-
 
     if let Some(auth_header) = req.headers().get("Authorization") {
         if let Ok(auth_str) = auth_header.to_str() {

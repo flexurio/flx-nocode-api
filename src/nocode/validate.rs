@@ -1,19 +1,16 @@
-use actix_web::{
-    web::Data,
-    HttpResponse, Responder,
-};
+use actix_web::{web::Data, HttpResponse, Responder};
 use serde_json::{json, Value};
 
 use crate::{
-    auth::{check_access, get_user_info_from_token}, 
-    helpers::filter_table_schema, 
-    model::{Column, GetOperation, Index, JoinTable, OperationDelete, OperationPostPut, Patch, PrimaryKey, Redis, TableSchema, Trace, WebResponse}, 
-    AppState
+    auth::{check_access, get_user_info_from_token},
+    helpers::filter_table_schema,
+    model::{
+        Column, GetOperation, Index, JoinTable, OperationDelete, OperationPostPut, Patch,
+        PrimaryKey, Redis, TableSchema, Trace, WebResponse,
+    },
+    AppState,
 };
 use std::sync::Arc;
-
-
-
 
 // NCO-VALIDATE
 pub async fn check_table_design(
@@ -63,11 +60,9 @@ pub async fn check_table_design(
         success: true,
         message: "Table validated".to_string(),
         total_data: 1,
-    data: json!((*table_schemas).clone()),
+        data: json!((*table_schemas).clone()),
     })
 }
-
-
 
 pub fn validate_table_design(design: TableSchema) -> TableSchema {
     let mut schema_check = TableSchema {
@@ -142,9 +137,10 @@ pub fn validate_table_design(design: TableSchema) -> TableSchema {
 
         for pk_col in &design.primary_key.columns {
             if !design.columns.iter().any(|col| col.name == *pk_col) {
-                schema_check.primary_key.columns = vec![
-                    format!("NOT OK - primary key column '{}' does not exist in columns", pk_col)
-                ];
+                schema_check.primary_key.columns = vec![format!(
+                    "NOT OK - primary key column '{}' does not exist in columns",
+                    pk_col
+                )];
             }
         }
     }
@@ -189,16 +185,28 @@ pub fn validate_table_design(design: TableSchema) -> TableSchema {
         for index_col in &index.columns {
             if !design.columns.iter().any(|col| col.name == *index_col) {
                 schema_check.indexes = vec![Index {
-                    name: format!("NOT OK - index column '{}' does not exist in columns", index_col),
-                    columns: vec![format!("NOT OK - index column '{}' does not exist in columns", index_col)],
+                    name: format!(
+                        "NOT OK - index column '{}' does not exist in columns",
+                        index_col
+                    ),
+                    columns: vec![format!(
+                        "NOT OK - index column '{}' does not exist in columns",
+                        index_col
+                    )],
                     unique: false,
                 }];
             }
 
             if design.primary_key.columns.contains(index_col) {
                 schema_check.indexes = vec![Index {
-                    name: format!("NOT OK - primary key column '{}' should not be indexed", index_col),
-                    columns: vec![format!("NOT OK - primary key column '{}' should not be indexed", index_col)],
+                    name: format!(
+                        "NOT OK - primary key column '{}' should not be indexed",
+                        index_col
+                    ),
+                    columns: vec![format!(
+                        "NOT OK - primary key column '{}' should not be indexed",
+                        index_col
+                    )],
                     unique: false,
                 }];
             }
@@ -213,20 +221,28 @@ pub fn validate_table_design(design: TableSchema) -> TableSchema {
         vec!["OK".to_string()]
     };
 
-    let ok_or_optional = if is_get_columns_exist { "NOT OK" } else { "OPTIONAL" };
+    let ok_or_optional = if is_get_columns_exist {
+        "NOT OK"
+    } else {
+        "OPTIONAL"
+    };
 
     // Check GET parameters
     let required_params = ["search", "page", "sort", "ascending", "limit"];
-    let has_required_params = required_params.iter().all(|p| design.get.parameters.contains(&p.to_string()));
+    let has_required_params = required_params
+        .iter()
+        .all(|p| design.get.parameters.contains(&p.to_string()));
 
     if !has_required_params {
-        schema_check.get.parameters = vec![
-            format!("{} - root.GET.parameters must contain search,page,sort,ascending,limit", ok_or_optional)
-        ];
+        schema_check.get.parameters = vec![format!(
+            "{} - root.GET.parameters must contain search,page,sort,ascending,limit",
+            ok_or_optional
+        )];
     } else if design.get.parameters.is_empty() {
-        schema_check.get.parameters = vec![
-            format!("{} - root.GET.parameters do not exist", ok_or_optional)
-        ];
+        schema_check.get.parameters = vec![format!(
+            "{} - root.GET.parameters do not exist",
+            ok_or_optional
+        )];
     } else {
         let mut column_problems = Vec::new();
         for param in &design.get.parameters {
@@ -241,7 +257,10 @@ pub fn validate_table_design(design: TableSchema) -> TableSchema {
                 let is_col_ok = if table == design.table {
                     design.columns.iter().any(|col| col.name == param_name)
                 } else {
-                    design.get.join_tables.iter()
+                    design
+                        .get
+                        .join_tables
+                        .iter()
                         .filter(|jt| jt.table == table)
                         .any(|jt| jt.columns.contains(&param_name.to_string()))
                 };
@@ -249,7 +268,9 @@ pub fn validate_table_design(design: TableSchema) -> TableSchema {
                 if !is_col_ok {
                     column_problems.push(param.clone());
                 } else if !design.primary_key.columns.contains(&param_name.to_string()) {
-                    let in_index = design.indexes.iter()
+                    let in_index = design
+                        .indexes
+                        .iter()
                         .any(|idx| idx.columns.contains(&param_name.to_string()));
                     if !in_index {
                         column_problems.push(param.clone());
@@ -324,4 +345,3 @@ pub fn validate_table_design(design: TableSchema) -> TableSchema {
 
     schema_check
 }
-

@@ -3,17 +3,23 @@ use actix_web::{
     web::{Data, Path},
     HttpResponse, Responder,
 };
-use serde_json::{Value};
+use serde_json::Value;
 
-use crate::{
-    auth::{check_access, get_user_info_from_token, Claims}, crypt::{encrypt, is_encrypted_string}, database::state::{execute_sql_formula, execute_sql_formula_with_transaction, DbParam}, helpers::{ filter_table_schema, multipart_to_json }, log::log_output, model::{ReferenceForeignKey, TableSchema, WebResponse}, nocode::foreign_key::{check_data_foreign_key, process_foreign_keys_delete_update}, AppState
-};
-use crate::rate_limit::RL_WINDOW_MUTATE;
 use crate::audit::{write_audit, AuditEntry};
+use crate::helpers::get_client_ip;
+use crate::rate_limit::RL_WINDOW_MUTATE;
+use crate::{
+    auth::{check_access, get_user_info_from_token, Claims},
+    crypt::{encrypt, is_encrypted_string},
+    database::state::{execute_sql_formula, execute_sql_formula_with_transaction, DbParam},
+    helpers::{filter_table_schema, multipart_to_json},
+    log::log_output,
+    model::{ReferenceForeignKey, TableSchema, WebResponse},
+    nocode::foreign_key::{check_data_foreign_key, process_foreign_keys_delete_update},
+    AppState,
+};
 use chrono::Local;
 use std::sync::Arc;
-
-
 
 // NCO-PUT
 pub async fn update(
@@ -63,10 +69,18 @@ pub async fn update(
         }
     };
     // Rate-limit per IP
-    let ip_key = req.clone().peer_addr().map(|a| a.ip().to_string()).unwrap_or_else(|| "unknown".into());
-    let limit: u32 = std::env::var("RATE_LIMIT_MUTATE_PER_MIN").ok().and_then(|s| s.parse().ok()).unwrap_or(120);
+    let ip_key = get_client_ip(&req);
+    let limit: u32 = std::env::var("RATE_LIMIT_MUTATE_PER_MIN")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(120);
     if !RL_WINDOW_MUTATE.check_and_increment(&format!("put:{}:{}", route, ip_key), limit) {
-        return HttpResponse::TooManyRequests().json(WebResponse { success: false, message: "Too many requests".into(), total_data: 0, data: Value::Null });
+        return HttpResponse::TooManyRequests().json(WebResponse {
+            success: false,
+            message: "Too many requests".into(),
+            total_data: 0,
+            data: Value::Null,
+        });
     }
     let id_raw: String = path.into_inner();
 
@@ -82,7 +96,6 @@ pub async fn update(
         });
     }
 
-
     let mut set_clause = "SET ".to_string();
     let mut bind_params: Vec<DbParam> = Vec::new();
     let mut id_new = "".to_string();
@@ -93,11 +106,8 @@ pub async fn update(
         for (key, value) in body.as_object().unwrap_or(&serde_json::Map::new()).iter() {
             // check if key from body is equal to column
             if key == column {
-
                 // convert value to string
-                let mut value_x = format!("{}", value)
-                    .replace("\"", "")
-                    .replace("null", "");
+                let mut value_x = format!("{}", value).replace("\"", "").replace("null", "");
 
                 // check if value from body is not empty
                 if !value_x.is_empty() {
@@ -111,68 +121,83 @@ pub async fn update(
                     for fk in table_schema.foreign_keys.iter() {
                         if fk.column == *column {
                             // check if value is valid !
-                            let isok = check_data_foreign_key(&state, fk.reference_table.clone(), fk.reference_column.clone(), value_x.clone()).await;
+                            let isok = check_data_foreign_key(
+                                &state,
+                                fk.reference_table.clone(),
+                                fk.reference_column.clone(),
+                                value_x.clone(),
+                            )
+                            .await;
                             if !isok {
-                                log_output("ERROR", "CHECK FOREIGN KEY", "DATA", format!("Invalid foreign key value: {}", value_x), false);
+                                log_output(
+                                    "ERROR",
+                                    "CHECK FOREIGN KEY",
+                                    "DATA",
+                                    format!("Invalid foreign key value: {}", value_x),
+                                    false,
+                                );
                                 return HttpResponse::InternalServerError().json(WebResponse {
                                     success: false,
-                                    message: format!("Invalid foreign key value: {} from table {}", value_x, fk.reference_table),
-                                    total_data: 0,
-                                    data: Value::Null,
-                                });                        
-                            }
-                        }
-                    }
-
-
-                    // find column properties in table_schemas.columns (handle not found)
-                    let col = match table_schema
-                        .columns
-                        .iter()
-                        .find(|col| col.name == *column) {
-                            Some(c) => c,
-                            None => {
-                                return HttpResponse::BadRequest().json(WebResponse {
-                                    success: false,
-                                    message: format!("Unknown column '{}' for route '{}'", column, route),
+                                    message: format!(
+                                        "Invalid foreign key value: {} from table {}",
+                                        value_x, fk.reference_table
+                                    ),
                                     total_data: 0,
                                     data: Value::Null,
                                 });
                             }
-                        };
+                        }
+                    }
+
+                    // find column properties in table_schemas.columns (handle not found)
+                    let col = match table_schema.columns.iter().find(|col| col.name == *column) {
+                        Some(c) => c,
+                        None => {
+                            return HttpResponse::BadRequest().json(WebResponse {
+                                success: false,
+                                message: format!(
+                                    "Unknown column '{}' for route '{}'",
+                                    column, route
+                                ),
+                                total_data: 0,
+                                data: Value::Null,
+                            });
+                        }
+                    };
 
                     // check col.encrypt if true then encrypt value
                     if col.encrypt {
                         // check apakah value udah di encrypt
                         let is_encrypted = is_encrypted_string(value_x.clone().as_str());
                         if !is_encrypted {
-                            value_x = encrypt(
-                                state.encrypt_key.clone(),
-                                value_x.clone(),
-                            );
+                            value_x = encrypt(state.encrypt_key.clone(), value_x.clone());
                         }
-                    }                    
+                    }
 
                     // check if value from body is number
                     if col.type_data.contains("int") || col.type_data.contains("float") {
-                        if let Ok(n) = value_x.parse::<i64>() { bind_params.push(DbParam::I64(n)); }
-                        else if let Ok(f) = value_x.parse::<f64>() { bind_params.push(DbParam::F64(f)); }
-                        else { bind_params.push(DbParam::Str(value_x)); }
+                        if let Ok(n) = value_x.parse::<i64>() {
+                            bind_params.push(DbParam::I64(n));
+                        } else if let Ok(f) = value_x.parse::<f64>() {
+                            bind_params.push(DbParam::F64(f));
+                        } else {
+                            bind_params.push(DbParam::Str(value_x));
+                        }
                         set_clause.push_str(&format!("{} = ?, ", column));
                     } else {
                         bind_params.push(DbParam::Str(value_x));
                         set_clause.push_str(&format!("{} = ?, ", column));
                     }
-
-
-                    
                 }
             }
         }
     }
 
     // add updated_at to set_clause
-    set_clause.push_str(&format!("updated_at = {}, ", state.query_converter.datetime_now));
+    set_clause.push_str(&format!(
+        "updated_at = {}, ",
+        state.query_converter.datetime_now
+    ));
     set_clause.push_str("updated_by_id = ?, ");
     bind_params.push(DbParam::I64(claims.id));
 
@@ -180,23 +205,34 @@ pub async fn update(
     set_clause = set_clause[..set_clause.len() - 2].to_string();
 
     // create query UPDATE sql from table in variable route and structure table in table_schemas where id = id, set set_clause
-    let s_sql = format!(
-        "UPDATE {} {} WHERE id = ?",
-        table_schema.table, set_clause
-    );
+    let s_sql = format!("UPDATE {} {} WHERE id = ?", table_schema.table, set_clause);
 
     // Bind id with type inference (int/str)
-    if let Ok(n) = id_raw.clone().parse::<i64>() { bind_params.push(DbParam::I64(n)); }
-    else { bind_params.push(DbParam::Str(id_raw.clone())); }
+    if let Ok(n) = id_raw.clone().parse::<i64>() {
+        bind_params.push(DbParam::I64(n));
+    } else {
+        bind_params.push(DbParam::Str(id_raw.clone()));
+    }
 
     log_output("QUERY", "PUT", route.as_str(), s_sql.clone(), true);
-    log_output("PARAM", "PUT", route.as_str(), format!("{:?}", bind_params), true);
-    
-
+    log_output(
+        "PARAM",
+        "PUT",
+        route.as_str(),
+        format!("{:?}", bind_params),
+        true,
+    );
 
     // check validation_data
-    if table_schema.put.validate_data.contains("SQL:"){
-        match execute_sql_formula(&state.db, table_schema.put.validate_data.clone(), &body, route.as_str()).await {
+    if table_schema.put.validate_data.contains("SQL:") {
+        match execute_sql_formula(
+            &state.db,
+            table_schema.put.validate_data.clone(),
+            &body,
+            route.as_str(),
+        )
+        .await
+        {
             Ok(row) => {
                 // check data row
                 if !row.is_empty() {
@@ -212,7 +248,9 @@ pub async fn update(
                 } else {
                     return HttpResponse::BadRequest().json(WebResponse {
                         success: false,
-                        message: "Validation data from table is empty. Please contact your administrator".to_string(),
+                        message:
+                            "Validation data from table is empty. Please contact your administrator"
+                                .to_string(),
                         total_data: 0,
                         data: Value::Null,
                     });
@@ -227,7 +265,7 @@ pub async fn update(
                 });
             }
         }
-    }    
+    }
     // Begin transaction
     let mut transaction = match state.db.begin_transaction().await {
         Ok(tx) => tx,
@@ -241,9 +279,15 @@ pub async fn update(
         }
     };
 
-
-    if table_schema.put.pre_process.contains("SQL:"){
-        if let Err(err) = execute_sql_formula_with_transaction(&mut transaction, table_schema.put.pre_process, &body, route.as_str()).await {
+    if table_schema.put.pre_process.contains("SQL:") {
+        if let Err(err) = execute_sql_formula_with_transaction(
+            &mut transaction,
+            table_schema.put.pre_process,
+            &body,
+            route.as_str(),
+        )
+        .await
+        {
             return HttpResponse::InternalServerError().json(WebResponse {
                 success: false,
                 message: format!("Error in pre-process: {}", err),
@@ -255,10 +299,16 @@ pub async fn update(
 
     match transaction.query_with_params(&s_sql, bind_params).await {
         Ok(_) => {
-
-            if table_schema.put.post_process.contains("SQL:"){
-                if let Err(err) = execute_sql_formula_with_transaction(&mut transaction, table_schema.put.post_process, &body, route.as_str()).await {
-                    let _= transaction.rollback().await;
+            if table_schema.put.post_process.contains("SQL:") {
+                if let Err(err) = execute_sql_formula_with_transaction(
+                    &mut transaction,
+                    table_schema.put.post_process,
+                    &body,
+                    route.as_str(),
+                )
+                .await
+                {
+                    let _ = transaction.rollback().await;
                     // Rollback transaction if post-process SQL fails
                     return HttpResponse::InternalServerError().json(WebResponse {
                         success: false,
@@ -279,13 +329,17 @@ pub async fn update(
                     claims.id,
                     id_raw.clone(),
                     id_new, // for UPDATE
-                ).await;
-                
+                )
+                .await;
+
                 if !is_fk_ok {
                     let _ = transaction.rollback().await;
                     return HttpResponse::InternalServerError().json(WebResponse {
                         success: false,
-                        message: format!("Transaction rolled back due to foreign key failures: {}", err_message),
+                        message: format!(
+                            "Transaction rolled back due to foreign key failures: {}",
+                            err_message
+                        ),
                         total_data: 0,
                         data: Value::Null,
                     });
@@ -302,7 +356,7 @@ pub async fn update(
                         action: "PUT",
                         route: &route,
                         id: Some(&id_raw),
-                        ip: req.clone().peer_addr().map(|a| a.ip().to_string()).as_deref(),
+                        ip: Some(get_client_ip(&req)).as_deref(),
                     });
                     HttpResponse::Ok().json(WebResponse {
                         success: true,
@@ -310,18 +364,15 @@ pub async fn update(
                         total_data: 1,
                         data: Value::Null,
                     })
-                },
-                Err(err) => {
-                    HttpResponse::InternalServerError().json(WebResponse {
-                        success: false,
-                        message: format!("Error committing transaction: {}", err),
-                        total_data: 0,
-                        data: Value::Null,
-                    })
                 }
+                Err(err) => HttpResponse::InternalServerError().json(WebResponse {
+                    success: false,
+                    message: format!("Error committing transaction: {}", err),
+                    total_data: 0,
+                    data: Value::Null,
+                }),
             }
-
-        },
+        }
         Err(err) => {
             let _ = transaction.rollback().await;
             HttpResponse::InternalServerError().json(WebResponse {
@@ -330,6 +381,6 @@ pub async fn update(
                 total_data: 0,
                 data: Value::Null,
             })
-        },
+        }
     }
 }

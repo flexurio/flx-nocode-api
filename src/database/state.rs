@@ -1,13 +1,13 @@
-use std::sync::Arc;
-use serde_json::Value;
 use once_cell::sync::Lazy;
 use regex::Regex;
+use serde_json::Value;
+use std::sync::Arc;
 
-use crate::{log::log_output};
+use crate::log::log_output;
 use anyhow::{anyhow, Result};
 
 pub struct QueryConverter {
-    pub datetime_now: String,    
+    pub datetime_now: String,
 }
 
 pub struct AppState {
@@ -19,7 +19,6 @@ pub struct AppState {
     pub whitelist_ips: Vec<String>,
     pub route_publics: Vec<String>,
 }
-
 
 /// Simple cross-DB parameter type for binding values safely.
 #[derive(Debug, Clone)]
@@ -38,13 +37,21 @@ pub trait DbRepository: Send + Sync {
 
     // Parameterized variants for safer queries. SQL must contain placeholders
     // appropriate for the target DB (MySQL/SQLite: `?`, Postgres: `$1,$2,...`).
-    async fn query_with_params(&self, sql: &str, _params: Vec<DbParam>) -> Result<Vec<Value>, anyhow::Error> {
+    async fn query_with_params(
+        &self,
+        sql: &str,
+        _params: Vec<DbParam>,
+    ) -> Result<Vec<Value>, anyhow::Error> {
         // Default fallback calls non-parameterized method (not recommended).
         // Implementations for each DB override this to bind safely.
         self.query(sql).await
     }
 
-    async fn get_total_rows_with_params(&self, sql: &str, _params: Vec<DbParam>) -> Result<i32, anyhow::Error> {
+    async fn get_total_rows_with_params(
+        &self,
+        sql: &str,
+        _params: Vec<DbParam>,
+    ) -> Result<i32, anyhow::Error> {
         self.get_total_rows(sql).await
     }
 
@@ -54,59 +61,106 @@ pub trait DbRepository: Send + Sync {
 
 #[async_trait::async_trait]
 pub trait DbTransaction: Send + Sync {
-    async fn query_with_params(&mut self, sql: &str, params: Vec<DbParam>) -> Result<Vec<Value>, anyhow::Error>;
+    async fn query_with_params(
+        &mut self,
+        sql: &str,
+        params: Vec<DbParam>,
+    ) -> Result<Vec<Value>, anyhow::Error>;
     async fn commit(self: Box<Self>) -> Result<(), anyhow::Error>;
     async fn rollback(self: Box<Self>) -> Result<(), anyhow::Error>;
 }
 
-pub async fn execute_sql_formula(db: &Arc<dyn DbRepository>, sql: String, body: &serde_json::Value, route: &str) -> Result<Vec<Value>, anyhow::Error> {
+pub async fn execute_sql_formula(
+    db: &Arc<dyn DbRepository>,
+    sql: String,
+    body: &serde_json::Value,
+    route: &str,
+) -> Result<Vec<Value>, anyhow::Error> {
     // Build parameterized SQL and params safely, then execute.
     match build_sql_and_params_from_formula(&sql, body) {
         Ok((built_sql, params)) => {
             log_output("QUERY", "AFTER", route, built_sql.clone(), true);
             match db.query_with_params(&built_sql, params).await {
                 Ok(rows) => {
-                    log_output("SUCCESS", "AFTER", route, "SQL formula executed successfully".to_string(), true);
+                    log_output(
+                        "SUCCESS",
+                        "AFTER",
+                        route,
+                        "SQL formula executed successfully".to_string(),
+                        true,
+                    );
                     Ok(rows)
-                },
+                }
                 Err(err) => {
-                    log_output("ERROR", "AFTER", route, format!("Error executing SQL query: {}", err), false);
+                    log_output(
+                        "ERROR",
+                        "AFTER",
+                        route,
+                        format!("Error executing SQL query: {}", err),
+                        false,
+                    );
                     Err(err)
                 }
             }
         }
         Err(e) => {
-            log_output("ERROR", "AFTER", route, format!("Error building SQL formula: {}", e), false);
+            log_output(
+                "ERROR",
+                "AFTER",
+                route,
+                format!("Error building SQL formula: {}", e),
+                false,
+            );
             Err(e)
         }
     }
 }
 
-
-pub async fn execute_sql_formula_with_transaction(tx: &mut Box<dyn DbTransaction>, sql: String, body: &serde_json::Value, route: &str) -> Result<(), anyhow::Error> {
+pub async fn execute_sql_formula_with_transaction(
+    tx: &mut Box<dyn DbTransaction>,
+    sql: String,
+    body: &serde_json::Value,
+    route: &str,
+) -> Result<(), anyhow::Error> {
     // Build parameterized SQL and params safely, then execute within transaction.
     match build_sql_and_params_from_formula(&sql, body) {
         Ok((built_sql, params)) => {
             log_output("QUERY", "AFTER", route, built_sql.clone(), true);
             match tx.query_with_params(&built_sql, params).await {
                 Ok(_) => {
-                    log_output("SUCCESS", "AFTER", route, "SQL formula executed successfully in transaction".to_string(), true);
+                    log_output(
+                        "SUCCESS",
+                        "AFTER",
+                        route,
+                        "SQL formula executed successfully in transaction".to_string(),
+                        true,
+                    );
                     Ok(())
-                },
+                }
                 Err(err) => {
-                    log_output("ERROR", "AFTER", route, format!("Error executing SQL query in transaction: {}", err), false);
+                    log_output(
+                        "ERROR",
+                        "AFTER",
+                        route,
+                        format!("Error executing SQL query in transaction: {}", err),
+                        false,
+                    );
                     Err(err)
                 }
             }
         }
         Err(e) => {
-            log_output("ERROR", "AFTER", route, format!("Error building SQL formula: {}", e), false);
+            log_output(
+                "ERROR",
+                "AFTER",
+                route,
+                format!("Error building SQL formula: {}", e),
+                false,
+            );
             Err(e)
         }
     }
 }
-
-
 
 #[allow(dead_code)]
 pub fn concat_column_values(values: Vec<Value>, column_name: &str, separator: &str) -> String {
@@ -130,39 +184,34 @@ pub fn concat_column_values(values: Vec<Value>, column_name: &str, separator: &s
     result.join(separator)
 }
 
-
-
 #[allow(dead_code)]
 pub fn sanitize_sql_input(input: String) -> String {
     // More comprehensive SQL injection prevention
     let dangerous_patterns = [
-        "--", "/*", "*/", ";", "\\", "xp_", "sp_", 
-        "exec", "execute", "select", "insert", "update", 
-        "delete", "drop", "create", "alter", "union"
+        "--", "/*", "*/", ";", "\\", "xp_", "sp_", "exec", "execute", "select", "insert", "update",
+        "delete", "drop", "create", "alter", "union",
     ];
-    
+
     let mut sanitized = input
-        .replace("'", "''")       // Proper SQL escape for single quotes
-        .replace("\"", "\"\"")    // Escape double quotes
-        .replace("\u{0000}", "")  // Remove null bytes
-        .replace("\r", "")        // Remove carriage returns
-        .replace("\n", " ");      // Replace newlines with spaces
-    
+        .replace("'", "''") // Proper SQL escape for single quotes
+        .replace("\"", "\"\"") // Escape double quotes
+        .replace("\u{0000}", "") // Remove null bytes
+        .replace("\r", "") // Remove carriage returns
+        .replace("\n", " "); // Replace newlines with spaces
+
     // Remove dangerous SQL keywords (case insensitive)
     for pattern in dangerous_patterns {
         sanitized = sanitized.replace(&pattern.to_lowercase(), "");
         sanitized = sanitized.replace(&pattern.to_uppercase(), "");
     }
-    
+
     // Limit length to prevent buffer overflow attacks
     if sanitized.len() > 1000 {
         sanitized.truncate(1000);
     }
-    
+
     sanitized.trim().to_string()
 }
-
-
 
 pub fn convert_to_sql(input: &str) -> String {
     // Pastikan formatnya seperti products[1].price
@@ -182,9 +231,9 @@ pub fn convert_to_sql(input: &str) -> String {
     }
 }
 
-
 // Precompiled regexes for performance
-static RE_NESTED: Lazy<Regex> = Lazy::new(|| Regex::new(r"\{(\w+)\[\s*\{([^}]+)\}\s*\]\.(\w+)\}").unwrap());
+static RE_NESTED: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"\{(\w+)\[\s*\{([^}]+)\}\s*\]\.(\w+)\}").unwrap());
 static RE_PLAIN: Lazy<Regex> = Lazy::new(|| Regex::new(r"\{(\w+)\[(\d+)\]\.(\w+)\}").unwrap());
 static RE_REQ: Lazy<Regex> = Lazy::new(|| Regex::new(r"\{request\.([^}]+)\}").unwrap());
 static RE_LEFTOVER: Lazy<Regex> = Lazy::new(|| Regex::new(r"\{[^}]+\}").unwrap());
@@ -194,9 +243,16 @@ static RE_IDENT: Lazy<Regex> = Lazy::new(|| Regex::new(r"^[A-Za-z_][A-Za-z0-9_]*
 /// Supported placeholders:
 /// - {request.field} -> bound as a parameter
 /// - {table[<id>].col} or {table[{request.id}].col} -> expanded to subselect
-pub fn build_sql_and_params_from_formula(sql_formula: &str, body: &serde_json::Value) -> Result<(String, Vec<DbParam>)> {
+pub fn build_sql_and_params_from_formula(
+    sql_formula: &str,
+    body: &serde_json::Value,
+) -> Result<(String, Vec<DbParam>)> {
     // Strip optional prefix
-    let mut sql = sql_formula.trim().strip_prefix("SQL:").unwrap_or(sql_formula).to_string();
+    let mut sql = sql_formula
+        .trim()
+        .strip_prefix("SQL:")
+        .unwrap_or(sql_formula)
+        .to_string();
     let mut params: Vec<DbParam> = Vec::new();
 
     // Helper: get nested value by dotted path, e.g. "user.id" or "items.0.price"
@@ -227,7 +283,11 @@ pub fn build_sql_and_params_from_formula(sql_formula: &str, body: &serde_json::V
 
         // Validate identifiers strictly
         if !RE_IDENT.is_match(table) || !RE_IDENT.is_match(field) {
-            return Err(anyhow!("Invalid identifier in formula: {}.{}", table, field));
+            return Err(anyhow!(
+                "Invalid identifier in formula: {}.{}",
+                table,
+                field
+            ));
         }
 
         // resolve inner value from body with dotted path support
@@ -235,16 +295,30 @@ pub fn build_sql_and_params_from_formula(sql_formula: &str, body: &serde_json::V
         // Prefer numeric id, fallback to NULL
         let id_param = match get_by_path(body, key) {
             Some(serde_json::Value::Number(n)) => {
-                if let Some(i) = n.as_i64() { DbParam::I64(i) }
-                else if let Some(f) = n.as_f64() { DbParam::F64(f) }
-                else { DbParam::Null }
+                if let Some(i) = n.as_i64() {
+                    DbParam::I64(i)
+                } else if let Some(f) = n.as_f64() {
+                    DbParam::F64(f)
+                } else {
+                    DbParam::Null
+                }
             }
             Some(serde_json::Value::String(s)) => {
-                if let Ok(i) = s.parse::<i64>() { DbParam::I64(i) }
-                else if let Ok(f) = s.parse::<f64>() { DbParam::F64(f) }
-                else { DbParam::Null }
+                if let Ok(i) = s.parse::<i64>() {
+                    DbParam::I64(i)
+                } else if let Ok(f) = s.parse::<f64>() {
+                    DbParam::F64(f)
+                } else {
+                    DbParam::Null
+                }
             }
-            Some(serde_json::Value::Bool(b)) => if *b { DbParam::I64(1) } else { DbParam::I64(0) },
+            Some(serde_json::Value::Bool(b)) => {
+                if *b {
+                    DbParam::I64(1)
+                } else {
+                    DbParam::I64(0)
+                }
+            }
             _ => DbParam::Null,
         };
         // Parameterize the id inside subselect
@@ -264,7 +338,10 @@ pub fn build_sql_and_params_from_formula(sql_formula: &str, body: &serde_json::V
             }
             // Parameterize numeric id as well
             // We'll convert this literal to a placeholder and append the param below
-            format!("(SELECT {} FROM {} WHERE id = {{__ID_PLACEHOLDER__:{}}})", field, table, id)
+            format!(
+                "(SELECT {} FROM {} WHERE id = {{__ID_PLACEHOLDER__:{}}})",
+                field, table, id
+            )
         })
         .to_string();
 
@@ -289,7 +366,10 @@ pub fn build_sql_and_params_from_formula(sql_formula: &str, body: &serde_json::V
                 } else if let Ok(f) = content.parse::<f64>() {
                     params.push(DbParam::F64(f));
                 } else {
-                    return Err(anyhow!("Invalid numeric id in plain subselect: {}", content));
+                    return Err(anyhow!(
+                        "Invalid numeric id in plain subselect: {}",
+                        content
+                    ));
                 }
                 out.push('?');
                 i = abs_start + end_rel + 1;
@@ -298,7 +378,9 @@ pub fn build_sql_and_params_from_formula(sql_formula: &str, body: &serde_json::V
                 return Err(anyhow!("Malformed ID placeholder in formula"));
             }
         }
-        if i < sql.len() { out.push_str(&sql[i..]); }
+        if i < sql.len() {
+            out.push_str(&sql[i..]);
+        }
         sql = out;
     }
 
@@ -321,15 +403,23 @@ pub fn build_sql_and_params_from_formula(sql_formula: &str, body: &serde_json::V
                 Some(serde_json::Value::Null) | None => params.push(DbParam::Null),
                 Some(serde_json::Value::Bool(b)) => params.push(DbParam::Bool(*b)),
                 Some(serde_json::Value::Number(n)) => {
-                    if let Some(i) = n.as_i64() { params.push(DbParam::I64(i)); }
-                    else if let Some(f) = n.as_f64() { params.push(DbParam::F64(f)); }
-                    else { params.push(DbParam::Str(n.to_string())); }
+                    if let Some(i) = n.as_i64() {
+                        params.push(DbParam::I64(i));
+                    } else if let Some(f) = n.as_f64() {
+                        params.push(DbParam::F64(f));
+                    } else {
+                        params.push(DbParam::Str(n.to_string()));
+                    }
                 }
                 Some(serde_json::Value::String(s)) => {
                     // try numeric first to reduce type mismatch on numeric columns
-                    if let Ok(i) = s.parse::<i64>() { params.push(DbParam::I64(i)); }
-                    else if let Ok(f) = s.parse::<f64>() { params.push(DbParam::F64(f)); }
-                    else { params.push(DbParam::Str(s.clone())); }
+                    if let Ok(i) = s.parse::<i64>() {
+                        params.push(DbParam::I64(i));
+                    } else if let Ok(f) = s.parse::<f64>() {
+                        params.push(DbParam::F64(f));
+                    } else {
+                        params.push(DbParam::Str(s.clone()));
+                    }
                 }
                 Some(_) => params.push(DbParam::Str(String::new())),
             }
@@ -341,7 +431,10 @@ pub fn build_sql_and_params_from_formula(sql_formula: &str, body: &serde_json::V
 
     // 4) Remove any leftover braces content defensively (shouldn't remain).
     if RE_LEFTOVER.is_match(&sql) {
-        return Err(anyhow!("Unresolved placeholder(s) remain in formula: {}", sql));
+        return Err(anyhow!(
+            "Unresolved placeholder(s) remain in formula: {}",
+            sql
+        ));
     }
 
     Ok((sql, params))
@@ -399,8 +492,7 @@ pub fn formula_replace(mut string_formula: String, body: &serde_json::Value) -> 
     string_formula = RE_REQ
         .replace_all(&string_formula, |caps: &regex::Captures| {
             let key = &caps[1];
-            body
-                .get(key)
+            body.get(key)
                 .map(|v| v.to_string().replace('"', "").replace("null", ""))
                 .unwrap_or_default()
         })

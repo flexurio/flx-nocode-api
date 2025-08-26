@@ -68,8 +68,7 @@ pub fn decrypt(key: String, encrypted_string: String) -> String {
     }
 }
 
-
-/// Fungsi untuk check apakah string sudah di enkripsi atau belum 
+/// Fungsi untuk check apakah string sudah di enkripsi atau belum
 pub fn is_encrypted_string(s: &str) -> bool {
     // Cek apakah panjang string lebih dari 12 karakter
     if s.len() < 12 {
@@ -77,5 +76,7 @@ pub fn is_encrypted_string(s: &str) -> bool {
     }
 
     // Cek apakah string dapat didecode dari Base64
-    base64::engine::general_purpose::STANDARD.decode(s.as_bytes()).is_ok()
+    base64::engine::general_purpose::STANDARD
+        .decode(s.as_bytes())
+        .is_ok()
 }

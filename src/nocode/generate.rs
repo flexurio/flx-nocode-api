@@ -2,14 +2,17 @@ use actix_web::{
     web::{self},
     HttpResponse, Responder,
 };
-use serde_json::{Value};
+use serde_json::Value;
 use std::fmt::Write;
 
 use crate::{
-    auth::{check_access, get_user_info_from_token}, helpers::filter_table_schema, log::log_output, model::{TableSchema, WebResponse}, AppState
+    auth::{check_access, get_user_info_from_token},
+    helpers::filter_table_schema,
+    log::log_output,
+    model::{TableSchema, WebResponse},
+    AppState,
 };
 use std::sync::Arc;
-
 
 // NCO-GENERATE-TABLE
 pub async fn create_table(
@@ -19,7 +22,6 @@ pub async fn create_table(
     req: actix_web::HttpRequest,
 ) -> impl Responder {
     if !state.route_publics.contains(&route) {
-
         let claims = match get_user_info_from_token(req, state.clone()) {
             Ok(c) => c,
             Err(_) => {
@@ -41,7 +43,7 @@ pub async fn create_table(
             });
         }
     }
-    
+
     let table_schema = filter_table_schema(&table_schemas, route.clone()).await;
     if table_schema.table.is_empty() {
         let message_error = format!("Entity {} on folder config/{}.json not found", route, route);
@@ -61,12 +63,11 @@ pub async fn create_table(
         "GENERATE TABLE",
         route.clone().as_str(),
         sql_create_table.clone(),
-        true
+        true,
     );
 
     // execute sql_create_table
-    match &state.db.query(&sql_create_table).await
-    {
+    match &state.db.query(&sql_create_table).await {
         Ok(_) => {
             println!("Table {} created", table_schema.table);
         }
@@ -87,12 +88,10 @@ pub async fn create_table(
             "GENERATE INDEX",
             route.clone().as_str(),
             sql_create_index.clone(),
-            true
+            true,
         );
 
-
-        match &state.db.query(sql_create_index).await
-        {
+        match &state.db.query(sql_create_index).await {
             Ok(_) => {
                 println!("Index {} created", table_schema.table);
             }
@@ -104,9 +103,8 @@ pub async fn create_table(
                 );
             }
         }
-
     }
-    
+
     if !err_message.is_empty() {
         HttpResponse::InternalServerError().json(WebResponse {
             success: false,
@@ -124,8 +122,7 @@ pub async fn create_table(
     }
 }
 
-
-pub fn generate_table(db_type:String, data: &TableSchema) -> (String, Vec<String>) {
+pub fn generate_table(db_type: String, data: &TableSchema) -> (String, Vec<String>) {
     let mut create_table_sql = format!("CREATE TABLE IF NOT EXISTS {} (\n", data.table);
 
     for col in &data.columns {
@@ -133,7 +130,10 @@ pub fn generate_table(db_type:String, data: &TableSchema) -> (String, Vec<String
         if data.primary_key.columns.len() == 1 && data.primary_key.columns[0] == col.name {
             if db_type == "mysql" {
                 auto_increment = " auto_increment".to_string();
-                create_table_sql.push_str(&format!("  {} {}{},\n", col.name, col.type_data, auto_increment));
+                create_table_sql.push_str(&format!(
+                    "  {} {}{},\n",
+                    col.name, col.type_data, auto_increment
+                ));
             } else if db_type == "postgres" {
                 auto_increment = " bigserial".to_string();
                 create_table_sql.push_str(&format!("  {} {},\n", col.name, auto_increment));
@@ -141,10 +141,16 @@ pub fn generate_table(db_type:String, data: &TableSchema) -> (String, Vec<String
                 auto_increment = " INTEGER PRIMARY KEY AUTOINCREMENT".to_string();
                 create_table_sql.push_str(&format!("  {} {},\n", col.name, auto_increment));
             } else {
-                create_table_sql.push_str(&format!("  {} {}{},\n", col.name, col.type_data, auto_increment));
+                create_table_sql.push_str(&format!(
+                    "  {} {}{},\n",
+                    col.name, col.type_data, auto_increment
+                ));
             }
         } else {
-            create_table_sql.push_str(&format!("  {} {}{},\n", col.name, col.type_data, auto_increment));
+            create_table_sql.push_str(&format!(
+                "  {} {}{},\n",
+                col.name, col.type_data, auto_increment
+            ));
         }
     }
 
@@ -180,7 +186,13 @@ pub fn generate_table(db_type:String, data: &TableSchema) -> (String, Vec<String
         } else {
             format!("{}_{}", data.table, idx.name)
         };
-        create_index_sql_vec.push(format!("CREATE {}INDEX {} ON {} ({});",unique,index_name,data.table,idx.columns.join(", ")));
+        create_index_sql_vec.push(format!(
+            "CREATE {}INDEX {} ON {} ({});",
+            unique,
+            index_name,
+            data.table,
+            idx.columns.join(", ")
+        ));
     }
 
     (create_table_sql, create_index_sql_vec)
