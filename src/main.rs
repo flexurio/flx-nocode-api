@@ -107,6 +107,7 @@ static ROUTE_PUBLICS: Lazy<Vec<String>> = Lazy::new(|| CONFIG.route_publics.clon
 
 // Static Routes for once initialization
 static ROUTES: Lazy<Vec<String>> = Lazy::new(|| CONFIG.routes.clone());
+static FOREIGNKEY_ACTION: [&str; 4] = ["cascade", "set null", "restrict", "no action"];
 
 static SCHEMAS: Lazy<Arc<(Vec<TableSchema>, Vec<ReferenceForeignKey>)>> = Lazy::new(|| {
     let config_location = env::var("LOC_CONFIG").unwrap_or_else(|_| "config/example".to_string());
@@ -140,6 +141,15 @@ static SCHEMAS: Lazy<Arc<(Vec<TableSchema>, Vec<ReferenceForeignKey>)>> = Lazy::
         if !schema.foreign_keys.is_empty() {
             // loop througt all schema.foreign_keys
             for fk in schema.foreign_keys.iter() {
+                // check if fk.on_delete not in FOREIGNKEY_ACTION
+                if !FOREIGNKEY_ACTION.contains(&fk.on_delete.as_str()) {
+                    eprintln!("ERROR FK_Check Delete : Foreign key on_delete action '{}' is not supported", fk.on_delete);
+                    exit(1);
+                }
+                if !FOREIGNKEY_ACTION.contains(&fk.on_update.as_str()) {
+                    eprintln!("ERROR FK_Check Update : Foreign key on_update action '{}' is not supported", fk.on_update);
+                    exit(1);
+                }
                 ref_foreign_keys.push(ReferenceForeignKey{
                     table: fk.reference_table.clone(),
                     column: fk.reference_column.clone(),
@@ -162,6 +172,7 @@ static SCHEMAS: Lazy<Arc<(Vec<TableSchema>, Vec<ReferenceForeignKey>)>> = Lazy::
         schemas.push(schema);
     }
 
+    log_output("INFO","FOREING KEY","ref_foreign_keys",format!("{:?}", ref_foreign_keys),true);
     // Shrink to fit to reduce memory overhead
     schemas.shrink_to_fit();
     Arc::new((schemas, ref_foreign_keys))
