@@ -9,17 +9,6 @@ use std::collections::HashSet;
 use crate::{log::log_output, model::TableSchema, ISDEBUG};
 
 pub fn cetak_label(host: String, port: u16) {
-    println!("\n\n");
-    println!("\n\n");
-    println!("{}",          r"  __________       _________    _____     _______          _____   _____  ".green());
-    println!("{}",          r" (________  |     (________ \  / __  |   |  _____ \       (_____) / ___ \ ".green());
-    println!("{}",          r"  _____   | |      _____   \ \/ /  | |   | | ____) )         _   | |   | |".green());
-    println!("{}",          r" |  ___)  | |     |  ___)   )  (   | |   | |(____ (         | |  | |   | |".green());
-    println!("{}",  format!(r" | |      | |___  | |____  / /\ \  | |___| |     | |  {}   _| |_ | |___| |","__".red()).green());
-    println!("{}",format!(r" |_|      |_____) |______)/_/  \_\  \______|     |_| {} (_____) \_____/","(__)".red()).green());
-    println!("{}",          r"                                 AI-Powered No-Code, Rust-Level Robustness".red());
-    println!("\n");
-    println!("\n");
     println!(
         "Server started at http://{}:{}",
         host.green(),
