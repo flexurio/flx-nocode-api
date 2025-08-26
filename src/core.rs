@@ -22,7 +22,6 @@ use crate::{
        AppState
 };
 use crate::rate_limit::RL_WINDOW_LOGIN;
-use chrono::Local;
 
 
 pub async fn login(state: web::Data<AppState>, req: actix_web::HttpRequest) -> impl Responder {   
@@ -113,7 +112,17 @@ pub async fn login(state: web::Data<AppState>, req: actix_web::HttpRequest) -> i
    
 // NCO-POST
 pub async fn register(state: Data<AppState>, multipart: Multipart) -> impl Responder {
-       let body = multipart_to_json(multipart).await.unwrap();
+          let body = match multipart_to_json(multipart).await {
+                 Ok(v) => v,
+                 Err(e) => {
+                        return HttpResponse::BadRequest().json(WebResponse {
+                               success: false,
+                               message: format!("Invalid multipart: {}", e),
+                               total_data: 0,
+                               data: Value::Null,
+                        });
+                 }
+          };
 
        if body["email"] == "" || body["password"] == "" || body["name"] == "" || body["phone"] == "" {
               return HttpResponse::BadRequest().json(WebResponse {
@@ -125,11 +134,7 @@ pub async fn register(state: Data<AppState>, multipart: Multipart) -> impl Respo
        }
 
        let password_value = &body["password"];
-       let password = if password_value.is_string() {
-              password_value.as_str().unwrap().to_string()
-       } else {
-              password_value.to_string()
-       };
+       let password = if let Some(s) = password_value.as_str() { s.to_string() } else { password_value.to_string() };
 
        let encrypt_password = encrypt(
               state.encrypt_key.clone(),

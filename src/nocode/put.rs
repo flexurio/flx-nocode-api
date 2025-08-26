@@ -125,12 +125,21 @@ pub async fn update(
                     }
 
 
-                    // find column properties in table_schemas.columns
-                    let col = table_schema
+                    // find column properties in table_schemas.columns (handle not found)
+                    let col = match table_schema
                         .columns
                         .iter()
-                        .find(|col| col.name == *column)
-                        .unwrap();
+                        .find(|col| col.name == *column) {
+                            Some(c) => c,
+                            None => {
+                                return HttpResponse::BadRequest().json(WebResponse {
+                                    success: false,
+                                    message: format!("Unknown column '{}' for route '{}'", column, route),
+                                    total_data: 0,
+                                    data: Value::Null,
+                                });
+                            }
+                        };
 
                     // check col.encrypt if true then encrypt value
                     if col.encrypt {

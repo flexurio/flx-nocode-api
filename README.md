@@ -149,6 +149,7 @@ Core use cases:
 * Pluggable pre / post hooks for POST & PUT (string SQL markers in schema) and PATCH stored procedure like flows.
 * Structured logging with optional file output path.
 * Static file serving under `/static` (e.g. images, logs).
+* Rate Limit per request per minutes
 
 ---
 
