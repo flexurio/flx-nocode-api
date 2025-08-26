@@ -60,7 +60,7 @@ LOC_LOGGING=static/log
 Pick one method:
 - Using the installer: go to the project folder that contains `.env`, then run `flexurio`.
 - Using a release binary: pick the file under `release/` that matches your OS and run it.
-- Build from source: `cargo build --release` then run `./target/release/flexurio-api-nocode-v2`.
+- Build from source: `cargo build --release` then run `./target/release/flx-nocode-api`.
 
 On the first start:
 - The app ensures core tables (`flx_users`, `flx_roles`) exist. If not, they will be created.
@@ -73,7 +73,7 @@ Use `docker-compose.yaml` as a reference. Adjust volumes for your local paths. E
 services:
   rust-app:
     build: .
-    container_name: flexurio-api-nocode-v2
+    container_name: flx-nocode-api
     restart: always
     ports:
       - "2121:8080"    # access at http://localhost:2121

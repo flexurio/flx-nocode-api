@@ -1215,8 +1215,19 @@ dependencies = [
 ]
 
 [[package]]
-name = "flexurio-api-nocode-v2"
-version = "0.1.10"
+name = "flume"
+version = "0.11.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "da0e4dd2a88388a1f4ccc7c9ce104604dab68d9f408dc34cd45823d5a9069095"
+dependencies = [
+ "futures-core",
+ "futures-sink",
+ "spin",
+]
+
+[[package]]
+name = "flx-nocode-api"
+version = "0.1.11"
 dependencies = [
  "actix",
  "actix-cors",
@@ -1244,17 +1255,6 @@ dependencies = [
  "sha2",
  "sqlx",
  "zip",
-]
-
-[[package]]
-name = "flume"
-version = "0.11.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "da0e4dd2a88388a1f4ccc7c9ce104604dab68d9f408dc34cd45823d5a9069095"
-dependencies = [
- "futures-core",
- "futures-sink",
- "spin",
 ]
 
 [[package]]
