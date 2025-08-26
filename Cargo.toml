@@ -1,6 +1,6 @@
 [package]
 name = "flexurio-api-nocode-v2"
-version = "0.1.9"
+version = "0.1.10"
 edition = "2021"
 
 # Optimization settings for performance

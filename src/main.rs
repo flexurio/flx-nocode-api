@@ -164,10 +164,6 @@ static SCHEMAS: Lazy<Arc<(Vec<TableSchema>, Vec<ReferenceForeignKey>)>> = Lazy::
 
     // Shrink to fit to reduce memory overhead
     schemas.shrink_to_fit();
-
-    println!("=========================");
-    println!("ref_foreign_keys: {:?}", ref_foreign_keys);
-
     Arc::new((schemas, ref_foreign_keys))
 });
 
