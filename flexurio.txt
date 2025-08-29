@@ -1,0 +1,208 @@
+FLEXURIO NO‑CODE API ENGINE — PENJELASAN PROYEK & FORMAT JSON ENTITY (LENGKAP)
+
+* Apa itu Flexurio pada proyek ini?
+Flexurio No‑Code API Engine adalah mesin REST API berbasis konfigurasi yang membangkitkan endpoint CRUD (GET/POST/PUT/DELETE) 
+dan operasi lanjutan (PATCH/TRACE/VALIDATE/GENERATE TABLE) hanya dari berkas JSON. 
+Anda cukup mendeskripsikan skema setiap tabel dalam JSON ("entity schema") dan mendaftarkannya pada routes.json; 
+server akan menyiapkan endpoint otomatis untuk membaca, menulis, memperbarui, dan menghapus data, termasuk join, filter, grouping, validasi SQL, dan hook pre/post proses.
+
+
+*. Endpoint runtime per route
+- GET /<route>?param=value → select data (mendukung filter/operator dari parameters).
+- POST /<route> → create (multipart/form-data didukung untuk upload file; file dapat disimpan ke DB (data URI) atau disk/static sesuai env).
+- PUT /<route>/:id → update by id.
+- DELETE /<route>/:id → soft/hard delete sesuai skema.
+- PATCH /<route> → eksekusi prosedur terparametrisasi (pre_process_sp).
+- TRACE /<route> → pipeline insert+select+grouping untuk penarikan data terorkestrasi.
+- GET /validate/<route> → validasi format skema entity.
+- POST /generate/table/<route> → membuat tabel (kecuali flx_users & flx_roles yang dikelola inti).
+
+* Format JSON Entity (LENGKAP)
+Di bawah ini adalah spesifikasi penuh berdasarkan tipe data yang diperlukan di flexurio. Semua properti dituliskan agar "lengkap"; banyak yang opsional, namun direkomendasikan untuk dicantumkan saat dibutuhkan.
+
+Template Json : 
+{
+  "table": "nama_tabel_fisik",
+  "primary_key": {
+    "columns": ["id"]
+  },
+  "columns": [
+    {
+      "name": "id",
+      "auto_increment": true,
+      "nullable": false,
+      "type_data": "bigint",
+      "function": "",
+      "encrypt": false
+    }
+    // contoh kolom lain:
+    // { "name": "name", "auto_increment": false, "nullable": false, "type_data": "varchar(255)", "function": "", "encrypt": false }
+  ],
+  "foreign_keys": [
+    {
+      "column": "kolom_fk",
+      "reference_table": "tabel_referensi",
+      "reference_column": "id",
+      "on_delete": "cascade|restrict|set null|no action",
+      "on_update": "cascade|restrict|set null|no action"
+    }
+  ],
+  "indexes": [
+    {
+      "name": "nama_index",
+      "columns": ["kolom1", "kolom2"],
+      "unique": false
+    }
+  ],
+  "redis": {
+    "keys": ["kolom_cache_key_1", "kolom_cache_key_2"],
+    "ttl": 3600
+  },
+  "get": {
+    "columns": ["tabel.kolom", "alias.kolom", "tabel.kolom AS alias"],
+    "parameters": [
+      // Parameter filter yang diizinkan pengguna. Sistem juga akan menambahkan otomatis:
+      // page, sort, ascending, limit, search, redis, dan "<table>.deleted_at"
+      "nama.like",
+      "id.eq",
+      "deleted_at.is"
+    ],
+    "join_tables": [
+      {
+        "table": "tabel_join",
+        "columns": ["id", "name"],
+        "logical": "tabel.fk_id = tabel_join.id",
+        "type_join": "inner|left|right"
+      }
+    ],
+    "column_groups": [
+      // contoh: "tabel.kategori_id"
+    ],
+    "having": [
+      // contoh: "COUNT(tabel.id) > 0"
+    ],
+    "order_by": ["tabel.id", "tabel.nama DESC"]
+  },
+  "post": {
+    "validate_data": "SQL:SELECT ... RETURNING/BOOLEAN ...", // Jalankan untuk validasi data request
+    "pre_process": "SQL:UPDATE ...", // Dieksekusi sebelum INSERT
+    "columns": ["kolom_yang_boleh_diinsert"],
+    "post_process": "SQL:INSERT INTO audit_logs(...) VALUES(...)" // Setelah INSERT
+  },
+  "put": {
+    "validate_data": "",
+    "pre_process": "",
+    "columns": ["kolom_yang_boleh_diupdate"],
+    "post_process": ""
+  },
+  "del": {
+    "pre_process": "",
+    "columns": ["id"], // kolom identitas untuk DELETE/:id
+    "type_delete": "soft|hard",
+    "post_process": ""
+  },
+  "patch": {
+    "pre_process_sp": "CALL sp_nama_prosedur", // nama stored procedure / routine
+    "parameters": ["nama_parameter_query"]
+  },
+  "trace": {
+    "insert_into": "tabel_agregat",
+    "column_inserts": ["qty", "kategori_id"],
+    "column_selects": ["COUNT(DISTINCT t.id) AS qty", "kategori_id"],
+    "parameters": ["kategori.name.eq"],
+    "join_tables": [
+      {
+        "table": "kategori",
+        "columns": ["id", "name"],
+        "logical": "t.kategori_id = kategori.id",
+        "type_join": "inner"
+      }
+    ],
+    "column_groups": ["kategori_id"],
+    "column_conflicts": ["qty"] // kolom yang diupdate saat upsert/konflik
+  }
+}
+
+Penjelasan field kunci:
+- table: Nama tabel fisik (boleh bertitik skema, mis. public.products; engine akan mendeteksi nama dasarnya sebagai route).
+- primary_key.columns: Daftar kolom PK (mendukung komposit). Untuk auto-increment gunakan columns[].auto_increment pada kolom bersangkutan.
+- columns[]:
+  - name: Nama kolom.
+  - type_data: Tipe data SQL di DB target (int, bigint, varchar(255), timestamp, datetime, longtext, dsb.).
+  - auto_increment: true jika kolom menggunakan auto-increment di DB.
+  - nullable: true/false.
+  - function: Pola generator nilai (contoh: "BT/%Y/%m/000ID" untuk ID kustom saat POST). Kosongkan jika tak dipakai.
+  - encrypt: true untuk kolom yang perlu dienkripsi di aplikasi (mis. password). Nilai dienkripsi/dekripsi menggunakan ENCRYPT_KEY.
+- foreign_keys[]: Definisi FK dan aksi on_delete/on_update (cascade/restrict/set null/no action).
+- indexes[]: Index biasa maupun unik.
+- redis: keys (kolom penentu key cache) dan ttl (detik). Saat ini sebagai blueprint; implementasi cache bisa diperluas.
+- get:
+  - columns: Proyeksi kolom SELECT.
+  - parameters: Daftar parameter yang diizinkan klien. Pola: <kolom>.<operator>. Operator: eq, like, lt, lte, gt, gte, is.
+    • Contoh gabungan OR: "name.like|id.like" (artinya name LIKE ? OR id LIKE ? gunakan nilai sama).
+  - join_tables: Daftar join; logical berisi ekspresi ON; type_join: inner/left/right.
+  - column_groups/having/order_by: Group By, Having, dan Order By tambahan.
+- post/put:
+  - validate_data: SQL:... untuk validasi. Placeholder aman otomatis diikat (gunakan ekspresi {request.field}).
+  - pre_process/post_process: SQL hooks sebelum/sesudah operasi utama.
+  - columns: Kolom yang diizinkan diisi klien untuk operasi tersebut.
+- del:
+  - type_delete: soft (isi deleted_at) atau hard (hapus baris fisik). deleted_at.is dapat dipakai untuk filter di GET.
+- patch:
+  - pre_process_sp: Nama prosedur/statement yang dieksekusi; parameters: nama parameter query.
+- trace:
+  - insert_into: Tabel target untuk hasil agregasi/penjurnalan.
+  - column_inserts: Kolom yang diinsert ke insert_into.
+  - column_selects: Ekspresi select yang menghitung nilai untuk column_inserts.
+  - column_groups: Grouping pada select.
+  - column_conflicts: Kolom yang di-update saat konflik/upsert (bergantung DB).
+
+Contoh skema lengkap untuk table "banks"
+{
+  "table": "banks",
+  "primary_key": { "columns": ["id"] },
+  "columns": [
+    { "name": "id", "auto_increment": true, "nullable": false, "function": "", "type_data": "int", "encrypt": false },
+    { "name": "name", "auto_increment": false, "nullable": false, "function": "", "type_data": "varchar(255)", "encrypt": false },
+    { "name": "bank_type_id", "auto_increment": false, "nullable": false, "function": "", "type_data": "int", "encrypt": false },
+    { "name": "created_at", "auto_increment": false, "nullable": true, "function": "", "type_data": "timestamp", "encrypt": false },
+    { "name": "updated_at", "auto_increment": false, "nullable": true, "function": "", "type_data": "timestamp", "encrypt": false },
+    { "name": "deleted_at", "auto_increment": false, "nullable": true, "function": "", "type_data": "timestamp", "encrypt": false },
+    { "name": "created_by_id", "auto_increment": false, "nullable": true, "function": "", "type_data": "int", "encrypt": false },
+    { "name": "updated_by_id", "auto_increment": false, "nullable": true, "function": "", "type_data": "int", "encrypt": false },
+    { "name": "deleted_by_id", "auto_increment": false, "nullable": true, "function": "", "type_data": "int", "encrypt": false },
+    { "name": "foto", "auto_increment": false, "nullable": true, "function": "", "type_data": "varchar(255)", "encrypt": false }
+  ],
+  "foreign_keys": [
+    { "column": "bank_type_id", "reference_table": "bank_types", "reference_column": "id", "on_delete": "cascade", "on_update": "cascade" }
+  ],
+  "indexes": [
+    { "name": "index_banks_name", "columns": ["name"], "unique": false },
+    { "name": "index_banks_bank_type_id", "columns": ["bank_type_id"], "unique": false }
+  ],
+  "redis": { "keys": ["name"], "ttl": 3600 },
+  "get": {
+    "columns": ["banks.id", "banks.name", "banks.created_at", "banks.bank_type_id", "bank_types.name as bank_type_name", "banks.deleted_at", "banks.foto"],
+    "parameters": ["name.like", "name.like|id.like", "bank_type_id.eq", "id.eq", "name.eq", "bank_types.name.eq", "deleted_at.is"],
+    "join_tables": [ { "table": "bank_types", "columns": ["id", "name"], "logical": "banks.bank_type_id = bank_types.id", "type_join": "inner" } ],
+    "column_groups": [],
+    "having": [],
+    "order_by": ["banks.id"]
+  },
+  "post": { "validate_data": "SQL:SELECT CASE WHEN id = {request.bank_type_id} THEN TRUE ELSE FALSE END as is_valid FROM bank_types WHERE id = {request.bank_type_id}", "pre_process": "", "post_process": "", "columns": ["name", "bank_type_id", "foto"] },
+  "put":  { "validate_data": "", "pre_process": "", "post_process": "", "columns": ["name", "bank_type_id", "foto"] },
+  "del":  { "pre_process": "", "post_process": "", "columns": ["id"], "type_delete": "soft" },
+  "trace": {
+    "insert_into": "bank_type_qtys",
+    "column_inserts": ["qty", "bank_type_id", "bank_type_name"],
+    "column_selects": ["COUNT(DISTINCT banks.id) as qty", "bank_type_id", "bank_types.name as bank_type_name"],
+    "parameters": ["bank_types.name.eq"],
+    "join_tables": [ { "table": "bank_types", "columns": ["id", "name"], "logical": "banks.bank_type_id = bank_types.id", "type_join": "inner" } ],
+    "column_groups": ["bank_type_id"],
+    "column_conflicts": ["qty", "bank_type_name"]
+  },
+  "patch": { "pre_process_sp": "CALL sp_delete_bank_type_qtys", "parameters": ["periode"] }
+}
+
+Untuk selanjutnya pertanyaan yang akan diajukan ke kamu seputar bagaimana mengenerate file json ini. Orang hanya akan menyuruh dg cara menyebutkan nama table nya. 
+Jadi kamu asumsikan aja kalo table itu kolomnya apa aja. Semua kolom dari template, WAJIB kamu sertakan. 
