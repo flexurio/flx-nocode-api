@@ -30,7 +30,7 @@ use database::{
 };
 mod nocode;
 use nocode::{
-    delete::delete, generate::create_table, get::select, patch::process_sp, post::insert,
+    delete::delete, generate::create_table, get::select, import::import, patch::process_sp, post::insert,
     put::update, trace::process, validate::check_table_design,
 };
 mod core;
@@ -594,6 +594,7 @@ async fn main() -> std::io::Result<()> {
                     let route_patch = route.clone();
                     let route_post = route.clone();
                     let route_delete = route.clone();
+                    let route_import = route.clone();
                     let route_put = route.clone();
                     let route_validate = route.clone();
                     let route_generate_table = route.clone();
@@ -707,6 +708,36 @@ async fn main() -> std::io::Result<()> {
                             )),
                     );
 
+                    // register import BEFORE the dynamic {id} route to avoid conflicts
+                    log_output(
+                        "ENDPOINT",
+                        "METHOD",
+                        "POST",
+                        format!(
+                            "http://{}:{}/import/{}",
+                            host.red(),
+                            port.clone().to_string().green(),
+                            route_import.clone().purple()
+                        ),
+                        false,
+                    );
+                    cfg.service(
+                        web::resource(format!("/import/{}", &*route_import))
+                            .route(web::post().to(
+                                move |state: web::Data<AppState>,
+                                      multipart: Multipart,
+                                      req: actix_web::HttpRequest| {
+                                    import(
+                                        state,
+                                        route_import.clone(),
+                                        SCHEMAS.clone(),
+                                        multipart,
+                                        req,
+                                    )
+                                },
+                            )),
+                    );
+
                     log_output(
                         "ENDPOINT",
                         "METHOD",
@@ -758,7 +789,9 @@ async fn main() -> std::io::Result<()> {
                                     )
                                 },
                             )),
+                            
                     );
+
 
                     log_output(
                         "ENDPOINT",

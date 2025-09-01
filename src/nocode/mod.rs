@@ -1,6 +1,7 @@
 pub mod delete;
 pub mod foreign_key;
 pub mod generate;
+pub mod import;
 pub mod get;
 pub mod patch;
 pub mod post;
