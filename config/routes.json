@@ -4,7 +4,8 @@
                 "flx_roles",
                 "banks",
                 "bank_types",
-                "products"
+                "products",
+                "customers"
         ],
         "route_publics": [
                 "flx_users",
