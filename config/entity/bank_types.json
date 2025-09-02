@@ -9,7 +9,7 @@
                 {
                         "name":"id",
                         "auto_increment":false,
-                        "function":"BT/%Y/%m/000ID",
+                        "function":"{request.id_trans}/%Y/%m/000ID",
                         "nullable":false,
                         "type_data":"varchar(15)",
                         "encrypt":false

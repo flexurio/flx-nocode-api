@@ -309,6 +309,29 @@ pub async fn insert(
                 let max_id_str = format!("{:0>len$}", max_id, len = len_id);
                 id.push('/');
                 id.push_str(&max_id_str);
+            } else if function_id.starts_with("{request.") && function_id.ends_with('}') {
+                
+                // get value from body
+                let key = function_id
+                    .trim_start_matches("{request.")
+                    .trim_end_matches('}');
+                let value = body
+                    .get(key)
+                    .map(|v| v.to_string().replace('"', "").replace("null", ""))
+                    .unwrap_or_default();
+
+                if value.is_empty() {
+                    // return error if value is empty
+                    return HttpResponse::BadRequest().json(WebResponse {
+                        success: false,
+                        message: format!("Missing value for {}", key),
+                        total_data: 0,
+                        data: Value::Null,
+                    });
+                }
+
+                id.push('/');
+                id.push_str(&value);
             } else {
                 id.push('/');
                 id.push_str(function_id);
