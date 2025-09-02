@@ -81,7 +81,7 @@ pub async fn import(
         });
     }
 
-    // Read a single file field named "file" from multipart
+    // Read file and additional fields from multipart
     let max_file_mb: usize = std::env::var("UPLOAD_LIMIT_MB")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -90,6 +90,8 @@ pub async fn import(
     let mut file_bytes: Option<Vec<u8>> = None;
     let mut filename: String = String::new();
     let mut declared_mime: Option<String> = None;
+    let mut additional_columns: Map<String, Value> = Map::new();
+    
     while let Some(item) = multipart.next().await {
         let mut field = match item {
             Ok(f) => f,
@@ -107,42 +109,58 @@ pub async fn import(
             .as_ref()
             .and_then(|c| c.get_name())
             .unwrap_or("");
-        if name != "file" {
-            // consume and ignore other fields
-            while let Some(chunk) = field.next().await { let _ = chunk; }
-            continue;
-        }
-        if let Some(fname) = cd.as_ref().and_then(|c| c.get_filename()) {
-            filename = fname.to_string();
-        }
-        declared_mime = field.content_type().map(|t| t.to_string());
-        let mut buf: Vec<u8> = Vec::new();
-        let mut total = 0usize;
-        while let Some(chunk) = field.next().await {
-            let data = match chunk {
-                Ok(c) => c,
-                Err(e) => {
-                    return HttpResponse::BadRequest().json(WebResponse {
+        
+        if name == "file" {
+            if let Some(fname) = cd.as_ref().and_then(|c| c.get_filename()) {
+                filename = fname.to_string();
+            }
+            declared_mime = field.content_type().map(|t| t.to_string());
+            let mut buf: Vec<u8> = Vec::new();
+            let mut total = 0usize;
+            while let Some(chunk) = field.next().await {
+                let data = match chunk {
+                    Ok(c) => c,
+                    Err(e) => {
+                        return HttpResponse::BadRequest().json(WebResponse {
+                            success: false,
+                            message: format!("Read chunk error: {}", e),
+                            total_data: 0,
+                            data: Value::Null,
+                        })
+                    }
+                };
+                total += data.len();
+                if total > max_file_size {
+                    return HttpResponse::PayloadTooLarge().json(WebResponse {
                         success: false,
-                        message: format!("Read chunk error: {}", e),
+                        message: "File too large".to_string(),
                         total_data: 0,
                         data: Value::Null,
-                    })
+                    });
                 }
-            };
-            total += data.len();
-            if total > max_file_size {
-                return HttpResponse::PayloadTooLarge().json(WebResponse {
-                    success: false,
-                    message: "File too large".to_string(),
-                    total_data: 0,
-                    data: Value::Null,
-                });
+                buf.extend_from_slice(&data);
             }
-            buf.extend_from_slice(&data);
+            file_bytes = Some(buf);
+        } else if !name.is_empty() {
+            // Handle additional column fields
+            let mut field_value = String::new();
+            while let Some(chunk) = field.next().await {
+                let data = match chunk {
+                    Ok(c) => c,
+                    Err(e) => {
+                        return HttpResponse::BadRequest().json(WebResponse {
+                            success: false,
+                            message: format!("Read field '{}' error: {}", name, e),
+                            total_data: 0,
+                            data: Value::Null,
+                        })
+                    }
+                };
+                field_value.push_str(&String::from_utf8_lossy(&data));
+            }
+            // Store additional column value
+            additional_columns.insert(name.to_string(), json!(field_value));
         }
-        file_bytes = Some(buf);
-        break;
     }
 
     let file_bytes = match file_bytes { Some(b) => b, None => {
@@ -206,6 +224,17 @@ pub async fn import(
             total_data: 0,
             data: Value::Null,
         });
+    }
+
+    // Log additional columns for debugging
+    if !additional_columns.is_empty() {
+        log_output(
+            "INFO",
+            "IMPORT",
+            &table_schema.table,
+            format!("Additional columns from multipart: {:?}", additional_columns),
+            true,
+        );
     }
 
     // Build list of insertable columns (skip auto_increment and audit columns)
@@ -299,11 +328,16 @@ pub async fn import(
             let mut placeholders: Vec<String> = Vec::with_capacity(final_columns.len() + 2);
 
             for col in final_columns.iter() {
-                // Compute value
-                let mut value_str = row
-                    .get(&col.name)
-                    .map(json_value_to_string)
-                    .unwrap_or_default();
+                // Compute value - first check additional columns, then row data
+                let mut value_str = if let Some(additional_value) = additional_columns.get(&col.name) {
+                    // Use value from multipart additional fields
+                    json_value_to_string(additional_value)
+                } else {
+                    // Use value from file data
+                    row.get(&col.name)
+                        .map(json_value_to_string)
+                        .unwrap_or_default()
+                };
 
                 // Special handling for id
                 if col.name == "id"
