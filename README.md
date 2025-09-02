@@ -145,15 +145,8 @@ Core use cases:
 * Role + bitwise permission model embedded in JWT claims (`rl` field, e.g. `products/127,*/*`).
 * Configurable additional JWT claim via SQL (`CUSTOME_JWT_QUERY`).
 * IP whitelisting override (`WHITE_LIST_IP`).
-* Redis caching blueprint (keys + TTL) in schema (implementation hooks in place; extend as needed).
-* Pluggable pre / post hooks for POST & PUT (string SQL markers in schema) and PATCH stored procedure like flows.
-* Structured logging with optional file output path.
 * Static file serving under `/static` (e.g. images, logs).
 * Rate Limit per request per minutes
-
----
-
-## 3. Quick Start
 
 ### 3.1 Clone
 ```bash
@@ -216,6 +209,7 @@ Below is the authoritative list derived from `.env_example` and source code.
 | LOC_IMAGE | No | Static image directory (served under `/static`). |
 | CUSTOME_JWT_QUERY | No | SQL template run at login to enrich JWT claim `cs` (use `{:?}` placeholder for user id). |
 | WHITE_LIST_IP | No | Comma separated IPs that bypass JWT validation. |
+| PRIMARY_BUNDLE_ID | No | Optional primary bundle identifier for notarization. |
 
 Example snippet:
 ```env
