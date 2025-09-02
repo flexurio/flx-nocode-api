@@ -3,6 +3,7 @@ pub mod foreign_key;
 pub mod generate;
 pub mod import;
 pub mod get;
+pub mod export;
 pub mod patch;
 pub mod post;
 pub mod put;
