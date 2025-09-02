@@ -11,13 +11,7 @@ use crate::{log::log_output, model::TableSchema, ISDEBUG};
 pub fn cetak_label(host: String, port: u16) {
     // print version from cargo.toml
 
-    let cargo_toml = std::fs::read_to_string("Cargo.toml").unwrap();
-    let version = cargo_toml
-        .lines()
-        .find(|line| line.starts_with("version"))
-        .unwrap_or("version = \"0.1.0\"");
-
-    println!("\n\nFlexurio Version: {}", version.green());
+    println!("\n\nFlexurio ");
 
     println!(
         "Server started at http://{}:{}",
