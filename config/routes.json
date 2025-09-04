@@ -9,14 +9,7 @@
         ],
         "route_publics": [
                 "login",
-                "register"
-        ],
-        "converter_token": {
-                "id":"id",
-                "nm":"nm",
-                "exp":"exp",
-                "at":"at",
-                "rl":"rl",
-                "cs":"cs"
-        }
+                "register",
+                "refresh_token"
+        ]
 }

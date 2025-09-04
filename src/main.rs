@@ -53,7 +53,7 @@ static CONFIG: Lazy<crate::model::Config> = Lazy::new(|| {
     });
     let file_path = format!("{}/routes.json", config_location);
 
-    let content = match std::fs::read_to_string(&file_path) {
+    let mut content = match std::fs::read_to_string(&file_path) {
         Ok(content) => content,
         Err(e) => {
             eprintln!(
@@ -69,11 +69,22 @@ static CONFIG: Lazy<crate::model::Config> = Lazy::new(|| {
         }
     };
 
+    if !content.contains("converter_token") {
+        content = content.replace(
+            "}",
+            ", \"converter_token\": {\"id\":\"id\",\"nm\":\"nm\",\"exp\":\"exp\",\"at\":\"at\",\"rl\":\"rl\",\"cs\":\"cs\"} }",
+        );
+    }
+
+
+    println!("{}", content);
+
+
     match serde_json::from_str(&content) {
         Ok(config) => config,
         Err(e) => {
             eprintln!(
-                "Sorry, content of /{}/routes.json is not valid JSON, with ERROR Message : {}",
+                "ERROR main 75 : Sorry, content of /{}/routes.json is not valid JSON, with ERROR Message : {}",
                 config_location, e
             );
             std::process::exit(1);
