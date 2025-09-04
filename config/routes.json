@@ -1,5 +1,5 @@
 {
-        "routes" : [
+        "routes": [
                 "flx_users",
                 "flx_roles",
                 "banks",
@@ -8,9 +8,15 @@
                 "customers"
         ],
         "route_publics": [
-                "flx_users",
-                "flx_roles",
-                "banks",
                 "bank_types"
-        ]
+        ],
+        "converter_token": {
+                "id":"id",
+                "ids":"ids",
+                "nm":"name",
+                "exp":"exp",
+                "at":"",
+                "rl":"",
+                "cs":""
+        }
 }

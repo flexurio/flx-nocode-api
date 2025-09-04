@@ -91,7 +91,7 @@ pub async fn delete(
             "UPDATE {} SET deleted_at = {}, deleted_by_id = ? WHERE id = ?",
             table_schema.table, state.query_converter.datetime_now
         );
-        bind_params.push(DbParam::I64(claims.id));
+        bind_params.push(DbParam::Str(claims.id.clone()));
     } else if type_delete == "hard" {
         // create query DELETE sql parameterized by id
         s_sql = format!("DELETE FROM {} WHERE id = ?", table_schema.table);
@@ -130,7 +130,7 @@ pub async fn delete(
                 state.clone(),
                 &mut transaction,
                 reference_foreign_keys,
-                claims.id,
+                claims.id.clone(),
                 id_raw.clone(),
                 "".to_string(), // for UPDATE
             )
@@ -143,7 +143,7 @@ pub async fn delete(
                         // Audit
                         write_audit(&AuditEntry {
                             at: Local::now().to_rfc3339(),
-                            actor_id: claims.id,
+                            actor_id: claims.id.clone(),
                             action: "DELETE",
                             route: &route,
                             id: Some(&id_raw),

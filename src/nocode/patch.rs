@@ -136,7 +136,7 @@ pub async fn process_sp(
             // Audit
             write_audit(&AuditEntry {
                 at: Local::now().to_rfc3339(),
-                actor_id: 0, // unknown actor from claims in this scope
+                actor_id: "".to_string(), // unknown actor from claims in this scope
                 action: "PATCH",
                 route: &route,
                 id: None,

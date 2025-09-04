@@ -23,6 +23,8 @@ pub async fn select(
     req: actix_web::HttpRequest,
 ) -> impl Responder {
     if !state.route_publics.contains(&route) {
+        println!("Route: {}", route);
+        
         let claims = match get_user_info_from_token(req, state.clone()) {
             Ok(c) => c,
             Err(_) => {
@@ -34,6 +36,8 @@ pub async fn select(
                 });
             }
         };
+
+        println!("Claims: {:?}", claims);
 
         if !check_access(&claims, &route, "read") {
             return HttpResponse::Unauthorized().json(WebResponse {

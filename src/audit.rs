@@ -5,7 +5,7 @@ use std::io::Write;
 #[derive(Serialize)]
 pub struct AuditEntry<'a> {
     pub at: String,
-    pub actor_id: i64,
+    pub actor_id: String,
     pub action: &'a str,
     pub route: &'a str,
     pub id: Option<&'a str>,

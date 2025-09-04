@@ -1,21 +1,33 @@
-use std::env;
+use std::{env, os::macos::raw::stat};
 
 use actix_web::{web, HttpResponse};
 use chrono::{Duration, Utc};
 use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use serde_json::Value;
 
 use crate::{helpers::get_client_ip, AppState};
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Claims {
-    pub id: i64,
+    pub id: String,
     pub nm: String,
     pub exp: usize,
     pub at: usize,
     pub rl: String,
     pub cs: String,
 }
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct ClaimsConverter {
+    pub id: String,
+    pub nm: String,
+    pub exp: String,
+    pub at: String,
+    pub rl: String,
+    pub cs: String,
+}
+
 impl Claims {
     pub fn get_roles(&self) -> Vec<String> {
         self.rl.split(",").map(|s| s.to_string()).collect()
@@ -26,12 +38,27 @@ impl Claims {
 impl Default for Claims {
     fn default() -> Self {
         Claims {
-            id: 0,
+            id: "".to_string(),
             nm: "route_publics".to_string(),
             exp: 0,
             at: 0,
             rl: "*/127".to_string(),
             cs: "".to_string(),
+        }
+    }
+}
+
+
+// set default ClaimsConverter
+impl Default for ClaimsConverter {
+    fn default() -> Self {
+        ClaimsConverter {
+            id:"id".to_string(),
+            nm:"nm".to_string(),
+            exp:"exp".to_string(),
+            at:"at".to_string(),
+            rl:"rl".to_string(),
+            cs:"cs".to_string(),
         }
     }
 }
@@ -42,7 +69,9 @@ pub fn validate_token(
     state: web::Data<AppState>,
 ) -> Result<web::Data<AppState>, HttpResponse> {
     // Fast path: check IP whitelist first to avoid expensive token operations
-    if is_ip_whitelisted(&req, &state.whitelist_ips) {
+    if is_ip_whitelisted(&req, &state.whitelist_ips) || 
+        state.route_publics.contains(&req.path().to_string()) ||
+        state.converter_token != ClaimsConverter::default() {
         return Ok(state);
     }
 
@@ -109,7 +138,7 @@ pub async fn create_token(
     }
 
     let claims = Claims {
-        id: id_user,
+        id: id_user.to_string(),
         nm: name,
         exp: expiration,
         at: Utc::now().timestamp() as usize,
@@ -144,6 +173,28 @@ fn extract_token_claims(token: &str, secret: &[u8]) -> Result<Claims, jsonwebtok
     Ok(token_data.claims)
 }
 
+// function JWWT Decoder tanpa validasi key
+fn extract_token_claims_no_validation(token: &str, state: web::Data<AppState>) -> Claims {
+    let token = token.trim_start_matches("Bearer ");
+
+    let parts: Vec<&str> = token.split('.').collect();
+    let payload_b64 = parts[1];
+
+    let decoded = URL_SAFE_NO_PAD.decode(payload_b64).unwrap();
+    let json: Value = serde_json::from_slice(&decoded).unwrap();
+
+    // read converter_token from state
+    let converter = &state.converter_token;
+    Claims {
+        id: json.get(&converter.id).and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        nm: json.get(&converter.nm).and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        exp: json.get(&converter.exp).and_then(|v| v.as_u64()).unwrap_or(0) as usize,
+        at: json.get(&converter.at).and_then(|v| v.as_u64()).unwrap_or(0) as usize,
+        rl: json.get(&converter.rl).and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        cs: json.get(&converter.cs).and_then(|v| v.as_str()).unwrap_or("").to_string(),
+    }
+}
+
 fn is_ip_whitelisted(req: &actix_web::HttpRequest, whitelist: &[String]) -> bool {
     let ip = get_client_ip(req);
     whitelist.contains(&ip)
@@ -157,19 +208,16 @@ pub fn get_user_info_from_token(
     if is_ip_whitelisted(&req, &state.whitelist_ips) {
         println!("IP is whitelisted, returning default claims.");
         // Anda bisa sesuaikan isi Claims berikut sesuai kebutuhan
-        return Ok(Claims {
-            id: 0,
-            nm: "whitelisted".to_string(),
-            exp: 0,
-            at: 0,
-            rl: "*/127".to_string(),
-            cs: "".to_string(),
-        });
+        return Ok(Claims::default());
     }
 
     if let Some(auth_header) = req.headers().get("Authorization") {
         if let Ok(auth_str) = auth_header.to_str() {
             if auth_str.starts_with("Bearer ") {
+                if state.converter_token != ClaimsConverter::default() {
+                    let claims = extract_token_claims_no_validation(auth_str, state.clone());
+                    return Ok(claims);
+                }
                 match extract_token_claims(auth_str, state.secret.as_ref()) {
                     Ok(claims) => return Ok(claims),
                     Err(_) => return Err(false),

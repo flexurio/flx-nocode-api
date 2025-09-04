@@ -199,7 +199,7 @@ pub async fn update(
         state.query_converter.datetime_now
     ));
     set_clause.push_str("updated_by_id = ?, ");
-    bind_params.push(DbParam::I64(claims.id));
+    bind_params.push(DbParam::Str(claims.id.clone()));
 
     // remove last ", " from set_clause
     set_clause = set_clause[..set_clause.len() - 2].to_string();
@@ -326,7 +326,7 @@ pub async fn update(
                     state.clone(),
                     &mut transaction,
                     reference_foreign_keys,
-                    claims.id,
+                    claims.id.clone(),
                     id_raw.clone(),
                     id_new, // for UPDATE
                 )
@@ -352,7 +352,7 @@ pub async fn update(
                     // Audit
                     write_audit(&AuditEntry {
                         at: Local::now().to_rfc3339(),
-                        actor_id: claims.id,
+                        actor_id: claims.id.clone(),
                         action: "PUT",
                         route: &route,
                         id: Some(&id_raw),

@@ -38,6 +38,7 @@ use core::{generate_users, login, register};
 mod model;
 use model::TableSchema;
 
+use crate::auth::ClaimsConverter;
 use crate::model::{ReferenceForeignKey, ReferenceForeignKeyAction};
 mod audit;
 mod helpers;
@@ -63,6 +64,7 @@ static CONFIG: Lazy<crate::model::Config> = Lazy::new(|| {
             return crate::model::Config {
                 routes: vec![],
                 route_publics: vec![],
+                converter_token: ClaimsConverter::default(),
             };
         }
     };
@@ -99,20 +101,17 @@ static LOC_LOGGING: Lazy<String> = Lazy::new(|| match env::var("LOC_LOGGING") {
     Err(_) => "logs".to_string(),
 });
 
-// Static Routes for once initialization
-static ROUTE_PUBLICS: Lazy<Vec<String>> = Lazy::new(|| CONFIG.route_publics.clone());
 
 // Static Routes for once initialization
-static ROUTES: Lazy<Vec<String>> = Lazy::new(|| CONFIG.routes.clone());
 static FOREIGNKEY_ACTION: [&str; 4] = ["cascade", "set null", "restrict", "no action"];
 
 static SCHEMAS: Lazy<Arc<(Vec<TableSchema>, Vec<ReferenceForeignKey>)>> = Lazy::new(|| {
     let config_location = env::var("LOC_CONFIG").unwrap_or_else(|_| "config/example".to_string());
     let config_dir = format!("{}/entity", config_location);
-    let mut schemas = Vec::with_capacity(ROUTES.len()); // Pre-allocate capacity
-    let mut ref_foreign_keys: Vec<ReferenceForeignKey> = Vec::with_capacity(ROUTES.len());
+    let mut schemas = Vec::with_capacity(CONFIG.routes.len()); // Pre-allocate capacity
+    let mut ref_foreign_keys: Vec<ReferenceForeignKey> = Vec::with_capacity(CONFIG.routes.len());
 
-    for route in ROUTES.iter() {
+    for route in CONFIG.routes.iter() {
         let file_path = format!("{}/{}.json", config_dir, route);
 
         let content = match fs::read_to_string(&file_path) {
@@ -378,17 +377,18 @@ async fn main() -> std::io::Result<()> {
         encrypt_key,
         query_converter,
         whitelist_ips,
-        route_publics: ROUTE_PUBLICS.to_vec(),
+        route_publics: CONFIG.route_publics.clone().to_vec(),
+        converter_token: CONFIG.converter_token.clone(),
     });
 
     generate_users(app_state.clone()).await;
 
     // Initialize Routes only once, using Lazy
-    let _ = &*ROUTES;
+    let _ = &*CONFIG;
     let _ = &*SCHEMAS;
     let _ = &*ISDEBUG;
 
-    if ROUTES.is_empty() {
+    if CONFIG.routes.is_empty() {
         println!("--------------------------------------");
         println!("{}", "ROUTES NOT VALID ! ".on_red());
         println!("--------------------------------------");
@@ -588,7 +588,7 @@ async fn main() -> std::io::Result<()> {
                 println!("\n");
 
                 // setup endpoint for each route
-                for route in ROUTES.iter() {
+                for route in CONFIG.routes.iter() {
                     let route_get = route.clone();
                     let route_trace = route.clone();
                     let route_patch = route.clone();

@@ -13,7 +13,7 @@ pub(crate) async fn process_foreign_keys_delete_update(
     state: Data<AppState>,
     transaction: &mut Box<dyn DbTransaction>,
     reference_foreign_keys: &[ReferenceForeignKey],
-    id_user: i64,
+    id_user: String,
     id_data: String,
     id_new: String, // for UPDATE
 ) -> (bool, String) {
@@ -32,7 +32,7 @@ pub(crate) async fn process_foreign_keys_delete_update(
                         "UPDATE {} SET deleted_at = {}, deleted_by_id = ? WHERE {} = ?",
                         data_table.table, state.query_converter.datetime_now, data_table.column
                     );
-                    bind_params_fk.push(DbParam::I64(id_user));
+                    bind_params_fk.push(DbParam::Str(id_user.clone()));
                 } else if data_table.type_delete == "hard" {
                     // create query DELETE sql parameterized by id
                     s_sql_fk = format!(
@@ -59,7 +59,7 @@ pub(crate) async fn process_foreign_keys_delete_update(
                     data_table.column
                 );
                 // isikan bind_params_fk updated_by_id
-                bind_params_fk.push(DbParam::I64(id_user));
+                bind_params_fk.push(DbParam::Str(id_user.clone()));
                 // isikan bind_params_fk id lama
                 if let Ok(n) = id_data.clone().parse::<i64>() {
                     bind_params_fk.push(DbParam::I64(n));
@@ -122,7 +122,7 @@ pub(crate) async fn process_foreign_keys_delete_update(
                 }
 
                 // isikan bind_params_fk updated_by_id
-                bind_params_fk.push(DbParam::I64(id_user));
+                bind_params_fk.push(DbParam::Str(id_user.clone()));
 
                 // isikan bind_params_fk id lama
                 if let Ok(n) = id_data.clone().parse::<i64>() {
@@ -142,7 +142,7 @@ pub(crate) async fn process_foreign_keys_delete_update(
                     data_table.column
                 );
                 // isikan bind_params_fk updated_by_id
-                bind_params_fk.push(DbParam::I64(id_user));
+                bind_params_fk.push(DbParam::Str(id_user.clone()));
                 // isikan bind_params_fk id lama
                 if let Ok(n) = id_data.clone().parse::<i64>() {
                     bind_params_fk.push(DbParam::I64(n));

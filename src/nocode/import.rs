@@ -422,7 +422,7 @@ pub async fn import(
             // created_at (expr) and created_by_id
             placeholders.push(state.query_converter.datetime_now.clone());
             placeholders.push("?".into());
-            params.push(DbParam::I64(claims.id));
+            params.push(DbParam::Str(claims.id.clone()));
 
             values_groups.push(format!("({})", placeholders.join(", ")));
         }
@@ -473,7 +473,7 @@ pub async fn import(
     // Audit
     write_audit(&AuditEntry {
         at: Local::now().to_rfc3339(),
-        actor_id: claims.id,
+        actor_id: claims.id.clone(),
         action: "IMPORT",
         route: &route,
         id: None,

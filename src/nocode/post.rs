@@ -356,7 +356,7 @@ pub async fn insert(
     // **Tambahkan created_by_id**
     insert_columns.push("created_by_id");
     insert_values.push("?".into());
-    bind_params.push(DbParam::I64(claims.id));
+    bind_params.push(DbParam::Str(claims.id.clone()));
 
     let s_sql = format!(
         "INSERT INTO {} ({}) VALUES ({})",
@@ -475,7 +475,7 @@ pub async fn insert(
             // Audit trail
             write_audit(&AuditEntry {
                 at: Local::now().to_rfc3339(),
-                actor_id: claims.id,
+                actor_id: claims.id.clone(),
                 action: "POST",
                 route: &route,
                 id: None,

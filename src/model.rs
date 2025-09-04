@@ -1,9 +1,12 @@
 use serde::{Deserialize, Serialize};
 
+use crate::auth::ClaimsConverter;
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Config {
     pub routes: Vec<String>,
     pub route_publics: Vec<String>,
+    pub converter_token: ClaimsConverter,
 }
 
 pub struct ParamJoin {

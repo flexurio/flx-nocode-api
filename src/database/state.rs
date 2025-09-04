@@ -3,7 +3,7 @@ use regex::Regex;
 use serde_json::Value;
 use std::sync::Arc;
 
-use crate::log::log_output;
+use crate::{auth::ClaimsConverter, log::log_output};
 use anyhow::{anyhow, Result};
 
 pub struct QueryConverter {
@@ -18,6 +18,7 @@ pub struct AppState {
     pub query_converter: QueryConverter,
     pub whitelist_ips: Vec<String>,
     pub route_publics: Vec<String>,
+    pub converter_token: ClaimsConverter,
 }
 
 /// Simple cross-DB parameter type for binding values safely.

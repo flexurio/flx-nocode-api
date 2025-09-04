@@ -144,7 +144,7 @@ pub async fn login(state: web::Data<AppState>, req: actix_web::HttpRequest) -> i
 
     // Cross-DB: avoid CONCAT differences; fetch endpoint & role and join in Rust
     let s_sql = "SELECT endpoint, role FROM flx_roles WHERE id_users = ?".to_string();
-    log_output("QUERY", "POST", "flx_roles", s_sql.clone(), true);
+    log_output("QUERY", "core.rs/login", "flx_roles", s_sql.clone() + " ~ " + &id_user.to_string(), true);
     let roles_rows = state
         .db
         .query_with_params(&s_sql, vec![DbParam::I64(id_user)])
