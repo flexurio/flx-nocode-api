@@ -76,10 +76,6 @@ static CONFIG: Lazy<crate::model::Config> = Lazy::new(|| {
         );
     }
 
-
-    println!("{}", content);
-
-
     match serde_json::from_str(&content) {
         Ok(config) => config,
         Err(e) => {
