@@ -199,8 +199,36 @@ pub async fn update(
         state.query_converter.datetime_now
     ));
     set_clause.push_str("updated_by_id = ?, ");
-    bind_params.push(DbParam::Str(claims.id.clone()));
 
+    // get type data updated_by_id from table_schema
+    let created_by_type = table_schema
+        .columns
+        .iter()
+        .find(|c| c.name == "updated_by_id")
+        .map(|c| c.type_data.clone())
+        .unwrap_or("int".to_string());
+
+    log_output("TYPE", "updated_by_id", route.as_str(), created_by_type.clone(), true);
+
+    if created_by_type.contains("int") {
+        if let Ok(n) = claims.id.parse::<i64>() {
+            bind_params.push(DbParam::I64(n));
+        } else {
+            bind_params.push(DbParam::Str(claims.id.clone()));
+        }
+    } else if created_by_type.contains("float") || 
+        created_by_type.contains("double") || 
+        created_by_type.contains("decimal") || 
+        created_by_type.contains("money") {
+        if let Ok(n) = claims.id.parse::<f64>() {
+            bind_params.push(DbParam::F64(n));
+        } else {
+            bind_params.push(DbParam::Str(claims.id.clone()));
+        }
+    } else {
+        bind_params.push(DbParam::Str(claims.id.clone()));
+    }
+    
     // remove last ", " from set_clause
     set_clause = set_clause[..set_clause.len() - 2].to_string();
 

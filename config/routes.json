@@ -8,15 +8,15 @@
                 "customers"
         ],
         "route_publics": [
-                "bank_types"
+                "login",
+                "register"
         ],
         "converter_token": {
                 "id":"id",
-                "ids":"ids",
-                "nm":"name",
+                "nm":"nm",
                 "exp":"exp",
-                "at":"",
-                "rl":"",
-                "cs":""
+                "at":"at",
+                "rl":"rl",
+                "cs":"cs"
         }
 }

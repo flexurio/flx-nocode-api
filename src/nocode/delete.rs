@@ -91,7 +91,35 @@ pub async fn delete(
             "UPDATE {} SET deleted_at = {}, deleted_by_id = ? WHERE id = ?",
             table_schema.table, state.query_converter.datetime_now
         );
-        bind_params.push(DbParam::Str(claims.id.clone()));
+
+        // get type data deleted_by_id from table_schema
+        let created_by_type = table_schema
+            .columns
+            .iter()
+            .find(|c| c.name == "deleted_by_id")
+            .map(|c| c.type_data.clone())
+            .unwrap_or("int".to_string());
+
+        log_output("TYPE", "deleted_by_id", route.as_str(), created_by_type.clone(), true);
+
+        if created_by_type.contains("int") {
+            if let Ok(n) = claims.id.parse::<i64>() {
+                bind_params.push(DbParam::I64(n));
+            } else {
+                bind_params.push(DbParam::Str(claims.id.clone()));
+            }
+        } else if created_by_type.contains("float") || 
+            created_by_type.contains("double") || 
+            created_by_type.contains("decimal") || 
+            created_by_type.contains("money") {
+            if let Ok(n) = claims.id.parse::<f64>() {
+                bind_params.push(DbParam::F64(n));
+            } else {
+                bind_params.push(DbParam::Str(claims.id.clone()));
+            }
+        } else {
+            bind_params.push(DbParam::Str(claims.id.clone()));
+        }        
     } else if type_delete == "hard" {
         // create query DELETE sql parameterized by id
         s_sql = format!("DELETE FROM {} WHERE id = ?", table_schema.table);

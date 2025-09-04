@@ -42,6 +42,7 @@ pub async fn insert(
             }
         };
 
+
         if !check_access(&claims, &route, "write") {
             return HttpResponse::Unauthorized().json(WebResponse {
                 success: false,
@@ -356,7 +357,35 @@ pub async fn insert(
     // **Tambahkan created_by_id**
     insert_columns.push("created_by_id");
     insert_values.push("?".into());
-    bind_params.push(DbParam::Str(claims.id.clone()));
+    
+    // get type data created_by_id from table_schema
+    let created_by_type = table_schema
+        .columns
+        .iter()
+        .find(|c| c.name == "created_by_id")
+        .map(|c| c.type_data.clone())
+        .unwrap_or("int".to_string());
+
+    log_output("TYPE", "created_by_id", route.as_str(), created_by_type.clone(), true);
+
+    if created_by_type.contains("int") {
+        if let Ok(n) = claims.id.parse::<i64>() {
+            bind_params.push(DbParam::I64(n));
+        } else {
+            bind_params.push(DbParam::Str(claims.id.clone()));
+        }
+    } else if created_by_type.contains("float") || 
+        created_by_type.contains("double") || 
+        created_by_type.contains("decimal") || 
+        created_by_type.contains("money") {
+        if let Ok(n) = claims.id.parse::<f64>() {
+            bind_params.push(DbParam::F64(n));
+        } else {
+            bind_params.push(DbParam::Str(claims.id.clone()));
+        }
+    } else {
+        bind_params.push(DbParam::Str(claims.id.clone()));
+    }
 
     let s_sql = format!(
         "INSERT INTO {} ({}) VALUES ({})",
@@ -490,9 +519,13 @@ pub async fn insert(
         }
         Err(err) => {
             transaction.rollback().await.ok();
+            let mut err_message = err.to_string().to_lowercase();
+            if err_message.contains("created_by_id") {
+                err_message += format!(" \n id from token : {}", &claims.id).as_str();
+            }
             HttpResponse::InternalServerError().json(WebResponse {
                 success: false,
-                message: format!("Error NCO-POST: {}", err),
+                message: format!("Error NCO-POST: {}", err_message),
                 total_data: 0,
                 data: Value::Null,
             })

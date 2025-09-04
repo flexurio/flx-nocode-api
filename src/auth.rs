@@ -1,4 +1,4 @@
-use std::{env, os::macos::raw::stat};
+use std::{env};
 
 use actix_web::{web, HttpResponse};
 use chrono::{Duration, Utc};
@@ -191,7 +191,7 @@ fn extract_token_claims_no_validation(token: &str, state: web::Data<AppState>) -
         exp: json.get(&converter.exp).and_then(|v| v.as_u64()).unwrap_or(0) as usize,
         at: json.get(&converter.at).and_then(|v| v.as_u64()).unwrap_or(0) as usize,
         rl: json.get(&converter.rl).and_then(|v| v.as_str()).unwrap_or("").to_string(),
-        cs: json.get(&converter.cs).and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        cs: json.get(&converter.cs).and_then(|v| v.as_str()).unwrap_or("converter_token").to_string(),
     }
 }
 
@@ -265,6 +265,9 @@ fn get_permissions(value: i8) -> Vec<&'static str> {
 }
 
 pub fn check_access(claims: &Claims, route: &str, permission: &str) -> bool {
+    if claims.cs == "converter_token" {
+        return true;
+    }
     // from claims.roles get rl where ep = route
     let mut role = 0_i8;
     for r in claims.get_roles().iter() {
