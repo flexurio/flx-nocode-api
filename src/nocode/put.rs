@@ -360,7 +360,7 @@ pub async fn update(
                     });
                     HttpResponse::Ok().json(WebResponse {
                         success: true,
-                        message: "Data deleted successfully".to_string(),
+                        message: "Data updated successfully".to_string(),
                         total_data: 1,
                         data: Value::Null,
                     })

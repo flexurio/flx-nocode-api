@@ -148,7 +148,7 @@ pub async fn process_sp(
             });
             HttpResponse::Ok().json(WebResponse {
                 success: true,
-                message: "Stored procedure executed".to_string(),
+                message: "Processes executed".to_string(),
                 total_data: 1,
                 data: Value::Null,
             })
