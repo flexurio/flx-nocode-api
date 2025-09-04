@@ -11,5 +11,13 @@
                 "login",
                 "register",
                 "refresh_token"
-        ]
+        ],
+        "converter_token": {
+                "id":"id",
+                "nm":"name",
+                "exp":"exp",
+                "at":"",
+                "rl":"",
+                "cs":""
+        }
 }
