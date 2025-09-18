@@ -22,12 +22,13 @@ use std::env;
 mod auth;
 mod crypt;
 mod database;
-use database::{
-    mysql::MySqlRepo,
-    postgres::PostgresRepo,
-    sqlite::SqliteRepo,
-    state::{AppState, DbRepository, QueryConverter},
-};
+use database::state::{AppState, DbRepository, QueryConverter};
+#[cfg(feature = "mysql")]
+use database::mysql::MySqlRepo;
+#[cfg(feature = "postgres")]
+use database::postgres::PostgresRepo;
+#[cfg(feature = "sqlite")]
+use database::sqlite::SqliteRepo;
 mod nocode;
 use nocode::{
     delete::delete, export::export, generate::create_table, get::select, import::import,
@@ -255,6 +256,13 @@ async fn main() -> std::io::Result<()> {
         .unwrap_or(5);
     let db_repo: Arc<dyn DbRepository> = match db_type.as_str() {
         "mysql" => {
+            #[cfg(not(feature = "mysql"))]
+            {
+                eprintln!("Feature 'mysql' not enabled at compile time");
+                return Err(std::io::Error::new(std::io::ErrorKind::Other, "mysql feature disabled"));
+            }
+            #[cfg(feature = "mysql")]
+            {
             let url = match env::var("MYSQL_URL") {
                 Ok(url) => url,
                 Err(_) => {
@@ -281,8 +289,16 @@ async fn main() -> std::io::Result<()> {
                 })?;
 
             Arc::new(MySqlRepo { pool })
+            }
         }
         "postgres" => {
+            #[cfg(not(feature = "postgres"))]
+            {
+                eprintln!("Feature 'postgres' not enabled at compile time");
+                return Err(std::io::Error::new(std::io::ErrorKind::Other, "postgres feature disabled"));
+            }
+            #[cfg(feature = "postgres")]
+            {
             let url = match env::var("POSTGRES_URL") {
                 Ok(url) => url,
                 Err(_) => {
@@ -309,8 +325,16 @@ async fn main() -> std::io::Result<()> {
                 })?;
 
             Arc::new(PostgresRepo { pool })
+            }
         }
         "sqlite" => {
+            #[cfg(not(feature = "sqlite"))]
+            {
+                eprintln!("Feature 'sqlite' not enabled at compile time");
+                return Err(std::io::Error::new(std::io::ErrorKind::Other, "sqlite feature disabled"));
+            }
+            #[cfg(feature = "sqlite")]
+            {
             let url = match env::var("SQLITE_URL") {
                 Ok(url) => url,
                 Err(_) => {
@@ -348,6 +372,7 @@ async fn main() -> std::io::Result<()> {
                 })?;
 
             Arc::new(SqliteRepo { pool })
+            }
         }
         _ => {
             eprintln!("Unsupported DB_TYPE: {}", db_type);

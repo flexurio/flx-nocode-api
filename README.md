@@ -448,3 +448,87 @@ Flexurio Engineering Team. Built with Rust + Actix Web.
 
 Happy building.
 
+---
+
+## 18. Database Feature Flags (Compile-Time)
+
+Starting from version 0.1.18+, database backends are controlled via Cargo features so you can build a lighter binary containing only what you need.
+
+### 18.1 Available Features
+
+Enabled by default (all three):
+```
+mysql
+postgres
+sqlite
+```
+
+`Cargo.toml` excerpt:
+```toml
+[features]
+default = ["mysql", "postgres", "sqlite"]
+mysql   = ["sqlx/mysql", "sqlx/chrono"]
+postgres= ["sqlx/postgres", "sqlx/chrono"]
+sqlite  = ["sqlx/sqlite", "sqlx/chrono"]
+```
+
+If you disable a feature and still set `DB_TYPE` at runtime to that backend, the application will exit with an error like `mysql feature disabled`.
+
+### 18.2 Build / Run Examples
+
+Build with only MySQL:
+```bash
+cargo build --release --no-default-features --features mysql
+```
+
+Run (after build):
+```bash
+DB_TYPE=mysql MYSQL_URL="mysql://user:pass@localhost/db" \
+SECRET_KEY=change_me ENCRYPT_KEY=change_me \
+LOC_CONFIG=config/example \
+./target/release/flx-nocode-api
+```
+
+Build with MySQL + SQLite:
+```bash
+cargo build --release --no-default-features --features "mysql sqlite"
+```
+
+Build with only PostgreSQL:
+```bash
+cargo build --release --no-default-features --features postgres
+```
+
+Build with everything (default):
+```bash
+cargo build --release
+```
+
+### 18.3 Run Directly via cargo run
+
+You can also compile & run in one step:
+```bash
+cargo run --no-default-features --features mysql --release
+```
+
+Or with multiple:
+```bash
+cargo run --no-default-features --features "mysql sqlite" --release
+```
+
+If you omit `--no-default-features`, all backends are included.
+
+### 18.4 Why Use Feature Flags?
+* Faster compile time when you only target one backend.
+* Smaller binary footprint.
+* Reduced supply surface (fewer unused code paths in production).
+
+### 18.5 Troubleshooting
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| `feature 'postgres' not enabled at compile time` | You set `DB_TYPE=postgres` but didn't enable the feature | Rebuild with `--features postgres` or change `DB_TYPE`. |
+| `could not find sqlx::mysql` compile error | Removed mysql feature from default and code still referencing it | Ensure the `#[cfg(feature="mysql")]` guards are present (already applied) and rebuild with proper features. |
+| Runtime exit `Unsupported DB_TYPE` | Typo in `DB_TYPE` or feature disabled | Verify `.env` and enabled feature list. |
+
+---
+
