@@ -1,174 +1,236 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -euo pipefail
 
-targets=(
-  # "x86_64-unknown-linux-gnu"
-  # # "aarch64-unknown-linux-gnu"
-  "x86_64-pc-windows-gnu"
-  # "aarch64-pc-windows-gnu"
-  "x86_64-apple-darwin"
-  "aarch64-apple-darwin"
-)
+# -----------------------------------------------------------------------------
+# Flexurio Multi-Target Builder (with DB feature selection)
+# -----------------------------------------------------------------------------
+# Usage examples:
+#   ./build.sh                          # build all DB variants for all OS targets
+#   ./build.sh --db mysql               # only mysql for all OS targets
+#   ./build.sh --db mysql,sqlite        # mysql + sqlite for all OS targets
+#   ./build.sh --db all --os macos      # all DBs only for macOS (both arch)
+#   ./build.sh --os macos,windows --db postgres
+#   ./build.sh --help                   # show help
+#
+# Output artifacts are placed under ./release named as:
+#   flx-nocode-<driver>-<target>[.exe]
+# For macOS targets, a signed & notarized pkg is produced (if env variables set):
+#   flx-nocode-<driver>-<target>.pkg
+# -----------------------------------------------------------------------------
 
-export APPLE_ID='YOURIDBOSS'
-export APPLE_TEAM_ID='YOURIDBOSS'
-export PASSWORD='YOURIDBOSS'
-export PRIMARY_BUNDLE_ID='YOURIDBOSS'
-export APPLE_IDENTITY='YOURIDBOSS'
-export APPLE_IDENTITY_INS='YOURIDBOSS'
-export KEYCHAIN_PROFILE="YOURIDBOSS"
+show_help() {
+  cat <<'EOF'
+Flexurio build script
 
+Flags:
+  --db <list>    Comma separated database drivers (mysql,postgres,sqlite,all). Default: all
+  --os <list>    Comma separated OS targets (macos,windows,linux,all). Default: all
+  --arch <list>  Comma separated arch list (x86_64,aarch64,all). Filters expanded targets. Default: all
+  --help         Show this help
+
+OS Expansions:
+  macos   => x86_64-apple-darwin,aarch64-apple-darwin
+  windows => x86_64-pc-windows-gnu
+  linux   => x86_64-unknown-linux-gnu (add aarch64 if needed)
+
+Examples:
+  ./build.sh --db mysql --os macos
+  ./build.sh --db postgres,sqlite --os linux
+  ./build.sh --db all --os macos,windows
+  ./build.sh --db mysql,sqlite --os macos,linux
+
+Environment (macOS signing): APPLE_ID, APPLE_TEAM_ID, PASSWORD/APPLE_APP_SPECIFIC_PASSWORD,
+  APPLE_IDENTITY, APPLE_IDENTITY_INS, PRIMARY_BUNDLE_ID, KEYCHAIN_PROFILE
+EOF
+}
+
+DB_LIST="all"
+OS_LIST="all"
+ARCH_LIST="all"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --db)
+      DB_LIST="$2"; shift 2 ;;
+    --os)
+      OS_LIST="$2"; shift 2 ;;
+    --arch)
+      ARCH_LIST="$2"; shift 2 ;;
+    --help|-h)
+      show_help; exit 0 ;;
+    *) echo "Unknown argument: $1" >&2; show_help; exit 1 ;;
+  esac
+done
+
+# Resolve drivers
+if [[ "$DB_LIST" == "all" ]]; then
+  DRIVERS=(mysql postgres sqlite)
+else
+  IFS=',' read -r -a DRIVERS <<<"$DB_LIST"
+fi
+for d in "${DRIVERS[@]}"; do
+  case "$d" in
+    mysql|postgres|sqlite) ;;
+    *) echo "Unknown driver: $d" >&2; exit 1 ;;
+  esac
+done
+
+# Resolve OS targets
+declare -a targets
+expand_os() {
+  case "$1" in
+    macos)   echo "x86_64-apple-darwin aarch64-apple-darwin" ;;
+    windows) echo "x86_64-pc-windows-gnu" ;;
+    linux)   echo "x86_64-unknown-linux-gnu" ;;
+    *) echo "" ;;
+  esac
+}
+
+if [[ "$OS_LIST" == "all" ]]; then
+  targets=(x86_64-pc-windows-gnu x86_64-apple-darwin aarch64-apple-darwin x86_64-unknown-linux-gnu)
+else
+  IFS=',' read -r -a OS_ARR <<<"$OS_LIST"
+  declare -A seen
+  for osname in "${OS_ARR[@]}"; do
+    case "$osname" in
+      macos|windows|linux) ;;
+      *) echo "Unknown OS: $osname" >&2; exit 1 ;;
+    esac
+    for tgt in $(expand_os "$osname"); do
+      if [[ -z "${seen[$tgt]:-}" ]]; then
+        targets+=("$tgt"); seen[$tgt]=1
+      fi
+    done
+  done
+fi
+
+if [[ ${#targets[@]} -eq 0 ]]; then
+  echo "No targets resolved" >&2; exit 1
+fi
 
 mkdir -p release
 
-for target in "${targets[@]}"; do
-  # check if target is not for apple
-  echo "Building for $target..."
-  echo "cargo build --release --target $target"
-  cargo build --release --target "$target"
-  
-  # Tentukan ekstensi
-  if [[ "$target" == *"windows"* ]]; then
-    ext=".exe"
+build_variant() {
+  local driver="$1" target="$2"
+  echo "============================="
+  echo "Building driver=$driver target=$target"
+  echo "============================="
+
+  local features_flag
+  case "$driver" in
+    mysql) features_flag="--no-default-features --features mysql" ;;
+    postgres) features_flag="--no-default-features --features postgres" ;;
+    sqlite) features_flag="--no-default-features --features sqlite" ;;
+  esac
+
+  echo "cargo build --release $features_flag --target $target"
+  cargo build --release $features_flag --target "$target"
+
+  local ext=""; [[ "$target" == *"windows"* ]] && ext=".exe"
+  local src="target/$target/release/flx-nocode-api$ext"
+  local dst="release/flx-nocode-${driver}-$target$ext"
+  if [[ -f "$src" ]]; then
+    mv "$src" "$dst"
+    echo "Artifact: $dst"
   else
-    ext=""
-  fi
-  
-  # Lokasi file output (asumsi nama default dari Cargo.toml adalah 'flx-nocode')
-  default_output="target/$target/release/flx-nocode-api$ext"
-  new_output="release/flx-nocode-$target$ext"
-  
-  # Rename
-  if [ -f "$default_output" ]; then
-    mv "$default_output" "$new_output"
-    echo "Renamed to $new_output"
-  else
-    echo "Build failed for $target"
-    continue
+    echo "Build failed for $driver / $target" >&2
+    return 1
   fi
 
-  # macOS signing and pkg creation
   if [[ "$target" == *"apple-darwin"* ]]; then
-    echo "Signing and packaging $new_output for macOS..."
-
-    # Ensure required tools are available
-    if ! command -v codesign >/dev/null 2>&1; then
-      echo "codesign not found. Xcode Command Line Tools are required. Skipping signing/packaging." >&2
-      continue
-    fi
-    if ! command -v xcrun >/dev/null 2>&1; then
-      echo "xcrun not found. Xcode is required. Skipping signing/packaging." >&2
-      continue
-    fi
-
-    # codesign
-    if [[ -z "${APPLE_IDENTITY:-}" ]]; then
-      echo "APPLE_IDENTITY is not set. Skipping signing/packaging." >&2
-      continue
-    fi
-
-    CODESIGN_ARGS=(--force --sign "$APPLE_IDENTITY" --options runtime --timestamp)
-    if [[ -n "${ENTITLEMENTS_PATH:-}" ]] && [[ -f "${ENTITLEMENTS_PATH}" ]]; then
-      CODESIGN_ARGS+=(--entitlements "$ENTITLEMENTS_PATH")
-      echo "Using entitlements at ${ENTITLEMENTS_PATH}"
-    fi
-
-    echo "codesign ${CODESIGN_ARGS[*]} $new_output"
-    if ! codesign "${CODESIGN_ARGS[@]}" "$new_output"; then
-      echo "codesign failed for $new_output" >&2
-      continue
-    fi
-
-    echo "Verifying signature..."
-    codesign --verify --verbose=2 "$new_output" || { echo "codesign verify failed" >&2; continue; }
-    spctl --assess --type execute --verbose "$new_output" || echo "spctl assessment non-fatal: may fail before notarization"
-
-    # Build a signed .pkg installer for macOS targets
-    echo "Building signed .pkg installer for $target..."
-    if [[ -z "${APPLE_IDENTITY_INS:-}" ]]; then
-      echo "APPLE_IDENTITY_INS is not set (Developer ID Installer). Skipping pkg build for $target." >&2
-      continue
-    fi
-
-    pkg_staging_dir="release/pkg-$target"
-    pkg_root="$pkg_staging_dir/root"
-    install_bin_name="flx-nocode-api"
-    mkdir -p "$pkg_root/usr/local/bin"
-    cp "$new_output" "$pkg_root/usr/local/bin/$install_bin_name"
-    chmod 755 "$pkg_root/usr/local/bin/$install_bin_name"
-
-    pkg_identifier="${PRIMARY_BUNDLE_ID:-com.flexurio.api}"
-    pkg_version="${PKG_VERSION:-1.0.0}"
-    pkg_output="release/flx-nocode-$target.pkg"
-
-    echo "Creating pkg: $pkg_output (id=$pkg_identifier, version=$pkg_version)"
-    if ! pkgbuild --root "$pkg_root" \
-        --install-location "/" \
-        --identifier "$pkg_identifier" \
-        --version "$pkg_version" \
-        --sign "$APPLE_IDENTITY_INS" \
-        "$pkg_output"; then
-      echo "pkgbuild failed for $target" >&2
-      rm -rf "$pkg_staging_dir"
-      continue
-    fi
-
-    echo "Submitting PKG to Apple Notary Service..."
-    PKG_NOTARY_ARGS_BASE=(submit "$pkg_output" --wait)
-    if [[ -n "${PRIMARY_BUNDLE_ID:-}" ]]; then
-      if xcrun notarytool submit --help 2>&1 | grep -q -- "--primary-bundle-id"; then
-        PKG_NOTARY_ARGS_BASE+=(--primary-bundle-id "$PRIMARY_BUNDLE_ID")
-      else
-        echo "notarytool: --primary-bundle-id not supported on this Xcode version; skipping that flag."
-      fi
-    fi
-
-    pkg_notar_success=0
-    if [[ -n "${KEYCHAIN_PROFILE:-}" ]]; then
-      PKG_FIRST_ARGS=("${PKG_NOTARY_ARGS_BASE[@]}" --keychain-profile "$KEYCHAIN_PROFILE")
-      if xcrun notarytool "${PKG_FIRST_ARGS[@]}"; then
-        pkg_notar_success=1
-      else
-        echo "Profile '$KEYCHAIN_PROFILE' failed; attempting direct Apple ID credentials if available..."
-      fi
-    fi
-
-    if [[ $pkg_notar_success -eq 0 ]]; then
-      APP_PW="${APPLE_APP_SPECIFIC_PASSWORD:-${PASSWORD:-}}"
-      if [[ -n "${APPLE_ID:-}" && -n "${APPLE_TEAM_ID:-}" && -n "${APP_PW}" ]]; then
-        PKG_SECOND_ARGS=("${PKG_NOTARY_ARGS_BASE[@]}" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APP_PW")
-        if xcrun notarytool "${PKG_SECOND_ARGS[@]}"; then
-          pkg_notar_success=1
-        fi
-      fi
-    fi
-
-    if [[ $pkg_notar_success -ne 1 ]]; then
-      echo "Notarization failed for $pkg_output" >&2
-      rm -rf "$pkg_staging_dir"
-      continue
-    fi
-
-    echo "Stapling notarization ticket to PKG..."
-    pkg_staple_ok=0
-    for i in 1 2 3; do
-      if xcrun stapler staple "$pkg_output"; then
-        pkg_staple_ok=1
-        break
-      fi
-      echo "PKG staple attempt $i failed; retrying in 10s..."
-      sleep 10
-    done
-
-    if [[ $pkg_staple_ok -ne 1 ]]; then
-      echo "Stapling PKG failed (non-fatal). The PKG is notarized but may not carry a local ticket." >&2
-    else
-      echo "Stapling completed for $pkg_output"
-    fi
-
-    # Cleanup staging
-    rm -rf "$pkg_staging_dir"
-    echo "Cleaned staging: $pkg_staging_dir"
-
-    echo "✅ PKG creation completed: $pkg_output"
+    sign_and_pkg "$driver" "$target" "$dst"
   fi
+}
+
+sign_and_pkg() {
+  local driver="$1" target="$2" bin_path="$3"
+  echo "-- macOS signing & packaging ($driver / $target) --"
+
+  if ! command -v codesign >/dev/null 2>&1; then
+    echo "codesign not found, skipping signing"; return
+  fi
+  if ! command -v xcrun >/dev/null 2>&1; then
+    echo "xcrun not found, skipping notarization"; return
+  fi
+  if [[ -z "${APPLE_IDENTITY:-}" ]]; then
+    echo "APPLE_IDENTITY not set, skipping signing"; return
+  fi
+
+  local CODESIGN_ARGS=(--force --sign "$APPLE_IDENTITY" --options runtime --timestamp)
+  if [[ -n "${ENTITLEMENTS_PATH:-}" && -f "${ENTITLEMENTS_PATH}" ]]; then
+    CODESIGN_ARGS+=(--entitlements "$ENTITLEMENTS_PATH")
+    echo "Using entitlements: $ENTITLEMENTS_PATH"
+  fi
+  echo "codesign ${CODESIGN_ARGS[*]} $bin_path"
+  if ! codesign "${CODESIGN_ARGS[@]}" "$bin_path"; then
+    echo "codesign failed" >&2; return
+  fi
+  codesign --verify --verbose=2 "$bin_path" || echo "codesign verify warning"
+  spctl --assess --type execute --verbose "$bin_path" || echo "spctl pre‑notary warning"
+
+  if [[ -z "${APPLE_IDENTITY_INS:-}" ]]; then
+    echo "APPLE_IDENTITY_INS not set, skip pkg build"; return
+  fi
+
+  local pkg_root="release/pkg-${driver}-${target}/root"
+  local install_bin_name="flx-nocode-api"
+  mkdir -p "$pkg_root/usr/local/bin"
+  cp "$bin_path" "$pkg_root/usr/local/bin/$install_bin_name"
+  chmod 755 "$pkg_root/usr/local/bin/$install_bin_name"
+
+  local pkg_identifier="${PRIMARY_BUNDLE_ID:-com.flexurio.api}.${driver}"
+  local pkg_version="${PKG_VERSION:-1.0.0}"
+  local pkg_output="release/flx-nocode-${driver}-${target}.pkg"
+  echo "Creating pkg: $pkg_output"
+  if ! pkgbuild --root "$pkg_root" \
+      --install-location "/" \
+      --identifier "$pkg_identifier" \
+      --version "$pkg_version" \
+      --sign "$APPLE_IDENTITY_INS" \
+      "$pkg_output"; then
+    echo "pkgbuild failed" >&2
+    rm -rf "release/pkg-${driver}-${target}"
+    return
+  fi
+
+  echo "Submitting for notarization..."
+  local BASE_ARGS=(submit "$pkg_output" --wait)
+  if xcrun notarytool submit --help 2>&1 | grep -q -- "--primary-bundle-id" && [[ -n "${PRIMARY_BUNDLE_ID:-}" ]]; then
+    BASE_ARGS+=(--primary-bundle-id "$PRIMARY_BUNDLE_ID")
+  fi
+
+  local notar_ok=0
+  if [[ -n "${KEYCHAIN_PROFILE:-}" ]]; then
+    if xcrun notarytool "${BASE_ARGS[@]}" --keychain-profile "$KEYCHAIN_PROFILE"; then
+      notar_ok=1
+    fi
+  fi
+  if [[ $notar_ok -eq 0 ]]; then
+    local APP_PW="${APPLE_APP_SPECIFIC_PASSWORD:-${PASSWORD:-}}"
+    if [[ -n "${APPLE_ID:-}" && -n "${APPLE_TEAM_ID:-}" && -n "$APP_PW" ]]; then
+      if xcrun notarytool "${BASE_ARGS[@]}" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APP_PW"; then
+        notar_ok=1
+      fi
+    fi
+  fi
+  if [[ $notar_ok -ne 1 ]]; then
+    echo "Notarization failed (continuing without pkg stapling)" >&2
+    return
+  fi
+
+  echo "Stapling pkg..."
+  if ! xcrun stapler staple "$pkg_output"; then
+    echo "Staple failed (non-fatal)" >&2
+  fi
+
+  rm -rf "release/pkg-${driver}-${target}"
+  echo "✅ Completed pkg: $pkg_output"
+}
+
+for driver in "${DRIVERS[@]}"; do
+  for target in "${targets[@]}"; do
+    build_variant "$driver" "$target"
+  done
 done
+
+echo "All builds finished. Artifacts in ./release"

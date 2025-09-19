@@ -532,3 +532,86 @@ If you omit `--no-default-features`, all backends are included.
 
 ---
 
+## 19. Multi-Target Build Script (`build.sh`)
+
+The `build.sh` script produces per-database, per-OS binaries with feature-gated builds so each artifact contains only the selected backend. It also optionally signs/notarizes macOS binaries if Apple credentials are present.
+
+### 19.1 New Flag Syntax
+
+Usage:
+```bash
+./build.sh [--db <list>] [--os <list>] [--help]
+```
+
+Flags:
+* `--db <list>`: Comma-separated database drivers: `mysql,postgres,sqlite,all` (default: `all`).
+* `--os <list>`: Comma-separated OS groups: `macos,windows,linux,all` (default: `all`).
+* `--help`: Show help text.
+
+OS group expansion:
+* `macos` -> `x86_64-apple-darwin`, `aarch64-apple-darwin`
+* `windows` -> `x86_64-pc-windows-gnu`
+* `linux` -> `x86_64-unknown-linux-gnu`
+
+Examples:
+```bash
+# All DBs for all OS targets
+./build.sh
+
+# Only MySQL (all OS targets)
+./build.sh --db mysql
+
+# MySQL + SQLite only for macOS (both architectures)
+./build.sh --db mysql,sqlite --os macos
+
+# PostgreSQL only for Linux
+./build.sh --db postgres --os linux
+
+# All DBs for macOS + Windows
+./build.sh --db all --os macos,windows
+```
+
+### 19.2 Output Artifacts
+
+Artifacts are written to `release/` with the pattern:
+```
+flx-nocode-<driver>-<target>
+```
+Windows executables have `.exe`. macOS installer packages (if signing succeeds) follow:
+```
+flx-nocode-<driver>-<target>.pkg
+```
+
+### 19.3 Feature Selection Logic
+
+For each chosen driver the script builds with:
+```bash
+cargo build --release --target <triple> --no-default-features --features <driver>
+```
+
+### 19.4 macOS Signing & Notarization (Optional)
+
+If these environment variables are set the script will attempt to sign and notarize the binary and produce a signed `.pkg`:
+* `APPLE_ID`, `APPLE_TEAM_ID`, `PASSWORD` or `APPLE_APP_SPECIFIC_PASSWORD`
+* `APPLE_IDENTITY` (codesign identity)
+* `APPLE_IDENTITY_INS` (installer identity)
+* `PRIMARY_BUNDLE_ID`
+* `KEYCHAIN_PROFILE` (for `notarytool` stored credentials)
+
+If signing variables are absent the script simply copies/renames the compiled binary.
+
+### 19.5 Backward Compatibility
+
+Previous versions accepted a positional driver list (e.g. `./build.sh mysql,sqlite`). This still works if you pass it as `--db mysql,sqlite`. Pure positional usage has been deprecated in favor of explicit flags for clarity and future extensibility (e.g. adding `--arch`).
+
+### 19.6 Troubleshooting
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| `Unknown driver` | Typo in `--db` list | Use only `mysql,postgres,sqlite` |
+| `Unknown OS` | Typo in `--os` list | Use only `macos,windows,linux` |
+| `No targets resolved` | Empty expansion due to bad `--os` value | Correct the OS names |
+| Build fails linking for target | Missing target toolchain | `rustup target add <triple>` |
+| macOS signing errors | Missing/invalid Apple credentials | Export required env vars or skip signing |
+
+---
+
