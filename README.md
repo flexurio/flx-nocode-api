@@ -597,6 +597,16 @@ Windows executables have `.exe`. macOS installer packages (if signing succeeds) 
 flx-nocode-<driver>-<target>.pkg
 ```
 
+When you use `--db all` (default) the script produces a single combined binary per target containing all database drivers, using the legacy naming without the driver segment:
+```
+flx-nocode-<target>
+```
+and for macOS pkg (if signed):
+```
+flx-nocode-<target>.pkg
+```
+This preserves compatibility with existing installer scripts expecting a generic multi-driver binary.
+
 ### 19.3 Feature Selection Logic
 
 For each chosen driver the script builds with:

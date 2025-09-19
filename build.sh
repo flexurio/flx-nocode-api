@@ -82,18 +82,20 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# Resolve drivers
+# Resolve drivers / combined mode flag
+COMBINED_ALL=0
 if [[ "$DB_LIST" == "all" ]]; then
-  DRIVERS=(mysql postgres sqlite)
+  COMBINED_ALL=1
+  DRIVERS=(all)  # placeholder for loop logic
 else
   IFS=',' read -r -a DRIVERS <<<"$DB_LIST"
+  for d in "${DRIVERS[@]}"; do
+    case "$d" in
+      mysql|postgres|sqlite) ;;
+      *) echo "Unknown driver: $d" >&2; exit 1 ;;
+    esac
+  done
 fi
-for d in "${DRIVERS[@]}"; do
-  case "$d" in
-    mysql|postgres|sqlite) ;;
-    *) echo "Unknown driver: $d" >&2; exit 1 ;;
-  esac
-done
 
 # Resolve OS targets
 declare -a targets
@@ -169,22 +171,39 @@ mkdir -p release
 build_variant() {
   local driver="$1" target="$2"
   echo "============================="
-  echo "Building driver=$driver target=$target"
+  if [[ $COMBINED_ALL -eq 1 ]]; then
+    echo "Building combined(all drivers) target=$target"
+  else
+    echo "Building driver=$driver target=$target"
+  fi
   echo "============================="
 
-  local features_flag
-  case "$driver" in
-    mysql) features_flag="--no-default-features --features mysql" ;;
-    postgres) features_flag="--no-default-features --features postgres" ;;
-    sqlite) features_flag="--no-default-features --features sqlite" ;;
-  esac
+  local features_flag=""
+  local dst_driver_part="$driver"
+  if [[ $COMBINED_ALL -eq 1 ]]; then
+    # Use default features (all enabled in Cargo.toml)
+    features_flag="" # no --no-default-features
+    dst_driver_part="all"
+  else
+    case "$driver" in
+      mysql) features_flag="--no-default-features --features mysql" ;;
+      postgres) features_flag="--no-default-features --features postgres" ;;
+      sqlite) features_flag="--no-default-features --features sqlite" ;;
+    esac
+  fi
 
   echo "cargo build --release $features_flag --target $target"
   cargo build --release $features_flag --target "$target"
 
   local ext=""; [[ "$target" == *"windows"* ]] && ext=".exe"
   local src="target/$target/release/flx-nocode-api$ext"
-  local dst="release/flx-nocode-${driver}-$target$ext"
+  local dst
+  if [[ $COMBINED_ALL -eq 1 ]]; then
+    # Legacy naming without driver segment
+    dst="release/flx-nocode-$target$ext"
+  else
+    dst="release/flx-nocode-${dst_driver_part}-$target$ext"
+  fi
   if [[ -f "$src" ]]; then
     mv "$src" "$dst"
     echo "Artifact: $dst"
@@ -194,7 +213,7 @@ build_variant() {
   fi
 
   if [[ "$target" == *"apple-darwin"* ]]; then
-    sign_and_pkg "$driver" "$target" "$dst"
+    sign_and_pkg "$dst_driver_part" "$target" "$dst"
   fi
 }
 
