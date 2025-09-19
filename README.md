@@ -540,18 +540,22 @@ The `build.sh` script produces per-database, per-OS binaries with feature-gated 
 
 Usage:
 ```bash
-./build.sh [--db <list>] [--os <list>] [--help]
+./build.sh [--db <list>] [--os <list>] [--arch <list>] [--help]
 ```
 
 Flags:
 * `--db <list>`: Comma-separated database drivers: `mysql,postgres,sqlite,all` (default: `all`).
 * `--os <list>`: Comma-separated OS groups: `macos,windows,linux,all` (default: `all`).
+* `--arch <list>`: Comma-separated architectures: `x86_64,aarch64,all` (filters after OS expansion, default: `all`).
 * `--help`: Show help text.
 
 OS group expansion:
 * `macos` -> `x86_64-apple-darwin`, `aarch64-apple-darwin`
 * `windows` -> `x86_64-pc-windows-gnu`
-* `linux` -> `x86_64-unknown-linux-gnu`
+* `linux` -> `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`
+
+Architecture filtering (optional):
+After expanding OS groups you can further restrict with `--arch`.
 
 Examples:
 ```bash
@@ -563,6 +567,15 @@ Examples:
 
 # MySQL + SQLite only for macOS (both architectures)
 ./build.sh --db mysql,sqlite --os macos
+
+# PostgreSQL only for macOS on Apple Silicon
+./build.sh --db postgres --os macos --arch aarch64
+
+# All DBs for Linux only (both arches)
+./build.sh --db all --os linux
+
+# Only MySQL for Windows + Linux x86_64
+./build.sh --db mysql --os windows,linux --arch x86_64
 
 # PostgreSQL only for Linux
 ./build.sh --db postgres --os linux

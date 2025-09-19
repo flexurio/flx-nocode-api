@@ -31,13 +31,17 @@ Flags:
 OS Expansions:
   macos   => x86_64-apple-darwin,aarch64-apple-darwin
   windows => x86_64-pc-windows-gnu
-  linux   => x86_64-unknown-linux-gnu (add aarch64 if needed)
+  linux   => x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu
+
+Arch Filter:
+  After expansion you can restrict to `--arch x86_64` or `--arch aarch64`.
 
 Examples:
-  ./build.sh --db mysql --os macos
-  ./build.sh --db postgres,sqlite --os linux
-  ./build.sh --db all --os macos,windows
-  ./build.sh --db mysql,sqlite --os macos,linux
+  ./build.sh --db mysql --os macos --arch aarch64
+  ./build.sh --db postgres,sqlite --os linux --arch aarch64
+  ./build.sh --db all --os macos,windows --arch x86_64
+  ./build.sh --db mysql,sqlite --os macos,linux --arch x86_64
+
 
 Environment (macOS signing): APPLE_ID, APPLE_TEAM_ID, PASSWORD/APPLE_APP_SPECIFIC_PASSWORD,
   APPLE_IDENTITY, APPLE_IDENTITY_INS, PRIMARY_BUNDLE_ID, KEYCHAIN_PROFILE
@@ -87,7 +91,7 @@ expand_os() {
 }
 
 if [[ "$OS_LIST" == "all" ]]; then
-  targets=(x86_64-pc-windows-gnu x86_64-apple-darwin aarch64-apple-darwin x86_64-unknown-linux-gnu)
+  targets=(x86_64-pc-windows-gnu x86_64-apple-darwin aarch64-apple-darwin x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu)
 else
   IFS=',' read -r -a OS_ARR <<<"$OS_LIST"
   declare -A seen
@@ -102,6 +106,28 @@ else
       fi
     done
   done
+fi
+
+# Architecture filtering
+if [[ "$ARCH_LIST" != "all" ]]; then
+  IFS=',' read -r -a ARCH_ARR <<<"$ARCH_LIST"
+  declare -A arch_ok
+  for a in "${ARCH_ARR[@]}"; do
+    case "$a" in
+      x86_64|aarch64) arch_ok[$a]=1 ;;
+      *) echo "Unknown arch: $a" >&2; exit 1 ;;
+    esac
+  done
+  filtered=()
+  for tgt in "${targets[@]}"; do
+    if [[ "$tgt" =~ ^(x86_64|aarch64)- ]]; then
+      arch_prefix=${BASH_REMATCH[1]}
+      if [[ -n "${arch_ok[$arch_prefix]:-}" ]]; then
+        filtered+=("$tgt")
+      fi
+    fi
+  done
+  targets=(${filtered[@]})
 fi
 
 if [[ ${#targets[@]} -eq 0 ]]; then
