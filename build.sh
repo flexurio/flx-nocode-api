@@ -18,6 +18,21 @@ set -euo pipefail
 #   flx-nocode-<driver>-<target>.pkg
 # -----------------------------------------------------------------------------
 
+# NOTE: For security, DO NOT hardcode Apple credentials here. Export them in your shell or CI environment instead, e.g.:
+#   export APPLE_ID="you@example.com"
+#   export APPLE_TEAM_ID="TEAMID"
+#   export APPLE_APP_SPECIFIC_PASSWORD="xxxx-xxxx-xxxx-xxxx"
+#   export APPLE_IDENTITY="Developer ID Application: Company (TEAMID)"
+#   export APPLE_IDENTITY_INS="Developer ID Installer: Company (TEAMID)"
+#   export PRIMARY_BUNDLE_ID="com.company.app"
+#   export KEYCHAIN_PROFILE="notary-profile"
+
+if [ -z "${BASH_VERSION:-}" ]; then
+  echo "This script requires bash. Run as ./build.sh or bash build.sh (not sh)." >&2
+  exit 1
+fi
+
+
 show_help() {
   cat <<'EOF'
 Flexurio build script
@@ -37,6 +52,7 @@ Arch Filter:
   After expansion you can restrict to `--arch x86_64` or `--arch aarch64`.
 
 Examples:
+  ./build.sh --db mysql --os macos
   ./build.sh --db mysql --os macos --arch aarch64
   ./build.sh --db postgres,sqlite --os linux --arch aarch64
   ./build.sh --db all --os macos,windows --arch x86_64
@@ -94,15 +110,21 @@ if [[ "$OS_LIST" == "all" ]]; then
   targets=(x86_64-pc-windows-gnu x86_64-apple-darwin aarch64-apple-darwin x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu)
 else
   IFS=',' read -r -a OS_ARR <<<"$OS_LIST"
-  declare -A seen
   for osname in "${OS_ARR[@]}"; do
     case "$osname" in
       macos|windows|linux) ;;
       *) echo "Unknown OS: $osname" >&2; exit 1 ;;
     esac
     for tgt in $(expand_os "$osname"); do
-      if [[ -z "${seen[$tgt]:-}" ]]; then
-        targets+=("$tgt"); seen[$tgt]=1
+      # Deduplicate manually (portable across old bash)
+      already=0
+      for existing in "${targets[@]:-}"; do
+        if [[ "$existing" == "$tgt" ]]; then
+          already=1; break
+        fi
+      done
+      if [[ $already -eq 0 ]]; then
+        targets+=("$tgt")
       fi
     done
   done
@@ -111,20 +133,28 @@ fi
 # Architecture filtering
 if [[ "$ARCH_LIST" != "all" ]]; then
   IFS=',' read -r -a ARCH_ARR <<<"$ARCH_LIST"
-  declare -A arch_ok
+  # Validate arch names
   for a in "${ARCH_ARR[@]}"; do
     case "$a" in
-      x86_64|aarch64) arch_ok[$a]=1 ;;
+      x86_64|aarch64) ;;
       *) echo "Unknown arch: $a" >&2; exit 1 ;;
     esac
   done
   filtered=()
   for tgt in "${targets[@]}"; do
-    if [[ "$tgt" =~ ^(x86_64|aarch64)- ]]; then
-      arch_prefix=${BASH_REMATCH[1]}
-      if [[ -n "${arch_ok[$arch_prefix]:-}" ]]; then
-        filtered+=("$tgt")
+    case "$tgt" in
+      x86_64-*) arch_prefix="x86_64" ;;
+      aarch64-*) arch_prefix="aarch64" ;;
+      *) arch_prefix="" ;;
+    esac
+    keep=0
+    for a in "${ARCH_ARR[@]}"; do
+      if [[ "$a" == "$arch_prefix" ]]; then
+        keep=1; break
       fi
+    done
+    if [[ $keep -eq 1 ]]; then
+      filtered+=("$tgt")
     fi
   done
   targets=(${filtered[@]})

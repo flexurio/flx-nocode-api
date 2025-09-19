@@ -536,6 +536,8 @@ If you omit `--no-default-features`, all backends are included.
 
 The `build.sh` script produces per-database, per-OS binaries with feature-gated builds so each artifact contains only the selected backend. It also optionally signs/notarizes macOS binaries if Apple credentials are present.
 
+Note: Use `./build.sh` or `bash build.sh` (not `sh build.sh`). macOS ships an older Bash (3.2) that lacks associative arrays, so the script avoids them for portability. Export any Apple signing credentials in your shell or CI environment rather than editing the script.
+
 ### 19.1 New Flag Syntax
 
 Usage:
