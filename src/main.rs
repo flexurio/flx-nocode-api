@@ -4,6 +4,7 @@ use actix_multipart::Multipart;
 use actix_web::dev::{Service, ServiceRequest};
 use actix_web::web::Path;
 use actix_web::{web, App, HttpResponse, HttpServer};
+use actix_web::middleware::Condition;
 use auth::validate_token;
 use colored::Colorize;
 use dotenv::dotenv;
@@ -481,7 +482,7 @@ async fn main() -> std::io::Result<()> {
                     .ok()
                     .and_then(|s| s.parse::<usize>().ok())
                     .map(|mb| mb * 1024 * 1024)
-                    .unwrap_or(10 * 1024 * 1024),
+                    .unwrap_or(10 * 1024 * 1024), 
             ))
             .app_data({
                 let kb: usize = env::var("JSON_LIMIT_KB")
@@ -521,7 +522,12 @@ async fn main() -> std::io::Result<()> {
                     }
                 }
             })
-            .wrap(cors)
+            .wrap(Condition::new(
+                env::var("ALLOW_ANY_ORIGINS")
+                    .map(|v| matches!(v.to_lowercase().as_str(), "1" | "true" | "yes"))
+                    .unwrap_or(false),
+                cors,
+            ))
             .configure(|cfg: &mut web::ServiceConfig| {
                 let static_loc =
                     std::env::var("LOC_STATIC").unwrap_or_else(|_| "static".to_string());
