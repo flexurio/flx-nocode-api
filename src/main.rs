@@ -30,6 +30,8 @@ use database::mysql::MySqlRepo;
 use database::postgres::PostgresRepo;
 #[cfg(feature = "sqlite")]
 use database::sqlite::SqliteRepo;
+#[cfg(feature = "mssql")]
+use database::mssql::{MssqlRepo, connect_mssql};
 mod nocode;
 use nocode::{
     delete::delete, export::export, generate::create_table, get::select, import::import,
@@ -375,6 +377,35 @@ async fn main() -> std::io::Result<()> {
             Arc::new(SqliteRepo { pool })
             }
         }
+        "mssql" => {
+            #[cfg(not(feature = "mssql"))]
+            {
+                eprintln!("Feature 'mssql' not enabled at compile time");
+                return Err(std::io::Error::new(std::io::ErrorKind::Other, "mssql feature disabled"));
+            }
+            #[cfg(feature = "mssql")]
+            {
+            let url = match env::var("MSSQL_URL") {
+                Ok(url) => url,
+                Err(_) => {
+                    log_output(
+                        "ERROR",
+                        ".ENV",
+                        "MSSQL_URL",
+                        "Please set MSSQL_URL on .env file".to_string(),
+                        true,
+                    );
+                    exit(1);
+                }
+            };
+            let tcp_timeout = acquire_secs;
+            let client = connect_mssql(&url, tcp_timeout).await.map_err(|e| {
+                eprintln!("Failed to connect to MSSQL: {}", e);
+                std::io::Error::new(std::io::ErrorKind::ConnectionRefused, e)
+            })?;
+            Arc::new(MssqlRepo { client: std::sync::Arc::new(tokio::sync::Mutex::new(client)) })
+            }
+        }
         _ => {
             eprintln!("Unsupported DB_TYPE: {}", db_type);
             return Err(std::io::Error::new(
@@ -389,6 +420,7 @@ async fn main() -> std::io::Result<()> {
         "mysql" => include_str!("../db/mysql/datetime.sql").to_string(),
         "postgres" => include_str!("../db/postgres/datetime.sql").to_string(),
         "sqlite" => include_str!("../db/sqlite/datetime.sql").to_string(),
+        "mssql" => include_str!("../db/mssql/datetime.sql").to_string(),
         _ => "CURRENT_TIMESTAMP".to_string(),
     };
 
