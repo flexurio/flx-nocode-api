@@ -2,7 +2,7 @@ use anyhow::Result;
 use base64::Engine;
 use serde_json::{Map, Value};
 use std::sync::Arc;
-use tiberius::{AuthMethod, Client, Query, Row};
+use tiberius::{AuthMethod, Client, EncryptionLevel, Query, Row};
 use tokio_util::compat::TokioAsyncWriteCompatExt;
 
 use super::state::{DbParam, DbRepository, DbTransaction};
@@ -19,6 +19,73 @@ fn convert_placeholders_to_mssql(sql: &str) -> String {
         } else {
             out.push(ch);
         }
+    }
+    out
+}
+
+// Replace bare TRUE/FALSE literals (common in other SQL dialects) with MSSQL-friendly forms.
+// This scan avoids changing text inside single-quoted string literals.
+fn normalize_mssql_booleans(sql: &str) -> String {
+    let bytes = sql.as_bytes();
+    let mut out = String::with_capacity(sql.len());
+    let mut i = 0;
+    let mut in_str = false;
+    while i < bytes.len() {
+        let c = bytes[i] as char;
+        if c == '\'' {
+            // handle escaped '' inside strings
+            out.push(c);
+            if in_str {
+                if i + 1 < bytes.len() && bytes[i + 1] as char == '\'' {
+                    // escaped quote inside string, keep in string
+                    out.push('\'');
+                    i += 2;
+                    continue;
+                } else {
+                    in_str = false;
+                    i += 1;
+                    continue;
+                }
+            } else {
+                in_str = true;
+                i += 1;
+                continue;
+            }
+        }
+        if !in_str {
+            // Try TRUE/FALSE tokens with word boundaries
+            // Check for TRUE
+            if i + 4 <= bytes.len() {
+                let token = &sql[i..i + 4];
+                if token.eq_ignore_ascii_case("true") {
+                    // ensure word boundary before and after
+                    let prev_ok = i == 0 || !sql.as_bytes()[i - 1].is_ascii_alphanumeric();
+                    let next_ok = i + 4 == bytes.len()
+                        || !sql.as_bytes()[i + 4].is_ascii_alphanumeric();
+                    if prev_ok && next_ok {
+                        out.push_str("CAST(1 AS bit)");
+                        i += 4;
+                        continue;
+                    }
+                }
+            }
+            // Check for FALSE
+            if i + 5 <= bytes.len() {
+                let token = &sql[i..i + 5];
+                if token.eq_ignore_ascii_case("false") {
+                    let prev_ok = i == 0 || !sql.as_bytes()[i - 1].is_ascii_alphanumeric();
+                    let next_ok = i + 5 == bytes.len()
+                        || !sql.as_bytes()[i + 5].is_ascii_alphanumeric();
+                    if prev_ok && next_ok {
+                        out.push_str("CAST(0 AS bit)");
+                        i += 5;
+                        continue;
+                    }
+                }
+            }
+        }
+        out.push(c);
+        i += 1;
     }
     out
 }
@@ -62,14 +129,16 @@ fn mssql_row_to_json(row: &Row) -> Value {
 impl DbRepository for MssqlRepo {
     async fn query(&self, sql: &str) -> Result<Vec<Value>, anyhow::Error> {
         let mut client = self.client.lock().await;
-        let stream = client.simple_query(sql).await?;
+        let norm = normalize_mssql_booleans(sql);
+        let stream = client.simple_query(&norm).await?;
         let rows: Vec<Row> = stream.into_first_result().await?;
         Ok(rows.iter().map(mssql_row_to_json).collect())
     }
 
     async fn get_total_rows(&self, sql: &str) -> Result<i32, anyhow::Error> {
         let mut client = self.client.lock().await;
-        let stream = client.simple_query(sql).await?;
+        let norm = normalize_mssql_booleans(sql);
+        let stream = client.simple_query(&norm).await?;
         let rows: Vec<Row> = stream.into_first_result().await?;
         // Expect single row single column
         let first = rows.first().ok_or_else(|| anyhow::anyhow!("No rows"))?;
@@ -80,7 +149,8 @@ impl DbRepository for MssqlRepo {
     async fn query_with_params(&self, sql: &str, params: Vec<DbParam>) -> Result<Vec<Value>, anyhow::Error> {
         let mut client = self.client.lock().await;
         let converted = convert_placeholders_to_mssql(sql);
-        let mut q = Query::new(converted);
+        let norm = normalize_mssql_booleans(&converted);
+        let mut q = Query::new(norm);
         for p in params {
             match p {
                 DbParam::I64(v) => { q.bind(v); },
@@ -98,7 +168,8 @@ impl DbRepository for MssqlRepo {
     async fn get_total_rows_with_params(&self, sql: &str, params: Vec<DbParam>) -> Result<i32, anyhow::Error> {
         let mut client = self.client.lock().await;
         let converted = convert_placeholders_to_mssql(sql);
-        let mut q = Query::new(converted);
+        let norm = normalize_mssql_booleans(&converted);
+        let mut q = Query::new(norm);
         for p in params {
             match p {
                 DbParam::I64(v) => { q.bind(v); },
@@ -139,7 +210,8 @@ impl DbTransaction for MssqlTransaction {
     async fn query_with_params(&mut self, sql: &str, params: Vec<DbParam>) -> Result<Vec<Value>, anyhow::Error> {
         let mut client = self.client.lock().await;
         let converted = convert_placeholders_to_mssql(sql);
-        let mut q = Query::new(converted);
+        let norm = normalize_mssql_booleans(&converted);
+        let mut q = Query::new(norm);
         for p in params {
             match p {
                 DbParam::I64(v) => { q.bind(v); },
@@ -176,6 +248,37 @@ pub async fn connect_mssql(url: &str, timeout_secs: u64) -> Result<Client<tokio_
     let database = parsed.path().trim_start_matches('/');
     let username = parsed.username();
     let password = parsed.password().unwrap_or("");
+    // Optional toggles via URL query or env vars
+    let mut trust_cert_flag = false;
+    let mut enc_level: Option<EncryptionLevel> = None;
+    for (k, v) in parsed.query_pairs() {
+        match k.as_ref() {
+            "trust_cert" | "trustservercertificate" => {
+                let vv = v.to_ascii_lowercase();
+                trust_cert_flag = matches!(vv.as_str(), "1" | "true" | "yes");
+            }
+            "encrypt" | "encryption" => {
+                let vv = v.to_ascii_lowercase();
+                enc_level = Some(match vv.as_str() {
+                    "off" => EncryptionLevel::Off,
+                    "not_supported" | "notsupported" => EncryptionLevel::NotSupported,
+                    _ => EncryptionLevel::Required,
+                });
+            }
+            _ => {}
+        }
+    }
+    // Env overrides
+    if std::env::var("MSSQL_TRUST_CERT").map(|s| matches!(s.to_lowercase().as_str(), "1"|"true"|"yes")).unwrap_or(false) {
+        trust_cert_flag = true;
+    }
+    if let Ok(s) = std::env::var("MSSQL_ENCRYPTION") {
+        enc_level = Some(match s.to_lowercase().as_str() {
+            "off" => EncryptionLevel::Off,
+            "not_supported" | "notsupported" => EncryptionLevel::NotSupported,
+            _ => EncryptionLevel::Required,
+        });
+    }
 
     let addr = format!("{}:{}", host, port);
     let tcp = tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), tokio::net::TcpStream::connect(addr)).await??;
@@ -185,8 +288,12 @@ pub async fn connect_mssql(url: &str, timeout_secs: u64) -> Result<Client<tokio_
     config.port(port);
     if !database.is_empty() { config.database(database); }
     config.authentication(AuthMethod::sql_server(username.to_string(), password.to_string()));
-    // Use TLS via rustls feature
-    config.encryption(tiberius::EncryptionLevel::Required);
+    // TLS
+    config.encryption(enc_level.unwrap_or(EncryptionLevel::Required));
+    if trust_cert_flag {
+        // Equivalent to TrustServerCertificate=Yes in connection strings
+        config.trust_cert();
+    }
 
     let client = tiberius::Client::connect(config, tcp.compat_write()).await?;
     Ok(client)

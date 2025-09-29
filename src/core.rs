@@ -285,58 +285,35 @@ pub async fn generate_users(state: Data<AppState>) -> impl Responder {
         .expect("Failed to read SQL file")
         .replace("\"", "");
 
-    log_output(
-        "QUERY",
-        "POST",
-        "generate/table/flx_users",
-        s_sql.clone(),
-        true,
-    );
 
     // execute sql
-    match &state.db.query(&s_sql).await {
-        Ok(_) => HttpResponse::Ok().json(WebResponse {
-            success: true,
-            message: "Generate Table users".to_string(),
-            total_data: 1,
-            data: Value::Null,
-        }),
-        Err(err) => HttpResponse::InternalServerError().json(WebResponse {
-            success: false,
-            message: format!("Error NCO-POST: {}", err),
-            total_data: 0,
-            data: Value::Null,
-        }),
-    };
+    let result = &state.db.query(&s_sql).await;
+    if result.is_err() {
+        log_output(
+            "ERROR QUERY",
+            "POST",
+            "generate/table/flx_users",
+            s_sql.clone() + " ~ ERROR : " + result.as_ref().err().unwrap().to_string().as_str(),
+            true,
+        );
+    }
 
     // read sql from file db/mysql/create-flx_users.sql
     s_sql = std::fs::read_to_string(format!("db/{}/create-flx_roles.sql", state.db_type))
         .expect("Failed to read SQL file")
         .replace("\"", "");
 
-    log_output(
-        "QUERY",
-        "POST",
-        "generate/table/flx_roles",
-        s_sql.clone(),
-        true,
-    );
-
     // execute sql
-    match &state.db.query(&s_sql).await {
-        Ok(_) => HttpResponse::Ok().json(WebResponse {
-            success: true,
-            message: "Generate Table users".to_string(),
-            total_data: 1,
-            data: Value::Null,
-        }),
-        Err(err) => HttpResponse::InternalServerError().json(WebResponse {
-            success: false,
-            message: format!("Error NCO-POST: {}", err),
-            total_data: 0,
-            data: Value::Null,
-        }),
-    };
+    let result = &state.db.query(&s_sql).await;
+    if result.is_err() {
+        log_output(
+            "ERROR QUERY",
+            "POST",
+            "generate/table/flx_roles",
+            s_sql.clone() + " ~ ERROR : " + result.as_ref().err().unwrap().to_string().as_str(),
+            true,
+        );
+    }
 
     // guery to flx_users where name = "Flexurio Admin"
     // read sql from file db/mysql/create-flx_users.sql
@@ -353,7 +330,16 @@ pub async fn generate_users(state: Data<AppState>) -> impl Responder {
                 row[0].get("id").and_then(|v| v.as_i64()).unwrap_or(0)
             }
         }
-        Err(_) => 0,
+        Err(err) => {
+            log_output(
+                "ERROR QUERY",
+                "POST",
+                "generate/table/select-flx_users-admin.sql",
+                s_sql.clone() + " ~ ERROR : " + &err.to_string(),
+                true,
+            );
+            0
+        },
     };
 
     log_output("QUERY", "POST", "generate/table/users", s_sql.clone(), true);
@@ -374,23 +360,16 @@ pub async fn generate_users(state: Data<AppState>) -> impl Responder {
             .replace("\"", "")
             .replace("{{password}}", &encrypt_password);
 
-        log_output("EXEC", "POST", "generate/table/users", s_sql.clone(), true);
-
-        // execute sql
-        match &state.db.query(&s_sql).await {
-            Ok(_) => HttpResponse::Ok().json(WebResponse {
-                success: true,
-                message: "Generate Table users".to_string(),
-                total_data: 1,
-                data: Value::Null,
-            }),
-            Err(err) => HttpResponse::InternalServerError().json(WebResponse {
-                success: false,
-                message: format!("Error NCO-POST: {}", err),
-                total_data: 0,
-                data: Value::Null,
-            }),
-        };
+        let result = &state.db.query(&s_sql).await;
+        if result.is_err() {
+            log_output(
+                "ERROR QUERY",
+                "POST",
+                "generate/table/insert-flx_users-admin.sql",
+                s_sql.clone() + " ~ ERROR : " + result.as_ref().err().unwrap().to_string().as_str(),
+                true,
+            );
+        }
 
         // insert into test.users (id, email, phone, role, password, name, photo, email_verified, created_at, updated_at, enabled)
         s_sql = std::fs::read_to_string(format!("db/{}/insert-flx_roles.sql", state.db_type))

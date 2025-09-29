@@ -56,7 +56,7 @@ calamine = { version = "0.30", default-features = false }
 rust_xlsxwriter = "0.79"
 
 [features]
-default = ["mysql", "postgres", "sqlite"]
+default = ["mysql", "postgres", "sqlite", "mssql"]
 mysql = ["sqlx/mysql", "sqlx/chrono"]
 postgres = ["sqlx/postgres", "sqlx/chrono"]
 sqlite = ["sqlx/sqlite", "sqlx/chrono"]

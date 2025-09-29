@@ -6,11 +6,7 @@ use serde_json::Value;
 use std::fmt::Write;
 
 use crate::{
-    auth::{check_access, get_user_info_from_token},
-    helpers::filter_table_schema,
-    log::log_output,
-    model::{TableSchema, WebResponse},
-    AppState,
+    AppState, auth::{check_access, get_user_info_from_token}, helpers::filter_table_schema, log::{self, log_output}, model::{TableSchema, WebResponse}
 };
 use std::sync::Arc;
 
@@ -58,13 +54,6 @@ pub async fn create_table(
     let (sql_create_table, sql_create_index) = generate_table(state.db_type.clone(), &table_schema);
     let mut err_message = String::new();
 
-    log_output(
-        "QUERY",
-        "GENERATE TABLE",
-        route.clone().as_str(),
-        sql_create_table.clone(),
-        true,
-    );
 
     // execute sql_create_table
     match &state.db.query(&sql_create_table).await {
@@ -76,6 +65,15 @@ pub async fn create_table(
                 "Failed to create table {} with error : {}",
                 table_schema.table, err
             );
+
+            log_output(
+                "QUERY",
+                "GENERATE TABLE",
+                route.clone().as_str(),
+                sql_create_table.clone() + " ~ ERROR : " + &error_message,
+                true,
+            );
+
             err_message = error_message;
         }
     }
@@ -83,13 +81,6 @@ pub async fn create_table(
     // execute sql_create_index
     // loop every sql_create_index
     for sql_create_index in sql_create_index.iter() {
-        log_output(
-            "QUERY",
-            "GENERATE INDEX",
-            route.clone().as_str(),
-            sql_create_index.clone(),
-            true,
-        );
 
         match &state.db.query(sql_create_index).await {
             Ok(_) => {
@@ -101,6 +92,15 @@ pub async fn create_table(
                     Failed to create index {} with error : {}",
                     err_message, table_schema.table, err
                 );
+
+                log_output(
+                    "QUERY",
+                    "GENERATE INDEX",
+                    route.clone().as_str(),
+                    sql_create_index.clone() + " ~ ERROR : " + &err_message,
+                    true,
+                );
+
             }
         }
     }
@@ -123,33 +123,70 @@ pub async fn create_table(
 }
 
 pub fn generate_table(db_type: String, data: &TableSchema) -> (String, Vec<String>) {
-    let mut create_table_sql = format!("CREATE TABLE IF NOT EXISTS {} (\n", data.table);
+    // SQL Server (MSSQL) doesn't support "CREATE TABLE IF NOT EXISTS".
+    // Use OBJECT_ID guard for MSSQL, keep original for others.
+    let mut create_table_sql = if db_type == "mssql" {
+        format!(
+            "IF OBJECT_ID(N'{}', N'U') IS NULL\nBEGIN\nCREATE TABLE {} (\n",
+            data.table, data.table
+        )
+    } else {
+        format!("CREATE TABLE IF NOT EXISTS {} (\n", data.table)
+    };
 
     for col in &data.columns {
+        // DB-specific type mapping
+        let mut mapped_type = col.type_data.clone();
+        if db_type == "mssql" {
+            // In SQL Server, TIMESTAMP means ROWVERSION (binary) and only one per table.
+            // Map generic 'timestamp' to a datetime type instead.
+            if col.type_data.eq_ignore_ascii_case("timestamp") {
+                mapped_type = "datetime".to_string();
+            }
+        }
         let mut auto_increment = "".to_string();
         if data.primary_key.columns.len() == 1 && data.primary_key.columns[0] == col.name {
             if db_type == "mysql" {
                 auto_increment = " auto_increment".to_string();
                 create_table_sql.push_str(&format!(
                     "  {} {}{},\n",
-                    col.name, col.type_data, auto_increment
+                    col.name, mapped_type, auto_increment
                 ));
             } else if db_type == "postgres" {
                 auto_increment = " bigserial".to_string();
                 create_table_sql.push_str(&format!("  {} {},\n", col.name, auto_increment));
+            } else if db_type == "mssql" {
+                // Use IDENTITY for auto-increment in MSSQL only when the PK type supports it
+                let lt_clean = mapped_type.to_lowercase().replace(' ', "");
+                let mut identity_ok = matches!(lt_clean.as_str(), "int" | "bigint" | "smallint" | "tinyint");
+                if !identity_ok && (lt_clean.starts_with("decimal(") || lt_clean.starts_with("numeric(")) {
+                    // allow decimal/numeric with scale 0 e.g., decimal(18,0)
+                    if lt_clean.ends_with(",0)") {
+                        identity_ok = true;
+                    }
+                }
+                if identity_ok {
+                    auto_increment = " IDENTITY(1,1)".to_string();
+                } else {
+                    auto_increment.clear();
+                }
+                create_table_sql.push_str(&format!(
+                    "  {} {}{},\n",
+                    col.name, mapped_type, auto_increment
+                ));
             } else if db_type == "sqlite" {
                 auto_increment = " INTEGER PRIMARY KEY AUTOINCREMENT".to_string();
                 create_table_sql.push_str(&format!("  {} {},\n", col.name, auto_increment));
             } else {
                 create_table_sql.push_str(&format!(
                     "  {} {}{},\n",
-                    col.name, col.type_data, auto_increment
+                    col.name, mapped_type, auto_increment
                 ));
             }
         } else {
             create_table_sql.push_str(&format!(
                 "  {} {}{},\n",
-                col.name, col.type_data, auto_increment
+                col.name, mapped_type, auto_increment
             ));
         }
     }
@@ -161,11 +198,20 @@ pub fn generate_table(db_type: String, data: &TableSchema) -> (String, Vec<Strin
         }
         create_table_sql.push_str(");\n");
     } else {
-        let _ = writeln!(
-            create_table_sql,
-            "  PRIMARY KEY ({})\n);",
-            data.primary_key.columns.join(", ")
-        );
+        // Close statement, handling MSSQL BEGIN..END wrapper
+        if db_type == "mssql" {
+            let _ = writeln!(
+                create_table_sql,
+                "  PRIMARY KEY ({})\n);\nEND",
+                data.primary_key.columns.join(", ")
+            );
+        } else {
+            let _ = writeln!(
+                create_table_sql,
+                "  PRIMARY KEY ({})\n);",
+                data.primary_key.columns.join(", ")
+            );
+        }
     }
 
     // create variable to store multipe query create index Vec<String>
@@ -186,14 +232,44 @@ pub fn generate_table(db_type: String, data: &TableSchema) -> (String, Vec<Strin
         } else {
             format!("{}_{}", data.table, idx.name)
         };
-        create_index_sql_vec.push(format!(
-            "CREATE {}INDEX {} ON {} ({});",
-            unique,
-            index_name,
-            data.table,
-            idx.columns.join(", ")
-        ));
+        if db_type == "mssql" {
+            // Guard for MSSQL: only create index if it doesn't exist
+            create_index_sql_vec.push(format!(
+                "IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'{}' AND object_id = OBJECT_ID(N'{}'))\nBEGIN\nCREATE {}INDEX {} ON {} ({});\nEND",
+                index_name,
+                data.table,
+                unique,
+                index_name,
+                data.table,
+                idx.columns.join(", ")
+            ));
+        } else {
+            create_index_sql_vec.push(format!(
+                "CREATE {}INDEX {} ON {} ({});",
+                unique,
+                index_name,
+                data.table,
+                idx.columns.join(", ")
+            ));
+        }
     }
+
+    // print log for create_table_sql
+    log_output(
+        "QUERY",
+        "GENERATE TABLE",
+        data.table.as_str(),
+        create_table_sql.clone(),
+        false,
+    );
+
+    log_output(
+        "QUERY",
+        "GENERATE INDEX",
+        data.table.as_str(),
+        create_index_sql_vec.join("\n"),
+        false,
+    );
 
     (create_table_sql, create_index_sql_vec)
 }

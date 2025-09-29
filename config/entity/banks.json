@@ -26,7 +26,7 @@
                         "auto_increment":false,
                         "nullable":false,
                         "function":"",
-                        "type_data":"int",
+                        "type_data":"varchar(15)",
                         "encrypt":false
                 },
                 {
