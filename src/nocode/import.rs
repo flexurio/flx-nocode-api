@@ -55,19 +55,22 @@ pub async fn import(
         }
     }
 
-    // Rate-limit
+    // Rate-limit (allow disable with 0 or -1)
     let ip_key = get_client_ip(&req);
-    let limit: u32 = std::env::var("RATE_LIMIT_MUTATE_PER_SEC")
+    let limit_i64: i64 = std::env::var("RATE_LIMIT_MUTATE_PER_SEC")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(10);
-    if !RL_WINDOW_MUTATE.check_and_increment(&format!("import:{}:{}", route, ip_key), limit) {
-        return HttpResponse::TooManyRequests().json(WebResponse {
-            success: false,
-            message: "Too many requests".into(),
-            total_data: 0,
-            data: Value::Null,
-        });
+    if limit_i64 > 0 {
+        let limit = (limit_i64.min(u32::MAX as i64)) as u32;
+        if !RL_WINDOW_MUTATE.check_and_increment(&format!("import:{}:{}", route, ip_key), limit) {
+            return HttpResponse::TooManyRequests().json(WebResponse {
+                success: false,
+                message: "Too many requests".into(),
+                total_data: 0,
+                data: Value::Null,
+            });
+        }
     }
 
     let table_schema: TableSchema = filter_table_schema(table_schemas, route.clone()).await;

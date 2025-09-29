@@ -48,23 +48,22 @@ pub async fn process_sp(
             });
         }
     }
-    // Rate-limit
-    let ip_key = req
-        .clone()
-        .peer_addr()
-        .map(|a| a.ip().to_string())
-        .unwrap_or_else(|| "unknown".into());
-    let limit: u32 = std::env::var("RATE_LIMIT_MUTATE_PER_SEC")
+    // Rate-limit (allow disable with 0 or -1)
+    let ip_key = crate::helpers::get_client_ip(&req);
+    let limit_i64: i64 = std::env::var("RATE_LIMIT_MUTATE_PER_SEC")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(10);
-    if !RL_WINDOW_MUTATE.check_and_increment(&format!("patch:{}:{}", route, ip_key), limit) {
-        return HttpResponse::TooManyRequests().json(WebResponse {
-            success: false,
-            message: "Too many requests".into(),
-            total_data: 0,
-            data: Value::Null,
-        });
+    if limit_i64 > 0 {
+        let limit = (limit_i64.min(u32::MAX as i64)) as u32;
+        if !RL_WINDOW_MUTATE.check_and_increment(&format!("patch:{}:{}", route, ip_key), limit) {
+            return HttpResponse::TooManyRequests().json(WebResponse {
+                success: false,
+                message: "Too many requests".into(),
+                total_data: 0,
+                data: Value::Null,
+            });
+        }
     }
 
     // get parameters value only allowed from table_schema.trace.parameters

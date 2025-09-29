@@ -25,11 +25,14 @@ pub async fn select(
 ) -> impl Responder {
     // Per-IP GET rate limit per second
     let ip_key = get_client_ip(&req);
-    let get_limit: u32 = std::env::var("RATE_LIMIT_GET_PER_SEC")
+    let get_limit_i64: i64 = std::env::var("RATE_LIMIT_GET_PER_SEC")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(20);
-    if !RL_WINDOW_GET.check_and_increment(&format!("get:{}:{}", route, ip_key), get_limit) {
+    if get_limit_i64 > 0
+        && !RL_WINDOW_GET
+            .check_and_increment(&format!("get:{}:{}", route, ip_key), get_limit_i64 as u32)
+    {
         return HttpResponse::TooManyRequests().json(WebResponse {
             success: false,
             message: "Too many requests".to_string(),
@@ -64,9 +67,10 @@ pub async fn select(
         }
 
         // Per-user GET rate limit per second
-        if !claims.id.is_empty()
+        if get_limit_i64 > 0
+            && !claims.id.is_empty()
             && !RL_WINDOW_GET
-                .check_and_increment(&format!("get:{}:user:{}", route, claims.id), get_limit)
+                .check_and_increment(&format!("get:{}:user:{}", route, claims.id), get_limit_i64 as u32)
         {
             return HttpResponse::TooManyRequests().json(WebResponse {
                 success: false,

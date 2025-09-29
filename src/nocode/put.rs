@@ -70,11 +70,14 @@ pub async fn update(
     };
     // Rate-limit per IP
     let ip_key = get_client_ip(&req);
-    let limit: u32 = std::env::var("RATE_LIMIT_MUTATE_PER_SEC")
+    let limit_i64: i64 = std::env::var("RATE_LIMIT_MUTATE_PER_SEC")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(10);
-    if !RL_WINDOW_MUTATE.check_and_increment(&format!("put:{}:{}", route, ip_key), limit) {
+    if limit_i64 > 0
+        && !RL_WINDOW_MUTATE
+            .check_and_increment(&format!("put:{}:{}", route, ip_key), limit_i64 as u32)
+    {
         return HttpResponse::TooManyRequests().json(WebResponse {
             success: false,
             message: "Too many requests".into(),
@@ -85,7 +88,11 @@ pub async fn update(
     // Per-user limit (for non-public routes only)
     if !state.route_publics.contains(&route) {
         let user_key = claims.id.clone();
-        if !user_key.is_empty() && !RL_WINDOW_MUTATE.check_and_increment(&format!("put:{}:user:{}", route, user_key), limit) {
+        if limit_i64 > 0
+            && !user_key.is_empty()
+            && !RL_WINDOW_MUTATE
+                .check_and_increment(&format!("put:{}:user:{}", route, user_key), limit_i64 as u32)
+        {
             return HttpResponse::TooManyRequests().json(WebResponse {
                 success: false,
                 message: "Too many requests".into(),

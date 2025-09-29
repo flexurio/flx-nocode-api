@@ -70,11 +70,14 @@ pub async fn insert(
 
     // Rate-limit per IP for mutations
     let ip_key = get_client_ip(&req);
-    let limit: u32 = std::env::var("RATE_LIMIT_MUTATE_PER_SEC")
+    let limit_i64: i64 = std::env::var("RATE_LIMIT_MUTATE_PER_SEC")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(10);
-    if !RL_WINDOW_MUTATE.check_and_increment(&format!("post:{}:{}", route, ip_key), limit) {
+    if limit_i64 > 0
+        && !RL_WINDOW_MUTATE
+            .check_and_increment(&format!("post:{}:{}", route, ip_key), limit_i64 as u32)
+    {
         return HttpResponse::TooManyRequests().json(WebResponse {
             success: false,
             message: "Too many requests".into(),
@@ -85,7 +88,11 @@ pub async fn insert(
     // Per-user limit (for non-public routes only)
     if !state.route_publics.contains(&route) {
         let user_key = claims.id.clone();
-        if !user_key.is_empty() && !RL_WINDOW_MUTATE.check_and_increment(&format!("post:{}:user:{}", route, user_key), limit) {
+        if limit_i64 > 0
+            && !user_key.is_empty()
+            && !RL_WINDOW_MUTATE
+                .check_and_increment(&format!("post:{}:user:{}", route, user_key), limit_i64 as u32)
+        {
             return HttpResponse::TooManyRequests().json(WebResponse {
                 success: false,
                 message: "Too many requests".into(),
@@ -105,6 +112,27 @@ pub async fn insert(
             total_data: 0,
             data: Value::Null,
         });
+    }
+
+    // Validate required fields (non-nullable columns listed in post.columns)
+    for post_col in &table_schema.post.columns {
+        if let Some(col_def) = table_schema.columns.iter().find(|c| c.name == *post_col) {
+            if !col_def.nullable && !col_def.auto_increment {
+                let present = body
+                    .get(post_col)
+                    .map(|v| v.to_string().replace('"', ""))
+                    .map(|s| !s.trim().is_empty())
+                    .unwrap_or(false);
+                if !present {
+                    return HttpResponse::BadRequest().json(WebResponse {
+                        success: false,
+                        message: format!("Missing required field: {}", post_col),
+                        total_data: 0,
+                        data: Value::Null,
+                    });
+                }
+            }
+        }
     }
 
     let skip_columns: HashSet<&str> = [
@@ -228,7 +256,7 @@ pub async fn insert(
                             format!("Invalid foreign key value: {}", value),
                             false,
                         );
-                        return HttpResponse::InternalServerError().json(WebResponse {
+                        return HttpResponse::BadRequest().json(WebResponse {
                             success: false,
                             message: format!(
                                 "Invalid foreign key value: {} from table {}",
@@ -248,9 +276,7 @@ pub async fn insert(
                 }
             }
 
-            if value.is_empty() {
-                value = "0".into();
-            }
+            // Do not force default "0"; required fields checked earlier. Keep empty if optional.
 
             // push placeholder and param by type
             if col.type_data.contains("int") || col.type_data.contains("float") {

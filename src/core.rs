@@ -23,19 +23,22 @@ use crate::{
 };
 
 pub async fn login(state: web::Data<AppState>, req: actix_web::HttpRequest) -> impl Responder {
-    // Rate limit by IP (fixed window)
+    // Rate limit by IP (fixed window) — allow disabling with 0 or -1
     let ip_key = get_client_ip(&req);
-    let limit: u32 = std::env::var("RATE_LIMIT_LOGIN_PER_MIN")
+    let limit_i64: i64 = std::env::var("RATE_LIMIT_LOGIN_PER_MIN")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(10);
-    if !RL_WINDOW_LOGIN.check_and_increment(&format!("login:{}", ip_key), limit) {
-        return HttpResponse::TooManyRequests().json(WebResponse {
-            success: false,
-            message: "Too many login attempts".into(),
-            total_data: 0,
-            data: Value::Null,
-        });
+    if limit_i64 > 0 {
+        let limit = (limit_i64.min(u32::MAX as i64)) as u32;
+        if !RL_WINDOW_LOGIN.check_and_increment(&format!("login:{}", ip_key), limit) {
+            return HttpResponse::TooManyRequests().json(WebResponse {
+                success: false,
+                message: "Too many login attempts".into(),
+                total_data: 0,
+                data: Value::Null,
+            });
+        }
     }
     // Parse Authorization Basic header safely
     let Some(hdr) = req.headers().get("Authorization") else {
@@ -134,29 +137,35 @@ pub async fn login(state: web::Data<AppState>, req: actix_web::HttpRequest) -> i
     let decrypt_password = decrypt(state.encrypt_key.clone(), password_db);
 
     if pass_in != decrypt_password {
-        // Apply per-user and per-IP failure rate limits within a 5-minute window
-        let base_per_min: u32 = std::env::var("RATE_LIMIT_LOGIN_PER_MIN")
+        // Apply per-user and per-IP failure rate limits within a 5-minute window.
+        // Any of these env values <= 0 disables that specific limiter.
+        let base_per_min_i64: i64 = std::env::var("RATE_LIMIT_LOGIN_PER_MIN")
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(3);
-        // Conservative defaults: at least 5 failures per 5 minutes per user, and 20 per IP
-        // Override-able via env:
-        //  - RATE_LIMIT_LOGIN_FAIL_USER: failures per 5 minutes per user
-        //  - RATE_LIMIT_LOGIN_FAIL_IP: failures per 5 minutes per IP
-        let fail_user_limit: u32 = std::env::var("RATE_LIMIT_LOGIN_FAIL_USER")
+        // Defaults if env not set: user=5 per 5 min, ip=20 per 5 min
+        let fail_user_limit_i64: i64 = std::env::var("RATE_LIMIT_LOGIN_FAIL_USER")
             .ok()
             .and_then(|s| s.parse().ok())
-            .unwrap_or_else(|| std::cmp::max(5, base_per_min));
-        let fail_ip_limit: u32 = std::env::var("RATE_LIMIT_LOGIN_FAIL_IP")
+            .unwrap_or_else(|| std::cmp::max(5_i64, base_per_min_i64));
+        let fail_ip_limit_i64: i64 = std::env::var("RATE_LIMIT_LOGIN_FAIL_IP")
             .ok()
             .and_then(|s| s.parse().ok())
-            .unwrap_or_else(|| std::cmp::max(20, base_per_min.saturating_mul(5)));
+            .unwrap_or_else(|| std::cmp::max(20_i64, base_per_min_i64.saturating_mul(5)));
 
+        let mut over_user = false;
+        let mut over_ip = false;
         let user_key = email.to_lowercase();
-        let over_user = !RL_WINDOW_LOGIN_FAIL
-            .check_and_increment(&format!("loginfail:user:{}", user_key), fail_user_limit);
-        let over_ip = !RL_WINDOW_LOGIN_FAIL
-            .check_and_increment(&format!("loginfail:ip:{}", ip_key), fail_ip_limit);
+        if fail_user_limit_i64 > 0 {
+            let limit = (fail_user_limit_i64.min(u32::MAX as i64)) as u32;
+            over_user = !RL_WINDOW_LOGIN_FAIL
+                .check_and_increment(&format!("loginfail:user:{}", user_key), limit);
+        }
+        if fail_ip_limit_i64 > 0 {
+            let limit = (fail_ip_limit_i64.min(u32::MAX as i64)) as u32;
+            over_ip = !RL_WINDOW_LOGIN_FAIL
+                .check_and_increment(&format!("loginfail:ip:{}", ip_key), limit);
+        }
 
         if over_user || over_ip {
             return HttpResponse::TooManyRequests().json(WebResponse {
