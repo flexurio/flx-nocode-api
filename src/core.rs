@@ -140,8 +140,17 @@ pub async fn login(state: web::Data<AppState>, req: actix_web::HttpRequest) -> i
             .and_then(|s| s.parse().ok())
             .unwrap_or(3);
         // Conservative defaults: at least 5 failures per 5 minutes per user, and 20 per IP
-        let fail_user_limit: u32 = std::cmp::max(5, base_per_min);
-        let fail_ip_limit: u32 = std::cmp::max(20, base_per_min.saturating_mul(5));
+        // Override-able via env:
+        //  - RATE_LIMIT_LOGIN_FAIL_USER: failures per 5 minutes per user
+        //  - RATE_LIMIT_LOGIN_FAIL_IP: failures per 5 minutes per IP
+        let fail_user_limit: u32 = std::env::var("RATE_LIMIT_LOGIN_FAIL_USER")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or_else(|| std::cmp::max(5, base_per_min));
+        let fail_ip_limit: u32 = std::env::var("RATE_LIMIT_LOGIN_FAIL_IP")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or_else(|| std::cmp::max(20, base_per_min.saturating_mul(5)));
 
         let user_key = email.to_lowercase();
         let over_user = !RL_WINDOW_LOGIN_FAIL

@@ -40,3 +40,7 @@ UPLOAD_MAX_FIELDS=200
 
 WHITE_LIST_IP=192.168.0.0/24
 RATE_LIMIT_GET_PER_SEC=20
+
+# Optional: login failure limits over 5-minute window (defaults apply if unset)
+RATE_LIMIT_LOGIN_FAIL_USER=5
+RATE_LIMIT_LOGIN_FAIL_IP=20
