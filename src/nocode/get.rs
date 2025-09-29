@@ -62,6 +62,19 @@ pub async fn select(
                 data: Value::Null,
             });
         }
+
+        // Per-user GET rate limit per second
+        if !claims.id.is_empty()
+            && !RL_WINDOW_GET
+                .check_and_increment(&format!("get:{}:user:{}", route, claims.id), get_limit)
+        {
+            return HttpResponse::TooManyRequests().json(WebResponse {
+                success: false,
+                message: "Too many requests".to_string(),
+                total_data: 0,
+                data: Value::Null,
+            });
+        }
     }
 
     let table_schema: TableSchema = filter_table_schema(&table_schemas, route.clone()).await;

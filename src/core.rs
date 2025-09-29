@@ -11,7 +11,7 @@ use reqwest::Client;
 use serde_json::{json, Value};
 use zip::ZipArchive;
 
-use crate::rate_limit::RL_WINDOW_LOGIN;
+use crate::rate_limit::{RL_WINDOW_LOGIN, RL_WINDOW_LOGIN_FAIL};
 use crate::{
     auth::create_token,
     crypt::{decrypt, encrypt},
@@ -134,6 +134,30 @@ pub async fn login(state: web::Data<AppState>, req: actix_web::HttpRequest) -> i
     let decrypt_password = decrypt(state.encrypt_key.clone(), password_db);
 
     if pass_in != decrypt_password {
+        // Apply per-user and per-IP failure rate limits within a 5-minute window
+        let base_per_min: u32 = std::env::var("RATE_LIMIT_LOGIN_PER_MIN")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(3);
+        // Conservative defaults: at least 5 failures per 5 minutes per user, and 20 per IP
+        let fail_user_limit: u32 = std::cmp::max(5, base_per_min);
+        let fail_ip_limit: u32 = std::cmp::max(20, base_per_min.saturating_mul(5));
+
+        let user_key = email.to_lowercase();
+        let over_user = !RL_WINDOW_LOGIN_FAIL
+            .check_and_increment(&format!("loginfail:user:{}", user_key), fail_user_limit);
+        let over_ip = !RL_WINDOW_LOGIN_FAIL
+            .check_and_increment(&format!("loginfail:ip:{}", ip_key), fail_ip_limit);
+
+        if over_user || over_ip {
+            return HttpResponse::TooManyRequests().json(WebResponse {
+                success: false,
+                message: "Too many login attempts".into(),
+                total_data: 0,
+                data: Value::Null,
+            });
+        }
+
         return HttpResponse::Unauthorized().json(WebResponse {
             success: false,
             message: "Login Failed".to_string(),

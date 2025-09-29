@@ -69,6 +69,21 @@ pub async fn delete(
             data: Value::Null,
         });
     }
+    // Per-user limit (for non-public routes only)
+    if !state.route_publics.contains(&route) {
+        let user_key = claims.id.clone();
+        if !user_key.is_empty()
+            && !RL_WINDOW_MUTATE
+                .check_and_increment(&format!("delete:{}:user:{}", route, user_key), limit)
+        {
+            return HttpResponse::TooManyRequests().json(WebResponse {
+                success: false,
+                message: "Too many requests".into(),
+                total_data: 0,
+                data: Value::Null,
+            });
+        }
+    }
 
     let table_schema = filter_table_schema(table_schemas, route.clone()).await;
     if table_schema.table.is_empty() {

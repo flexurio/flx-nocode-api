@@ -82,6 +82,18 @@ pub async fn update(
             data: Value::Null,
         });
     }
+    // Per-user limit (for non-public routes only)
+    if !state.route_publics.contains(&route) {
+        let user_key = claims.id.clone();
+        if !user_key.is_empty() && !RL_WINDOW_MUTATE.check_and_increment(&format!("put:{}:user:{}", route, user_key), limit) {
+            return HttpResponse::TooManyRequests().json(WebResponse {
+                success: false,
+                message: "Too many requests".into(),
+                total_data: 0,
+                data: Value::Null,
+            });
+        }
+    }
     let id_raw: String = path.into_inner();
 
     // get body from request and compare with table_schemas.put.columns

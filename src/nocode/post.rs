@@ -82,6 +82,18 @@ pub async fn insert(
             data: Value::Null,
         });
     }
+    // Per-user limit (for non-public routes only)
+    if !state.route_publics.contains(&route) {
+        let user_key = claims.id.clone();
+        if !user_key.is_empty() && !RL_WINDOW_MUTATE.check_and_increment(&format!("post:{}:user:{}", route, user_key), limit) {
+            return HttpResponse::TooManyRequests().json(WebResponse {
+                success: false,
+                message: "Too many requests".into(),
+                total_data: 0,
+                data: Value::Null,
+            });
+        }
+    }
 
     // Generate SQL query INSERT to table in variable route, from data structure table in table_schemas
     let table_schema: TableSchema = filter_table_schema(&table_schemas, route.clone()).await;
