@@ -54,10 +54,10 @@ pub async fn process_sp(
         .peer_addr()
         .map(|a| a.ip().to_string())
         .unwrap_or_else(|| "unknown".into());
-    let limit: u32 = std::env::var("RATE_LIMIT_MUTATE_PER_MIN")
+    let limit: u32 = std::env::var("RATE_LIMIT_MUTATE_PER_SEC")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(120);
+        .unwrap_or(10);
     if !RL_WINDOW_MUTATE.check_and_increment(&format!("patch:{}:{}", route, ip_key), limit) {
         return HttpResponse::TooManyRequests().json(WebResponse {
             success: false,

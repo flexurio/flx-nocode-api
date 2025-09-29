@@ -31,7 +31,7 @@ LOC_LOGGING=static/log
 LOC_AUDIT=static/log/audit/events.log # (atau path lain di luar static agar tidak terpublikasi)
 
 RATE_LIMIT_LOGIN_PER_MIN=3
-RATE_LIMIT_MUTATE_PER_MIN=10
+RATE_LIMIT_MUTATE_PER_SEC=2
 
 UPLOAD_LIMIT_MB=10
 UPLOAD_TEXT_LIMIT_KB=1024

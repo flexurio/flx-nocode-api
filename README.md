@@ -146,7 +146,7 @@ Core use cases:
 * Configurable additional JWT claim via SQL (`CUSTOME_JWT_QUERY`).
 * IP whitelisting override (`WHITE_LIST_IP`).
 * Static file serving under `/static` (e.g. images, logs).
-* Rate Limit per request per minutes
+* Rate limiting for login (per-minute) and mutations (now per-second via env)
 
 ### 3.1 Clone
 ```bash

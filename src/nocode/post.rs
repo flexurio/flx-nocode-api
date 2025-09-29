@@ -70,10 +70,10 @@ pub async fn insert(
 
     // Rate-limit per IP for mutations
     let ip_key = get_client_ip(&req);
-    let limit: u32 = std::env::var("RATE_LIMIT_MUTATE_PER_MIN")
+    let limit: u32 = std::env::var("RATE_LIMIT_MUTATE_PER_SEC")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(120);
+        .unwrap_or(10);
     if !RL_WINDOW_MUTATE.check_and_increment(&format!("post:{}:{}", route, ip_key), limit) {
         return HttpResponse::TooManyRequests().json(WebResponse {
             success: false,
