@@ -7,9 +7,10 @@ use serde_json::Value;
 use crate::{
     auth::{check_access, get_user_info_from_token},
     database::state::DbParam,
-    helpers::{filter_table_schema, split_column_operator},
+    helpers::{filter_table_schema, split_column_operator, get_client_ip},
     log::log_output,
     model::{ParamJoin, TableSchema, WebResponse},
+    rate_limit::RL_WINDOW_GET,
     AppState,
 };
 use std::sync::Arc;
@@ -22,6 +23,20 @@ pub async fn select(
     table_schemas: Arc<Vec<TableSchema>>,
     req: actix_web::HttpRequest,
 ) -> impl Responder {
+    // Per-IP GET rate limit per second
+    let ip_key = get_client_ip(&req);
+    let get_limit: u32 = std::env::var("RATE_LIMIT_GET_PER_SEC")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(20);
+    if !RL_WINDOW_GET.check_and_increment(&format!("get:{}:{}", route, ip_key), get_limit) {
+        return HttpResponse::TooManyRequests().json(WebResponse {
+            success: false,
+            message: "Too many requests".to_string(),
+            total_data: 0,
+            data: Value::Null,
+        });
+    }
     if !state.route_publics.contains(&route) {
         println!("Route: {}", route);
         
