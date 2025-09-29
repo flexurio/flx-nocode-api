@@ -187,6 +187,11 @@ $binDir = Split-Path -Parent $PSCommandPath
 $exe = Join-Path $binDir 'flx-nocode.exe'
 if (-not (Test-Path -LiteralPath $exe)) { Write-Err 'flx-nocode.exe not found next to wrapper'; exit 1 }
 
+if ($Args.Count -gt 0 -and ($Args[0] -eq '--version' -or $Args[0] -eq 'version' -or $Args[0] -eq '-V')) {
+  & $exe --version
+  exit $LASTEXITCODE
+}
+
 if ($Args.Count -gt 0 -and ($Args[0] -eq '--update' -or $Args[0] -eq 'update' -or $Args[0] -eq '-U')) {
   Update-Binary
   exit 0

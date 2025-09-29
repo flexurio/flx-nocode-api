@@ -197,6 +197,18 @@ static SCHEMAS: Lazy<Arc<(Vec<TableSchema>, Vec<ReferenceForeignKey>)>> = Lazy::
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
+    // Early CLI handling: print version and exit
+    {
+        let mut args = env::args();
+        let _ = args.next(); // skip binary name
+        if let Some(first) = args.next() {
+            if matches!(first.as_str(), "--version" | "-V" | "version") {
+                println!("flx-nocode-api {}", env!("CARGO_PKG_VERSION"));
+                return Ok(());
+            }
+        }
+    }
+
     // check .env exit or not
     if !std::path::Path::new(".env").exists() {
         if let Err(e) = core::download_env_file().await {

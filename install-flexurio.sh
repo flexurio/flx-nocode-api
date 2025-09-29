@@ -186,6 +186,15 @@ fi
 
 EXEC="/usr/local/bin/flx-nocode-api"
 
+# Handle version command
+if [ "${1:-}" = "--version" ] || [ "${1:-}" = "-V" ] || [ "${1:-}" = "version" ]; then
+  if [ ! -x "$EXEC" ]; then
+    err "flexurio wrapper: flx-nocode-api binary not found at $EXEC"
+    exit 1
+  fi
+  exec "$EXEC" --version
+fi
+
 # Handle update command for macOS
 do_update() {
   log "Checking for updates..."
@@ -317,6 +326,15 @@ BIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 EXEC="$BIN_DIR/flx-nocode"
 if [ ! -x "$EXEC" ]; then
   EXEC="$(command -v flx-nocode || true)"
+fi
+
+# Handle version command
+if [ "${1:-}" = "--version" ] || [ "${1:-}" = "-V" ] || [ "${1:-}" = "version" ]; then
+  if [ -z "$EXEC" ] || [ ! -x "$EXEC" ]; then
+    err "flexurio wrapper: flx-nocode binary not found in PATH"
+    exit 1
+  fi
+  exec "$EXEC" --version
 fi
 
 do_update() {
