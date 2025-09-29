@@ -6,7 +6,7 @@ use serde_json::Value;
 use std::fmt::Write;
 
 use crate::{
-    AppState, auth::{check_access, get_user_info_from_token}, helpers::filter_table_schema, log::{self, log_output}, model::{TableSchema, WebResponse}
+    AppState, auth::{check_access, get_user_info_from_token}, helpers::filter_table_schema, log::log_output, model::{TableSchema, WebResponse}
 };
 use std::sync::Arc;
 

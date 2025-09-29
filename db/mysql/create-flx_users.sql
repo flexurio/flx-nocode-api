@@ -17,5 +17,5 @@ CREATE TABLE IF NOT EXISTS flx_users (
 
        CONSTRAINT idx_user_email UNIQUE (email),
        CONSTRAINT idx_user_phone UNIQUE (phone),
-       CONSTRAINT idx_user_enabled (enabled)
+       INDEX idx_user_enabled (enabled)
 );
