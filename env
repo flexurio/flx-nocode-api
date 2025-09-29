@@ -32,8 +32,15 @@ LOC_IMAGE=images     # location image file. Will set inside of static directory
 LOC_LOGGING=static/log
 LOC_AUDIT=static/log/audit/events.log # (atau path lain di luar static agar tidak terpublikasi)
 
+
 RATE_LIMIT_LOGIN_PER_MIN=3
-RATE_LIMIT_MUTATE_PER_SEC=2
+RATE_LIMIT_MUTATE_PER_SEC=10
+RATE_LIMIT_GET_PER_SEC=20
+
+# Optional: login failure limits over 5-minute window
+# If unset, defaults to max(5, RATE_LIMIT_LOGIN_PER_MIN) per user and max(20, RATE_LIMIT_LOGIN_PER_MIN*5) per IP
+RATE_LIMIT_LOGIN_FAIL_USER=5
+RATE_LIMIT_LOGIN_FAIL_IP=20
 
 UPLOAD_LIMIT_MB=10
 UPLOAD_TEXT_LIMIT_KB=1024
@@ -41,8 +48,3 @@ UPLOAD_MAX_FILES=10
 UPLOAD_MAX_FIELDS=200
 
 WHITE_LIST_IP=192.168.0.0/24
-RATE_LIMIT_GET_PER_SEC=20
-
-# Optional: login failure limits over 5-minute window (defaults apply if unset)
-RATE_LIMIT_LOGIN_FAIL_USER=5
-RATE_LIMIT_LOGIN_FAIL_IP=20
