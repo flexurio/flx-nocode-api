@@ -79,7 +79,7 @@ pub async fn select(
 
     let table_schema: TableSchema = filter_table_schema(&table_schemas, route.clone()).await;
     let mut where_clause: String = "WHERE ".to_string();
-    let mut limit_clause: String = "LIMIT ".to_string();
+    let mut limit_clause: String = String::new();
     let mut i_limit = 100;
     let mut pagination_clause = String::new();
     let mut i_page = 1;
@@ -315,12 +315,36 @@ pub async fn select(
         }
     }
 
-    // check limit
-    limit_clause.push_str(&format!("{}", i_limit));
+    // DB-specific pagination
+    // For MySQL/Postgres/SQLite -> LIMIT <n> OFFSET <m>
+    // For MSSQL -> ORDER BY ... OFFSET <m> ROWS FETCH NEXT <n> ROWS ONLY
 
     // check page
     let offset = (i_page - 1) * i_limit;
-    pagination_clause.push_str(&format!("OFFSET {} ", offset));
+    match state.db_type.as_str() {
+        "mssql" => {
+            // Ensure ORDER BY exists; MSSQL requires ORDER BY for OFFSET/FETCH
+            if order_clause.is_empty() {
+                let fallback_col = if !table_schema.primary_key.columns.is_empty() {
+                    table_schema.primary_key.columns[0].clone()
+                } else {
+                    // last resort fallback
+                    "id".to_string()
+                };
+                order_clause = format!("ORDER BY {} ASC ", fallback_col);
+            }
+            pagination_clause.push_str(&format!(
+                "OFFSET {} ROWS FETCH NEXT {} ROWS ONLY ",
+                offset, i_limit
+            ));
+            limit_clause.clear();
+        }
+        _ => {
+            // default SQL dialects
+            limit_clause = format!("LIMIT {} ", i_limit);
+            pagination_clause.push_str(&format!("OFFSET {} ", offset));
+        }
+    }
 
     // jika gak ada deleted_at di where_clause, maka tambahkan deleted_at IS NULL
     if is_deleted_at {

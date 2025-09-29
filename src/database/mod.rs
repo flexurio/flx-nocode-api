@@ -4,4 +4,6 @@ pub mod mysql;
 pub mod postgres;
 #[cfg(feature = "sqlite")]
 pub mod sqlite;
+#[cfg(feature = "mssql")]
+pub mod mssql;
 pub mod state;

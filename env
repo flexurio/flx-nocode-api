@@ -16,6 +16,8 @@ POSTGRES_URL=postgres://user:pass@host:port/db
 MONGODB_URL=mongodb://user:pass@host:port/db
 DB_TYPE=sqlite
 SQLITE_URL=sqlite://data.db
+DB_TYPE=mssql
+MSSQL_URL=mssql://user:pass@host:1433/db
 
 DEBUG=True
 LOGGING=True
