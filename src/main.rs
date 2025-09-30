@@ -149,6 +149,62 @@ static SCHEMAS: Lazy<Arc<(Vec<TableSchema>, Vec<ReferenceForeignKey>)>> = Lazy::
             }
         };
 
+        // Early validation for TRACE upsert/merge requirements based on backend
+        // Determine db type from env (same as later runtime config)
+        let dbt = env::var("DB_TYPE").unwrap_or_else(|_| "mysql".to_string()).to_lowercase();
+        let trace_active = !schema.trace.insert_into.is_empty() || !schema.trace.column_selects.is_empty();
+        if trace_active && (dbt == "postgres" || dbt == "mssql") {
+            // Resolve conflict keys: allow special entry "index:NAME" to reference an index by name
+            let mut resolved_conflict_cols: Vec<String> = vec![];
+            if !schema.trace.column_conflicts.is_empty() {
+                if let Some(idx_spec) = schema
+                    .trace
+                    .column_conflicts
+                    .iter()
+                    .find(|s| s.to_lowercase().starts_with("index:"))
+                {
+                    let name = idx_spec.split_once(':').map(|(_, n)| n.trim()).unwrap_or("");
+                    if let Some(ix) = schema
+                        .indexes
+                        .iter()
+                        .find(|ix| ix.name.eq_ignore_ascii_case(name))
+                    {
+                        resolved_conflict_cols = ix.columns.clone();
+                    } else {
+                        eprintln!(
+                            "TRACE config error for table '{}': referenced index '{}' not found in indexes",
+                            schema.table, name
+                        );
+                        exit(1);
+                    }
+                } else {
+                    resolved_conflict_cols = schema.trace.column_conflicts.clone();
+                }
+            }
+
+            if dbt == "postgres" {
+                if resolved_conflict_cols.is_empty() {
+                    eprintln!(
+                        "TRACE config error for table '{}': Postgres requires 'column_conflicts' (or index:<name>) for upsert",
+                        schema.table
+                    );
+                    exit(1);
+                }
+            } else if dbt == "mssql" && resolved_conflict_cols.is_empty() {
+                // Allow fallback to a single unique index if present unambiguously
+                let unique_indexes: Vec<_> = schema.indexes.iter().filter(|ix| ix.unique).collect();
+                if unique_indexes.len() == 1 {
+                    // ok: will use this unique index at runtime
+                } else {
+                    eprintln!(
+                        "TRACE config error for table '{}': MSSQL requires 'column_conflicts' (or index:<name>); no unambiguous unique index found",
+                        schema.table
+                    );
+                    exit(1);
+                }
+            }
+        }
+
         // check if schema.foreign_keys is not empty
         if !schema.foreign_keys.is_empty() {
             // loop througt all schema.foreign_keys

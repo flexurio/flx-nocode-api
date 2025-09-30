@@ -11,6 +11,7 @@ use crate::{
     model::{TableSchema, WebResponse},
     AppState,
 };
+use crate::storage::sql_store::SqlStore;
 use std::sync::Arc;
 
 // NCO-TRACE
@@ -171,22 +172,61 @@ pub async fn process(
     } else {
         format!(" {}", joins.join(" "))
     };
-    let s_sql = format!(
-        "INSERT INTO {} {}
-        SELECT {}
-        FROM {} {} {} {}
-        ON DUPLICATE KEY UPDATE {}",
-        table_insert_clause,
-        column_insert_clause,
-        select_columns,
-        table_schema.table,
-        join_clause,
-        where_clause,
-        group_clause,
-        conflict_clause
+    // Build SELECT part as a single SQL fragment
+    let select_fragment = format!(
+        "SELECT {} FROM {} {} {} {}",
+        select_columns, table_schema.table, join_clause, where_clause, group_clause
     );
 
-    log_output("QUERY", "TRACE", route.as_str(), s_sql.clone(), true);
+    // Prepare insert columns list (trace.column_inserts + created_at)
+    let mut insert_cols: Vec<String> = table_schema.trace.column_inserts.to_vec();
+    insert_cols.push("created_at".to_string());
+
+    // Conflict keys and extra update assignments, dialect-aware via SqlStore
+    let conflict_keys: Vec<String> = table_schema.trace.column_conflicts.clone();
+    // Guard: some backends require keys for upsert/merge semantics
+    let dbt = state.db_type.to_lowercase();
+    if (dbt == "postgres" || dbt == "mssql") && conflict_keys.is_empty() {
+        return HttpResponse::BadRequest().json(WebResponse {
+            success: false,
+            message: format!(
+                "TRACE requires 'column_conflicts' to be set in config for backend '{}'",
+                dbt
+            ),
+            total_data: 0,
+            data: Value::Null,
+        });
+    }
+    // conflict_clause previously included updated_at/deleted_at; keep those as extra assignments
+    let extra_assignments = vec![
+        format!("updated_at={}", state.query_converter.datetime_now),
+        "deleted_at=null".to_string(),
+    ];
+
+    let ds = SqlStore::new(state.db.clone(), state.db_type.clone());
+    let (s_sql, compiled_params) = match ds.preview_insert_select_upsert(
+        &table_insert_clause,
+        &insert_cols,
+        &select_fragment,
+        &conflict_keys,
+        &extra_assignments,
+        Vec::new(),
+    ) {
+        Ok(v) => v,
+        Err(e) => {
+            return HttpResponse::BadRequest().json(WebResponse {
+                success: false,
+                message: format!("Unsupported TRACE operation for backend: {}", e),
+                total_data: 0,
+                data: Value::Null,
+            });
+        }
+    };
+
+    if *crate::ISDEBUG {
+        log_output("QUERY", "TRACE(AST)", route.as_str(), s_sql.clone(), true);
+        log_output("PARAMS", "TRACE(AST)", route.as_str(), format!("{:?}", compiled_params), true);
+    }
 
     // Begin transaction
     let mut transaction = match state.db.begin_transaction().await {
@@ -201,7 +241,7 @@ pub async fn process(
         }
     };
 
-    match transaction.query_with_params(&s_sql, [].to_vec()).await {
+    match transaction.query_with_params(&s_sql, compiled_params).await {
         Ok(_) => {
             // Commit transaction
             transaction.commit().await.ok();

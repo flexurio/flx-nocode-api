@@ -248,6 +248,152 @@ impl SqlStore {
         self.build_insert(collection, doc)
     }
 
+    fn build_call_procedure(
+        &self,
+        name: &str,
+        param_len: usize,
+        params: Vec<DbParam>,
+    ) -> anyhow::Result<(String, Vec<DbParam>)> {
+        let proc_name = name.trim();
+        if proc_name.is_empty() {
+            return Err(anyhow::anyhow!("procedure name is empty"));
+        }
+
+        // Build placeholders according to dialect
+        let placeholders = match self.db_type.as_str() {
+            "postgres" => {
+                // $1, $2, ...
+                (1..=param_len).map(|i| format!("${}", i)).collect::<Vec<_>>().join(", ")
+            }
+            _ => {
+                // ?, ?, ...
+                if param_len == 0 { String::new() } else { vec!["?"; param_len].join(", ") }
+            }
+        };
+
+        let sql = match self.db_type.as_str() {
+            // MySQL / MariaDB
+            "mysql" => format!("CALL {}({})", proc_name, placeholders),
+            // PostgreSQL (procedures supported >= 11). If using functions, configure name accordingly.
+            "postgres" => format!("CALL {}({})", proc_name, placeholders),
+            // SQL Server uses EXEC
+            "mssql" => {
+                if placeholders.is_empty() {
+                    format!("EXEC {}", proc_name)
+                } else {
+                    format!("EXEC {} {}", proc_name, placeholders)
+                }
+            }
+            // SQLite (and others) do not support stored procedures
+            other => return Err(anyhow::anyhow!("Stored procedures are not supported for backend: {}", other)),
+        };
+
+        Ok((sql, params))
+    }
+
+    pub fn preview_call_procedure(
+        &self,
+        name: &str,
+        param_len: usize,
+        params: Vec<DbParam>,
+    ) -> anyhow::Result<(String, Vec<DbParam>)> {
+        self.build_call_procedure(name, param_len, params)
+    }
+
+    /// Compose an INSERT .. SELECT with dialect-aware upsert/merge support.
+    /// - For MySQL/MariaDB: ON DUPLICATE KEY UPDATE col=VALUES(col), ...
+    /// - For Postgres: ON CONFLICT (keys) DO UPDATE SET col=EXCLUDED.col, ...
+    /// - For MSSQL: MERGE INTO ... USING (SELECT ...) AS s(..) ON (...) WHEN MATCHED THEN UPDATE ... WHEN NOT MATCHED THEN INSERT ...
+    /// - Others: fallback to plain INSERT .. SELECT (no upsert)
+    pub fn preview_insert_select_upsert(
+        &self,
+        target: &str,
+        insert_columns: &[String],
+        select_sql: &str,
+        conflict_columns: &[String],
+        update_extra_assignments: &[String],
+        params: Vec<DbParam>,
+    ) -> anyhow::Result<(String, Vec<DbParam>)> {
+        let cols_joined = insert_columns.join(", ");
+        let has_keys = !conflict_columns.is_empty();
+        let mut sql: String;
+        match self.db_type.as_str() {
+            "mysql" => {
+                sql = format!("INSERT INTO {} ({}) {}", target, cols_joined, select_sql);
+                if has_keys || !update_extra_assignments.is_empty() {
+                    // Build assignments
+                    let mut assigns: Vec<String> = Vec::new();
+                    for k in conflict_columns {
+                        assigns.push(format!("{}=VALUES({})", k, k));
+                    }
+                    assigns.extend(update_extra_assignments.iter().cloned());
+                    if !assigns.is_empty() {
+                        sql.push_str(&format!(" ON DUPLICATE KEY UPDATE {}", assigns.join(", ")));
+                    }
+                }
+                Ok((sql, params))
+            }
+            "postgres" => {
+                sql = format!("INSERT INTO {} ({}) {}", target, cols_joined, select_sql);
+                if has_keys {
+                    let mut assigns: Vec<String> = Vec::new();
+                    for k in conflict_columns {
+                        assigns.push(format!("{} = EXCLUDED.{}", k, k));
+                    }
+                    assigns.extend(update_extra_assignments.iter().cloned());
+                    if !assigns.is_empty() {
+                        sql.push_str(&format!(" ON CONFLICT ({}) DO UPDATE SET {}", conflict_columns.join(", "), assigns.join(", ")));
+                    }
+                }
+                Ok((sql, params))
+            }
+            "mssql" => {
+                if has_keys {
+                    // Build MERGE statement
+                    let src_cols = insert_columns.join(", ");
+                    let on_clause = conflict_columns
+                        .iter()
+                        .map(|k| format!("t.{} = s.{}", k, k))
+                        .collect::<Vec<_>>()
+                        .join(" AND ");
+                    // Update sets: keys (t.k = s.k) then extra assignments
+                    let mut update_sets: Vec<String> = Vec::new();
+                    for k in conflict_columns {
+                        update_sets.push(format!("t.{} = s.{}", k, k));
+                    }
+                    update_sets.extend(update_extra_assignments.iter().cloned());
+                    let insert_values = insert_columns
+                        .iter()
+                        .map(|c| format!("s.{}", c))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    sql = format!(
+                        "MERGE INTO {target} AS t USING ({select}) AS s ({src_cols}) ON {on} \
+                         WHEN MATCHED THEN UPDATE SET {upd} \
+                         WHEN NOT MATCHED THEN INSERT ({cols}) VALUES ({vals});",
+                        target = target,
+                        select = select_sql,
+                        src_cols = src_cols,
+                        on = on_clause,
+                        upd = update_sets.join(", "),
+                        cols = cols_joined,
+                        vals = insert_values,
+                    );
+                    Ok((sql, params))
+                } else {
+                    // No keys -> plain insert-select
+                    sql = format!("INSERT INTO {} ({}) {}", target, cols_joined, select_sql);
+                    Ok((sql, params))
+                }
+            }
+            _ => {
+                // Fallback: plain insert-select (no upsert)
+                sql = format!("INSERT INTO {} ({}) {}", target, cols_joined, select_sql);
+                Ok((sql, params))
+            }
+        }
+    }
+
     fn build_update(
         &self,
         collection: &str,

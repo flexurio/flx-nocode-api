@@ -14,6 +14,7 @@ use crate::{
     model::{TableSchema, WebResponse},
     AppState,
 };
+use crate::storage::sql_store::SqlStore;
 use chrono::Local;
 use std::sync::Arc;
 
@@ -25,6 +26,7 @@ pub async fn process_sp(
     table_schemas: Arc<Vec<TableSchema>>,
     req: actix_web::HttpRequest,
 ) -> impl Responder {
+    let mut actor_id: Option<String> = None;
     if !state.route_publics.contains(&route) {
         let req_for_auth = req.clone();
         let claims = match get_user_info_from_token(req_for_auth, state.clone()) {
@@ -47,6 +49,7 @@ pub async fn process_sp(
                 data: Value::Null,
             });
         }
+        actor_id = Some(claims.id);
     }
     // Rate-limit (allow disable with 0 or -1)
     let ip_key = crate::helpers::get_client_ip(&req);
@@ -108,13 +111,26 @@ pub async fn process_sp(
         }
     }
 
-    let s_sql = format!(
-        "CALL {} ({})",
-        table_schema.patch.pre_process_sp,
-        param_sp.join(", ")
-    );
-
-    log_output("QUERY", "PATCH", route.as_str(), s_sql.clone(), true);
+    // Use SqlStore to compile dialect-aware procedure call
+    let ds = SqlStore::new(state.db.clone(), state.db_type.clone());
+    let param_count = param_sp.len();
+    let (s_sql, compiled_params) = match ds.preview_call_procedure(&table_schema.patch.pre_process_sp, param_count, bind_params.clone()) {
+        Ok((sql, params)) => {
+            if *crate::ISDEBUG {
+                log_output("QUERY", "PATCH(CALL)", route.as_str(), sql.clone(), true);
+                log_output("PARAMS", "PATCH(CALL)", route.as_str(), format!("{:?}", params), true);
+            }
+            (sql, params)
+        }
+        Err(e) => {
+            return HttpResponse::BadRequest().json(WebResponse {
+                success: false,
+                message: format!("Unsupported or invalid procedure call: {}", e),
+                total_data: 0,
+                data: Value::Null,
+            });
+        }
+    };
 
     // Begin transaction
     let mut transaction = match state.db.begin_transaction().await {
@@ -129,13 +145,13 @@ pub async fn process_sp(
         }
     };
 
-    match transaction.query_with_params(&s_sql, bind_params).await {
+    match transaction.query_with_params(&s_sql, compiled_params).await {
         Ok(_) => {
             transaction.commit().await.ok();
             // Audit
             write_audit(&AuditEntry {
                 at: Local::now().to_rfc3339(),
-                actor_id: "".to_string(), // unknown actor from claims in this scope
+                actor_id: actor_id.unwrap_or_default(),
                 action: "PATCH",
                 route: &route,
                 id: None,
