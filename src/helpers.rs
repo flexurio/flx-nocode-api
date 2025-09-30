@@ -138,6 +138,9 @@ pub fn operator_query(symbol: &str) -> String {
         "gt" => ">",
         "gte" => ">=",
         "is" => "is",
+        // new operators
+        "nin" => "nin",
+        "between" => "between",
         _ => "",
     };
 

@@ -16,6 +16,7 @@ use crate::storage::ast::{Filter as QF, Query as QQ, Val as QV};
 use crate::storage::sql_store::SqlStore;
 use crate::storage::traits::DataStore;
 use std::sync::Arc;
+use std::collections::HashSet;
 
 // NCO-GET
 pub async fn select(
@@ -173,7 +174,7 @@ pub async fn select(
                             if !value_str.is_empty() {
                                 let sanitized: String = value_str
                                     .chars()
-                                    .filter(|c| c.is_alphanumeric() || *c == '.' || *c == ',' || *c == ' ')
+                                    .filter(|c| c.is_alphanumeric() || *c == '.' || *c == ',' || *c == ' ' || *c == '_' || *c == '-')
                                     .collect();
                                 order_col_ast = sanitized;
                             }
@@ -218,6 +219,56 @@ pub async fn select(
                                     ">" => QF::Gt(column, to_val(&val)),
                                     ">=" => QF::Gte(column, to_val(&val)),
                                     "like" => QF::ILike(column, val),
+                                    "nin" => {
+                                        // nin: support JSON array or comma-separated
+                                        let val_trim = value_str.trim();
+                                        if val_trim.starts_with('[') && val_trim.ends_with(']') {
+                                            if let Ok(arr) = serde_json::from_str::<Vec<serde_json::Value>>(val_trim) {
+                                                let vs = arr.into_iter().map(|x| match x {
+                                                    serde_json::Value::Number(n) => {
+                                                        if let Some(i) = n.as_i64() { QV::I64(i) }
+                                                        else if let Some(f) = n.as_f64() { QV::F64(f) } else { QV::Str(n.to_string()) }
+                                                    }
+                                                    serde_json::Value::Bool(b) => QV::Bool(b),
+                                                    serde_json::Value::String(s) => QV::Str(s),
+                                                    serde_json::Value::Null => QV::Null,
+                                                    other => QV::Str(other.to_string()),
+                                                }).collect::<Vec<QV>>();
+                                                QF::NotIn(column, vs)
+                                            } else { QF::NotIn(column, vec![to_val(&val)]) }
+                                        } else if value_str.contains(',') {
+                                            let vs = value_str.split(',').map(|s| to_val(s.trim())).collect::<Vec<QV>>();
+                                            QF::NotIn(column, vs)
+                                        } else { QF::NotIn(column, vec![to_val(&val)]) }
+                                    }
+                                    "between" => {
+                                        // between: support JSON [a,b] or 'a,b'
+                                        let val_trim = value_str.trim();
+                                        if val_trim.starts_with('[') && val_trim.ends_with(']') {
+                                            if let Ok(arr) = serde_json::from_str::<Vec<serde_json::Value>>(val_trim) {
+                                                if arr.len() == 2 {
+                                                    let a = &arr[0];
+                                                    let b = &arr[1];
+                                                    let to_qv = |v: &serde_json::Value| match v {
+                                                        serde_json::Value::Number(n) => {
+                                                            if let Some(i) = n.as_i64() { QV::I64(i) }
+                                                            else if let Some(f) = n.as_f64() { QV::F64(f) } else { QV::Str(n.to_string()) }
+                                                        }
+                                                        serde_json::Value::Bool(b) => QV::Bool(*b),
+                                                        serde_json::Value::String(s) => QV::Str(s.clone()),
+                                                        serde_json::Value::Null => QV::Null,
+                                                        other => QV::Str(other.to_string()),
+                                                    };
+                                                    QF::Between(column, to_qv(a), to_qv(b))
+                                                } else { QF::Eq(column, to_val(&val)) }
+                                            } else { QF::Eq(column, to_val(&val)) }
+                                        } else if value_str.contains(',') {
+                                            let mut parts = value_str.split(',').map(|s| s.trim().to_string());
+                                            let a = parts.next().unwrap_or_default();
+                                            let b = parts.next().unwrap_or_default();
+                                            QF::Between(column, to_val(&a), to_val(&b))
+                                        } else { QF::Eq(column, to_val(&val)) }
+                                    }
                                     "is" => {
                                         if val.eq_ignore_ascii_case("NULL") { QF::IsNull(column) }
                                         else if val.eq_ignore_ascii_case("NOT NULL") { QF::IsNotNull(column) }
@@ -278,6 +329,54 @@ pub async fn select(
                                     ">" => QF::Gt(column, to_val(&val)),
                                     ">=" => QF::Gte(column, to_val(&val)),
                                     "like" => QF::ILike(column, val),
+                                    "nin" => {
+                                        let val_trim = value_str.trim();
+                                        if val_trim.starts_with('[') && val_trim.ends_with(']') {
+                                            if let Ok(arr) = serde_json::from_str::<Vec<serde_json::Value>>(val_trim) {
+                                                let vs = arr.into_iter().map(|x| match x {
+                                                    serde_json::Value::Number(n) => {
+                                                        if let Some(i) = n.as_i64() { QV::I64(i) }
+                                                        else if let Some(f) = n.as_f64() { QV::F64(f) } else { QV::Str(n.to_string()) }
+                                                    }
+                                                    serde_json::Value::Bool(b) => QV::Bool(b),
+                                                    serde_json::Value::String(s) => QV::Str(s),
+                                                    serde_json::Value::Null => QV::Null,
+                                                    other => QV::Str(other.to_string()),
+                                                }).collect::<Vec<QV>>();
+                                                QF::NotIn(column, vs)
+                                            } else { QF::NotIn(column, vec![to_val(&val)]) }
+                                        } else if value_str.contains(',') {
+                                            let vs = value_str.split(',').map(|s| to_val(s.trim())).collect::<Vec<QV>>();
+                                            QF::NotIn(column, vs)
+                                        } else { QF::NotIn(column, vec![to_val(&val)]) }
+                                    }
+                                    "between" => {
+                                        let val_trim = value_str.trim();
+                                        if val_trim.starts_with('[') && val_trim.ends_with(']') {
+                                            if let Ok(arr) = serde_json::from_str::<Vec<serde_json::Value>>(val_trim) {
+                                                if arr.len() == 2 {
+                                                    let a = &arr[0];
+                                                    let b = &arr[1];
+                                                    let to_qv = |v: &serde_json::Value| match v {
+                                                        serde_json::Value::Number(n) => {
+                                                            if let Some(i) = n.as_i64() { QV::I64(i) }
+                                                            else if let Some(f) = n.as_f64() { QV::F64(f) } else { QV::Str(n.to_string()) }
+                                                        }
+                                                        serde_json::Value::Bool(b) => QV::Bool(*b),
+                                                        serde_json::Value::String(s) => QV::Str(s.clone()),
+                                                        serde_json::Value::Null => QV::Null,
+                                                        other => QV::Str(other.to_string()),
+                                                    };
+                                                    QF::Between(column, to_qv(a), to_qv(b))
+                                                } else { QF::Eq(column, to_val(&val)) }
+                                            } else { QF::Eq(column, to_val(&val)) }
+                                        } else if value_str.contains(',') {
+                                            let mut parts = value_str.split(',').map(|s| s.trim().to_string());
+                                            let a = parts.next().unwrap_or_default();
+                                            let b = parts.next().unwrap_or_default();
+                                            QF::Between(column, to_val(&a), to_val(&b))
+                                        } else { QF::Eq(column, to_val(&val)) }
+                                    }
                                     _ => QF::Eq(column, to_val(&val)),
                                 };
                                 filters.push(f);
@@ -301,35 +400,87 @@ pub async fn select(
                 q = q.r#where(QF::And(filters));
             }
 
-            // order by (sanitized)
-            let allowed_cols: Vec<&str> = table_schema
-                .get
-                .columns
-                .iter()
-                .map(|s| s.as_str())
-                .chain(
-                    table_schema
-                        .indexes
-                        .iter()
-                        .flat_map(|idx| idx.columns.iter().map(|s| s.as_str())),
-                )
-                .chain(
-                    table_schema
-                        .get
-                        .join_tables
-                        .iter()
-                        .flat_map(|j| j.columns.iter().map(|s| s.as_str())),
-                )
-                .collect();
-            let sanitized: String = order_col_ast
-                .split(',')
-                .map(|c| c.trim())
-                .filter(|c| allowed_cols.contains(c))
-                .collect::<Vec<&str>>()
-                .join(", ");
-            if !sanitized.is_empty() {
-                for col in sanitized.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()) {
-                    q = q.order_by(col.to_string(), order_type_ast.eq_ignore_ascii_case("ASC"));
+            // order by: support formats
+            // - "col" (uses global ascending)
+            // - "-col" (desc)
+            // - "col asc" or "col desc" (per-column)
+            // - allow fully-qualified (table.col); validate by unqualified name against allowlist
+            // Build allowlist of unqualified column names including aliases from SELECT list
+            let mut allowed_unqualified: HashSet<String> = HashSet::new();
+            // From projection (get.columns): capture unqualified names and aliases
+            for c in table_schema.get.columns.iter() {
+                let s = c.trim();
+                // handle "expr AS alias" (case-insensitive)
+                if let Some((left, right)) = s.to_lowercase().split_once(" as ") {
+                    // right is alias in lowercase; recover actual alias by splitting original string
+                    if let Some((_l, alias_actual)) = s.split_once(" as ") {
+                        allowed_unqualified.insert(alias_actual.trim().to_string());
+                    } else if let Some((_l, alias_actual)) = s.split_once(" AS ") {
+                        allowed_unqualified.insert(alias_actual.trim().to_string());
+                    } else {
+                        // fallback: use lower-case parsed alias
+                        allowed_unqualified.insert(right.trim().to_string());
+                    }
+                    // also add unqualified of left expr
+                    let left_orig = &s[..left.len()];
+                    let base = left_orig.rsplit('.').next().unwrap_or(left_orig).trim();
+                    if !base.is_empty() { allowed_unqualified.insert(base.to_string()); }
+                } else {
+                    // no alias; add unqualified token
+                    let base = s.rsplit('.').next().unwrap_or(s).trim();
+                    if !base.is_empty() { allowed_unqualified.insert(base.to_string()); }
+                }
+            }
+            // Indexed columns
+            for idx in table_schema.indexes.iter() {
+                for c in idx.columns.iter() {
+                    let base = c.rsplit('.').next().unwrap_or(c).trim();
+                    if !base.is_empty() { allowed_unqualified.insert(base.to_string()); }
+                }
+            }
+            // Columns from join tables definitions
+            for j in table_schema.get.join_tables.iter() {
+                for c in j.columns.iter() {
+                    let base = c.rsplit('.').next().unwrap_or(c).trim();
+                    if !base.is_empty() { allowed_unqualified.insert(base.to_string()); }
+                }
+            }
+
+            let global_asc = order_type_ast.eq_ignore_ascii_case("ASC");
+            let mut any_order = false;
+            for token in order_col_ast.split(',') {
+                let raw = token.trim();
+                if raw.is_empty() { continue; }
+                // detect per-column direction
+                let mut col_str = raw;
+                let mut asc_opt: Option<bool> = None;
+                if let Some(stripped) = raw.strip_prefix('-') {
+                    col_str = stripped.trim();
+                    asc_opt = Some(false);
+                } else if let Some((name, dir)) = raw.rsplit_once(' ') {
+                    let d = dir.trim().to_ascii_lowercase();
+                    if d == "asc" || d == "desc" {
+                        col_str = name.trim();
+                        asc_opt = Some(d == "asc");
+                    }
+                }
+                let unqualified = col_str.rsplit('.').next().unwrap_or(col_str).trim();
+                if !allowed_unqualified.contains(unqualified) { continue; }
+                let asc = asc_opt.unwrap_or(global_asc);
+                q = q.order_by(col_str.to_string(), asc);
+                any_order = true;
+            }
+
+            // If still no ORDER BY (client omitted or all tokens invalid), fall back to schema.get.order_by
+            if !any_order {
+                for col in table_schema.get.order_by.iter() {
+                    let col_trim = col.trim();
+                    if col_trim.is_empty() { continue; }
+                    // allow alias or unqualified name from projection
+                    let unqualified = col_trim.rsplit('.').next().unwrap_or(col_trim);
+                    if allowed_unqualified.contains(unqualified) || allowed_unqualified.contains(col_trim) {
+                        q = q.order_by(col_trim.to_string(), global_asc);
+                    }
                 }
             }
 

@@ -19,6 +19,9 @@ use crate::{
     AppState,
 };
 use chrono::Local;
+use crate::storage::sql_store::SqlStore;
+use crate::storage::traits::DataStore;
+use crate::storage::ast::{Query as Q, Filter as F};
 
 // CSV/XLSX import into a route table
 pub async fn import(
@@ -282,17 +285,15 @@ pub async fn import(
             let (prefix, width) = derive_id_prefix_and_width(func);
             // Query once for max existing id with this prefix
             let id_find = prefix.clone();
-            let s_sql_max_id = format!(
-                "SELECT COALESCE(MAX(id),0) as max_id FROM {} WHERE id like '%{}%' ",
-                table_schema.table, id_find
-            );
-            log_output("QUERY", "GET", table_schema.table.as_str(), s_sql_max_id.clone(), true);
-            let max_id: String = match state.db.query(&s_sql_max_id).await {
-                Ok(row) if !row.is_empty() => row[0]
-                    .get("max_id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("0")
-                    .to_string(),
+            // AST: fetch highest id matching prefix pattern
+            let ds = SqlStore::new(state.db.clone(), state.db_type.clone());
+            let q = Q::from(table_schema.table.clone())
+                .select(["id"]) // only id needed
+                .r#where(F::Like("id".into(), format!("%{}%", id_find)))
+                .order_by("id", false)
+                .limit(1);
+            let max_id: String = match ds.query(&q).await {
+                Ok(rows) if !rows.is_empty() => rows[0].get("id").and_then(|v| v.as_str()).unwrap_or("0").to_string(),
                 _ => "0".to_string(),
             };
             let last = max_id.rsplit('/').next().unwrap_or("0");

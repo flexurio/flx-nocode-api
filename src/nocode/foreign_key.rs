@@ -6,6 +6,9 @@ use crate::{
     log::log_output,
     model::ReferenceForeignKey,
 };
+use crate::storage::sql_store::SqlStore;
+use crate::storage::traits::DataStore;
+use crate::storage::ast::{Query as Q, Filter as F, Val as V};
 
 // create function to post delete or update table with foreign key constraints
 pub(crate) async fn process_foreign_keys_delete_update(
@@ -231,29 +234,14 @@ pub(crate) async fn check_data_foreign_key(
     reference_column: String,
     id_data: String,
 ) -> bool {
-    // query to table
-    let s_query = format!(
-        "SELECT 1 FROM {} WHERE {} = ?",
-        reference_table, reference_column
-    );
-    let mut bind_params_fk: Vec<DbParam> = Vec::new();
-
-    if let Ok(n) = id_data.clone().parse::<i64>() {
-        bind_params_fk.push(DbParam::I64(n));
-    } else {
-        bind_params_fk.push(DbParam::Str(id_data.clone()));
-    }
-
-    match state.db.query_with_params(&s_query, bind_params_fk).await {
+    // portable AST query: SELECT 1 FROM ref WHERE col = ? LIMIT 1
+    let ds = SqlStore::new(state.db.clone(), state.db_type.clone());
+    let val = if let Ok(n) = id_data.clone().parse::<i64>() { V::I64(n) } else { V::Str(id_data.clone()) };
+    let q = Q::from(reference_table).r#where(F::Eq(reference_column, val)).limit(1);
+    match ds.query(&q).await {
         Ok(rows) => !rows.is_empty(),
         Err(err) => {
-            log_output(
-                "ERROR",
-                "CHECK FOREIGN KEY",
-                "QUERY",
-                err.to_string(),
-                false,
-            );
+            log_output("ERROR", "CHECK FOREIGN KEY", "QUERY", err.to_string(), false);
             false
         }
     }

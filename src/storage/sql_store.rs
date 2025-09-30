@@ -12,6 +12,17 @@ pub struct SqlStore {
     db_type: String, // "mysql" | "postgres" | "sqlite" | "mssql"
 }
 
+/// Value type for INSERT fields supporting bound params and raw SQL expressions.
+#[derive(Debug, Clone)]
+pub enum InsertValue {
+    /// A value to be bound as a parameter
+    Param(DbParam),
+    /// A raw SQL fragment (trusted, typically from config/query_converter)
+    Raw(String),
+    /// A raw SQL fragment containing `?` placeholders with its own params
+    RawWithParams { sql: String, params: Vec<DbParam> },
+}
+
 impl SqlStore {
     pub fn new(inner: Arc<dyn DbRepository>, db_type: String) -> Self {
         Self { inner, db_type }
@@ -248,6 +259,78 @@ impl SqlStore {
         self.build_insert(collection, doc)
     }
 
+    /// Build an INSERT statement from explicit column-value pairs that may include expressions.
+    pub fn preview_insert_with(
+        &self,
+        collection: &str,
+        fields: &[(String, InsertValue)],
+    ) -> anyhow::Result<(String, Vec<DbParam>)> {
+        if fields.is_empty() {
+            return Err(anyhow::anyhow!("insert fields cannot be empty"));
+        }
+        let mut params: Vec<DbParam> = Vec::new();
+        let mut idx = 0usize; // for placeholder numbering in postgres
+
+        let mut col_names: Vec<String> = Vec::with_capacity(fields.len());
+        let mut val_frags: Vec<String> = Vec::with_capacity(fields.len());
+
+        for (col, val) in fields.iter() {
+            col_names.push(col.clone());
+            match val {
+                InsertValue::Param(p) => {
+                    idx += 1;
+                    params.push(p.clone());
+                    val_frags.push(self.next_placeholder(idx));
+                }
+                InsertValue::Raw(sql) => {
+                    val_frags.push(sql.clone());
+                }
+                InsertValue::RawWithParams { sql, params: p } => {
+                    let reb = self.rebind_fragment(sql, p, &mut idx, &mut params);
+                    val_frags.push(reb);
+                }
+            }
+        }
+
+        let sql = format!(
+            "INSERT INTO {} ({}) VALUES ({})",
+            collection,
+            col_names.join(","),
+            val_frags.join(",")
+        );
+        Ok((sql, params))
+    }
+
+    fn rebind_fragment(
+        &self,
+        sql: &str,
+        frag_params: &[DbParam],
+        idx: &mut usize,
+        params: &mut Vec<DbParam>,
+    ) -> String {
+        if frag_params.is_empty() {
+            return sql.to_string();
+        }
+        let parts: Vec<&str> = sql.split('?').collect();
+        let needed = parts.len().saturating_sub(1);
+        // Safety: assume needed == frag_params.len(); if not, we bind as many as min
+        let bind_count = std::cmp::min(needed, frag_params.len());
+        let mut out = String::new();
+        for i in 0..bind_count {
+            out.push_str(parts[i]);
+            *idx += 1;
+            out.push_str(&self.next_placeholder(*idx));
+            params.push(frag_params[i].clone());
+        }
+        // append remaining chunk(s)
+        out.push_str(parts.get(bind_count).copied().unwrap_or(""));
+        // If there are extra chunks beyond bind_count+1 (due to mismatch), append them raw
+        for chunk in parts.into_iter().skip(bind_count + 1) {
+            out.push_str(chunk);
+        }
+        out
+    }
+
     fn build_call_procedure(
         &self,
         name: &str,
@@ -429,6 +512,46 @@ impl SqlStore {
         patch: &Value,
     ) -> anyhow::Result<(String, Vec<DbParam>)> {
         self.build_update(collection, filter, patch)
+    }
+
+    /// Build an UPDATE statement from explicit column-value pairs that may include expressions.
+    pub fn preview_update_with(
+        &self,
+        collection: &str,
+        filter: Option<&Filter>,
+        fields: &[(String, InsertValue)],
+    ) -> anyhow::Result<(String, Vec<DbParam>)> {
+        if fields.is_empty() {
+            return Err(anyhow::anyhow!("update fields cannot be empty"));
+        }
+        let mut params: Vec<DbParam> = Vec::new();
+        let mut idx = 0usize;
+
+        let sets: Vec<String> = fields
+            .iter()
+            .map(|(k, v)| match v {
+                InsertValue::Param(p) => {
+                    idx += 1;
+                    params.push(p.clone());
+                    format!("{} = {}", k, self.next_placeholder(idx))
+                }
+                InsertValue::Raw(sql) => format!("{} = {}", k, sql),
+                InsertValue::RawWithParams { sql, params: p } => {
+                    let reb = self.rebind_fragment(sql, p, &mut idx, &mut params);
+                    format!("{} = {}", k, reb)
+                }
+            })
+            .collect();
+
+        let mut sql = format!("UPDATE {} SET {}", collection, sets.join(","));
+        if let Some(f) = filter {
+            let clause = self.compile_filter(f, &mut params, &mut idx);
+            if !clause.is_empty() {
+                sql.push_str(" WHERE ");
+                sql.push_str(&clause);
+            }
+        }
+        Ok((sql, params))
     }
 
     fn build_delete(
