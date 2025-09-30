@@ -17,6 +17,7 @@ use std::fs;
 use std::fs::{create_dir_all, File};
 use std::process::exit;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use std::env;
 
@@ -112,6 +113,9 @@ static LOC_LOGGING: Lazy<String> = Lazy::new(|| match env::var("LOC_LOGGING") {
     Ok(val) => val,
     Err(_) => "logs".to_string(),
 });
+
+// Ensure endpoint logging happens only once even if server factory runs multiple times
+static ENDPOINT_LOG_ONCE: Lazy<AtomicBool> = Lazy::new(|| AtomicBool::new(false));
 
 
 // Static Routes for once initialization
@@ -576,6 +580,9 @@ async fn main() -> std::io::Result<()> {
                 .max_age(3600),
         };
 
+        // Only log endpoint URLs once per process; always register routes regardless
+        let do_log = !ENDPOINT_LOG_ONCE.swap(true, Ordering::SeqCst);
+
         App::new()
             .app_data(app_state.clone())
             .app_data(web::PayloadConfig::new(
@@ -639,18 +646,20 @@ async fn main() -> std::io::Result<()> {
                 } else {
                     cfg.service(static_files);
                 }
-                log_output(
-                    "CORE ENDPOINT",
-                    "METHOD",
-                    "GET",
-                    format!(
-                        "http://{}:{}/{}",
-                        host.red(),
-                        port.clone().to_string().green(),
-                        "static".purple()
-                    ),
-                    false,
-                );
+                if do_log {
+                    log_output(
+                        "CORE ENDPOINT",
+                        "METHOD",
+                        "GET",
+                        format!(
+                            "http://{}:{}/{}",
+                            host.red(),
+                            port.clone().to_string().green(),
+                            "static".purple()
+                        ),
+                        false,
+                    );
+                }
 
                 // end point for login
                 cfg.service(web::resource("/login").route(web::post().to(
@@ -658,18 +667,20 @@ async fn main() -> std::io::Result<()> {
                         login(state, req)
                     },
                 )));
-                log_output(
-                    "CORE ENDPOINT",
-                    "METHOD",
-                    "POST",
-                    format!(
-                        "http://{}:{}/{}",
-                        host.red(),
-                        port.clone().to_string().green(),
-                        "login".purple()
-                    ),
-                    false,
-                );
+                if do_log {
+                    log_output(
+                        "CORE ENDPOINT",
+                        "METHOD",
+                        "POST",
+                        format!(
+                            "http://{}:{}/{}",
+                            host.red(),
+                            port.clone().to_string().green(),
+                            "login".purple()
+                        ),
+                        false,
+                    );
+                }
 
                 // end point for register
                 cfg.service(web::resource("/register").route(web::post().to(
@@ -677,18 +688,20 @@ async fn main() -> std::io::Result<()> {
                         register(state, multipart)
                     },
                 )));
-                log_output(
-                    "CORE ENDPOINT",
-                    "METHOD",
-                    "POST",
-                    format!(
-                        "http://{}:{}/{}",
-                        host.red(),
-                        port.clone().to_string().green(),
-                        "register".purple()
-                    ),
-                    false,
-                );
+                if do_log {
+                    log_output(
+                        "CORE ENDPOINT",
+                        "METHOD",
+                        "POST",
+                        format!(
+                            "http://{}:{}/{}",
+                            host.red(),
+                            port.clone().to_string().green(),
+                            "register".purple()
+                        ),
+                        false,
+                    );
+                }
 
                 // health check endpoint (public)
                 cfg.service(web::resource("/healthz").route(web::get().to({
@@ -711,18 +724,20 @@ async fn main() -> std::io::Result<()> {
                         }
                     }
                 })));
-                log_output(
-                    "CORE ENDPOINT",
-                    "METHOD",
-                    "GET",
-                    format!(
-                        "http://{}:{}/{}",
-                        host.red(),
-                        port.clone().to_string().green(),
-                        "healthz".purple()
-                    ),
-                    false,
-                );
+                if do_log {
+                    log_output(
+                        "CORE ENDPOINT",
+                        "METHOD",
+                        "GET",
+                        format!(
+                            "http://{}:{}/{}",
+                            host.red(),
+                            port.clone().to_string().green(),
+                            "healthz".purple()
+                        ),
+                        false,
+                    );
+                }
 
                 println!("\n");
 
@@ -739,54 +754,56 @@ async fn main() -> std::io::Result<()> {
                     let route_validate = route.clone();
                     let route_generate_table = route.clone();
 
-                    log_output(
-                        "ENDPOINT",
-                        "METHOD",
-                        "GET",
-                        format!(
-                            "http://{}:{}/{}",
-                            host.red(),
-                            port.clone().to_string().green(),
-                            route_get.clone().purple()
-                        ),
-                        false,
-                    );
-                    log_output(
-                        "ENDPOINT",
-                        "METHOD",
-                        "POST",
-                        format!(
-                            "http://{}:{}/{}",
-                            host.red(),
-                            port.clone().to_string().green(),
-                            route_post.clone().purple()
-                        ),
-                        false,
-                    );
-                    log_output(
-                        "ENDPOINT",
-                        "METHOD",
-                        "TRACE",
-                        format!(
-                            "http://{}:{}/{}",
-                            host.red(),
-                            port.clone().to_string().green(),
-                            route_trace.clone().purple()
-                        ),
-                        false,
-                    );
-                    log_output(
-                        "ENDPOINT",
-                        "METHOD",
-                        "PATCH",
-                        format!(
-                            "http://{}:{}/{}",
-                            host.red(),
-                            port.clone().to_string().green(),
-                            route_patch.clone().purple()
-                        ),
-                        false,
-                    );
+                    if do_log {
+                        log_output(
+                            "ENDPOINT",
+                            "METHOD",
+                            "GET",
+                            format!(
+                                "http://{}:{}/{}",
+                                host.red(),
+                                port.clone().to_string().green(),
+                                route_get.clone().purple()
+                            ),
+                            false,
+                        );
+                        log_output(
+                            "ENDPOINT",
+                            "METHOD",
+                            "POST",
+                            format!(
+                                "http://{}:{}/{}",
+                                host.red(),
+                                port.clone().to_string().green(),
+                                route_post.clone().purple()
+                            ),
+                            false,
+                        );
+                        log_output(
+                            "ENDPOINT",
+                            "METHOD",
+                            "TRACE",
+                            format!(
+                                "http://{}:{}/{}",
+                                host.red(),
+                                port.clone().to_string().green(),
+                                route_trace.clone().purple()
+                            ),
+                            false,
+                        );
+                        log_output(
+                            "ENDPOINT",
+                            "METHOD",
+                            "PATCH",
+                            format!(
+                                "http://{}:{}/{}",
+                                host.red(),
+                                port.clone().to_string().green(),
+                                route_patch.clone().purple()
+                            ),
+                            false,
+                        );
+                    }
 
                     cfg.service(
                         web::resource((*(route_get.clone())).to_string())
@@ -849,30 +866,32 @@ async fn main() -> std::io::Result<()> {
                     );
 
 
-                    log_output(
-                        "ENDPOINT",
-                        "METHOD",
-                        "DELETE",
-                        format!(
-                            "http://{}:{}/{}",
-                            host.red(),
-                            port.clone().to_string().green(),
-                            route_delete.clone().purple()
-                        ),
-                        false,
-                    );
-                    log_output(
-                        "ENDPOINT",
-                        "METHOD",
-                        "PUT",
-                        format!(
-                            "http://{}:{}/{}",
-                            host.red(),
-                            port.clone().to_string().green(),
-                            route_put.clone().purple()
-                        ),
-                        false,
-                    );
+                    if do_log {
+                        log_output(
+                            "ENDPOINT",
+                            "METHOD",
+                            "DELETE",
+                            format!(
+                                "http://{}:{}/{}",
+                                host.red(),
+                                port.clone().to_string().green(),
+                                route_delete.clone().purple()
+                            ),
+                            false,
+                        );
+                        log_output(
+                            "ENDPOINT",
+                            "METHOD",
+                            "PUT",
+                            format!(
+                                "http://{}:{}/{}",
+                                host.red(),
+                                port.clone().to_string().green(),
+                                route_put.clone().purple()
+                            ),
+                            false,
+                        );
+                    }
 
                     cfg.service(
                         web::resource(format!("{}/{{id}}", &*route_delete))
@@ -904,18 +923,20 @@ async fn main() -> std::io::Result<()> {
                     );
 
                     // register import BEFORE the dynamic {id} route to avoid conflicts
-                    log_output(
-                        "ENDPOINT",
-                        "METHOD",
-                        "POST",
-                        format!(
-                            "http://{}:{}/import/{}",
-                            host.red(),
-                            port.clone().to_string().green(),
-                            route_import.clone().purple()
-                        ),
-                        false,
-                    );
+                    if do_log {
+                        log_output(
+                            "ENDPOINT",
+                            "METHOD",
+                            "POST",
+                            format!(
+                                "http://{}:{}/import/{}",
+                                host.red(),
+                                port.clone().to_string().green(),
+                                route_import.clone().purple()
+                            ),
+                            false,
+                        );
+                    }
                     cfg.service(
                         web::resource(format!("/import/{}", &*route_import))
                             .route(web::post().to(
@@ -935,18 +956,20 @@ async fn main() -> std::io::Result<()> {
 
 
                     // register import BEFORE the dynamic {id} route to avoid conflicts
-                    log_output(
-                        "ENDPOINT",
-                        "METHOD",
-                        "GET",
-                        format!(
-                            "http://{}:{}/export/{}",
-                            host.red(),
-                            port.clone().to_string().green(),
-                            route_export.clone().purple()
-                        ),
-                        false,
-                    );
+                    if do_log {
+                        log_output(
+                            "ENDPOINT",
+                            "METHOD",
+                            "GET",
+                            format!(
+                                "http://{}:{}/export/{}",
+                                host.red(),
+                                port.clone().to_string().green(),
+                                route_export.clone().purple()
+                            ),
+                            false,
+                        );
+                    }
                     cfg.service(
                         web::resource(format!("/export/{}", &*route_export))
                             .route(web::get().to(
@@ -965,19 +988,21 @@ async fn main() -> std::io::Result<()> {
                     );
 
 
-                    log_output(
-                        "ENDPOINT",
-                        "METHOD",
-                        "GET",
-                        format!(
-                            "http://{}:{}/{}/{}",
-                            host.red(),
-                            port.clone().to_string().green(),
-                            "validate".yellow(),
-                            route_validate.clone().purple()
-                        ),
-                        false,
-                    );
+                    if do_log {
+                        log_output(
+                            "ENDPOINT",
+                            "METHOD",
+                            "GET",
+                            format!(
+                                "http://{}:{}/{}/{}",
+                                host.red(),
+                                port.clone().to_string().green(),
+                                "validate".yellow(),
+                                route_validate.clone().purple()
+                            ),
+                            false,
+                        );
+                    }
                     cfg.service(
                         web::resource(format!("validate/{}", &*route_validate)).route(
                             web::get().to(
@@ -994,19 +1019,21 @@ async fn main() -> std::io::Result<()> {
                     );
 
                     if route_generate_table != "flx_users" && route_generate_table != "flx_roles" {
-                        log_output(
-                            "ENDPOINT",
-                            "METHOD",
-                            "POST",
-                            format!(
-                                "http://{}:{}/{}/{}",
-                                host.red(),
-                                port.clone().to_string().green(),
-                                "generate/table".yellow(),
-                                route_generate_table.clone().purple()
-                            ),
-                            false,
-                        );
+                        if do_log {
+                            log_output(
+                                "ENDPOINT",
+                                "METHOD",
+                                "POST",
+                                format!(
+                                    "http://{}:{}/{}/{}",
+                                    host.red(),
+                                    port.clone().to_string().green(),
+                                    "generate/table".yellow(),
+                                    route_generate_table.clone().purple()
+                                ),
+                                false,
+                            );
+                        }
                         cfg.service(
                             web::resource(format!("generate/table/{}", &*route_generate_table))
                                 .route(web::post().to(

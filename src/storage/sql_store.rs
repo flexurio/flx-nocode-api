@@ -6,6 +6,7 @@ use serde_json::Value;
 use crate::database::state::{DbParam, DbRepository};
 use crate::storage::ast::{Filter, Query, Val, JoinKind};
 use crate::storage::traits::{BackendCapabilities, DataStore};
+use crate::storage::ddl::*;
 
 pub struct SqlStore {
     inner: Arc<dyn DbRepository>,
@@ -27,6 +28,8 @@ impl SqlStore {
     pub fn new(inner: Arc<dyn DbRepository>, db_type: String) -> Self {
         Self { inner, db_type }
     }
+
+    pub fn dialect(&self) -> &str { self.db_type.as_str() }
 
     /// Compile the query into (SQL, params) for debugging or advanced use-cases.
     pub fn preview_sql(&self, q: &Query) -> (String, Vec<DbParam>) {
@@ -231,6 +234,191 @@ impl SqlStore {
         }
 
         (sql, params)
+    }
+
+    fn compile_default_expr(&self, d: &DefaultExpr) -> String {
+        match d {
+            DefaultExpr::CurrentTimestamp => match self.db_type.as_str() {
+                "sqlite" => "CURRENT_TIMESTAMP".into(),
+                "mssql" => "GETDATE()".into(),
+                _ => "CURRENT_TIMESTAMP".into(),
+            },
+            DefaultExpr::Now => match self.db_type.as_str() {
+                "mssql" => "GETDATE()".into(),
+                "sqlite" => "CURRENT_TIMESTAMP".into(),
+                _ => "NOW()".into(),
+            },
+            DefaultExpr::Raw(s) => s.clone(),
+        }
+    }
+
+    fn fk_action_sql(&self, a: &crate::storage::ddl::ForeignAction) -> &'static str {
+        match a {
+            crate::storage::ddl::ForeignAction::Cascade => "CASCADE",
+            crate::storage::ddl::ForeignAction::SetNull => "SET NULL",
+            crate::storage::ddl::ForeignAction::Restrict => "RESTRICT",
+            crate::storage::ddl::ForeignAction::NoAction => "NO ACTION",
+        }
+    }
+
+    fn compile_create_table(&self, ct: &CreateTable) -> String {
+        // Fallback to combined statements using the separate builder
+        let (table_sql, index_sqls) = self.compile_create_table_separate(ct);
+        let mut sql = table_sql;
+        for ix in index_sqls {
+            sql.push_str("\n");
+            sql.push_str(&ix);
+        }
+        sql
+    }
+
+    fn compile_create_table_separate(&self, ct: &CreateTable) -> (String, Vec<String>) {
+        // Column lines
+        let mut col_lines: Vec<String> = Vec::with_capacity(ct.columns.len());
+        for c in &ct.columns {
+            let mut line = format!("{} ", c.name);
+            match &c.col_type {
+                ColumnType::Raw(t) => line.push_str(t),
+            }
+            if !c.nullable { line.push_str(" NOT NULL"); }
+            if let Some(def) = &c.default {
+                line.push_str(" DEFAULT ");
+                line.push_str(&self.compile_default_expr(def));
+            }
+            if c.auto_increment {
+                // best-effort: most dialects encode autoinc in type; for MySQL we may append AUTO_INCREMENT
+                if self.db_type == "mysql" {
+                    line.push_str(" AUTO_INCREMENT");
+                }
+            }
+            if c.primary_key_inline {
+                line.push_str(" PRIMARY KEY");
+                if self.db_type == "sqlite" && matches!(c.col_type, ColumnType::Raw(ref t) if t.eq_ignore_ascii_case("INTEGER")) {
+                    // If caller wants AUTOINCREMENT they should specify it in col_type raw
+                }
+            }
+            col_lines.push(line);
+        }
+
+        // Table constraints
+        let mut indexes_to_emit: Vec<(Option<String>, Vec<String>, bool)> = vec![];
+        // For MSSQL, emit FKs as separate ALTER TABLE statements guarded by existence checks
+        let mut fks_to_emit_mssql: Vec<(Option<String>, Vec<String>, String, Vec<String>, Option<crate::storage::ddl::ForeignAction>, Option<crate::storage::ddl::ForeignAction>)> = vec![];
+        for cons in &ct.constraints {
+            match cons {
+                TableConstraint::PrimaryKey { columns } => {
+                    col_lines.push(format!("PRIMARY KEY ({})", columns.join(", ")));
+                }
+                TableConstraint::Unique { name, columns } => {
+                    if let Some(nm) = name { col_lines.push(format!("CONSTRAINT {} UNIQUE ({})", nm, columns.join(", "))); }
+                    else { col_lines.push(format!("UNIQUE ({})", columns.join(", "))); }
+                }
+                TableConstraint::Index { name, columns, unique } => {
+                    // Emit as separate CREATE INDEX after CREATE TABLE for portability
+                    indexes_to_emit.push((name.clone(), columns.clone(), *unique));
+                }
+                TableConstraint::ForeignKey { name, columns, ref_table, ref_columns, on_delete, on_update } => {
+                    if self.db_type == "mssql" {
+                        fks_to_emit_mssql.push((name.clone(), columns.clone(), ref_table.clone(), ref_columns.clone(), on_delete.clone(), on_update.clone()));
+                    } else {
+                        let mut fk = String::new();
+                        if let Some(nm) = name { fk.push_str(&format!("CONSTRAINT {} ", nm)); }
+                        fk.push_str(&format!(
+                            "FOREIGN KEY ({}) REFERENCES {}({})",
+                            columns.join(", "),
+                            ref_table,
+                            ref_columns.join(", ")
+                        ));
+                        if let Some(act) = on_delete {
+                            fk.push_str(" ON DELETE ");
+                            fk.push_str(self.fk_action_sql(act));
+                        }
+                        if let Some(act) = on_update {
+                            fk.push_str(" ON UPDATE ");
+                            fk.push_str(self.fk_action_sql(act));
+                        }
+                        col_lines.push(fk);
+                    }
+                }
+            }
+        }
+
+        let if_not_exists = match self.db_type.as_str() {
+            "mysql" | "postgres" | "sqlite" => if ct.if_not_exists { " IF NOT EXISTS" } else { "" },
+            _ => "", // MSSQL handled with IF NOT EXISTS wrapper
+        };
+        let mut sql = String::new();
+        if self.db_type == "mssql" && ct.if_not_exists {
+            sql.push_str(&format!(
+                "IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='{}' AND xtype='U')\nBEGIN\n",
+                ct.name
+            ));
+        }
+        sql.push_str(&format!(
+            "CREATE TABLE{} {} (\n    {}\n);",
+            if_not_exists,
+            ct.name,
+            col_lines.join(",\n    ")
+        ));
+        if self.db_type == "mssql" && ct.if_not_exists {
+            sql.push_str("\nEND");
+        }
+        // Collect statements after table creation (FKs first for MSSQL, then indexes)
+        let mut index_sqls: Vec<String> = vec![];
+        if self.db_type == "mssql" {
+            for (name_opt, cols, ref_tbl, ref_cols, on_del, on_upd) in fks_to_emit_mssql.into_iter() {
+                let fk_name = name_opt.unwrap_or_else(|| format!("fk_{}_{}_{}", ct.name, cols.join("_"), ref_tbl));
+                let mut stmt = format!(
+                    "IF OBJECT_ID(N'{}', N'U') IS NOT NULL AND OBJECT_ID(N'{}', N'U') IS NOT NULL\nBEGIN\n    ALTER TABLE {} ADD CONSTRAINT {} FOREIGN KEY ({}) REFERENCES {}({})",
+                    ct.name, ref_tbl, ct.name, fk_name, cols.join(", "), ref_tbl, ref_cols.join(", ")
+                );
+                if let Some(act) = on_del { stmt.push_str(&format!(" ON DELETE {}", self.fk_action_sql(&act))); }
+                if let Some(act) = on_upd { stmt.push_str(&format!(" ON UPDATE {}", self.fk_action_sql(&act))); }
+                stmt.push_str(";\nEND");
+                index_sqls.push(stmt);
+            }
+        }
+        for (name_opt, cols, unique) in indexes_to_emit.into_iter() {
+            let ix_name = name_opt.unwrap_or_else(|| format!("idx_{}_{}", ct.name, cols.join("_")));
+            let uniq = if unique { "UNIQUE " } else { "" };
+            let stmt = match self.db_type.as_str() {
+                "postgres" | "sqlite" => format!(
+                    "CREATE {uniq}INDEX IF NOT EXISTS {ix} ON {tbl} ({cols});",
+                    uniq=uniq,
+                    ix=ix_name,
+                    tbl=ct.name,
+                    cols=cols.join(", ")
+                ),
+                "mssql" => format!(
+                    "IF NOT EXISTS (SELECT name FROM sys.indexes WHERE name = '{ix}' AND object_id = OBJECT_ID('{tbl}'))\nBEGIN\n    CREATE {uniq}INDEX {ix} ON {tbl} ({cols});\nEND",
+                    uniq=uniq,
+                    ix=ix_name,
+                    tbl=ct.name,
+                    cols=cols.join(", ")
+                ),
+                _ => format!(
+                    "CREATE {uniq}INDEX {ix} ON {tbl} ({cols});",
+                    uniq=uniq,
+                    ix=ix_name,
+                    tbl=ct.name,
+                    cols=cols.join(", ")
+                ),
+            };
+            index_sqls.push(stmt);
+        }
+        (sql, index_sqls)
+    }
+
+    pub fn preview_ddl(&self, d: &Ddl) -> String {
+        match d {
+            Ddl::CreateTable(ct) => self.compile_create_table(ct),
+        }
+    }
+
+    pub fn preview_ddl_separate(&self, d: &Ddl) -> (String, Vec<String>) {
+        match d {
+            Ddl::CreateTable(ct) => self.compile_create_table_separate(ct),
+        }
     }
 
     fn build_insert(&self, collection: &str, doc: &Value) -> anyhow::Result<(String, Vec<DbParam>)> {

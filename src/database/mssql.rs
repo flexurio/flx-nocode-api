@@ -86,16 +86,14 @@ fn mssql_row_to_json(row: &Row) -> Value {
     for col in row.columns() {
         let name = col.name();
         // Try common types by downcasting; fallback to string
-        let val = if let Ok(v) = row.try_get::<i64, _>(name) {
+        // Order matters: MSSQL INT is 32-bit; BIGINT is 64-bit.
+        let val = if let Ok(v) = row.try_get::<i32, _>(name) {
+            v.map(|n| Value::Number(n.into())).unwrap_or(Value::Null)
+        } else if let Ok(v) = row.try_get::<i64, _>(name) {
             v.map(|n| Value::Number(n.into())).unwrap_or(Value::Null)
         } else if let Ok(v) = row.try_get::<f64, _>(name) {
             v.and_then(serde_json::Number::from_f64)
                 .map(Value::Number)
-                .unwrap_or(Value::Null)
-        } else if let Ok(v) = row.try_get::<&str, _>(name) {
-            v.map(|s| Value::String(s.to_string())).unwrap_or(Value::Null)
-        } else if let Ok(v) = row.try_get::<&[u8], _>(name) {
-            v.map(|b| Value::String(base64::engine::general_purpose::STANDARD.encode(b)))
                 .unwrap_or(Value::Null)
         } else if let Ok(v) = row.try_get::<bool, _>(name) {
             v.map(Value::Bool).unwrap_or(Value::Null)
@@ -103,6 +101,9 @@ fn mssql_row_to_json(row: &Row) -> Value {
             v.map(|dt| Value::String(dt.to_string())).unwrap_or(Value::Null)
         } else if let Ok(v) = row.try_get::<&str, _>(name) {
             v.map(|s| Value::String(s.to_string())).unwrap_or(Value::Null)
+        } else if let Ok(v) = row.try_get::<&[u8], _>(name) {
+            v.map(|b| Value::String(base64::engine::general_purpose::STANDARD.encode(b)))
+                .unwrap_or(Value::Null)
         } else {
             Value::Null
         };

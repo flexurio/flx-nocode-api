@@ -22,6 +22,7 @@ use crate::{
 };
 use crate::storage::ast::{Filter as QF, Query as QQ, Val as QV};
 use crate::storage::sql_store::SqlStore;
+use crate::storage::prelude::{Ddl, CreateTable, ColumnDef, ColumnType, TableConstraint, DefaultExpr, ForeignAction};
 use crate::storage::traits::DataStore;
 
 pub async fn login(state: web::Data<AppState>, req: actix_web::HttpRequest) -> impl Responder {
@@ -290,49 +291,171 @@ pub async fn register(state: Data<AppState>, multipart: Multipart) -> impl Respo
 
 // NCO-POST
 pub async fn generate_users(state: Data<AppState>) -> impl Responder {
-    // read sql from file db/mysql/create-flx_users.sql
-    let db_file_path = format!("db/{}/create-flx_users.sql", state.db_type);
-    let mut s_sql = std::fs::read_to_string(db_file_path)
-        .expect("Failed to read SQL file")
-        .replace("\"", "");
+    // Create tables via DDL AST (vendor-aware)
+    let ds = SqlStore::new(state.db.clone(), state.db_type.clone());
 
+    // flx_users definition simplified; use Raw types per dialect where necessary
+    let users_cols: Vec<ColumnDef> = match state.db_type.as_str() {
+        "mssql" => vec![
+            ColumnDef { name: "id".into(), col_type: ColumnType::Raw("BIGINT IDENTITY(1,1)".into()), nullable: false, default: None, auto_increment: false, primary_key_inline: true },
+            ColumnDef { name: "email".into(), col_type: ColumnType::Raw("VARCHAR(100)".into()), nullable: false, default: None, auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "phone".into(), col_type: ColumnType::Raw("VARCHAR(15)".into()), nullable: false, default: None, auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "password".into(), col_type: ColumnType::Raw("NVARCHAR(MAX)".into()), nullable: false, default: None, auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "name".into(), col_type: ColumnType::Raw("VARCHAR(50)".into()), nullable: false, default: None, auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "photo".into(), col_type: ColumnType::Raw("VARCHAR(50)".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "email_verified".into(), col_type: ColumnType::Raw("BIT".into()), nullable: false, default: Some(DefaultExpr::Raw("0".into())), auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "enabled".into(), col_type: ColumnType::Raw("BIT".into()), nullable: true, default: Some(DefaultExpr::Raw("1".into())), auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "created_at".into(), col_type: ColumnType::Raw("DATETIME2".into()), nullable: false, default: Some(DefaultExpr::Raw("SYSDATETIME()".into())), auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "updated_at".into(), col_type: ColumnType::Raw("DATETIME2".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "deleted_at".into(), col_type: ColumnType::Raw("DATETIME2".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "created_by_id".into(), col_type: ColumnType::Raw("BIGINT".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "updated_by_id".into(), col_type: ColumnType::Raw("BIGINT".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "deleted_by_id".into(), col_type: ColumnType::Raw("BIGINT".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false },
+        ],
+        "postgres" => vec![
+            ColumnDef { name: "id".into(), col_type: ColumnType::Raw("BIGSERIAL".into()), nullable: false, default: None, auto_increment: true, primary_key_inline: true },
+            ColumnDef { name: "email".into(), col_type: ColumnType::Raw("VARCHAR(100)".into()), nullable: false, default: None, auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "phone".into(), col_type: ColumnType::Raw("VARCHAR(15)".into()), nullable: false, default: None, auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "password".into(), col_type: ColumnType::Raw("TEXT".into()), nullable: false, default: None, auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "name".into(), col_type: ColumnType::Raw("VARCHAR(50)".into()), nullable: false, default: None, auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "photo".into(), col_type: ColumnType::Raw("VARCHAR(50)".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "email_verified".into(), col_type: ColumnType::Raw("BOOLEAN".into()), nullable: false, default: Some(DefaultExpr::Raw("false".into())), auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "enabled".into(), col_type: ColumnType::Raw("BOOLEAN".into()), nullable: true, default: Some(DefaultExpr::Raw("true".into())), auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "created_at".into(), col_type: ColumnType::Raw("TIMESTAMP".into()), nullable: true, default: Some(DefaultExpr::Raw("CURRENT_TIMESTAMP".into())), auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "updated_at".into(), col_type: ColumnType::Raw("TIMESTAMP".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "deleted_at".into(), col_type: ColumnType::Raw("TIMESTAMP".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "created_by_id".into(), col_type: ColumnType::Raw("BIGINT".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "updated_by_id".into(), col_type: ColumnType::Raw("BIGINT".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "deleted_by_id".into(), col_type: ColumnType::Raw("BIGINT".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false },
+        ],
+        "sqlite" => vec![
+            ColumnDef { name: "id".into(), col_type: ColumnType::Raw("INTEGER PRIMARY KEY AUTOINCREMENT".into()), nullable: false, default: None, auto_increment: true, primary_key_inline: false },
+            ColumnDef { name: "email".into(), col_type: ColumnType::Raw("VARCHAR(100)".into()), nullable: false, default: None, auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "phone".into(), col_type: ColumnType::Raw("VARCHAR(15)".into()), nullable: false, default: None, auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "password".into(), col_type: ColumnType::Raw("TEXT".into()), nullable: false, default: None, auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "name".into(), col_type: ColumnType::Raw("VARCHAR(50)".into()), nullable: false, default: None, auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "photo".into(), col_type: ColumnType::Raw("VARCHAR(50)".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "email_verified".into(), col_type: ColumnType::Raw("BOOLEAN".into()), nullable: false, default: Some(DefaultExpr::Raw("0".into())), auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "enabled".into(), col_type: ColumnType::Raw("BOOLEAN".into()), nullable: true, default: Some(DefaultExpr::Raw("1".into())), auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "created_at".into(), col_type: ColumnType::Raw("DATETIME".into()), nullable: true, default: Some(DefaultExpr::CurrentTimestamp), auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "updated_at".into(), col_type: ColumnType::Raw("DATETIME".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "deleted_at".into(), col_type: ColumnType::Raw("DATETIME".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "created_by_id".into(), col_type: ColumnType::Raw("BIGINT".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "updated_by_id".into(), col_type: ColumnType::Raw("BIGINT".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "deleted_by_id".into(), col_type: ColumnType::Raw("BIGINT".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false },
+        ],
+        _ => vec![
+            ColumnDef { name: "id".into(), col_type: ColumnType::Raw("BIGINT AUTO_INCREMENT".into()), nullable: false, default: None, auto_increment: true, primary_key_inline: true },
+            ColumnDef { name: "email".into(), col_type: ColumnType::Raw("VARCHAR(100)".into()), nullable: false, default: None, auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "phone".into(), col_type: ColumnType::Raw("VARCHAR(15)".into()), nullable: false, default: None, auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "password".into(), col_type: ColumnType::Raw("LONGTEXT".into()), nullable: false, default: None, auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "name".into(), col_type: ColumnType::Raw("VARCHAR(50)".into()), nullable: false, default: None, auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "photo".into(), col_type: ColumnType::Raw("VARCHAR(50)".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "email_verified".into(), col_type: ColumnType::Raw("BOOLEAN".into()), nullable: false, default: Some(DefaultExpr::Raw("0".into())), auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "enabled".into(), col_type: ColumnType::Raw("BOOLEAN".into()), nullable: true, default: Some(DefaultExpr::Raw("1".into())), auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "created_at".into(), col_type: ColumnType::Raw("DATETIME".into()), nullable: true, default: Some(DefaultExpr::Now), auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "updated_at".into(), col_type: ColumnType::Raw("DATETIME".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "deleted_at".into(), col_type: ColumnType::Raw("DATETIME".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "created_by_id".into(), col_type: ColumnType::Raw("BIGINT".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "updated_by_id".into(), col_type: ColumnType::Raw("BIGINT".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "deleted_by_id".into(), col_type: ColumnType::Raw("BIGINT".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false },
+        ],
+    };
 
-    // execute sql
-    let result = &state.db.query(&s_sql).await;
-    if result.is_err() {
-        log_output(
-            "ERROR QUERY",
-            "POST",
-            "generate/table/flx_users",
-            s_sql.clone() + " ~ ERROR : " + result.as_ref().err().unwrap().to_string().as_str(),
-            true,
-        );
+    let users_constraints = vec![
+        TableConstraint::Unique { name: Some("idx_user_email".into()), columns: vec!["email".into()] },
+        TableConstraint::Unique { name: Some("idx_user_phone".into()), columns: vec!["phone".into()] },
+    ];
+
+    let ddl_users = Ddl::CreateTable(CreateTable {
+        if_not_exists: true,
+        name: "flx_users".into(),
+        columns: users_cols,
+        constraints: users_constraints,
+    });
+    let sql_users = ds.preview_ddl(&ddl_users);
+    if let Err(e) = state.db.query(&sql_users).await {
+        log_output("ERROR QUERY", "POST", "generate/table/flx_users", format!("{} ~ ERROR : {}", sql_users, e), true);
     }
 
-    // read sql from file db/mysql/create-flx_users.sql
-    s_sql = std::fs::read_to_string(format!("db/{}/create-flx_roles.sql", state.db_type))
-        .expect("Failed to read SQL file")
-        .replace("\"", "");
+    // flx_roles
+    let roles_cols: Vec<ColumnDef> = match state.db_type.as_str() {
+        "mssql" => vec![
+            ColumnDef { name: "id".into(), col_type: ColumnType::Raw("BIGINT IDENTITY(1,1)".into()), nullable: false, default: None, auto_increment: false, primary_key_inline: true },
+            ColumnDef { name: "id_users".into(), col_type: ColumnType::Raw("BIGINT".into()), nullable: false, default: None, auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "endpoint".into(), col_type: ColumnType::Raw("VARCHAR(100)".into()), nullable: false, default: None, auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "role".into(), col_type: ColumnType::Raw("TINYINT".into()), nullable: false, default: None, auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "created_at".into(), col_type: ColumnType::Raw("DATETIME2".into()), nullable: false, default: Some(DefaultExpr::Raw("SYSDATETIME()".into())), auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "updated_at".into(), col_type: ColumnType::Raw("DATETIME2".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "deleted_at".into(), col_type: ColumnType::Raw("DATETIME2".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "created_by_id".into(), col_type: ColumnType::Raw("BIGINT".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "updated_by_id".into(), col_type: ColumnType::Raw("BIGINT".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "deleted_by_id".into(), col_type: ColumnType::Raw("BIGINT".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false },
+        ],
+        "postgres" => vec![
+            ColumnDef { name: "id".into(), col_type: ColumnType::Raw("BIGSERIAL".into()), nullable: false, default: None, auto_increment: true, primary_key_inline: true },
+            ColumnDef { name: "id_users".into(), col_type: ColumnType::Raw("BIGINT".into()), nullable: false, default: None, auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "endpoint".into(), col_type: ColumnType::Raw("VARCHAR(100)".into()), nullable: false, default: None, auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "role".into(), col_type: ColumnType::Raw("SMALLINT".into()), nullable: false, default: None, auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "created_at".into(), col_type: ColumnType::Raw("TIMESTAMP".into()), nullable: true, default: Some(DefaultExpr::CurrentTimestamp), auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "updated_at".into(), col_type: ColumnType::Raw("TIMESTAMP".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "deleted_at".into(), col_type: ColumnType::Raw("TIMESTAMP".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "created_by_id".into(), col_type: ColumnType::Raw("BIGINT".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "updated_by_id".into(), col_type: ColumnType::Raw("BIGINT".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "deleted_by_id".into(), col_type: ColumnType::Raw("BIGINT".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false },
+        ],
+        "sqlite" => vec![
+            ColumnDef { name: "id".into(), col_type: ColumnType::Raw("INTEGER PRIMARY KEY AUTOINCREMENT".into()), nullable: false, default: None, auto_increment: true, primary_key_inline: false },
+            ColumnDef { name: "id_users".into(), col_type: ColumnType::Raw("BIGINT".into()), nullable: false, default: None, auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "endpoint".into(), col_type: ColumnType::Raw("VARCHAR(100)".into()), nullable: false, default: None, auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "role".into(), col_type: ColumnType::Raw("SMALLINT".into()), nullable: false, default: None, auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "created_at".into(), col_type: ColumnType::Raw("DATETIME".into()), nullable: true, default: Some(DefaultExpr::CurrentTimestamp), auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "updated_at".into(), col_type: ColumnType::Raw("DATETIME".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "deleted_at".into(), col_type: ColumnType::Raw("DATETIME".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "created_by_id".into(), col_type: ColumnType::Raw("BIGINT".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "updated_by_id".into(), col_type: ColumnType::Raw("BIGINT".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "deleted_by_id".into(), col_type: ColumnType::Raw("BIGINT".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false },
+        ],
+        _ => vec![
+            ColumnDef { name: "id".into(), col_type: ColumnType::Raw("BIGINT AUTO_INCREMENT".into()), nullable: false, default: None, auto_increment: true, primary_key_inline: true },
+            ColumnDef { name: "id_users".into(), col_type: ColumnType::Raw("BIGINT".into()), nullable: false, default: None, auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "endpoint".into(), col_type: ColumnType::Raw("VARCHAR(100)".into()), nullable: false, default: None, auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "role".into(), col_type: ColumnType::Raw("TINYINT".into()), nullable: false, default: None, auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "created_at".into(), col_type: ColumnType::Raw("DATETIME".into()), nullable: true, default: Some(DefaultExpr::Now), auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "updated_at".into(), col_type: ColumnType::Raw("DATETIME".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "deleted_at".into(), col_type: ColumnType::Raw("DATETIME".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "created_by_id".into(), col_type: ColumnType::Raw("BIGINT".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "updated_by_id".into(), col_type: ColumnType::Raw("BIGINT".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false },
+            ColumnDef { name: "deleted_by_id".into(), col_type: ColumnType::Raw("BIGINT".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false },
+        ],
+    };
 
-    // execute sql
-    let result = &state.db.query(&s_sql).await;
-    if result.is_err() {
-        log_output(
-            "ERROR QUERY",
-            "POST",
-            "generate/table/flx_roles",
-            s_sql.clone() + " ~ ERROR : " + result.as_ref().err().unwrap().to_string().as_str(),
-            true,
-        );
+    let roles_constraints = vec![
+        TableConstraint::Unique { name: Some("uq_role_user_endpoint".into()), columns: vec!["id_users".into(), "endpoint".into()] },
+        TableConstraint::ForeignKey {
+            name: Some("fk_roles_user".into()),
+            columns: vec!["id_users".into()],
+            ref_table: "flx_users".into(),
+            ref_columns: vec!["id".into()],
+            on_delete: Some(ForeignAction::Cascade),
+            on_update: Some(ForeignAction::NoAction),
+        },
+    ];
+
+    let ddl_roles = Ddl::CreateTable(CreateTable {
+        if_not_exists: true,
+        name: "flx_roles".into(),
+        columns: roles_cols,
+        constraints: roles_constraints,
+    });
+    let sql_roles = ds.preview_ddl(&ddl_roles);
+    if let Err(e) = state.db.query(&sql_roles).await {
+        log_output("ERROR QUERY", "POST", "generate/table/flx_roles", format!("{} ~ ERROR : {}", sql_roles, e), true);
     }
 
-    // guery to flx_users where name = "Flexurio Admin"
-    // read sql from file db/mysql/create-flx_users.sql
-    s_sql = std::fs::read_to_string(format!("db/{}/select-flx_users-admin.sql", state.db_type))
-        .expect("Failed to read SQL file")
-        .replace("\"", "");
-
-    let mut id_user: i64 = match &state.db.query(&s_sql).await {
+    // Query flx_users to check if admin user already exists
+    let select_admin_sql = "SELECT id FROM flx_users WHERE email = 'admin'";
+    let mut id_user: i64 = match &state.db.query(select_admin_sql).await {
         Ok(row) => {
             // check if row is empty
             if row.is_empty() {
@@ -345,15 +468,14 @@ pub async fn generate_users(state: Data<AppState>) -> impl Responder {
             log_output(
                 "ERROR QUERY",
                 "POST",
-                "generate/table/select-flx_users-admin.sql",
-                s_sql.clone() + " ~ ERROR : " + &err.to_string(),
+                "generate/table/select-flx_users-admin",
+                select_admin_sql.to_string() + " ~ ERROR : " + &err.to_string(),
                 true,
             );
             0
         },
     };
-
-    log_output("QUERY", "POST", "generate/table/users", s_sql.clone(), true);
+    log_output("QUERY", "POST", "generate/table/users", select_admin_sql.to_string(), true);
 
     if id_user == 0 {
         id_user = 1;
@@ -365,54 +487,54 @@ pub async fn generate_users(state: Data<AppState>) -> impl Responder {
         println!("Your admin Password: {:?}", random_pass);
         println!("==========================================");
 
-        // insert into test.users (id, email, phone, role, password, name, photo, email_verified, created_at, updated_at, enabled)
-        s_sql = std::fs::read_to_string(format!("db/{}/insert-flx_users-admin.sql", state.db_type))
-            .expect("Failed to read SQL file")
-            .replace("\"", "")
-            .replace("{{password}}", &encrypt_password);
-
-        let result = &state.db.query(&s_sql).await;
-        if result.is_err() {
+    // Insert admin using AST insert_with for cross-db NOW()
+        let ds = SqlStore::new(state.db.clone(), state.db_type.clone());
+        let now_fn = state.query_converter.datetime_now.clone();
+        let (sql_insert_admin, params_insert_admin) = ds
+            .preview_insert_with(
+                "flx_users",
+                &[
+                    ("id".into(), crate::storage::sql_store::InsertValue::Param(crate::database::state::DbParam::I64(1))),
+                    ("email".into(), crate::storage::sql_store::InsertValue::Param(crate::database::state::DbParam::Str("admin".into()))),
+                    ("phone".into(), crate::storage::sql_store::InsertValue::Param(crate::database::state::DbParam::Str("5758".into()))),
+                    ("password".into(), crate::storage::sql_store::InsertValue::Param(crate::database::state::DbParam::Str(encrypt_password))),
+                    ("name".into(), crate::storage::sql_store::InsertValue::Param(crate::database::state::DbParam::Str("Admin Flexurio".into()))),
+                    ("created_at".into(), crate::storage::sql_store::InsertValue::Raw(now_fn.clone())),
+                    ("updated_at".into(), crate::storage::sql_store::InsertValue::Raw(now_fn.clone())),
+                    ("enabled".into(), crate::storage::sql_store::InsertValue::Param(crate::database::state::DbParam::Bool(true))),
+                ],
+            )
+            .unwrap();
+        let built = crate::database::state::rehydrate_placeholders(&sql_insert_admin, &state.db_type);
+        // For MSSQL identity column, allow explicit ID insertion by toggling IDENTITY_INSERT
+        let result = if state.db_type == "mssql" {
+            let _ = state.db.query("SET IDENTITY_INSERT flx_users ON").await;
+            let r = state.db.query_with_params(&built, params_insert_admin).await;
+            let _ = state.db.query("SET IDENTITY_INSERT flx_users OFF").await;
+            r
+        } else {
+            state.db.query_with_params(&built, params_insert_admin).await
+        };
+        if let Err(err) = &result {
             log_output(
                 "ERROR QUERY",
                 "POST",
-                "generate/table/insert-flx_users-admin.sql",
-                s_sql.clone() + " ~ ERROR : " + result.as_ref().err().unwrap().to_string().as_str(),
+                "generate/table/insert-flx_users-admin",
+                sql_insert_admin.clone() + " ~ ERROR : " + err.to_string().as_str(),
                 true,
             );
         }
 
-        // insert into test.users (id, email, phone, role, password, name, photo, email_verified, created_at, updated_at, enabled)
-        s_sql = std::fs::read_to_string(format!("db/{}/insert-flx_roles.sql", state.db_type))
-            .expect("Failed to read SQL file")
-            .replace("\"", "")
-            .replace("{{id_user}}", &id_user.to_string());
-
-        // split s_sql by ;
-        let array_sql: Vec<&str> = s_sql.split(";").collect();
-
-        // loop through array_sql and execute each sql
-        for sql in array_sql {
-            if !sql.trim().is_empty() {
-                log_output(
-                    "EXEC",
-                    "POST",
-                    "generate/table/users",
-                    sql.to_string(),
-                    true,
-                );
-                match &state.db.query(sql).await {
-                    Ok(_) => (),
-                    Err(err) => {
-                        return HttpResponse::InternalServerError().json(WebResponse {
-                            success: false,
-                            message: format!("Error NCO-POST: {}", err),
-                            total_data: 0,
-                            data: Value::Null,
-                        });
-                    }
-                };
-            }
+        // Insert default roles (two rows) with AST bulk insert
+        use crate::storage::sql_store::InsertValue as IV;
+        let cols = vec!["id_users".into(), "endpoint".into(), "role".into(), "created_at".into()];
+        let rows = vec![
+            vec![IV::Param(crate::database::state::DbParam::I64(id_user)), IV::Param(crate::database::state::DbParam::Str("flx_users".into())), IV::Param(crate::database::state::DbParam::I64(127)), IV::Raw(now_fn.clone())],
+            vec![IV::Param(crate::database::state::DbParam::I64(id_user)), IV::Param(crate::database::state::DbParam::Str("flx_roles".into())), IV::Param(crate::database::state::DbParam::I64(127)), IV::Raw(now_fn.clone())],
+        ];
+        if let Ok((sql_roles_ins, params_roles_ins)) = ds.preview_insert_bulk("flx_roles", &cols, &rows) {
+            let built_roles = crate::database::state::rehydrate_placeholders(&sql_roles_ins, &state.db_type);
+            let _ = state.db.query_with_params(&built_roles, params_roles_ins).await;
         }
     }
 

@@ -1,1 +1,0 @@
-SELECT id, name, CAST(password as CHAR(255)) as password FROM flx_users WHERE email = '{{email}}' AND enabled=True LIMIT 1;
