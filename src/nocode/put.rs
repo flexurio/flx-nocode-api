@@ -20,6 +20,8 @@ use crate::{
 };
 use chrono::Local;
 use std::sync::Arc;
+use crate::storage::sql_store::SqlStore;
+use crate::storage::traits::DataStore;
 
 // NCO-PUT
 pub async fn update(
@@ -118,6 +120,7 @@ pub async fn update(
     let mut set_clause = "SET ".to_string();
     let mut bind_params: Vec<DbParam> = Vec::new();
     let mut id_new = "".to_string();
+    let mut password_override: Option<String> = None;
 
     // loop every column in table_schemas.put.columns
     for column in table_schema.put.columns.iter() {
@@ -184,12 +187,14 @@ pub async fn update(
                         }
                     };
 
-                    // check col.encrypt if true then encrypt value
+                    // check col.encrypt if true then encrypt value (and capture password override for flx_users)
                     if col.encrypt {
-                        // check apakah value udah di encrypt
                         let is_encrypted = is_encrypted_string(value_x.clone().as_str());
                         if !is_encrypted {
                             value_x = encrypt(state.encrypt_key.clone(), value_x.clone());
+                        }
+                        if route == "flx_users" && column == "password" {
+                            password_override = Some(value_x.clone());
                         }
                     }
 
@@ -212,11 +217,8 @@ pub async fn update(
         }
     }
 
-    // add updated_at to set_clause
-    set_clause.push_str(&format!(
-        "updated_at = {}, ",
-        state.query_converter.datetime_now
-    ));
+    // add updated_at to set_clause (except when we only update password via DataStore below)
+    set_clause.push_str(&format!("updated_at = {}, ", state.query_converter.datetime_now));
     set_clause.push_str("updated_by_id = ?, ");
 
     // get type data updated_by_id from table_schema
@@ -262,13 +264,7 @@ pub async fn update(
     }
 
     log_output("QUERY", "PUT", route.as_str(), s_sql.clone(), true);
-    log_output(
-        "PARAM",
-        "PUT",
-        route.as_str(),
-        format!("{:?}", bind_params),
-        true,
-    );
+    log_output("PARAM", "PUT", route.as_str(), format!("{:?}", bind_params), true);
 
     // check validation_data
     if table_schema.put.validate_data.contains("SQL:") {
@@ -341,6 +337,71 @@ pub async fn update(
                 total_data: 0,
                 data: Value::Null,
             });
+        }
+    }
+
+    // If this is a password-only update for flx_users, prefer DataStore for clarity and consistency
+    if route == "flx_users" && password_override.is_some() && table_schema.put.columns.len() == 1 {
+        let ds = SqlStore::new(state.db.clone(), state.db_type.clone());
+        let now = chrono::Local::now().naive_local().format("%Y-%m-%d %H:%M:%S").to_string();
+        let mut doc = serde_json::json!({
+            "password": password_override.unwrap(),
+            "updated_at": now,
+        });
+        // updated_by_id from claims
+        // detect numeric type for updated_by_id
+        let created_by_type = table_schema
+            .columns
+            .iter()
+            .find(|c| c.name == "updated_by_id")
+            .map(|c| c.type_data.clone())
+            .unwrap_or("int".to_string());
+        if created_by_type.contains("int") {
+            if let Ok(n) = claims.id.parse::<i64>() {
+                doc["updated_by_id"] = serde_json::json!(n);
+            } else {
+                doc["updated_by_id"] = serde_json::json!(claims.id.clone());
+            }
+        } else if created_by_type.contains("float")
+            || created_by_type.contains("double")
+            || created_by_type.contains("decimal")
+            || created_by_type.contains("money")
+        {
+            if let Ok(n) = claims.id.parse::<f64>() {
+                doc["updated_by_id"] = serde_json::json!(n);
+            } else {
+                doc["updated_by_id"] = serde_json::json!(claims.id.clone());
+            }
+        } else {
+            doc["updated_by_id"] = serde_json::json!(claims.id.clone());
+        }
+
+        // Build WHERE id = ? by calling update with Filter
+        use crate::storage::ast::{Filter as QF, Val as QV};
+        let filter = Some(QF::Eq("id".into(), QV::Str(id_raw.clone())));
+        if *crate::ISDEBUG {
+            // Preview as UPDATE, reusing compile logic by constructing a Query then logging
+            log_output("QUERY", "PUT", route.as_str(), "AST password update flx_users".to_string(), true);
+        }
+        match ds.update("flx_users", filter, doc).await {
+            Ok(_) => {
+                let _ = transaction.commit().await; // ensure we end the surrounding TX cleanly
+                return HttpResponse::Ok().json(WebResponse {
+                    success: true,
+                    message: "Data updated successfully".to_string(),
+                    total_data: 1,
+                    data: Value::Null,
+                });
+            }
+            Err(err) => {
+                let _ = transaction.rollback().await;
+                return HttpResponse::InternalServerError().json(WebResponse {
+                    success: false,
+                    message: format!("Error NCO-PUT: {}", err),
+                    total_data: 0,
+                    data: Value::Null,
+                });
+            }
         }
     }
 

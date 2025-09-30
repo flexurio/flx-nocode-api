@@ -48,6 +48,7 @@ mod audit;
 mod helpers;
 mod log;
 mod rate_limit;
+mod storage; // new optional storage abstraction (not used yet)
 
 // Load routes.json once and expose via CONFIG
 static CONFIG: Lazy<crate::model::Config> = Lazy::new(|| {
@@ -95,7 +96,7 @@ static CONFIG: Lazy<crate::model::Config> = Lazy::new(|| {
 // Static whitelist for unauthenticated endpoints
 const ROUTE_WHITELIST: [&str; 3] = ["/login", "/register", "/healthz"];
 
-static ISDEBUG: Lazy<bool> = Lazy::new(|| match env::var("DEBUG") {
+pub(crate) static ISDEBUG: Lazy<bool> = Lazy::new(|| match env::var("DEBUG") {
     Ok(val) => matches!(val.to_lowercase().as_str(), "1" | "true" | "yes"),
     Err(_) => false,
 });

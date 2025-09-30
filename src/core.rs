@@ -15,12 +15,14 @@ use crate::rate_limit::{RL_WINDOW_LOGIN, RL_WINDOW_LOGIN_FAIL};
 use crate::{
     auth::create_token,
     crypt::{decrypt, encrypt},
-    database::state::DbParam,
     helpers::{get_client_ip, multipart_to_json},
     log::log_output,
     model::WebResponse,
     AppState,
 };
+use crate::storage::ast::{Filter as QF, Query as QQ, Val as QV};
+use crate::storage::sql_store::SqlStore;
+use crate::storage::traits::DataStore;
 
 pub async fn login(state: web::Data<AppState>, req: actix_web::HttpRequest) -> impl Responder {
     // Rate limit by IP (fixed window) — allow disabling with 0 or -1
@@ -85,53 +87,45 @@ pub async fn login(state: web::Data<AppState>, req: actix_web::HttpRequest) -> i
     let email = parts.next().unwrap_or("");
     let pass_in = parts.next().unwrap_or("");
 
-    // read sql from file db/mysql/create-flx_users.sql
-    let s_sql_tpl =
-        match std::fs::read_to_string(format!("db/{}/select-flx_users-login.sql", state.db_type)) {
-            Ok(s) => s,
-            Err(_) => {
-                return HttpResponse::InternalServerError().json(WebResponse {
-                    success: false,
-                    message: "Login SQL missing".into(),
-                    total_data: 0,
-                    data: Value::Null,
-                })
-            }
-        };
-    // Use parameter placeholder and bind email safely (backends handle Postgres placeholder conversion)
-    let s_sql = s_sql_tpl
-        .replace("\"", "")
-        .replace("'{{email}}'", "?")
-        .replace("{{email}}", "?");
-
-    log_output("QUERY", "POST", "login", s_sql.clone(), true);
-
-    let (password_db, id_user, name) = match &state
-        .db
-        .query_with_params(&s_sql, vec![DbParam::Str(email.to_string())])
-        .await
-    {
-        Ok(rows) => {
-            if let Some(row0) = rows.first() {
-                let password = row0
-                    .get("password")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string()
-                    .replace(" ", "");
-                let id = row0.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
-                let name = row0
-                    .get("name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                (password, id, name)
-            } else {
-                println!("No user found with email: {}", email);
-                ("".to_string(), 0_i64, "".to_string())
-            }
-        }
-        Err(_) => ("".to_string(), 0_i64, "".to_string()),
+    // Query via DataStore (SqlStore adapter)
+    let ds = SqlStore::new(state.db.clone(), state.db_type.clone());
+    // DB-specific cast for password so we always read it as string
+    let pass_expr: &str = match state.db_type.as_str() {
+        "mysql" | "postgres" => "CAST(password as CHAR(255)) as password",
+        "sqlite" => "CAST(password as TEXT) as password",
+        "mssql" => "CAST(password as NVARCHAR(255)) as password",
+        _ => "password",
+    };
+    let q_user = QQ::from("flx_users")
+        .select(["id", "name", pass_expr]) // columns needed for auth
+        .r#where(QF::And(vec![
+            QF::Eq("email".into(), QV::Str(email.to_string())),
+            QF::Eq("enabled".into(), QV::Bool(true)),
+        ]))
+        .limit(1);
+    if *crate::ISDEBUG {
+        let (sql_dbg, _params_dbg) = ds.preview_sql(&q_user);
+        log_output("QUERY", "POST", "login", sql_dbg.clone(), true);
+    } else {
+        log_output("QUERY", "POST", "login", format!("AST flx_users where email=? (db={})", state.db_type), true);
+    }
+    let rows = ds.query(&q_user).await.unwrap_or_default();
+    let (password_db, id_user, name) = if let Some(row0) = rows.first() {
+        let password = row0
+            .get("password")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string()
+            .replace(" ", "");
+        let id = row0.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+        let name = row0
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        (password, id, name)
+    } else {
+        ("".to_string(), 0_i64, "".to_string())
     };
 
     let decrypt_password = decrypt(state.encrypt_key.clone(), password_db);
@@ -184,14 +178,12 @@ pub async fn login(state: web::Data<AppState>, req: actix_web::HttpRequest) -> i
         });
     }
 
-    // Cross-DB: avoid CONCAT differences; fetch endpoint & role and join in Rust
-    let s_sql = "SELECT endpoint, role FROM flx_roles WHERE id_users = ?".to_string();
-    log_output("QUERY", "core.rs/login", "flx_roles", s_sql.clone() + " ~ " + &id_user.to_string(), true);
-    let roles_rows = state
-        .db
-        .query_with_params(&s_sql, vec![DbParam::I64(id_user)])
-        .await
-        .unwrap_or_default();
+    // Cross-DB: fetch endpoint & role and join in Rust via DataStore
+    let q_roles = QQ::from("flx_roles")
+        .select(["endpoint", "role"]) 
+        .r#where(QF::Eq("id_users".into(), QV::I64(id_user)));
+    log_output("QUERY", "core.rs/login", "flx_roles", format!("AST id_users=? ~ {}", id_user), true);
+    let roles_rows = ds.query(&q_roles).await.unwrap_or_default();
     let roles_data = roles_rows
         .into_iter()
         .filter_map(|v| {
@@ -248,29 +240,39 @@ pub async fn register(state: Data<AppState>, multipart: Multipart) -> impl Respo
 
     let encrypt_password = encrypt(state.encrypt_key.clone(), password);
 
-    // insert into test.users (id, email, phone, role, password, name, photo, email_verified, created_at, updated_at, enabled)
-    let s_sql = format!(
-              "INSERT INTO flx_users (email, phone, password, name, created_at, updated_at, enabled) VALUES (?, ?, ?, ?, {}, {}, 1)",
-              state.query_converter.datetime_now,
-              state.query_converter.datetime_now
-       );
+    // Use DataStore (SqlStore) insert with app-side timestamps for cross-DB compatibility
+    let ds = SqlStore::new(state.db.clone(), state.db_type.clone());
+    let now = chrono::Local::now().naive_local().format("%Y-%m-%d %H:%M:%S").to_string();
+    let email = body["email"].to_string().trim_matches('"').to_string();
+    let phone = body["phone"].to_string().trim_matches('"').to_string();
+    let name = body["name"].to_string().trim_matches('"').to_string();
 
-    log_output("QUERY", "POST", "register", s_sql.clone(), true);
+    // enabled type depends on DB: Postgres expects boolean, others accept 1/0
+    let enabled_val = match state.db_type.as_str() {
+        "postgres" => Value::Bool(true),
+        _ => Value::Number(1.into()),
+    };
 
-    // execute sql
-    match &state
-        .db
-        .query_with_params(
-            &s_sql,
-            vec![
-                DbParam::Str(body["email"].to_string().trim_matches('"').to_string()),
-                DbParam::Str(body["phone"].to_string().trim_matches('"').to_string()),
-                DbParam::Str(encrypt_password),
-                DbParam::Str(body["name"].to_string().trim_matches('"').to_string()),
-            ],
-        )
-        .await
-    {
+    let doc = json!({
+        "email": email,
+        "phone": phone,
+        "password": encrypt_password,
+        "name": name,
+        "created_at": now,
+        "updated_at": now,
+        "enabled": enabled_val
+    });
+
+    if *crate::ISDEBUG {
+        if let Ok((sql_dbg, params_dbg)) = ds.preview_insert("flx_users", &doc) {
+            log_output("QUERY", "POST", "register", sql_dbg, true);
+            log_output("PARAM", "POST", "register", format!("{:?}", params_dbg), true);
+        }
+    } else {
+        log_output("QUERY", "POST", "register", "AST insert flx_users".to_string(), true);
+    }
+
+    match ds.insert("flx_users", doc).await {
         Ok(_) => HttpResponse::Ok().json(WebResponse {
             success: true,
             message: "Register Success".to_string(),
