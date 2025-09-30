@@ -18,6 +18,7 @@ use crate::{
 };
 use chrono::Local;
 use std::sync::Arc;
+use crate::storage::sql_store::SqlStore;
 
 // NCO-POST
 pub async fn insert(
@@ -199,6 +200,8 @@ pub async fn insert(
     let mut bind_params: Vec<DbParam> = Vec::new();
 
     // **3️⃣ Buat daftar nilai untuk INSERT** (fragment SQL per kolom)
+    let mut has_formula = false;
+    let mut doc_map = serde_json::Map::new();
     let mut insert_values: Vec<String> = Vec::new();
     for col in filtered_columns.iter() {
         if col.auto_increment {
@@ -218,6 +221,7 @@ pub async fn insert(
             let string_formula = matched_string.unwrap_or("").to_string();
             if string_formula.contains('=') {
                 isformula = true;
+                has_formula = true;
                 // Remove leading "col=" part
                 let rhs = string_formula.replace(&format!("{}=", col.name), "");
                 let (frag, mut params) = build_formula_value(&rhs, &body);
@@ -278,18 +282,23 @@ pub async fn insert(
 
             // Do not force default "0"; required fields checked earlier. Keep empty if optional.
 
-            // push placeholder and param by type
+            // push placeholder and param by type and mirror into doc_map for AST
             if col.type_data.contains("int") || col.type_data.contains("float") {
                 if let Ok(n) = value.parse::<i64>() {
                     bind_params.push(DbParam::I64(n));
+                    doc_map.insert(col.name.clone(), serde_json::json!(n));
                 } else if let Ok(f) = value.parse::<f64>() {
                     bind_params.push(DbParam::F64(f));
+                    doc_map.insert(col.name.clone(), serde_json::json!(f));
                 } else {
                     bind_params.push(DbParam::Str(value));
+                    // try number first; else string
+                    doc_map.insert(col.name.clone(), serde_json::json!(body.get(&col.name).cloned().unwrap_or(Value::String(String::new()))));
                 }
                 insert_values.push("?".into());
             } else {
                 bind_params.push(DbParam::Str(value));
+                doc_map.insert(col.name.clone(), body.get(&col.name).cloned().unwrap_or(Value::String(String::new())));
                 insert_values.push("?".into());
             }
         }
@@ -383,14 +392,25 @@ pub async fn insert(
         // remove id from insert_columns
         insert_columns.retain(|&x| x != "id");
         insert_columns.push("id");
-        // add id parameter
-        insert_values.push("?".into());
-        bind_params.push(DbParam::Str(id));
+    // add id parameter
+    insert_values.push("?".into());
+    bind_params.push(DbParam::Str(id.clone()));
+    // mirror to doc_map actual id value for AST path
+    doc_map.insert("id".to_string(), serde_json::json!(id));
     }
 
-    // **Tambahkan created_at**
+    // **Tambahkan created_at** (app-side timestamp for AST)
+    let now = Local::now().to_rfc3339();
     insert_columns.push("created_at");
-    insert_values.push(state.query_converter.datetime_now.clone());
+    if has_formula {
+        insert_values.push(state.query_converter.datetime_now.clone());
+    } else {
+        insert_values.push("?".into());
+        // bind for legacy path
+        bind_params.push(DbParam::Str(now.clone()));
+        // doc for AST path
+        doc_map.insert("created_at".to_string(), serde_json::json!(now.clone()));
+    }
 
     // **Tambahkan created_by_id**
     insert_columns.push("created_by_id");
@@ -409,37 +429,62 @@ pub async fn insert(
     if created_by_type.contains("int") {
         if let Ok(n) = claims.id.parse::<i64>() {
             bind_params.push(DbParam::I64(n));
+            doc_map.insert("created_by_id".to_string(), serde_json::json!(n));
         } else {
             bind_params.push(DbParam::Str(claims.id.clone()));
+            doc_map.insert("created_by_id".to_string(), serde_json::json!(claims.id.clone()));
         }
-    } else if created_by_type.contains("float") || 
-        created_by_type.contains("double") || 
-        created_by_type.contains("decimal") || 
-        created_by_type.contains("money") {
+    } else if created_by_type.contains("float")
+        || created_by_type.contains("double")
+        || created_by_type.contains("decimal")
+        || created_by_type.contains("money")
+    {
         if let Ok(n) = claims.id.parse::<f64>() {
             bind_params.push(DbParam::F64(n));
+            doc_map.insert("created_by_id".to_string(), serde_json::json!(n));
         } else {
             bind_params.push(DbParam::Str(claims.id.clone()));
+            doc_map.insert("created_by_id".to_string(), serde_json::json!(claims.id.clone()));
         }
     } else {
         bind_params.push(DbParam::Str(claims.id.clone()));
+        doc_map.insert("created_by_id".to_string(), serde_json::json!(claims.id.clone()));
     }
 
-    let s_sql = format!(
-        "INSERT INTO {} ({}) VALUES ({})",
-        table_schema.table,
-        insert_columns.join(", "),
-        insert_values.join(", ")
-    );
-
-    log_output("QUERY", "POST", route.as_str(), s_sql.clone(), true);
-    log_output(
-        "PARAMS",
-        "POST",
-        route.as_str(),
-        format!("{:?}", bind_params),
-        true,
-    );
+    // Determine execution SQL and params (AST when no formula, legacy otherwise)
+    let ds = SqlStore::new(state.db.clone(), state.db_type.clone());
+    let (exec_sql, exec_params) = if !has_formula {
+        let doc_val = serde_json::Value::Object(doc_map.clone());
+        match ds.preview_insert(&table_schema.table, &doc_val) {
+            Ok((sql_dbg, params_dbg)) => {
+                if *crate::ISDEBUG {
+                    log_output("QUERY", "POST(AST)", route.as_str(), sql_dbg.clone(), true);
+                    log_output("PARAMS", "POST(AST)", route.as_str(), format!("{:?}", params_dbg), true);
+                }
+                (sql_dbg, params_dbg)
+            }
+            Err(e) => {
+                return HttpResponse::InternalServerError().json(WebResponse {
+                    success: false,
+                    message: format!("Error compiling AST INSERT: {}", e),
+                    total_data: 0,
+                    data: Value::Null,
+                });
+            }
+        }
+    } else {
+        let s_sql = format!(
+            "INSERT INTO {} ({}) VALUES ({})",
+            table_schema.table,
+            insert_columns.join(", "),
+            insert_values.join(", ")
+        );
+        if *crate::ISDEBUG {
+            log_output("QUERY", "POST(LEGACY)", route.as_str(), s_sql.clone(), true);
+            log_output("PARAMS", "POST(LEGACY)", route.as_str(), format!("{:?}", bind_params), true);
+        }
+        (s_sql, bind_params.clone())
+    };
 
     // check validation_data
     if table_schema.post.validate_data.contains("SQL:") {
@@ -517,7 +562,7 @@ pub async fn insert(
         }
     }
 
-    match transaction.query_with_params(&s_sql, bind_params).await {
+    match transaction.query_with_params(&exec_sql, exec_params).await {
         Ok(_) => {
             if table_schema.post.post_process.contains("SQL:") {
                 if let Err(err) = execute_sql_formula_with_transaction(

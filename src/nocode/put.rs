@@ -22,6 +22,7 @@ use chrono::Local;
 use std::sync::Arc;
 use crate::storage::sql_store::SqlStore;
 use crate::storage::traits::DataStore;
+use crate::storage::ast::{Filter as QF, Val as QV};
 
 // NCO-PUT
 pub async fn update(
@@ -117,10 +118,11 @@ pub async fn update(
         });
     }
 
-    let mut set_clause = "SET ".to_string();
-    let mut bind_params: Vec<DbParam> = Vec::new();
+    let mut set_clause = "SET ".to_string(); // kept for logging only
+    let mut bind_params: Vec<DbParam> = Vec::new(); // kept for logging only
     let mut id_new = "".to_string();
     let mut password_override: Option<String> = None;
+    let mut patch_fields = serde_json::Map::new();
 
     // loop every column in table_schemas.put.columns
     for column in table_schema.put.columns.iter() {
@@ -199,17 +201,21 @@ pub async fn update(
                     }
 
                     // check if value from body is number
-                    if col.type_data.contains("int") || col.type_data.contains("float") {
+                    if col.type_data.contains("int") || col.type_data.contains("float") || col.type_data.contains("double") || col.type_data.contains("decimal") || col.type_data.contains("money") {
                         if let Ok(n) = value_x.parse::<i64>() {
                             bind_params.push(DbParam::I64(n));
+                            patch_fields.insert(column.clone(), serde_json::json!(n));
                         } else if let Ok(f) = value_x.parse::<f64>() {
                             bind_params.push(DbParam::F64(f));
+                            patch_fields.insert(column.clone(), serde_json::json!(f));
                         } else {
-                            bind_params.push(DbParam::Str(value_x));
+                            bind_params.push(DbParam::Str(value_x.clone()));
+                            patch_fields.insert(column.clone(), serde_json::json!(value_x));
                         }
                         set_clause.push_str(&format!("{} = ?, ", column));
                     } else {
-                        bind_params.push(DbParam::Str(value_x));
+                        bind_params.push(DbParam::Str(value_x.clone()));
+                        patch_fields.insert(column.clone(), serde_json::json!(value_x));
                         set_clause.push_str(&format!("{} = ?, ", column));
                     }
                 }
@@ -218,7 +224,10 @@ pub async fn update(
     }
 
     // add updated_at to set_clause (except when we only update password via DataStore below)
-    set_clause.push_str(&format!("updated_at = {}, ", state.query_converter.datetime_now));
+    // add updated_at/by into patch_fields; also append to legacy log clause for consistency
+    let now = Local::now().to_rfc3339();
+    patch_fields.insert("updated_at".to_string(), serde_json::json!(now));
+    set_clause.push_str("updated_at = ?, ");
     set_clause.push_str("updated_by_id = ?, ");
 
     // get type data updated_by_id from table_schema
@@ -234,8 +243,10 @@ pub async fn update(
     if created_by_type.contains("int") {
         if let Ok(n) = claims.id.parse::<i64>() {
             bind_params.push(DbParam::I64(n));
+            patch_fields.insert("updated_by_id".to_string(), serde_json::json!(n));
         } else {
             bind_params.push(DbParam::Str(claims.id.clone()));
+            patch_fields.insert("updated_by_id".to_string(), serde_json::json!(claims.id.clone()));
         }
     } else if created_by_type.contains("float") || 
         created_by_type.contains("double") || 
@@ -243,24 +254,46 @@ pub async fn update(
         created_by_type.contains("money") {
         if let Ok(n) = claims.id.parse::<f64>() {
             bind_params.push(DbParam::F64(n));
+            patch_fields.insert("updated_by_id".to_string(), serde_json::json!(n));
         } else {
             bind_params.push(DbParam::Str(claims.id.clone()));
+            patch_fields.insert("updated_by_id".to_string(), serde_json::json!(claims.id.clone()));
         }
     } else {
         bind_params.push(DbParam::Str(claims.id.clone()));
+        patch_fields.insert("updated_by_id".to_string(), serde_json::json!(claims.id.clone()));
     }
     
-    // remove last ", " from set_clause
-    set_clause = set_clause[..set_clause.len() - 2].to_string();
+    // legacy set_clause kept only for logging; actual SQL compiled via AST
 
-    // create query UPDATE sql from table in variable route and structure table in table_schemas where id = id, set set_clause
-    let s_sql = format!("UPDATE {} {} WHERE id = ?", table_schema.table, set_clause);
+    // Compile AST update (to run inside our transaction below)
+    let ds = SqlStore::new(state.db.clone(), state.db_type.clone());
+    let filter = Some(QF::Eq("id".into(), QV::Str(id_raw.clone())));
+    let (s_sql, params_compiled) = match ds.preview_update(&table_schema.table, filter.as_ref(), &serde_json::Value::Object(patch_fields.clone())) {
+        Ok(pair) => pair,
+        Err(e) => {
+            return HttpResponse::InternalServerError().json(WebResponse {
+                success: false,
+                message: format!("Error compiling AST UPDATE: {}", e),
+                total_data: 0,
+                data: Value::Null,
+            });
+        }
+    };
 
-    // Bind id with type inference (int/str)
-    if let Ok(n) = id_raw.clone().parse::<i64>() {
-        bind_params.push(DbParam::I64(n));
-    } else {
-        bind_params.push(DbParam::Str(id_raw.clone()));
+    // Preview AST-style update for debug (filter id, patch keys from body + timestamps)
+    if *crate::ISDEBUG {
+        let ds = SqlStore::new(state.db.clone(), state.db_type.clone());
+        let mut patch = serde_json::Map::new();
+        for (key, value) in body.as_object().unwrap_or(&serde_json::Map::new()).iter() {
+            patch.insert(key.clone(), value.clone());
+        }
+        patch.insert("updated_at".to_string(), serde_json::json!(Local::now().to_rfc3339()));
+        patch.insert("updated_by_id".to_string(), serde_json::json!(claims.id.clone()));
+        if let Ok((sql_dbg, params_dbg)) = ds.preview_update(&table_schema.table, Some(&QF::Eq("id".into(), QV::Str(id_raw.clone()))), &serde_json::Value::Object(patch)) {
+            log_output("QUERY", "PUT(AST)", route.as_str(), sql_dbg, true);
+            log_output("PARAM", "PUT(AST)", route.as_str(), format!("{:?}", params_dbg), true);
+        }
     }
 
     log_output("QUERY", "PUT", route.as_str(), s_sql.clone(), true);
@@ -405,7 +438,7 @@ pub async fn update(
         }
     }
 
-    match transaction.query_with_params(&s_sql, bind_params).await {
+    match transaction.query_with_params(&s_sql, params_compiled).await {
         Ok(_) => {
             if table_schema.put.post_process.contains("SQL:") {
                 if let Err(err) = execute_sql_formula_with_transaction(

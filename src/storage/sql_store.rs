@@ -247,6 +247,67 @@ impl SqlStore {
     pub fn preview_insert(&self, collection: &str, doc: &Value) -> anyhow::Result<(String, Vec<DbParam>)> {
         self.build_insert(collection, doc)
     }
+
+    fn build_update(
+        &self,
+        collection: &str,
+        filter: Option<&Filter>,
+        patch: &Value,
+    ) -> anyhow::Result<(String, Vec<DbParam>)> {
+        let obj = patch
+            .as_object()
+            .ok_or_else(|| anyhow::anyhow!("update expects object"))?;
+        let mut params = Vec::<DbParam>::new();
+        let mut idx = 0usize;
+        let sets: Vec<_> = obj
+            .iter()
+            .map(|(k, v)| {
+                idx += 1;
+                params.push(json_to_param(v));
+                format!("{} = {}", k, self.next_placeholder(idx))
+            })
+            .collect();
+        let mut sql = format!("UPDATE {} SET {}", collection, sets.join(","));
+        if let Some(f) = filter {
+            let clause = self.compile_filter(f, &mut params, &mut idx);
+            sql.push_str(" WHERE ");
+            sql.push_str(&clause);
+        }
+        Ok((sql, params))
+    }
+
+    pub fn preview_update(
+        &self,
+        collection: &str,
+        filter: Option<&Filter>,
+        patch: &Value,
+    ) -> anyhow::Result<(String, Vec<DbParam>)> {
+        self.build_update(collection, filter, patch)
+    }
+
+    fn build_delete(
+        &self,
+        collection: &str,
+        filter: Option<&Filter>,
+    ) -> anyhow::Result<(String, Vec<DbParam>)> {
+        let mut params = Vec::<DbParam>::new();
+        let mut idx = 0usize;
+        let mut sql = format!("DELETE FROM {}", collection);
+        if let Some(f) = filter {
+            let clause = self.compile_filter(f, &mut params, &mut idx);
+            sql.push_str(" WHERE ");
+            sql.push_str(&clause);
+        }
+        Ok((sql, params))
+    }
+
+    pub fn preview_delete(
+        &self,
+        collection: &str,
+        filter: Option<&Filter>,
+    ) -> anyhow::Result<(String, Vec<DbParam>)> {
+        self.build_delete(collection, filter)
+    }
 }
 
 fn to_param(v: &Val) -> DbParam {
@@ -305,38 +366,13 @@ impl DataStore for SqlStore {
         filter: Option<Filter>,
         patch: Value,
     ) -> anyhow::Result<u64> {
-        let obj = patch
-            .as_object()
-            .ok_or_else(|| anyhow::anyhow!("update expects object"))?;
-        let mut params = Vec::<DbParam>::new();
-        let mut idx = 0usize;
-        let sets: Vec<_> = obj
-            .iter()
-            .map(|(k, v)| {
-                idx += 1;
-                params.push(json_to_param(v));
-                format!("{} = {}", k, self.next_placeholder(idx))
-            })
-            .collect();
-        let mut sql = format!("UPDATE {} SET {}", collection, sets.join(","));
-        if let Some(f) = &filter {
-            let clause = self.compile_filter(f, &mut params, &mut idx);
-            sql.push_str(" WHERE ");
-            sql.push_str(&clause);
-        }
+        let (sql, params) = self.build_update(collection, filter.as_ref(), &patch)?;
         let _ = self.inner.query_with_params(&sql, params).await?;
         Ok(1)
     }
 
     async fn delete(&self, collection: &str, filter: Option<Filter>) -> anyhow::Result<u64> {
-        let mut params = Vec::<DbParam>::new();
-        let mut idx = 0usize;
-        let mut sql = format!("DELETE FROM {}", collection);
-        if let Some(f) = &filter {
-            let clause = self.compile_filter(f, &mut params, &mut idx);
-            sql.push_str(" WHERE ");
-            sql.push_str(&clause);
-        }
+        let (sql, params) = self.build_delete(collection, filter.as_ref())?;
         let _ = self.inner.query_with_params(&sql, params).await?;
         Ok(1)
     }
