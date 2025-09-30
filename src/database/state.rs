@@ -232,6 +232,63 @@ pub fn convert_to_sql(input: &str) -> String {
     }
 }
 
+/// Convert '?' placeholders into dialect-specific placeholders while skipping string literals.
+/// - postgres: $1, $2, ...
+/// - mssql: @P1, @P2, ...
+/// - others: unchanged
+pub fn rehydrate_placeholders(sql: &str, dialect: &str) -> String {
+    match dialect {
+        "postgres" | "mssql" => {
+            let bytes = sql.as_bytes();
+            let mut out = String::with_capacity(sql.len());
+            let mut i = 0;
+            let mut in_str = false;
+            let mut idx = 1usize;
+            while i < bytes.len() {
+                let c = bytes[i] as char;
+                if c == '\'' { // handle single-quoted strings and escaped ''
+                    out.push(c);
+                    if in_str {
+                        if i + 1 < bytes.len() && bytes[i + 1] as char == '\'' {
+                            out.push('\'');
+                            i += 2;
+                            continue;
+                        } else {
+                            in_str = false;
+                            i += 1;
+                            continue;
+                        }
+                    } else {
+                        in_str = true;
+                        i += 1;
+                        continue;
+                    }
+                }
+                if !in_str && c == '?' {
+                    match dialect {
+                        "postgres" => {
+                            out.push('$');
+                            out.push_str(&idx.to_string());
+                        }
+                        "mssql" => {
+                            out.push_str("@P");
+                            out.push_str(&idx.to_string());
+                        }
+                        _ => out.push('?'),
+                    }
+                    idx += 1;
+                    i += 1;
+                    continue;
+                }
+                out.push(c);
+                i += 1;
+            }
+            out
+        }
+        _ => sql.to_string(),
+    }
+}
+
 // Precompiled regexes for performance
 static RE_NESTED: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"\{(\w+)\[\s*\{([^}]+)\}\s*\]\.(\w+)\}").unwrap());

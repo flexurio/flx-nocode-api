@@ -5,23 +5,9 @@ use std::sync::Arc;
 use tiberius::{AuthMethod, Client, EncryptionLevel, Query, Row};
 use tokio_util::compat::TokioAsyncWriteCompatExt;
 
-use super::state::{DbParam, DbRepository, DbTransaction};
+use super::state::{rehydrate_placeholders, DbParam, DbRepository, DbTransaction};
 
-fn convert_placeholders_to_mssql(sql: &str) -> String {
-    // Replace each '?' with @P1, @P2, ...
-    let mut out = String::with_capacity(sql.len());
-    let mut idx = 1;
-    for ch in sql.chars() {
-        if ch == '?' {
-            out.push_str("@P");
-            out.push_str(&idx.to_string());
-            idx += 1;
-        } else {
-            out.push(ch);
-        }
-    }
-    out
-}
+// Placeholder conversion centralized in state::rehydrate_placeholders
 
 // Replace bare TRUE/FALSE literals (common in other SQL dialects) with MSSQL-friendly forms.
 // This scan avoids changing text inside single-quoted string literals.
@@ -148,7 +134,7 @@ impl DbRepository for MssqlRepo {
 
     async fn query_with_params(&self, sql: &str, params: Vec<DbParam>) -> Result<Vec<Value>, anyhow::Error> {
         let mut client = self.client.lock().await;
-        let converted = convert_placeholders_to_mssql(sql);
+    let converted = rehydrate_placeholders(sql, "mssql");
         let norm = normalize_mssql_booleans(&converted);
         let mut q = Query::new(norm);
         for p in params {
@@ -167,7 +153,7 @@ impl DbRepository for MssqlRepo {
 
     async fn get_total_rows_with_params(&self, sql: &str, params: Vec<DbParam>) -> Result<i32, anyhow::Error> {
         let mut client = self.client.lock().await;
-        let converted = convert_placeholders_to_mssql(sql);
+    let converted = rehydrate_placeholders(sql, "mssql");
         let norm = normalize_mssql_booleans(&converted);
         let mut q = Query::new(norm);
         for p in params {
@@ -209,7 +195,7 @@ pub struct MssqlTransaction {
 impl DbTransaction for MssqlTransaction {
     async fn query_with_params(&mut self, sql: &str, params: Vec<DbParam>) -> Result<Vec<Value>, anyhow::Error> {
         let mut client = self.client.lock().await;
-        let converted = convert_placeholders_to_mssql(sql);
+    let converted = rehydrate_placeholders(sql, "mssql");
         let norm = normalize_mssql_booleans(&converted);
         let mut q = Query::new(norm);
         for p in params {

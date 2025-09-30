@@ -5,7 +5,7 @@ use sqlx::{
     Column, Pool, Row, Transaction,
 };
 
-use super::state::{DbParam, DbRepository, DbTransaction};
+use super::state::{rehydrate_placeholders, DbParam, DbRepository, DbTransaction};
 
 pub struct PostgresRepo {
     pub pool: Pool<Postgres>,
@@ -156,17 +156,7 @@ impl DbRepository for PostgresRepo {
         params: Vec<DbParam>,
     ) -> Result<Vec<Value>, anyhow::Error> {
         // Convert '?' placeholders to PostgreSQL-style $1, $2, ...
-        let mut converted = String::with_capacity(sql.len());
-        let mut idx = 1;
-        for ch in sql.chars() {
-            if ch == '?' {
-                converted.push('$');
-                converted.push_str(&idx.to_string());
-                idx += 1;
-            } else {
-                converted.push(ch);
-            }
-        }
+        let converted = rehydrate_placeholders(sql, "postgres");
 
         let mut q = sqlx::query(&converted);
         for p in params {
@@ -193,17 +183,7 @@ impl DbRepository for PostgresRepo {
         params: Vec<DbParam>,
     ) -> Result<i32, anyhow::Error> {
         // Convert '?' placeholders to PostgreSQL-style $1, $2, ...
-        let mut converted = String::with_capacity(sql.len());
-        let mut idx = 1;
-        for ch in sql.chars() {
-            if ch == '?' {
-                converted.push('$');
-                converted.push_str(&idx.to_string());
-                idx += 1;
-            } else {
-                converted.push(ch);
-            }
-        }
+        let converted = rehydrate_placeholders(sql, "postgres");
 
         let mut q = sqlx::query_as::<_, (i32,)>(&converted);
         for p in params {
@@ -237,17 +217,7 @@ impl DbTransaction for PostgresTransaction {
         params: Vec<DbParam>,
     ) -> Result<Vec<Value>, anyhow::Error> {
         // Convert '?' placeholders to PostgreSQL-style $1, $2, ...
-        let mut converted = String::with_capacity(sql.len());
-        let mut idx = 1;
-        for ch in sql.chars() {
-            if ch == '?' {
-                converted.push('$');
-                converted.push_str(&idx.to_string());
-                idx += 1;
-            } else {
-                converted.push(ch);
-            }
-        }
+        let converted = rehydrate_placeholders(sql, "postgres");
 
         let mut q = sqlx::query(&converted);
         for p in params {

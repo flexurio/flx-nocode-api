@@ -288,12 +288,16 @@ pub async fn import(
             // AST: fetch highest id matching prefix pattern
             let ds = SqlStore::new(state.db.clone(), state.db_type.clone());
             let q = Q::from(table_schema.table.clone())
-                .select(["id"]) // only id needed
-                .r#where(F::Like("id".into(), format!("%{}%", id_find)))
-                .order_by("id", false)
-                .limit(1);
+                .select(["COALESCE(MAX(id), 0) as max_id"]) // aggregate
+                .r#where(F::Like("id".into(), format!("%{}%", id_find)));
             let max_id: String = match ds.query(&q).await {
-                Ok(rows) if !rows.is_empty() => rows[0].get("id").and_then(|v| v.as_str()).unwrap_or("0").to_string(),
+                Ok(rows) if !rows.is_empty() => {
+                    let v = rows[0].get("max_id");
+                    if let Some(s) = v.and_then(|x| x.as_str()) { s.to_string() }
+                    else if let Some(n) = v.and_then(|x| x.as_i64()) { n.to_string() }
+                    else if let Some(f) = v.and_then(|x| x.as_f64()) { f.to_string() }
+                    else { "0".to_string() }
+                }
                 _ => "0".to_string(),
             };
             let last = max_id.rsplit('/').next().unwrap_or("0");

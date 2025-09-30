@@ -237,7 +237,10 @@ pub(crate) async fn check_data_foreign_key(
     // portable AST query: SELECT 1 FROM ref WHERE col = ? LIMIT 1
     let ds = SqlStore::new(state.db.clone(), state.db_type.clone());
     let val = if let Ok(n) = id_data.clone().parse::<i64>() { V::I64(n) } else { V::Str(id_data.clone()) };
-    let q = Q::from(reference_table).r#where(F::Eq(reference_column, val)).limit(1);
+    let q = Q::from(reference_table)
+        .select(["1"]) // lighter projection
+        .r#where(F::Eq(reference_column, val))
+        .limit(1);
     match ds.query(&q).await {
         Ok(rows) => !rows.is_empty(),
         Err(err) => {
