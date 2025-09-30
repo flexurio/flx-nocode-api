@@ -453,29 +453,28 @@ pub async fn generate_users(state: Data<AppState>) -> impl Responder {
         log_output("ERROR QUERY", "POST", "generate/table/flx_roles", format!("{} ~ ERROR : {}", sql_roles, e), true);
     }
 
-    // Query flx_users to check if admin user already exists
-    let select_admin_sql = "SELECT id FROM flx_users WHERE email = 'admin'";
-    let mut id_user: i64 = match &state.db.query(select_admin_sql).await {
-        Ok(row) => {
-            // check if row is empty
-            if row.is_empty() {
-                0
-            } else {
-                row[0].get("id").and_then(|v| v.as_i64()).unwrap_or(0)
-            }
+    // AST query to check if admin user exists: SELECT id FROM flx_users WHERE email='admin' LIMIT 1
+    let ds = SqlStore::new(state.db.clone(), state.db_type.clone());
+    use crate::storage::ast::{Query as QQ, Filter as QF, Val as QV};
+    let q_admin = QQ::from("flx_users").select(["id"]).r#where(QF::Eq("email".into(), QV::Str("admin".into()))).limit(1);
+    let (sql_admin, params_admin) = ds.preview_sql(&q_admin);
+    let built_admin = crate::database::state::rehydrate_placeholders(&sql_admin, &state.db_type);
+    let mut id_user: i64 = match &state.db.query_with_params(&built_admin, params_admin).await {
+        Ok(rows) => {
+            if rows.is_empty() { 0 } else { rows[0].get("id").and_then(|v| v.as_i64()).unwrap_or(0) }
         }
         Err(err) => {
             log_output(
                 "ERROR QUERY",
                 "POST",
                 "generate/table/select-flx_users-admin",
-                select_admin_sql.to_string() + " ~ ERROR : " + &err.to_string(),
+                sql_admin.clone() + " ~ ERROR : " + &err.to_string(),
                 true,
             );
             0
-        },
+        }
     };
-    log_output("QUERY", "POST", "generate/table/users", select_admin_sql.to_string(), true);
+    log_output("QUERY", "POST", "generate/table/users", sql_admin.to_string(), true);
 
     if id_user == 0 {
         id_user = 1;

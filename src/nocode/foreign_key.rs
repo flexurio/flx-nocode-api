@@ -7,6 +7,7 @@ use crate::{
     model::ReferenceForeignKey,
 };
 use crate::storage::sql_store::SqlStore;
+use crate::storage::sql_store::InsertValue as IV;
 use crate::storage::traits::DataStore;
 use crate::storage::ast::{Query as Q, Filter as F, Val as V};
 
@@ -22,80 +23,113 @@ pub(crate) async fn process_foreign_keys_delete_update(
 ) -> (bool, String) {
     let mut status_executed = true;
     let mut error_message = String::new();
-    let mut s_sql_fk;
+    let ds = SqlStore::new(state.db.clone(), state.db_type.clone());
 
     for fk in reference_foreign_keys.iter() {
-        let mut bind_params_fk: Vec<DbParam> = Vec::new();
+    // no direct bind params accumulation; each statement previews its own params
 
         if type_process == "DELETE" {
             let data_table = fk.on_delete_action.clone();
             if data_table.action == "cascade" {
                 if data_table.type_delete == "soft" {
-                    s_sql_fk = format!(
-                        "UPDATE {} SET deleted_at = {}, deleted_by_id = ? WHERE {} = ?",
-                        data_table.table, state.query_converter.datetime_now, data_table.column
-                    );
-                    bind_params_fk.push(DbParam::Str(id_user.clone()));
+                    // UPDATE <table> SET deleted_at = NOW(), deleted_by_id = ? WHERE col = ?
+                    let now_fn = state.query_converter.datetime_now.clone();
+                    let mut fields: Vec<(String, IV)> = vec![
+                        ("deleted_at".into(), IV::Raw(now_fn)),
+                    ];
+                    // deleted_by_id param
+                    if let Ok(n) = id_user.clone().parse::<i64>() {
+                        fields.push(("deleted_by_id".into(), IV::Param(DbParam::I64(n))));
+                    } else {
+                        fields.push(("deleted_by_id".into(), IV::Param(DbParam::Str(id_user.clone()))));
+                    }
+
+                    // filter by old id
+                    let filter = if let Ok(n) = id_data.clone().parse::<i64>() {
+                        F::Eq(data_table.column.clone(), V::I64(n))
+                    } else {
+                        F::Eq(data_table.column.clone(), V::Str(id_data.clone()))
+                    };
+                    match ds.preview_update_with(&data_table.table, Some(&filter), &fields) {
+                        Ok((sql_u, params_u)) => {
+                            let built = crate::database::state::rehydrate_placeholders(&sql_u, &state.db_type);
+                            let _ = execute(transaction, &built, params_u, type_process).await;
+                        }
+                        Err(err) => {
+                            status_executed = false;
+                            error_message = err.to_string();
+                            break;
+                        }
+                    }
                 } else if data_table.type_delete == "hard" {
-                    // create query DELETE sql parameterized by id
-                    s_sql_fk = format!(
-                        "DELETE FROM {} WHERE {} = ?",
-                        data_table.table, data_table.column
-                    );
+                    // DELETE FROM <table> WHERE col = ?
+                    let filter = if let Ok(n) = id_data.clone().parse::<i64>() {
+                        F::Eq(data_table.column.clone(), V::I64(n))
+                    } else {
+                        F::Eq(data_table.column.clone(), V::Str(id_data.clone()))
+                    };
+                    match ds.preview_delete(&data_table.table, Some(&filter)) {
+                        Ok((sql_d, params_d)) => {
+                            let built = crate::database::state::rehydrate_placeholders(&sql_d, &state.db_type);
+                            let _ = execute(transaction, &built, params_d, type_process).await;
+                        }
+                        Err(err) => {
+                            status_executed = false;
+                            error_message = err.to_string();
+                            break;
+                        }
+                    }
                 } else {
                     continue; // skip if type_delete is not soft or hard
                 }
-
-                // Bind id by type
-                if let Ok(n) = id_data.clone().parse::<i64>() {
-                    bind_params_fk.push(DbParam::I64(n));
-                } else {
-                    bind_params_fk.push(DbParam::Str(id_data.clone()));
-                }
-                let _ = execute(transaction, &s_sql_fk, bind_params_fk, type_process).await;
             } else if data_table.action == "set null" {
-                s_sql_fk = format!(
-                    "UPDATE {} SET {} = NULL, updated_at = {}, updated_by_id = ? WHERE {} = ?",
-                    data_table.table,
-                    data_table.column,
-                    state.query_converter.datetime_now,
-                    data_table.column
-                );
-                // isikan bind_params_fk updated_by_id
-                bind_params_fk.push(DbParam::Str(id_user.clone()));
-                // isikan bind_params_fk id lama
-                if let Ok(n) = id_data.clone().parse::<i64>() {
-                    bind_params_fk.push(DbParam::I64(n));
+                // UPDATE <table> SET <col>=NULL, updated_at=NOW(), updated_by_id=? WHERE col=?
+                let now_fn = state.query_converter.datetime_now.clone();
+                let mut fields: Vec<(String, IV)> = vec![
+                    (data_table.column.clone(), IV::Raw("NULL".into())),
+                    ("updated_at".into(), IV::Raw(now_fn)),
+                ];
+                if let Ok(n) = id_user.clone().parse::<i64>() {
+                    fields.push(("updated_by_id".into(), IV::Param(DbParam::I64(n))));
                 } else {
-                    bind_params_fk.push(DbParam::Str(id_data.clone()));
+                    fields.push(("updated_by_id".into(), IV::Param(DbParam::Str(id_user.clone()))));
                 }
-                let _ = execute(transaction, &s_sql_fk, bind_params_fk, type_process).await;
+                let filter = if let Ok(n) = id_data.clone().parse::<i64>() {
+                    F::Eq(data_table.column.clone(), V::I64(n))
+                } else {
+                    F::Eq(data_table.column.clone(), V::Str(id_data.clone()))
+                };
+                match ds.preview_update_with(&data_table.table, Some(&filter), &fields) {
+                    Ok((sql_u, params_u)) => {
+                        let built = crate::database::state::rehydrate_placeholders(&sql_u, &state.db_type);
+                        let _ = execute(transaction, &built, params_u, type_process).await;
+                    }
+                    Err(err) => {
+                        status_executed = false;
+                        error_message = err.to_string();
+                        break;
+                    }
+                }
             } else if data_table.action == "restrict" {
-                // create query check table
-                s_sql_fk = format!(
-                    "SELECT COUNT(*) FROM {} WHERE {} = ?",
-                    data_table.table, data_table.column
-                );
-                // isikan bind_params_fk id lama
-                if let Ok(n) = id_data.clone().parse::<i64>() {
-                    bind_params_fk.push(DbParam::I64(n));
+                // AST: SELECT 1 FROM table WHERE col=? LIMIT 1
+                let filter = if let Ok(n) = id_data.clone().parse::<i64>() {
+                    F::Eq(data_table.column.clone(), V::I64(n))
                 } else {
-                    bind_params_fk.push(DbParam::Str(id_data.clone()));
-                }
-                let result = execute(transaction, &s_sql_fk, bind_params_fk, type_process).await;
+                    F::Eq(data_table.column.clone(), V::Str(id_data.clone()))
+                };
+                let q = Q::from(data_table.table.clone()).select(["1"]).r#where(filter).limit(1);
+                let (sql_q, params_q) = ds.preview_sql(&q);
+                let built = crate::database::state::rehydrate_placeholders(&sql_q, &state.db_type);
+                let result = execute(transaction, &built, params_q, type_process).await;
                 match result {
                     Ok(rows) => {
                         if !rows.is_empty() {
-                            if let Some(count) = rows[0].get(0) {
-                                if count.as_i64().unwrap_or(0) > 0 {
-                                    status_executed = false;
-                                    error_message = format!(
-                                        "Cannot delete data because it is referenced in table {}",
-                                        data_table.table
-                                    );
-                                    break; // exit the loop and return
-                                }
-                            }
+                            status_executed = false;
+                            error_message = format!(
+                                "Cannot delete data because it is referenced in table {}",
+                                data_table.table
+                            );
+                            break; // exit the loop and return
                         }
                     }
                     Err(err) => {
@@ -110,74 +144,86 @@ pub(crate) async fn process_foreign_keys_delete_update(
         } else if type_process == "UPDATE" {
             let data_table = fk.on_update_action.clone();
             if data_table.action == "cascade" {
-                s_sql_fk = format!(
-                    "UPDATE {} SET {} = ?, updated_at = {}, updated_by_id = ? WHERE {} = ?",
-                    data_table.table,
-                    data_table.column,
-                    state.query_converter.datetime_now,
-                    data_table.column
-                );
-                // isikan bind_params_fk id_new
+                // UPDATE <table> SET <col>=?, updated_at=NOW(), updated_by_id=? WHERE col=?
+                let now_fn = state.query_converter.datetime_now.clone();
+                let mut fields: Vec<(String, IV)> = Vec::new();
+                // new id value
                 if let Ok(n) = id_new.clone().parse::<i64>() {
-                    bind_params_fk.push(DbParam::I64(n));
+                    fields.push((data_table.column.clone(), IV::Param(DbParam::I64(n))));
                 } else {
-                    bind_params_fk.push(DbParam::Str(id_new.clone()));
+                    fields.push((data_table.column.clone(), IV::Param(DbParam::Str(id_new.clone()))));
                 }
-
-                // isikan bind_params_fk updated_by_id
-                bind_params_fk.push(DbParam::Str(id_user.clone()));
-
-                // isikan bind_params_fk id lama
-                if let Ok(n) = id_data.clone().parse::<i64>() {
-                    bind_params_fk.push(DbParam::I64(n));
+                fields.push(("updated_at".into(), IV::Raw(now_fn)));
+                // updated_by_id
+                if let Ok(n) = id_user.clone().parse::<i64>() {
+                    fields.push(("updated_by_id".into(), IV::Param(DbParam::I64(n))));
                 } else {
-                    bind_params_fk.push(DbParam::Str(id_data.clone()));
+                    fields.push(("updated_by_id".into(), IV::Param(DbParam::Str(id_user.clone()))));
                 }
-
-                let _ = execute(transaction, &s_sql_fk, bind_params_fk, type_process).await;
+                let filter = if let Ok(n) = id_data.clone().parse::<i64>() {
+                    F::Eq(data_table.column.clone(), V::I64(n))
+                } else {
+                    F::Eq(data_table.column.clone(), V::Str(id_data.clone()))
+                };
+                match ds.preview_update_with(&data_table.table, Some(&filter), &fields) {
+                    Ok((sql_u, params_u)) => {
+                        let built = crate::database::state::rehydrate_placeholders(&sql_u, &state.db_type);
+                        let _ = execute(transaction, &built, params_u, type_process).await;
+                    }
+                    Err(err) => {
+                        status_executed = false;
+                        error_message = err.to_string();
+                        break;
+                    }
+                }
             } else if data_table.action == "set null" {
-                let data_table = fk.on_update_action.clone();
-                s_sql_fk = format!(
-                    "UPDATE {} SET {} = NULL, updated_at = {}, updated_by_id = ? WHERE {} = ?",
-                    data_table.table,
-                    data_table.column,
-                    state.query_converter.datetime_now,
-                    data_table.column
-                );
-                // isikan bind_params_fk updated_by_id
-                bind_params_fk.push(DbParam::Str(id_user.clone()));
-                // isikan bind_params_fk id lama
-                if let Ok(n) = id_data.clone().parse::<i64>() {
-                    bind_params_fk.push(DbParam::I64(n));
+                // UPDATE <table> SET <col>=NULL, updated_at=NOW(), updated_by_id=? WHERE col=?
+                let now_fn = state.query_converter.datetime_now.clone();
+                let mut fields: Vec<(String, IV)> = vec![
+                    (data_table.column.clone(), IV::Raw("NULL".into())),
+                    ("updated_at".into(), IV::Raw(now_fn)),
+                ];
+                if let Ok(n) = id_user.clone().parse::<i64>() {
+                    fields.push(("updated_by_id".into(), IV::Param(DbParam::I64(n))));
                 } else {
-                    bind_params_fk.push(DbParam::Str(id_data.clone()));
+                    fields.push(("updated_by_id".into(), IV::Param(DbParam::Str(id_user.clone()))));
                 }
-                let _ = execute(transaction, &s_sql_fk, bind_params_fk, type_process).await;
+                let filter = if let Ok(n) = id_data.clone().parse::<i64>() {
+                    F::Eq(data_table.column.clone(), V::I64(n))
+                } else {
+                    F::Eq(data_table.column.clone(), V::Str(id_data.clone()))
+                };
+                match ds.preview_update_with(&data_table.table, Some(&filter), &fields) {
+                    Ok((sql_u, params_u)) => {
+                        let built = crate::database::state::rehydrate_placeholders(&sql_u, &state.db_type);
+                        let _ = execute(transaction, &built, params_u, type_process).await;
+                    }
+                    Err(err) => {
+                        status_executed = false;
+                        error_message = err.to_string();
+                        break;
+                    }
+                }
             } else if data_table.action == "restrict" {
-                s_sql_fk = format!(
-                    "SELECT COUNT(*) FROM {} WHERE {} = ?",
-                    data_table.table, data_table.column
-                );
-                // isikan bind_params_fk id lama
-                if let Ok(n) = id_data.clone().parse::<i64>() {
-                    bind_params_fk.push(DbParam::I64(n));
+                // AST: SELECT 1 FROM table WHERE col=? LIMIT 1
+                let filter = if let Ok(n) = id_data.clone().parse::<i64>() {
+                    F::Eq(data_table.column.clone(), V::I64(n))
                 } else {
-                    bind_params_fk.push(DbParam::Str(id_data.clone()));
-                }
-                let result = execute(transaction, &s_sql_fk, bind_params_fk, type_process).await;
+                    F::Eq(data_table.column.clone(), V::Str(id_data.clone()))
+                };
+                let q = Q::from(data_table.table.clone()).select(["1"]).r#where(filter).limit(1);
+                let (sql_q, params_q) = ds.preview_sql(&q);
+                let built = crate::database::state::rehydrate_placeholders(&sql_q, &state.db_type);
+                let result = execute(transaction, &built, params_q, type_process).await;
                 match result {
                     Ok(rows) => {
                         if !rows.is_empty() {
-                            if let Some(count) = rows[0].get(0) {
-                                if count.as_i64().unwrap_or(0) > 0 {
-                                    status_executed = false;
-                                    error_message = format!(
-                                        "Cannot delete data because it is referenced in table {}",
-                                        data_table.table
-                                    );
-                                    break; // exit the loop and return
-                                }
-                            }
+                            status_executed = false;
+                            error_message = format!(
+                                "Cannot delete data because it is referenced in table {}",
+                                data_table.table
+                            );
+                            break; // exit the loop and return
                         }
                     }
                     Err(err) => {
