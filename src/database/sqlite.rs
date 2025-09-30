@@ -94,12 +94,6 @@ impl DbRepository for SqliteRepo {
         }
     }
 
-    async fn get_total_rows(&self, sql: &str) -> Result<i32, anyhow::Error> {
-        // Menghitung total baris dari tabel
-        let row: (i32,) = sqlx::query_as(sql).fetch_one(&self.pool).await?;
-        Ok(row.0)
-    }
-
     async fn query_with_params(
         &self,
         sql: &str,
@@ -122,25 +116,6 @@ impl DbRepository for SqliteRepo {
             }
             Err(e) => Err(anyhow::anyhow!("Error executing query: {}", e)),
         }
-    }
-
-    async fn get_total_rows_with_params(
-        &self,
-        sql: &str,
-        params: Vec<DbParam>,
-    ) -> Result<i32, anyhow::Error> {
-        let mut q = sqlx::query_as::<_, (i32,)>(sql);
-        for p in params {
-            q = match p {
-                DbParam::I64(v) => q.bind(v),
-                DbParam::F64(v) => q.bind(v),
-                DbParam::Str(v) => q.bind(v),
-                DbParam::Bool(v) => q.bind(v),
-                DbParam::Null => q.bind(Option::<i32>::None),
-            };
-        }
-        let row = q.fetch_one(&self.pool).await?;
-        Ok(row.0)
     }
 
     async fn begin_transaction(&self) -> Result<Box<dyn DbTransaction>, anyhow::Error> {

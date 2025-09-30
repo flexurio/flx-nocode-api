@@ -715,9 +715,6 @@ mod tests {
         async fn query(&self, _sql: &str) -> anyhow::Result<Vec<Value>, anyhow::Error> {
             Ok(vec![])
         }
-        async fn get_total_rows(&self, _sql: &str) -> anyhow::Result<i32, anyhow::Error> {
-            Ok(0)
-        }
         async fn query_with_params(
             &self,
             sql: &str,
@@ -726,13 +723,7 @@ mod tests {
             // Echo back for assertions
             Ok(vec![json!({ "sql": sql, "params": format!("{:?}", params) })])
         }
-        async fn get_total_rows_with_params(
-            &self,
-            _sql: &str,
-            _params: Vec<DbParam>,
-        ) -> anyhow::Result<i32, anyhow::Error> {
-            Ok(0)
-        }
+        
         async fn begin_transaction(&self) -> anyhow::Result<Box<dyn crate::database::state::DbTransaction>, anyhow::Error> {
             unimplemented!()
         }

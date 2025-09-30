@@ -121,17 +121,6 @@ impl DbRepository for MssqlRepo {
         Ok(rows.iter().map(mssql_row_to_json).collect())
     }
 
-    async fn get_total_rows(&self, sql: &str) -> Result<i32, anyhow::Error> {
-        let mut client = self.client.lock().await;
-        let norm = normalize_mssql_booleans(sql);
-        let stream = client.simple_query(&norm).await?;
-        let rows: Vec<Row> = stream.into_first_result().await?;
-        // Expect single row single column
-        let first = rows.first().ok_or_else(|| anyhow::anyhow!("No rows"))?;
-        let v: i32 = first.try_get::<i32, _>(0)?.unwrap_or(0);
-        Ok(v)
-    }
-
     async fn query_with_params(&self, sql: &str, params: Vec<DbParam>) -> Result<Vec<Value>, anyhow::Error> {
         let mut client = self.client.lock().await;
     let converted = rehydrate_placeholders(sql, "mssql");
@@ -149,31 +138,6 @@ impl DbRepository for MssqlRepo {
         let stream = q.query(&mut *client).await?;
         let rows: Vec<Row> = stream.into_first_result().await?;
         Ok(rows.into_iter().map(|r| mssql_row_to_json(&r)).collect())
-    }
-
-    async fn get_total_rows_with_params(&self, sql: &str, params: Vec<DbParam>) -> Result<i32, anyhow::Error> {
-        let mut client = self.client.lock().await;
-    let converted = rehydrate_placeholders(sql, "mssql");
-        let norm = normalize_mssql_booleans(&converted);
-        let mut q = Query::new(norm);
-        for p in params {
-            match p {
-                DbParam::I64(v) => { q.bind(v); },
-                DbParam::F64(v) => { q.bind(v); },
-                DbParam::Str(v) => { q.bind(v); },
-                DbParam::Bool(v) => { q.bind(v); },
-                DbParam::Null => { q.bind(Option::<i32>::None); },
-            }
-        }
-        let stream = q.query(&mut *client).await?;
-        let row = stream
-            .into_first_result()
-            .await?
-            .into_iter()
-            .next()
-            .ok_or_else(|| anyhow::anyhow!("No rows"))?;
-        let v: i32 = row.try_get::<i32, _>(0)?.unwrap_or(0);
-        Ok(v)
     }
 
     async fn begin_transaction(&self) -> Result<Box<dyn DbTransaction>, anyhow::Error> {
