@@ -18,7 +18,7 @@ use crate::storage::sql_store::SqlStore;
 use chrono::Local;
 use std::sync::Arc;
 
-// NCO-TRACE
+// NCO-PATCH
 pub async fn process_sp(
     state: web::Data<AppState>,
     parameters: web::Query<Value>,
@@ -68,6 +68,23 @@ pub async fn process_sp(
             });
         }
     }
+    // Per-user limit (for non-public routes only)
+    if !state.route_publics.contains(&route) {
+        if let Some(ref uid) = actor_id {
+            if limit_i64 > 0
+                && !uid.is_empty()
+                && !RL_WINDOW_MUTATE
+                    .check_and_increment(&format!("patch:{}:user:{}", route, uid), limit_i64 as u32)
+            {
+                return HttpResponse::TooManyRequests().json(WebResponse {
+                    success: false,
+                    message: "Too many requests".into(),
+                    total_data: 0,
+                    data: Value::Null,
+                });
+            }
+        }
+    }
 
     // get parameters value only allowed from table_schema.trace.parameters
     // loop every table_schema.trace.parameters
@@ -83,30 +100,46 @@ pub async fn process_sp(
         });
     }
 
-    // declare param_sp as Vec<String>
+    // Build ordered parameters according to schema.patch.parameters
     let mut param_sp: Vec<String> = Vec::new();
     let mut bind_params: Vec<DbParam> = Vec::new();
+    let params_map = parameters.into_inner();
 
-    for param in table_schema.patch.parameters.iter() {
-        for (key, value) in parameters
-            .clone()
-            .into_inner()
-            .as_object()
-            .unwrap_or(&serde_json::Map::new())
-            .iter()
-        {
-            // check if param contain in key
-            if key == param {
-                let s = value.to_string().trim_matches('"').to_string();
-                // Try parse numeric else treat as string
-                if let Ok(n) = s.parse::<i64>() {
-                    bind_params.push(DbParam::I64(n));
-                } else if let Ok(f) = s.parse::<f64>() {
-                    bind_params.push(DbParam::F64(f));
+    for name in table_schema.patch.parameters.iter() {
+        match params_map.get(name) {
+            Some(v) => {
+                let s = v.to_string().trim_matches('"').to_string();
+                // Try to infer numeric types if the schema declares a column with the same name
+                // Otherwise, fall back to best-effort parse
+                if let Some(col) = table_schema.columns.iter().find(|c| c.name == *name) {
+                    let t = col.type_data.to_lowercase();
+                    if t.contains("int") {
+                        if let Ok(n) = s.parse::<i64>() { bind_params.push(DbParam::I64(n)); } else { bind_params.push(DbParam::Str(s)); }
+                    } else if t.contains("float") || t.contains("double") || t.contains("decimal") || t.contains("money") {
+                        if let Ok(f) = s.parse::<f64>() { bind_params.push(DbParam::F64(f)); } else { bind_params.push(DbParam::Str(s)); }
+                    } else {
+                        bind_params.push(DbParam::Str(s));
+                    }
                 } else {
-                    bind_params.push(DbParam::Str(s));
+                    // Not tied to a column; heuristic
+                    if let Ok(n) = s.parse::<i64>() {
+                        bind_params.push(DbParam::I64(n));
+                    } else if let Ok(f) = s.parse::<f64>() {
+                        bind_params.push(DbParam::F64(f));
+                    } else {
+                        bind_params.push(DbParam::Str(s));
+                    }
                 }
                 param_sp.push("?".into());
+            }
+            None => {
+                // Missing required parameter declared in schema
+                return HttpResponse::BadRequest().json(WebResponse {
+                    success: false,
+                    message: format!("Missing required parameter: {}", name),
+                    total_data: 0,
+                    data: Value::Null,
+                });
             }
         }
     }

@@ -187,9 +187,11 @@ impl SqlStore {
         }
 
         // HAVING (raw-safe expressions from config)
+        // Note: SQL HAVING expects boolean expressions combined with AND/OR, not commas.
         if !q.having_raw.is_empty() {
             sql.push_str(" HAVING ");
-            sql.push_str(&q.having_raw.join(", "));
+            // Default to AND between expressions; callers can include their own OR/AND groups if needed.
+            sql.push_str(&q.having_raw.join(" AND "));
         }
 
         // ORDER

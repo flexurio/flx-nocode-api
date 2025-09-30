@@ -7,11 +7,13 @@ use serde_json::Value;
 use crate::{
     auth::{check_access, get_user_info_from_token},
     helpers::{filter_table_schema, split_column_operator},
+    rate_limit::RL_WINDOW_MUTATE,
     log::log_output,
     model::{TableSchema, WebResponse},
     AppState,
 };
 use crate::storage::sql_store::SqlStore;
+use crate::storage::ast::{Query as Q, Filter as F, Val as V};
 use std::sync::Arc;
 
 // NCO-TRACE
@@ -22,6 +24,25 @@ pub async fn process(
     table_schemas: Arc<Vec<TableSchema>>,
     req: actix_web::HttpRequest,
 ) -> impl Responder {
+    // Rate-limit per IP and per user (for non-public)
+    let ip_key = crate::helpers::get_client_ip(&req);
+    let limit_i64: i64 = std::env::var("RATE_LIMIT_MUTATE_PER_SEC")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(10);
+    if limit_i64 > 0 {
+        let limit = (limit_i64.min(u32::MAX as i64)) as u32;
+        if !RL_WINDOW_MUTATE.check_and_increment(&format!("trace:{}:{}", route, ip_key), limit) {
+            return HttpResponse::TooManyRequests().json(WebResponse {
+                success: false,
+                message: "Too many requests".into(),
+                total_data: 0,
+                data: Value::Null,
+            });
+        }
+    }
+
+    let mut actor_id: Option<String> = None;
     if !state.route_publics.contains(&route) {
         let claims = match get_user_info_from_token(req, state.clone()) {
             Ok(c) => c,
@@ -43,12 +64,27 @@ pub async fn process(
                 data: Value::Null,
             });
         }
+        actor_id = Some(claims.id);
+    }
+    // Per-user limit
+    if !state.route_publics.contains(&route) {
+        if let Some(ref uid) = actor_id {
+            if limit_i64 > 0
+                && !uid.is_empty()
+                && !RL_WINDOW_MUTATE
+                    .check_and_increment(&format!("trace:{}:user:{}", route, uid), limit_i64 as u32)
+            {
+                return HttpResponse::TooManyRequests().json(WebResponse {
+                    success: false,
+                    message: "Too many requests".into(),
+                    total_data: 0,
+                    data: Value::Null,
+                });
+            }
+        }
     }
 
-    // get parameters value only allowed from table_schema.trace.parameters
-    // loop every table_schema.trace.parameters
-    let mut where_clause: String = "WHERE ".to_string();
-
+    // Resolve schema first
     let table_schema: TableSchema = filter_table_schema(&table_schemas, route.clone()).await;
     if table_schema.table.is_empty() {
         let message_error = format!("Entity {} on folder config/{}.json not found", route, route);
@@ -59,124 +95,81 @@ pub async fn process(
             data: Value::Null,
         });
     }
+    // Build AST for SELECT part and bind parameters safely
+    let ds = SqlStore::new(state.db.clone(), state.db_type.clone());
+    let mut q = Q::from(table_schema.table.clone());
 
     let mut is_deleted_at = true;
-
+    let mut filters: Vec<F> = Vec::new();
+    let params_obj = parameters.clone().into_inner();
     for param in table_schema.trace.parameters.iter() {
-        for (key, value) in parameters
-            .clone()
-            .into_inner()
-            .as_object()
-            .unwrap_or(&serde_json::Map::new())
-            .iter()
-        {
-            if key.contains("deleted_at") {
-                is_deleted_at = false;
-            }
-
-            // check if parameters contains key from table_schema.trace.parameters
+        for (key, value) in params_obj.as_object().unwrap_or(&serde_json::Map::new()).iter() {
+            if key.contains("deleted_at") { is_deleted_at = false; }
             if param == key {
-                if param.contains("|") {
-                    where_clause.push_str(" ( ");
-                    let param_split: Vec<&str> = param.split("|").collect();
-                    // loop every param_split
-                    for (idx, param) in param_split.iter().enumerate() {
-                        let value_str = value.as_str().unwrap_or("");
-                        let (column, operator, value) =
-                            split_column_operator(param, &table_schema.table, value_str);
-
-                        if idx == 0 {
-                            where_clause.push_str(&format!("{} {} '{}' ", column, operator, value));
-                        } else {
-                            where_clause
-                                .push_str(&format!("OR {} {} '{}' ", column, operator, value));
-                        }
+                let val_str = value.as_str().unwrap_or("");
+                // split_column_operator masih mengembalikan potongan string, tapi kita perlu binding.
+                // Gunakan operator dan kolom, lalu tentukan Filter AST yang sepadan.
+                let (column, operator, v_raw) = split_column_operator(param, &table_schema.table, val_str);
+                // Handle OR pipe: a|b|c kita jadikan Or([...])
+                if param.contains('|') {
+                    let ps: Vec<&str> = param.split('|').collect();
+                    let mut or_terms: Vec<F> = Vec::new();
+                    for p in ps {
+                        let (c2, op2, v2) = split_column_operator(p, &table_schema.table, val_str);
+                        let filt = match op2.as_str() {
+                            "=" => build_eq_filter(c2, v2),
+                            ">" => F::Gt(c2, V::Str(v2)),
+                            ">=" => F::Gte(c2, V::Str(v2)),
+                            "<" => F::Lt(c2, V::Str(v2)),
+                            "<=" => F::Lte(c2, V::Str(v2)),
+                            "<>" | "!=" => F::Ne(c2, V::Str(v2)),
+                            "LIKE" => F::Like(c2, v2),
+                            _ => build_eq_filter(c2, v2),
+                        };
+                        or_terms.push(filt);
                     }
-
-                    where_clause.push_str(" ) AND ");
+                    if !or_terms.is_empty() { filters.push(F::Or(or_terms)); }
                 } else {
-                    let value_str = value.as_str().unwrap_or("");
-                    let (column, operator, value) =
-                        split_column_operator(param, &table_schema.table, value_str);
-
-                    if value.parse::<i64>().is_ok() || value_str.contains("NULL") {
-                        where_clause.push_str(&format!("{} {} {} AND ", column, operator, value));
-                    } else {
-                        where_clause.push_str(&format!("{} {} '{}' AND ", column, operator, value));
-                    }
+                    let filt = match operator.as_str() {
+                        "=" => build_eq_filter(column, v_raw),
+                        ">" => F::Gt(column, V::Str(v_raw)),
+                        ">=" => F::Gte(column, V::Str(v_raw)),
+                        "<" => F::Lt(column, V::Str(v_raw)),
+                        "<=" => F::Lte(column, V::Str(v_raw)),
+                        "<>" | "!=" => F::Ne(column, V::Str(v_raw)),
+                        "LIKE" => F::Like(column, v_raw),
+                        _ => build_eq_filter(column, v_raw),
+                    };
+                    filters.push(filt);
                 }
             }
         }
     }
 
-    // check table insert
-    let table_insert_clause = table_schema.trace.insert_into.clone();
-
-    // check column insert
-    let mut column_insert_clause = "(".to_string();
-    for column in table_schema.trace.column_inserts.iter() {
-        column_insert_clause.push_str(&format!("{}, ", column));
-    }
-    column_insert_clause.push_str("created_at) ");
-
-    // check group by
-    let mut group_clause = format!("GROUP BY {}", table_schema.trace.column_groups.join(", "));
-    if group_clause.len() < 10 {
-        group_clause = "".to_string();
-    }
-
-    // jika gak ada deleted_at di where_clause, maka tambahkan deleted_at IS NULL
+    // Tambah filter deleted_at IS NULL jika tidak disediakan
     if is_deleted_at {
-        where_clause.push_str(format!("{}.deleted_at IS NULL AND ", route).as_str());
+        filters.push(F::IsNull(format!("{}.deleted_at", route)));
+    }
+    if !filters.is_empty() {
+        q = q.r#where(F::And(filters));
     }
 
-    // remove last " AND " from where_clause
-    if where_clause.len() > 6 {
-        where_clause = where_clause[..where_clause.len() - 5].to_string();
-    } else {
-        where_clause = "".to_string();
+    // Projection columns + created_at (raw now expr)
+    let mut select_columns = table_schema.trace.column_selects.clone();
+    select_columns.push(format!("{} as created_at", state.query_converter.datetime_now));
+    q = q.select(select_columns);
+
+    // Joins
+    for jt in table_schema.trace.join_tables.iter() {
+        match jt.type_join.to_ascii_lowercase().as_str() {
+            "left" => { q = q.join_left(jt.table.clone(), jt.logical.clone()); }
+            _ => { q = q.join_inner(jt.table.clone(), jt.logical.clone()); }
+        }
     }
-
-    let mut conflict_clause = "".to_string();
-    for column in table_schema.trace.column_conflicts.iter() {
-        conflict_clause.push_str(&format!("{}=VALUES({}), ", column, column));
+    // Group by
+    if !table_schema.trace.column_groups.is_empty() {
+        q = q.group_by(table_schema.trace.column_groups.clone());
     }
-    conflict_clause.push_str(
-        format!(
-            "updated_at={}, deleted_at=null",
-            state.query_converter.datetime_now
-        )
-        .as_str(),
-    );
-
-    let table_schema = filter_table_schema(&table_schemas, route.clone()).await;
-    let mut select_columns = table_schema.trace.column_selects.join(", ");
-    select_columns
-        .push_str(format!(", {} as created_at", state.query_converter.datetime_now).as_str());
-    let joins: Vec<String> = table_schema
-        .trace
-        .join_tables
-        .iter()
-        .map(|join| {
-            format!(
-                "{} JOIN {} ON {}",
-                join.type_join.to_uppercase(),
-                join.table,
-                join.logical
-            )
-        })
-        .collect();
-
-    let join_clause = if joins.is_empty() {
-        "".to_string()
-    } else {
-        format!(" {}", joins.join(" "))
-    };
-    // Build SELECT part as a single SQL fragment
-    let select_fragment = format!(
-        "SELECT {} FROM {} {} {} {}",
-        select_columns, table_schema.table, join_clause, where_clause, group_clause
-    );
 
     // Prepare insert columns list (trace.column_inserts + created_at)
     let mut insert_cols: Vec<String> = table_schema.trace.column_inserts.to_vec();
@@ -230,14 +223,21 @@ pub async fn process(
         "deleted_at=null".to_string(),
     ];
 
+    // Compile SELECT via AST to SQL and params
+    let (select_sql, select_params) = ds.preview_sql(&q);
+    if *crate::ISDEBUG {
+        log_output("QUERY", "TRACE(AST-SELECT)", route.as_str(), select_sql.clone(), true);
+        log_output("PARAMS", "TRACE(AST-SELECT)", route.as_str(), format!("{:?}", select_params), true);
+    }
+
     let ds = SqlStore::new(state.db.clone(), state.db_type.clone());
     let (s_sql, compiled_params) = match ds.preview_insert_select_upsert(
-        &table_insert_clause,
+        &table_schema.trace.insert_into,
         &insert_cols,
-        &select_fragment,
+        &select_sql,
         &conflict_keys,
         &extra_assignments,
-        Vec::new(),
+        select_params,
     ) {
         Ok(v) => v,
         Err(e) => {
@@ -290,4 +290,13 @@ pub async fn process(
             })
         }
     }
+}
+
+// Helper: build equality filter with NULL handling and numeric inference
+fn build_eq_filter(column: String, raw: String) -> F {
+    let s = raw.clone();
+    if s.eq_ignore_ascii_case("NULL") { return F::IsNull(column); }
+    if let Ok(n) = s.parse::<i64>() { return F::Eq(column, V::I64(n)); }
+    if let Ok(f) = s.parse::<f64>() { return F::Eq(column, V::F64(f)); }
+    F::Eq(column, V::Str(raw))
 }
