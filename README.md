@@ -23,6 +23,55 @@ Quick guide to install and run the Flexurio No‑Code API on macOS/Linux using t
 - After it finishes, reload your shell (e.g., `source ~/.zshrc`).
 - The `flexurio` command automatically reads the `.env` file in the current working directory when executed.
 
+#### One‑liner (curl)
+Install in one step (downloads and runs the official installer script from this repo):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/flexurio/flx-nocode-api/main/install-flexurio.sh | bash
+```
+
+Alternatively, download first then run:
+
+```bash
+curl -fsSL -o install-flexurio.sh \
+  https://raw.githubusercontent.com/flexurio/flx-nocode-api/main/install-flexurio.sh
+bash install-flexurio.sh
+```
+
+The script detects your OS/architecture and fetches the correct asset from the GitHub latest release. It installs the core binary and a convenient `flexurio` wrapper into `~/.local/bin`, and patches your shell rc file to add it to PATH.
+
+#### Manual via curl (GitHub Latest Release)
+If you prefer not to run the installer, you can download the latest release asset directly with curl.
+
+- macOS (Apple Silicon):
+
+```bash
+curl -fsSL -o flx-nocode-aarch64-apple-darwin.pkg \
+  https://github.com/flexurio/flx-nocode-api/releases/latest/download/flx-nocode-aarch64-apple-darwin.pkg
+sudo installer -pkg flx-nocode-aarch64-apple-darwin.pkg -target /
+```
+
+- macOS (Intel):
+
+```bash
+curl -fsSL -o flx-nocode-x86_64-apple-darwin.pkg \
+  https://github.com/flexurio/flx-nocode-api/releases/latest/download/flx-nocode-x86_64-apple-darwin.pkg
+sudo installer -pkg flx-nocode-x86_64-apple-darwin.pkg -target /
+```
+
+- Linux (x86_64):
+
+```bash
+curl -fsSL -o flx-nocode-x86_64-unknown-linux-gnu \
+  https://github.com/flexurio/flx-nocode-api/releases/latest/download/flx-nocode-x86_64-unknown-linux-gnu
+chmod +x flx-nocode-x86_64-unknown-linux-gnu
+install -m 0755 flx-nocode-x86_64-unknown-linux-gnu "$HOME/.local/bin/flx-nocode"
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.zshrc"
+source "$HOME/.zshrc"
+```
+
+Tip: After manual install on Linux, create the `flexurio` wrapper yourself or use the installer script for convenient `.env` loading and updates.
+
 #### WINDOWS
 - Open PowerShell in the repo folder and run:
 - Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
