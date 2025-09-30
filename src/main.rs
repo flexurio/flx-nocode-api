@@ -311,15 +311,6 @@ async fn main() -> std::io::Result<()> {
         }
     }
 
-    // Ensure db directory exists; download and extract config only if missing
-    let current_dir = env::current_dir()?;
-    let db_dir_path = current_dir.join("db");
-    if !db_dir_path.exists() {
-        if let Err(e) = core::create_dir_and_get_db().await {
-            eprintln!("Failed to initialize db directory: {}", e);
-        }
-    }
-
     let db_type = env::var("DB_TYPE").unwrap_or_else(|_| "mysql".to_string());
     // Pool configuration via env
     let max_pool: u32 = env::var("MAX_POOL")

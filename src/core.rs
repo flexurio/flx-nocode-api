@@ -645,46 +645,6 @@ pub(crate) async fn create_dir_and_get_config(conf: &str) -> Result<(), std::io:
     Ok(())
 }
 
-// Function create directory & get config
-pub(crate) async fn create_dir_and_get_db() -> Result<(), std::io::Error> {
-    // If db directory already exists, skip
-    if Path::new("db").exists() {
-        return Ok(());
-    }
-
-    // get latest version from github release
-    let latest_version = get_latest_release()
-        .await
-        .unwrap_or_else(|_| "v1.0.0".to_string());
-    let url = format!(
-        "https://github.com/flexurio/flx-nocode-api/releases/download/{}/db.zip",
-        latest_version
-    );
-    let zip_path = "db.zip";
-    let extract_to = "."; // current working directory
-
-    println!("Downloading...");
-    download_file(url, zip_path)
-        .await
-        .map_err(std::io::Error::other)?;
-
-    println!("Extracting...");
-    extract_zip(zip_path, extract_to).map_err(std::io::Error::other)?;
-
-    // Ensure db directory now exists
-    if !Path::new("db").exists() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            "db directory not found after extraction",
-        ));
-    }
-
-    // Clean up zip file
-    let _ = std::fs::remove_file(zip_path);
-
-    Ok(())
-}
-
 // function download .env from latest release github
 pub(crate) async fn download_env_file() -> Result<(), Box<dyn Error + Send + Sync>> {
     let latest_version = get_latest_release().await?;
