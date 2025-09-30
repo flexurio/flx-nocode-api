@@ -183,14 +183,41 @@ pub async fn process(
     insert_cols.push("created_at".to_string());
 
     // Conflict keys and extra update assignments, dialect-aware via SqlStore
-    let conflict_keys: Vec<String> = table_schema.trace.column_conflicts.clone();
-    // Guard: some backends require keys for upsert/merge semantics
+    let mut conflict_keys: Vec<String> = Vec::new();
     let dbt = state.db_type.to_lowercase();
+    // Resolve conflict keys allowing special token index:NAME
+    if !table_schema.trace.column_conflicts.is_empty() {
+        if let Some(idx_tok) = table_schema
+            .trace
+            .column_conflicts
+            .iter()
+            .find(|s| s.to_lowercase().starts_with("index:"))
+        {
+            let name = idx_tok.split_once(':').map(|(_, n)| n.trim()).unwrap_or("");
+            if let Some(ix) = table_schema
+                .indexes
+                .iter()
+                .find(|ix| ix.name.eq_ignore_ascii_case(name))
+            {
+                conflict_keys = ix.columns.clone();
+            }
+        }
+        if conflict_keys.is_empty() {
+            conflict_keys = table_schema.trace.column_conflicts.clone();
+        }
+    } else if dbt == "mssql" {
+        // allow unambiguous single unique index as fallback
+        let uniques: Vec<_> = table_schema.indexes.iter().filter(|ix| ix.unique).collect();
+        if uniques.len() == 1 {
+            conflict_keys = uniques[0].columns.clone();
+        }
+    }
+    // Guard: some backends require keys for upsert/merge semantics
     if (dbt == "postgres" || dbt == "mssql") && conflict_keys.is_empty() {
         return HttpResponse::BadRequest().json(WebResponse {
             success: false,
             message: format!(
-                "TRACE requires 'column_conflicts' to be set in config for backend '{}'",
+                "TRACE requires 'column_conflicts' (or index:<name>) for backend '{}'",
                 dbt
             ),
             total_data: 0,

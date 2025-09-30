@@ -98,6 +98,7 @@ impl Default for TableSchema {
             patch: Patch {
                 pre_process_sp: "".to_string(),
                 parameters: vec![],
+                return_mode: "".to_string(),
             },
             trace: Trace {
                 insert_into: "".to_string(),
@@ -182,6 +183,8 @@ pub struct OperationDelete {
 pub struct Patch {
     pub pre_process_sp: String,
     pub parameters: Vec<String>,
+    #[serde(default)]
+    pub return_mode: String, // "" | "rows" | "affected"
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

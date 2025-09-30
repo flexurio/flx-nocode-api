@@ -106,6 +106,7 @@ pub fn validate_table_design(design: TableSchema) -> TableSchema {
         patch: Patch {
             pre_process_sp: String::new(),
             parameters: Vec::new(),
+            return_mode: String::new(),
         },
         trace: Trace {
             insert_into: String::new(),

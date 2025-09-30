@@ -146,7 +146,7 @@ pub async fn process_sp(
     };
 
     match transaction.query_with_params(&s_sql, compiled_params).await {
-        Ok(_) => {
+        Ok(rows) => {
             transaction.commit().await.ok();
             // Audit
             write_audit(&AuditEntry {
@@ -161,12 +161,33 @@ pub async fn process_sp(
                     .map(|a| a.ip().to_string())
                     .as_deref(),
             });
-            HttpResponse::Ok().json(WebResponse {
-                success: true,
-                message: "Processes executed".to_string(),
-                total_data: 1,
-                data: Value::Null,
-            })
+            // Respect return_mode
+            let mode = table_schema.patch.return_mode.to_ascii_lowercase();
+            if mode == "rows" {
+                let total = rows.len() as i32;
+                HttpResponse::Ok().json(WebResponse {
+                    success: true,
+                    message: "Processes executed".to_string(),
+                    total_data: total,
+                    data: Value::Array(rows),
+                })
+            } else if mode == "affected" {
+                // tiberius/sqlx doesn't always return affected count in this path; use rows len if any
+                let affected = rows.len() as i32;
+                HttpResponse::Ok().json(WebResponse {
+                    success: true,
+                    message: "Processes executed".to_string(),
+                    total_data: affected,
+                    data: Value::Null,
+                })
+            } else {
+                HttpResponse::Ok().json(WebResponse {
+                    success: true,
+                    message: "Processes executed".to_string(),
+                    total_data: 1,
+                    data: Value::Null,
+                })
+            }
         }
 
         Err(err) => {
