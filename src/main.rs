@@ -484,12 +484,12 @@ async fn main() -> std::io::Result<()> {
         }
     };
 
-    // Embed DB-specific datetime SQL to avoid runtime I/O
+    // Inline per-dialect datetime SQL function
     let datetime_now: String = match db_type.as_str() {
-        "mysql" => include_str!("../db/mysql/datetime.sql").to_string(),
-        "postgres" => include_str!("../db/postgres/datetime.sql").to_string(),
-        "sqlite" => include_str!("../db/sqlite/datetime.sql").to_string(),
-        "mssql" => include_str!("../db/mssql/datetime.sql").to_string(),
+        "mysql" => "NOW()".to_string(),
+        "postgres" => "NOW()".to_string(),
+        "sqlite" => "CURRENT_TIMESTAMP".to_string(),
+        "mssql" => "GETDATE()".to_string(),
         _ => "CURRENT_TIMESTAMP".to_string(),
     };
 
