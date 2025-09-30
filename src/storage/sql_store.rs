@@ -301,6 +301,60 @@ impl SqlStore {
         Ok((sql, params))
     }
 
+    /// Build a multi-row INSERT with dialect-aware placeholders.
+    /// `columns` are the final column names in order.
+    /// `rows` is a slice of rows, each row a vector of InsertValue with the same length as columns.
+    pub fn preview_insert_bulk(
+        &self,
+        collection: &str,
+        columns: &[String],
+        rows: &[Vec<InsertValue>],
+    ) -> anyhow::Result<(String, Vec<DbParam>)> {
+        if columns.is_empty() { return Err(anyhow::anyhow!("insert columns cannot be empty")); }
+        if rows.is_empty() { return Err(anyhow::anyhow!("insert rows cannot be empty")); }
+        // Validate uniform row length
+        for (i, r) in rows.iter().enumerate() {
+            if r.len() != columns.len() {
+                return Err(anyhow::anyhow!(
+                    "row {} has {} values but {} columns provided",
+                    i, r.len(), columns.len()
+                ));
+            }
+        }
+        let mut params: Vec<DbParam> = Vec::new();
+        let mut idx = 0usize; // for postgres placeholder numbering across all rows
+        let mut values_groups: Vec<String> = Vec::with_capacity(rows.len());
+
+        for r in rows.iter() {
+            let mut frags: Vec<String> = Vec::with_capacity(r.len());
+            for val in r.iter() {
+                match val {
+                    InsertValue::Param(p) => {
+                        idx += 1;
+                        params.push(p.clone());
+                        frags.push(self.next_placeholder(idx));
+                    }
+                    InsertValue::Raw(sql) => {
+                        frags.push(sql.clone());
+                    }
+                    InsertValue::RawWithParams { sql, params: p } => {
+                        let reb = self.rebind_fragment(sql, p, &mut idx, &mut params);
+                        frags.push(reb);
+                    }
+                }
+            }
+            values_groups.push(format!("({})", frags.join(",")));
+        }
+
+        let sql = format!(
+            "INSERT INTO {} ({}) VALUES {}",
+            collection,
+            columns.join(","),
+            values_groups.join(", ")
+        );
+        Ok((sql, params))
+    }
+
     fn rebind_fragment(
         &self,
         sql: &str,

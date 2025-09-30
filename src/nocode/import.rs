@@ -19,7 +19,7 @@ use crate::{
     AppState,
 };
 use chrono::Local;
-use crate::storage::sql_store::SqlStore;
+use crate::storage::sql_store::{SqlStore, InsertValue};
 use crate::storage::traits::DataStore;
 use crate::storage::ast::{Query as Q, Filter as F};
 
@@ -323,42 +323,35 @@ pub async fn import(
         .unwrap_or(500);
     let mut inserted: i32 = 0;
     for chunk in rows.chunks(batch_size) {
-        // Build VALUES and params
-        let mut values_groups: Vec<String> = Vec::with_capacity(chunk.len());
-        let mut params: Vec<DbParam> = Vec::with_capacity(chunk.len() * (final_columns.len() + 1));
+        // Build bulk rows as InsertValue vectors
+        let mut bulk_rows: Vec<Vec<InsertValue>> = Vec::with_capacity(chunk.len());
 
         for (i_row, row) in chunk.iter().enumerate() {
-            // One row worth of placeholders
-            let mut placeholders: Vec<String> = Vec::with_capacity(final_columns.len() + 2);
+            let mut row_vals: Vec<InsertValue> = Vec::with_capacity(final_columns.len() + 2);
 
             for col in final_columns.iter() {
                 // Compute value - first check additional columns, then row data
                 let mut value_str = if let Some(additional_value) = additional_columns.get(&col.name) {
-                    // Use value from multipart additional fields
                     json_value_to_string(additional_value)
                 } else {
-                    // Use value from file data
-                    row.get(&col.name)
-                        .map(json_value_to_string)
-                        .unwrap_or_default()
+                    row.get(&col.name).map(json_value_to_string).unwrap_or_default()
                 };
 
                 // Special handling for id
-                if col.name == "id"
-                    && value_str.is_empty() {
-                        if let Some((ref prefix, width, ref mut next_num)) = id_ctx {
-                            *next_num += 1;
-                            let num_str = format!("{:0>len$}", *next_num, len = width);
-                            value_str = format!("{}/{}", prefix, num_str);
-                        } else if !all_rows_have_id {
-                            return HttpResponse::BadRequest().json(WebResponse {
-                                success: false,
-                                message: format!("Row {} missing id and no function configured", inserted as usize + i_row + 1),
-                                total_data: inserted,
-                                data: Value::Null,
-                            });
-                        }
+                if col.name == "id" && value_str.is_empty() {
+                    if let Some((ref prefix, width, ref mut next_num)) = id_ctx {
+                        *next_num += 1;
+                        let num_str = format!("{:0>len$}", *next_num, len = width);
+                        value_str = format!("{}/{}", prefix, num_str);
+                    } else if !all_rows_have_id {
+                        return HttpResponse::BadRequest().json(WebResponse {
+                            success: false,
+                            message: format!("Row {} missing id and no function configured", inserted as usize + i_row + 1),
+                            total_data: inserted,
+                            data: Value::Null,
+                        });
                     }
+                }
 
                 // FK validation when value present
                 if !value_str.is_empty() {
@@ -377,9 +370,7 @@ pub async fn import(
                                     success: false,
                                     message: format!(
                                         "Invalid foreign key value '{}' for column '{}' at row {}",
-                                        value_str,
-                                        col.name,
-                                        inserted as usize + i_row + 1
+                                        value_str, col.name, inserted as usize + i_row + 1
                                     ),
                                     total_data: inserted,
                                     data: Value::Null,
@@ -397,38 +388,31 @@ pub async fn import(
                     }
                 }
 
-                // Decide param value (NULL vs default)
+                // Decide InsertValue param
                 if value_str.is_empty() && col.nullable {
-                    placeholders.push("?".into());
-                    params.push(DbParam::Null);
-                } else if (value_str.is_empty())
-                    && (col.type_data.contains("int") || col.type_data.contains("float"))
-                {
-                    placeholders.push("?".into());
-                    if let Ok(n) = "0".parse::<i64>() { params.push(DbParam::I64(n)); }
-                    else { params.push(DbParam::Str("0".to_string())); }
-                } else {
-                    placeholders.push("?".into());
-                    if col.type_data.contains("int") || col.type_data.contains("float") {
-                        if let Ok(n) = value_str.parse::<i64>() {
-                            params.push(DbParam::I64(n));
-                        } else if let Ok(f) = value_str.parse::<f64>() {
-                            params.push(DbParam::F64(f));
-                        } else {
-                            params.push(DbParam::Str(value_str));
-                        }
+                    row_vals.push(InsertValue::Param(DbParam::Null));
+                } else if value_str.is_empty() && (col.type_data.contains("int") || col.type_data.contains("float")) {
+                    // default numeric zero when empty and numeric type
+                    if let Ok(n) = "0".parse::<i64>() { row_vals.push(InsertValue::Param(DbParam::I64(n))); }
+                    else { row_vals.push(InsertValue::Param(DbParam::Str("0".to_string()))); }
+                } else if col.type_data.contains("int") || col.type_data.contains("float") {
+                    if let Ok(n) = value_str.parse::<i64>() {
+                        row_vals.push(InsertValue::Param(DbParam::I64(n)));
+                    } else if let Ok(f) = value_str.parse::<f64>() {
+                        row_vals.push(InsertValue::Param(DbParam::F64(f)));
                     } else {
-                        params.push(DbParam::Str(value_str));
+                        row_vals.push(InsertValue::Param(DbParam::Str(value_str)));
                     }
+                } else {
+                    row_vals.push(InsertValue::Param(DbParam::Str(value_str)));
                 }
             }
 
             // created_at (expr) and created_by_id
-            placeholders.push(state.query_converter.datetime_now.clone());
-            placeholders.push("?".into());
-            params.push(DbParam::Str(claims.id.clone()));
+            row_vals.push(InsertValue::Raw(state.query_converter.datetime_now.clone()));
+            row_vals.push(InsertValue::Param(DbParam::Str(claims.id.clone())));
 
-            values_groups.push(format!("({})", placeholders.join(", ")));
+            bulk_rows.push(row_vals);
         }
 
         // Build column names + audit
@@ -436,21 +420,23 @@ pub async fn import(
         col_names.push("created_at".into());
         col_names.push("created_by_id".into());
 
-        let sql = format!(
-            "INSERT INTO {} ({}) VALUES {}",
-            table_schema.table,
-            col_names.join(", "),
-            values_groups.join(", ")
-        );
+        // Use adapter to build dialect-aware SQL and params
+        let ds = SqlStore::new(state.db.clone(), state.db_type.clone());
+        let (sql, params) = match ds.preview_insert_bulk(&table_schema.table, &col_names, &bulk_rows) {
+            Ok(p) => p,
+            Err(e) => {
+                let _ = tx.rollback().await;
+                return HttpResponse::BadRequest().json(WebResponse {
+                    success: false,
+                    message: format!("Bulk compile error: {}", e),
+                    total_data: inserted,
+                    data: Value::Null,
+                });
+            }
+        };
 
         log_output("QUERY", "IMPORT-BULK", &table_schema.table, sql.clone(), true);
-        log_output(
-            "PARAMS",
-            "IMPORT-BULK",
-            &table_schema.table,
-            format!("{} params", params.len()),
-            true,
-        );
+        log_output("PARAMS", "IMPORT-BULK", &table_schema.table, format!("{} params", params.len()), true);
 
         if let Err(e) = tx.query_with_params(&sql, params).await {
             let _ = tx.rollback().await;
