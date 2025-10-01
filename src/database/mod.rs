@@ -7,3 +7,4 @@ pub mod sqlite;
 #[cfg(feature = "mssql")]
 pub mod mssql;
 pub mod state;
+pub mod redis;

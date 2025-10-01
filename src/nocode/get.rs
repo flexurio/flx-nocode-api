@@ -16,6 +16,7 @@ use crate::storage::ast::{Filter as QF, Query as QQ, Val as QV, Expr as QE};
 use crate::storage::sql_store::SqlStore;
 use std::sync::Arc;
 use std::collections::HashSet;
+use crate::database::redis::{redis_get_json, redis_set_json, build_key_prefix};
 
 // NCO-GET
 pub async fn select(
@@ -25,6 +26,8 @@ pub async fn select(
     table_schemas: Arc<Vec<TableSchema>>,
     req: actix_web::HttpRequest,
 ) -> impl Responder {
+    // Default cache tenant scope
+    let mut cache_tenant = String::from("public");
     // Per-IP GET rate limit per second
     let ip_key = get_client_ip(&req);
     let get_limit_i64: i64 = std::env::var("RATE_LIMIT_GET_PER_SEC")
@@ -58,6 +61,11 @@ pub async fn select(
         };
 
         println!("Claims: {:?}", claims);
+
+        // Capture tenant for cache key scoping
+        if !claims.id.is_empty() {
+            cache_tenant = claims.id.clone();
+        }
 
         if !check_access(&claims, &route, "read") {
             return HttpResponse::Unauthorized().json(WebResponse {
@@ -124,7 +132,7 @@ pub async fn select(
     // get parameters value only allowed from table_schemas.get.parameters
     // Pre-convert to object once for efficiency
     let params_obj = parameters.clone().into_inner();
-    let params_map = match params_obj.as_object() {
+    let params_map_awal = match params_obj.as_object() {
         Some(map) => map,
         None => {
             return HttpResponse::BadRequest().json(WebResponse {
@@ -135,6 +143,54 @@ pub async fn select(
             });
         }
     };
+    let mut params_map = params_map_awal.clone();
+    let mut isredis = false;
+
+    // check if in parameters contain redis 
+    if params_map_awal.contains_key("redis"){
+        println!("Ada redis");
+        if params_map_awal.get("redis").unwrap() == &Value::Bool(true) || params_map_awal.get("redis").unwrap() == &Value::String("true".to_string()) {
+            // if redis is true, try to get from redis
+            println!("Using redis ------- ");
+            isredis = true;
+        }
+        params_map.remove("redis");
+
+    }
+    // Build cache key if redis usage requested or TTL configured
+    let mut cache_key: Option<String> = None;
+    if isredis || table_schema.redis.ttl > 0 {
+        let prefix = build_key_prefix(&cache_tenant, &route);
+        // include stable request parameters in the key (sorted by name)
+        let mut keys: Vec<_> = params_map
+            .iter()
+            .map(|(k, v)| format!("{}={}", k, v))
+            .collect();
+        keys.sort();
+        let key_suffix = keys.join("&");
+        let full_key = if key_suffix.is_empty() { prefix } else { format!("{}:{}", prefix, key_suffix) };
+        cache_key = Some(full_key);
+    }
+
+    // Try read-through cache when explicitly requested via ?redis=true
+    if isredis {
+        if let Some(ref k) = cache_key {
+            if let Ok(Some(cached)) = redis_get_json::<WebResponse>(k).await {
+                // log_output data from redis
+                log_output(
+                    "REDIS",
+                    "GET",
+                    &route,
+                    format!("Cache hit for key: {}, {}", k, cached.data),
+                    true,
+                );
+                return HttpResponse::Ok().json(cached);
+            }
+        }
+    } else {
+        println!("Not using redis");
+    }
+    println!("Params map outer remove redis: {:?}", params_map);
 
     // AST path (now supports MSSQL, JOINs, GROUP BY, HAVING, and paramjoin)
     {
@@ -555,6 +611,13 @@ pub async fn select(
                 total_data,
                 data: Value::Array(rows),
             };
+            // Save to cache if TTL configured
+            if let Some(ref k) = cache_key {
+                if table_schema.redis.ttl > 0 {
+                    let ttl = table_schema.redis.ttl as usize;
+                    let _ = redis_set_json(k, &result, Some(ttl)).await;
+                }
+            }
             HttpResponse::Ok().json(result)
     }
 
