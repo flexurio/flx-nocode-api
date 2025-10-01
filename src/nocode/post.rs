@@ -9,7 +9,7 @@ use crate::rate_limit::RL_WINDOW_MUTATE;
 use crate::{
     auth::{check_access, get_user_info_from_token, Claims},
     crypt::{encrypt, is_encrypted_string},
-    database::state::{execute_sql_formula, DbParam},
+    database::state::{DbParam},
     helpers::{extract_expressions, filter_table_schema, find_column_match, multipart_to_json},
     log::log_output,
     model::{Column, TableSchema, WebResponse},
@@ -19,7 +19,6 @@ use crate::{
 use chrono::Local;
 use std::sync::Arc;
 use crate::storage::sql_store::{SqlStore, InsertValue};
-use crate::storage::traits::DataStore;
 use crate::storage::ast::{Query as Q, Filter as F};
 
 // NCO-POST
@@ -340,11 +339,10 @@ pub async fn insert(
 
                 // get max id from table from column id with length len_id from left
                 // AST: aggregate to get max id string for the prefix
-                let ds = SqlStore::new(state.db.clone(), state.db_type.clone());
                 let q = Q::from(table_schema.table.clone())
                     .select(["COALESCE(MAX(id), 0) as max_id"]) // raw projection allowed
                     .r#where(F::Like("id".into(), format!("%{}%", id_find)));
-                let max_id: String = match ds.query(&q).await {
+                let max_id: String = match state.store.query(&q).await {
                     Ok(rows) if !rows.is_empty() => {
                         let v = rows[0].get("max_id");
                         if let Some(s) = v.and_then(|x| x.as_str()) { s.to_string() }
@@ -354,53 +352,19 @@ pub async fn insert(
                     }
                     _ => "0".to_string(),
                 };
-
-                // get n char from right
-                let max_id_str: String = max_id.rsplit('/').next().unwrap_or("0").to_string();
-
-                // remove leading zero
-                let _ = max_id_str.trim_start_matches('0');
-
-                let max_id: i64 = max_id_str.parse().unwrap_or(0) + 1;
-                let max_id_str = format!("{:0>len$}", max_id, len = len_id);
-                id.push('/');
-                id.push_str(&max_id_str);
-            } else if function_id.starts_with("{request.") && function_id.ends_with('}') {
-                
-                // get value from body
-                let key = function_id
-                    .trim_start_matches("{request.")
-                    .trim_end_matches('}');
-                let value = body
-                    .get(key)
-                    .map(|v| v.to_string().replace('"', "").replace("null", ""))
-                    .unwrap_or_default();
-
-                if value.is_empty() {
-                    // return error if value is empty
-                    return HttpResponse::BadRequest().json(WebResponse {
-                        success: false,
-                        message: format!("Missing value for {}", key),
-                        total_data: 0,
-                        data: Value::Null,
-                    });
+                // Extract numeric suffix (width = len_id) and increment
+                let mut current_num: i64 = 0;
+                if max_id.len() >= len_id {
+                    let suffix = &max_id[max_id.len() - len_id..];
+                    current_num = suffix.parse::<i64>().unwrap_or(0);
                 }
-
+                let next_num = current_num + 1;
+                let next_str = format!("{:0width$}", next_num, width = len_id);
                 id.push('/');
-                id.push_str(&value);
-            } else {
-                id.push('/');
-                id.push_str(function_id);
+                id.push_str(&next_str);
             }
         }
-
-        // remove first "/" from id
-        id.remove(0);
-
-        // remove id from insert_columns
-        insert_columns.retain(|&x| x != "id");
-        insert_columns.push("id");
-        // add id parameter
+        // after building from tokens, bind id into params and AST fields
         bind_params.push(DbParam::Str(id.clone()));
         // mirror to doc_map actual id value for AST path
         doc_map.insert("id".to_string(), serde_json::json!(id.clone()));
@@ -478,49 +442,7 @@ pub async fn insert(
         }
     };
 
-    // check validation_data
-    if table_schema.post.validate_data.contains("SQL:") {
-        match execute_sql_formula(
-            &state.db,
-            table_schema.post.validate_data.clone(),
-            &body,
-            route.as_str(),
-        )
-        .await
-        {
-            Ok(row) => {
-                // check data row
-                if !row.is_empty() {
-                    let is_valid = row[0].get(0).and_then(|v| v.as_bool()).unwrap_or(true);
-                    if !is_valid {
-                        return HttpResponse::BadRequest().json(WebResponse {
-                            success: false,
-                            message: "Validation data from table is not valid. Please contact your administrator".to_string(),
-                            total_data: 0,
-                            data: Value::Null,
-                        });
-                    }
-                } else {
-                    return HttpResponse::BadRequest().json(WebResponse {
-                        success: false,
-                        message:
-                            "Validation data from table is empty. Please contact your administrator"
-                                .to_string(),
-                        total_data: 0,
-                        data: Value::Null,
-                    });
-                }
-            }
-            Err(err) => {
-                return HttpResponse::BadRequest().json(WebResponse {
-                    success: false,
-                    message: format!("Error in validation_data: {}", err),
-                    total_data: 0,
-                    data: Value::Null,
-                });
-            }
-        }
-    }
+    // (moved) validation_data will be executed inside the transaction below
 
     // Begin transaction via generic store
     let mut tx = match state.store.begin_tx().await {
@@ -534,6 +456,59 @@ pub async fn insert(
             });
         }
     };
+
+    // Run validate_data inside transaction (expects boolean in first column of first row)
+    if table_schema.post.validate_data.contains("SQL:") {
+        match crate::database::state::build_sql_and_params_from_formula(
+            &table_schema.post.validate_data,
+            &body,
+        ) {
+            Ok((built_sql, params)) => {
+                match tx.raw_sql(&built_sql, params).await {
+                    Ok(row) => {
+                        if !row.is_empty() {
+                            let is_valid = row[0].get(0).and_then(|v| v.as_bool()).unwrap_or(true);
+                            if !is_valid {
+                                let _ = tx.rollback().await;
+                                return HttpResponse::BadRequest().json(WebResponse {
+                                    success: false,
+                                    message: "Validation data from table is not valid. Please contact your administrator".to_string(),
+                                    total_data: 0,
+                                    data: Value::Null,
+                                });
+                            }
+                        } else {
+                            let _ = tx.rollback().await;
+                            return HttpResponse::BadRequest().json(WebResponse {
+                                success: false,
+                                message: "Validation data from table is empty. Please contact your administrator".to_string(),
+                                total_data: 0,
+                                data: Value::Null,
+                            });
+                        }
+                    }
+                    Err(err) => {
+                        let _ = tx.rollback().await;
+                        return HttpResponse::BadRequest().json(WebResponse {
+                            success: false,
+                            message: format!("Error in validation_data: {}", err),
+                            total_data: 0,
+                            data: Value::Null,
+                        });
+                    }
+                }
+            }
+            Err(e) => {
+                let _ = tx.rollback().await;
+                return HttpResponse::BadRequest().json(WebResponse {
+                    success: false,
+                    message: format!("Error building validation formula: {}", e),
+                    total_data: 0,
+                    data: Value::Null,
+                });
+            }
+        }
+    }
 
     if table_schema.post.pre_process.contains("SQL:") {
         if let Err(err) = crate::database::state::execute_sql_formula_with_txstore(

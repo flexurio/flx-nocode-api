@@ -11,7 +11,6 @@ use crate::log::log_output;
 use crate::model::{ParamJoin, ReferenceForeignKey, TableSchema, WebResponse};
 use crate::storage::ast::{Filter as QF, Query as QQ, Val as QV};
 use crate::storage::sql_store::SqlStore;
-use crate::storage::traits::DataStore;
 use crate::AppState;
 use chrono::Local;
 
@@ -443,14 +442,14 @@ pub async fn export(
     // LIMIT only (no pagination by default for export)
     q = q.limit(i_limit as u32);
 
-    // Execute via DataStore (AST)
+    // Execute via DataStore (AST). Use SqlStore only for preview logs.
     let ds = SqlStore::new(state.db.clone(), state.db_type.clone());
     if *crate::ISDEBUG {
         let (s_sql_dbg, params_dbg) = ds.preview_sql(&q);
         log_output("QUERY", "EXPORT(AST)", route.as_str(), s_sql_dbg.clone(), true);
         log_output("PARAMS", "EXPORT(AST)", route.as_str(), format!("{:?}", params_dbg), true);
     }
-    let rows = match ds.query(&q).await {
+    let rows = match state.store.query(&q).await {
         Ok(res) => res,
         Err(e) => {
             return HttpResponse::InternalServerError().json(WebResponse {

@@ -60,55 +60,56 @@ pub async fn create_table(
     let (sql_create_table, sql_create_index) = generate_table(&ds, &table_schema);
     let mut err_message = String::new();
 
-
-    // execute sql_create_table
-    match &state.db.query(&sql_create_table).await {
-        Ok(_) => {
-            println!("Table {} created", table_schema.table);
-        }
+    // Run DDL statements inside a TxStore transaction for consistency
+    let mut tx = match state.store.begin_tx().await {
+        Ok(t) => t,
         Err(err) => {
-            let error_message = format!(
-                "Failed to create table {} with error : {}",
-                table_schema.table, err
-            );
+            return HttpResponse::InternalServerError().json(WebResponse {
+                success: false,
+                message: format!("Error starting transaction: {}", err),
+                total_data: 0,
+                data: Value::Null,
+            });
+        }
+    };
 
+    // execute create table
+    if let Err(err) = tx.raw_sql(&sql_create_table, vec![]).await {
+        let error_message = format!(
+            "Failed to create table {} with error : {}",
+            table_schema.table, err
+        );
+        log_output(
+            "QUERY",
+            "GENERATE TABLE",
+            route.clone().as_str(),
+            sql_create_table.clone() + " ~ ERROR : " + &error_message,
+            true,
+        );
+        err_message = error_message;
+    }
+
+    // execute each create index
+    for sql_idx in sql_create_index.iter() {
+        if let Err(err) = tx.raw_sql(sql_idx, vec![]).await {
+            err_message = format!(
+                "{} \nFailed to create index {} with error : {}",
+                err_message, table_schema.table, err
+            );
             log_output(
                 "QUERY",
-                "GENERATE TABLE",
+                "GENERATE INDEX",
                 route.clone().as_str(),
-                sql_create_table.clone() + " ~ ERROR : " + &error_message,
+                sql_idx.clone() + " ~ ERROR : " + &err_message,
                 true,
             );
-
-            err_message = error_message;
         }
     }
 
-    // execute sql_create_index
-    // loop every sql_create_index
-    for sql_create_index in sql_create_index.iter() {
-
-        match &state.db.query(sql_create_index).await {
-            Ok(_) => {
-                println!("Index {} created", table_schema.table);
-            }
-            Err(err) => {
-                err_message = format!(
-                    "{} \n
-                    Failed to create index {} with error : {}",
-                    err_message, table_schema.table, err
-                );
-
-                log_output(
-                    "QUERY",
-                    "GENERATE INDEX",
-                    route.clone().as_str(),
-                    sql_create_index.clone() + " ~ ERROR : " + &err_message,
-                    true,
-                );
-
-            }
-        }
+    if err_message.is_empty() {
+        let _ = tx.commit().await;
+    } else {
+        let _ = tx.rollback().await;
     }
 
     if !err_message.is_empty() {

@@ -11,17 +11,16 @@ use crate::rate_limit::RL_WINDOW_MUTATE;
 use crate::{
     auth::{check_access, get_user_info_from_token, Claims},
     crypt::{encrypt, is_encrypted_string},
-    database::state::{execute_sql_formula, DbParam},
+    database::state::{DbParam},
     helpers::{filter_table_schema, multipart_to_json},
     log::log_output,
     model::{ReferenceForeignKey, TableSchema, WebResponse},
-    nocode::foreign_key::{check_data_foreign_key, process_foreign_keys_delete_update},
+    nocode::foreign_key::check_data_foreign_key,
     AppState,
 };
 use chrono::Local;
 use std::sync::Arc;
 use crate::storage::sql_store::{SqlStore, InsertValue};
-use crate::storage::traits::DataStore;
 use crate::storage::ast::{Filter as QF, Val as QV};
 
 // NCO-PUT
@@ -282,49 +281,7 @@ pub async fn update(
         log_output("PARAM", "PUT(AST)", route.as_str(), format!("{:?}", params_compiled), true);
     }
 
-    // check validation_data
-    if table_schema.put.validate_data.contains("SQL:") {
-        match execute_sql_formula(
-            &state.db,
-            table_schema.put.validate_data.clone(),
-            &body,
-            route.as_str(),
-        )
-        .await
-        {
-            Ok(row) => {
-                // check data row
-                if !row.is_empty() {
-                    let is_valid = row[0].get(0).and_then(|v| v.as_bool()).unwrap_or(true);
-                    if !is_valid {
-                        return HttpResponse::BadRequest().json(WebResponse {
-                            success: false,
-                            message: "Validation data from table is not valid. Please contact your administrator".to_string(),
-                            total_data: 0,
-                            data: Value::Null,
-                        });
-                    }
-                } else {
-                    return HttpResponse::BadRequest().json(WebResponse {
-                        success: false,
-                        message:
-                            "Validation data from table is empty. Please contact your administrator"
-                                .to_string(),
-                        total_data: 0,
-                        data: Value::Null,
-                    });
-                }
-            }
-            Err(err) => {
-                return HttpResponse::BadRequest().json(WebResponse {
-                    success: false,
-                    message: format!("Error in validation_data: {}", err),
-                    total_data: 0,
-                    data: Value::Null,
-                });
-            }
-        }
-    }
+    // validation_data moved to run inside the transaction below
     // Begin transaction via generic store (TxStore)
     let mut tx = match state.store.begin_tx().await {
         Ok(t) => t,
@@ -337,6 +294,59 @@ pub async fn update(
             });
         }
     };
+
+    // Run validate_data inside transaction (expects boolean in first column of first row)
+    if table_schema.put.validate_data.contains("SQL:") {
+        match crate::database::state::build_sql_and_params_from_formula(
+            &table_schema.put.validate_data,
+            &body,
+        ) {
+            Ok((built_sql, params)) => {
+                match tx.raw_sql(&built_sql, params).await {
+                    Ok(row) => {
+                        if !row.is_empty() {
+                            let is_valid = row[0].get(0).and_then(|v| v.as_bool()).unwrap_or(true);
+                            if !is_valid {
+                                let _ = tx.rollback().await;
+                                return HttpResponse::BadRequest().json(WebResponse {
+                                    success: false,
+                                    message: "Validation data from table is not valid. Please contact your administrator".to_string(),
+                                    total_data: 0,
+                                    data: Value::Null,
+                                });
+                            }
+                        } else {
+                            let _ = tx.rollback().await;
+                            return HttpResponse::BadRequest().json(WebResponse {
+                                success: false,
+                                message: "Validation data from table is empty. Please contact your administrator".to_string(),
+                                total_data: 0,
+                                data: Value::Null,
+                            });
+                        }
+                    }
+                    Err(err) => {
+                        let _ = tx.rollback().await;
+                        return HttpResponse::BadRequest().json(WebResponse {
+                            success: false,
+                            message: format!("Error in validation_data: {}", err),
+                            total_data: 0,
+                            data: Value::Null,
+                        });
+                    }
+                }
+            }
+            Err(e) => {
+                let _ = tx.rollback().await;
+                return HttpResponse::BadRequest().json(WebResponse {
+                    success: false,
+                    message: format!("Error building validation formula: {}", e),
+                    total_data: 0,
+                    data: Value::Null,
+                });
+            }
+        }
+    }
 
     if table_schema.put.pre_process.contains("SQL:") {
         if let Err(err) = crate::database::state::execute_sql_formula_with_txstore(

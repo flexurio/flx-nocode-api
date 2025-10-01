@@ -66,7 +66,7 @@ impl SqlStore {
         let (table_sql, index_sqls) = self.compile_create_table_separate(ct);
         let mut sql = table_sql;
         for ix in index_sqls {
-            sql.push_str("\n");
+            sql.push('\n');
             sql.push_str(&ix);
         }
         sql
@@ -103,7 +103,8 @@ impl SqlStore {
         // Table constraints
         let mut indexes_to_emit: Vec<(Option<String>, Vec<String>, bool)> = vec![];
         // For MSSQL, emit FKs as separate ALTER TABLE statements guarded by existence checks
-        let mut fks_to_emit_mssql: Vec<(Option<String>, Vec<String>, String, Vec<String>, Option<crate::storage::ddl::ForeignAction>, Option<crate::storage::ddl::ForeignAction>)> = vec![];
+    #[allow(clippy::type_complexity)]
+    let mut fks_to_emit_mssql: Vec<(Option<String>, Vec<String>, String, Vec<String>, Option<crate::storage::ddl::ForeignAction>, Option<crate::storage::ddl::ForeignAction>)> = vec![];
         for cons in &ct.constraints {
             match cons {
                 TableConstraint::PrimaryKey { columns } => {
@@ -501,6 +502,7 @@ impl SqlStore {
         }
     }
 
+    #[allow(dead_code)]
     fn build_update(
         &self,
         collection: &str,
@@ -529,6 +531,7 @@ impl SqlStore {
         Ok((sql, params))
     }
 
+    #[allow(dead_code)]
     pub fn preview_update(
         &self,
         collection: &str,
@@ -688,7 +691,7 @@ struct SqlTxStore {
 impl TxStore for SqlTxStore {
     async fn query(&mut self, q: &Query) -> anyhow::Result<Vec<serde_json::Value>> {
         let (sql, params) = compile_query_with_dialect(&self.db_type, q);
-        self.tx.query_with_params(&sql, params).await.map_err(Into::into)
+    self.tx.query_with_params(&sql, params).await
     }
 
     async fn insert(&mut self, collection: &str, doc: serde_json::Value) -> anyhow::Result<serde_json::Value> {
@@ -710,15 +713,15 @@ impl TxStore for SqlTxStore {
     }
 
     async fn raw_sql(&mut self, sql: &str, params: Vec<DbParam>) -> anyhow::Result<Vec<serde_json::Value>> {
-        self.tx.query_with_params(sql, params).await.map_err(Into::into)
+    self.tx.query_with_params(sql, params).await
     }
 
     async fn commit(self: Box<Self>) -> anyhow::Result<()> {
-        self.tx.commit().await.map_err(Into::into)
+    self.tx.commit().await
     }
 
     async fn rollback(self: Box<Self>) -> anyhow::Result<()> {
-        self.tx.rollback().await.map_err(Into::into)
+    self.tx.rollback().await
     }
 }
 
@@ -854,6 +857,7 @@ fn build_update_with_dialect(db_type: &str, collection: &str, filter: Option<&Fi
     Ok((sql, params))
 }
 
+#[allow(dead_code)]
 fn build_delete_with_dialect(db_type: &str, collection: &str, filter: Option<&Filter>) -> anyhow::Result<(String, Vec<DbParam>)> {
     let mut params = Vec::<DbParam>::new();
     let mut idx = 0usize;

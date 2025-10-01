@@ -3,6 +3,7 @@ use serde_json::Value;
 
 use crate::storage::ast::{Filter, Query};
 
+#[allow(dead_code)]
 #[derive(Clone, Debug, Default)]
 pub struct BackendCapabilities {
     pub transactions: bool,
@@ -14,7 +15,9 @@ pub struct BackendCapabilities {
 #[async_trait]
 pub trait TxStore: Send + Sync {
     // Query (transaction-scoped)
+    #[allow(dead_code)]
     async fn query(&mut self, q: &Query) -> anyhow::Result<Vec<Value>>;
+    #[allow(dead_code)]
     async fn insert(&mut self, collection: &str, doc: Value) -> anyhow::Result<Value>;
     async fn update(
         &mut self,
@@ -22,6 +25,7 @@ pub trait TxStore: Send + Sync {
         filter: Option<Filter>,
         patch: Value,
     ) -> anyhow::Result<u64>;
+    #[allow(dead_code)]
     async fn delete(&mut self, collection: &str, filter: Option<Filter>) -> anyhow::Result<u64>;
 
     // Optional: raw SQL escape hatch (used by legacy SQL hooks)
@@ -39,6 +43,7 @@ pub trait TxStore: Send + Sync {
 
 #[async_trait]
 pub trait DataStore: Send + Sync {
+    #[allow(dead_code)]
     fn capabilities(&self) -> BackendCapabilities {
         BackendCapabilities::default()
     }
@@ -48,12 +53,14 @@ pub trait DataStore: Send + Sync {
 
     // CRUD
     async fn insert(&self, collection: &str, doc: Value) -> anyhow::Result<Value>;
+    #[allow(dead_code)]
     async fn update(
         &self,
         collection: &str,
         filter: Option<Filter>,
         patch: Value,
     ) -> anyhow::Result<u64>;
+    #[allow(dead_code)]
     async fn delete(&self, collection: &str, filter: Option<Filter>) -> anyhow::Result<u64>;
 
     // Optional: transactions
@@ -62,6 +69,7 @@ pub trait DataStore: Send + Sync {
     }
 
     // Legacy escape hatch for gradual migration
+    #[allow(dead_code)]
     async fn raw_sql(
         &self,
         _sql: &str,

@@ -20,7 +20,6 @@ use crate::{
 };
 use chrono::Local;
 use crate::storage::sql_store::{SqlStore, InsertValue};
-use crate::storage::traits::DataStore;
 use crate::storage::ast::{Query as Q, Filter as F};
 
 // CSV/XLSX import into a route table
@@ -285,12 +284,11 @@ pub async fn import(
             let (prefix, width) = derive_id_prefix_and_width(func);
             // Query once for max existing id with this prefix
             let id_find = prefix.clone();
-            // AST: fetch highest id matching prefix pattern
-            let ds = SqlStore::new(state.db.clone(), state.db_type.clone());
+            // AST: fetch highest id matching prefix pattern via DataStore
             let q = Q::from(table_schema.table.clone())
                 .select(["COALESCE(MAX(id), 0) as max_id"]) // aggregate
                 .r#where(F::Like("id".into(), format!("%{}%", id_find)));
-            let max_id: String = match ds.query(&q).await {
+            let max_id: String = match state.store.query(&q).await {
                 Ok(rows) if !rows.is_empty() => {
                     let v = rows[0].get("max_id");
                     if let Some(s) = v.and_then(|x| x.as_str()) { s.to_string() }
@@ -307,8 +305,8 @@ pub async fn import(
         }
     }
 
-    // Start transaction
-    let mut tx = match state.db.begin_transaction().await {
+    // Start transaction via generic store
+    let mut tx = match state.store.begin_tx().await {
         Ok(t) => t,
         Err(e) => {
             return HttpResponse::InternalServerError().json(WebResponse {
@@ -442,7 +440,7 @@ pub async fn import(
         log_output("QUERY", "IMPORT-BULK", &table_schema.table, sql.clone(), true);
         log_output("PARAMS", "IMPORT-BULK", &table_schema.table, format!("{} params", params.len()), true);
 
-        if let Err(e) = tx.query_with_params(&sql, params).await {
+        if let Err(e) = tx.raw_sql(&sql, params).await {
             let _ = tx.rollback().await;
             return HttpResponse::BadRequest().json(WebResponse {
                 success: false,

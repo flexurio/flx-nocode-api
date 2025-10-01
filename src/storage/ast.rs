@@ -116,8 +116,4 @@ impl Query {
         self
     }
 
-    pub fn distinct(mut self) -> Self {
-        self.distinct = true;
-        self
-    }
 }
