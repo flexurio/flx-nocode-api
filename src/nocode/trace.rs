@@ -255,9 +255,9 @@ pub async fn process(
         log_output("PARAMS", "TRACE(AST)", route.as_str(), format!("{:?}", compiled_params), true);
     }
 
-    // Begin transaction
-    let mut transaction = match state.db.begin_transaction().await {
-        Ok(tx) => tx,
+    // Begin transaction via generic store
+    let mut tx = match state.store.begin_tx().await {
+        Ok(t) => t,
         Err(err) => {
             return HttpResponse::InternalServerError().json(WebResponse {
                 success: false,
@@ -268,10 +268,10 @@ pub async fn process(
         }
     };
 
-    match transaction.query_with_params(&s_sql, compiled_params).await {
+    match tx.raw_sql(&s_sql, compiled_params).await {
         Ok(_) => {
             // Commit transaction
-            transaction.commit().await.ok();
+            tx.commit().await.ok();
             HttpResponse::Ok().json(WebResponse {
                 success: true,
                 message: "Data inserted".to_string(),
@@ -281,7 +281,7 @@ pub async fn process(
         }
 
         Err(err) => {
-            transaction.rollback().await.ok();
+            tx.rollback().await.ok();
             HttpResponse::InternalServerError().json(WebResponse {
                 success: false,
                 message: format!("Error NCO-TRACE: {}", err),
