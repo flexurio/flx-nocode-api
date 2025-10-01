@@ -56,7 +56,6 @@ pub async fn insert(
     }
 
     let mut function_id_split: Vec<String> = Vec::new();
-    let mut id: String = String::new();
 
     let body = match multipart_to_json(multipart).await {
         Ok(json) => json,
@@ -312,37 +311,47 @@ pub async fn insert(
 
     // Note: we no longer build insert_values manually; using insert_fields per column
 
+    // Begin transaction early so ID generation (MAX lookup) runs in the same TX
+    let mut tx = match state.store.begin_tx().await {
+        Ok(t) => t,
+        Err(err) => {
+            return HttpResponse::InternalServerError().json(WebResponse {
+                success: false,
+                message: format!("Error starting transaction: {}", err),
+                total_data: 0,
+                data: Value::Null,
+            });
+        }
+    };
+
     if !function_id_split.is_empty() {
-        // loop every function_id_split
-        for function_id in function_id_split.iter() {
-            if function_id == "%Y" {
-                // get year from now with format YYYY
-                let year = chrono::Utc::now().format("%Y").to_string();
-                id.push('/');
-                id.push_str(&year);
-            } else if function_id == "%m" {
-                // get month from now with format MM
-                let month = chrono::Utc::now().format("%m").to_string();
-                id.push('/');
-                id.push_str(&month);
-            } else if function_id == "%d" {
-                // get day from now with format DD
-                let day = chrono::Utc::now().format("%d").to_string();
-                id.push('/');
-                id.push_str(&day);
-            } else if function_id.contains("ID") {
-                let mut id_find = id.clone();
-                id_find.remove(0);
-
-                let s_append = function_id.replace("ID", "");
+        // Build parts without leading slash; join with '/'
+        let mut parts: Vec<String> = Vec::new();
+        for token in function_id_split.iter() {
+            if token == "%Y" {
+                parts.push(chrono::Utc::now().format("%Y").to_string());
+            } else if token == "%m" {
+                parts.push(chrono::Utc::now().format("%m").to_string());
+            } else if token == "%d" {
+                parts.push(chrono::Utc::now().format("%d").to_string());
+            } else if token.contains("ID") {
+                // Numeric suffix with zero-padding based on token, e.g. 000ID -> width 3
+                let s_append = token.replace("ID", "");
                 let len_id = s_append.len();
+                let id_prefix = parts.join("/");
 
-                // get max id from table from column id with length len_id from left
-                // AST: aggregate to get max id string for the prefix
+                // Query max id by prefix (match start: prefix%)
+                let like_pat = if id_prefix.is_empty() { "%".to_string() } else { format!("{}%", id_prefix) };
                 let q = Q::from(table_schema.table.clone())
-                    .select(["COALESCE(MAX(id), 0) as max_id"]) // raw projection allowed
-                    .r#where(F::Like("id".into(), format!("%{}%", id_find)));
-                let max_id: String = match state.store.query(&q).await {
+                    .select(["MAX(id) as max_id"]).r#where(F::ILike("id".into(), like_pat));
+                // Debug preview of MAX query
+                if *crate::ISDEBUG {
+                    let ds_dbg = SqlStore::new(state.db.clone(), state.db_type.clone());
+                    let (sql_dbg, params_dbg) = ds_dbg.preview_sql(&q);
+                    log_output("QUERY", "MAX-ID", route.as_str(), sql_dbg, true);
+                    log_output("PARAMS", "MAX-ID", route.as_str(), format!("{:?}", params_dbg), true);
+                }
+                let max_id: String = match tx.query(&q).await {
                     Ok(rows) if !rows.is_empty() => {
                         let v = rows[0].get("max_id");
                         if let Some(s) = v.and_then(|x| x.as_str()) { s.to_string() }
@@ -360,10 +369,25 @@ pub async fn insert(
                 }
                 let next_num = current_num + 1;
                 let next_str = format!("{:0width$}", next_num, width = len_id);
-                id.push('/');
-                id.push_str(&next_str);
+                parts.push(next_str);
+            } else if token.starts_with('{') && token.ends_with('}') {
+                // Placeholder, likely {request.field}
+                let key = token.trim_start_matches('{').trim_end_matches('}');
+                if let Some(stripped) = key.strip_prefix("request.") {
+                    let val = body
+                        .get(stripped)
+                        .map(|v| v.to_string().replace('"', "").replace("null", ""))
+                        .unwrap_or_default();
+                    if !val.is_empty() {
+                        parts.push(val);
+                    }
+                }
+            } else if !token.is_empty() {
+                // literal segment
+                parts.push(token.clone());
             }
         }
+        let id = parts.join("/");
         // after building from tokens, bind id into params and AST fields
         bind_params.push(DbParam::Str(id.clone()));
         // mirror to doc_map actual id value for AST path
@@ -444,18 +468,7 @@ pub async fn insert(
 
     // (moved) validation_data will be executed inside the transaction below
 
-    // Begin transaction via generic store
-    let mut tx = match state.store.begin_tx().await {
-        Ok(t) => t,
-        Err(err) => {
-            return HttpResponse::InternalServerError().json(WebResponse {
-                success: false,
-                message: format!("Error starting transaction: {}", err),
-                total_data: 0,
-                data: Value::Null,
-            });
-        }
-    };
+    // tx already started above
 
     // Run validate_data inside transaction (expects boolean in first column of first row)
     if table_schema.post.validate_data.contains("SQL:") {

@@ -50,6 +50,8 @@ mod helpers;
 mod log;
 mod rate_limit;
 mod storage; // new optional storage abstraction (not used yet)
+#[cfg(feature = "mongodb")]
+use crate::storage::mongodb_store::MongoStore;
 
 // Load routes.json once and expose via CONFIG
 static CONFIG: Lazy<crate::model::Config> = Lazy::new(|| {
@@ -470,6 +472,20 @@ async fn main() -> std::io::Result<()> {
             Arc::new(MssqlRepo { client: std::sync::Arc::new(tokio::sync::Mutex::new(client)) })
             }
         }
+        #[cfg(feature = "mongodb")]
+        "mongodb" => {
+            // For MongoDB, we don't have an SQL DbRepository; provide a dummy that always succeeds for simple checks.
+            struct DummyRepo;
+            #[async_trait::async_trait]
+            impl DbRepository for DummyRepo {
+                async fn query(&self, _sql: &str) -> anyhow::Result<Vec<Value>, anyhow::Error> { Ok(vec![]) }
+                async fn begin_transaction(&self) -> anyhow::Result<Box<dyn database::state::DbTransaction>, anyhow::Error> {
+                    Err(anyhow::anyhow!("Transactions not supported for DummyRepo"))
+                }
+            }
+            Arc::new(DummyRepo)
+        }
+
         _ => {
             eprintln!("Unsupported DB_TYPE: {}", db_type);
             return Err(std::io::Error::new(
@@ -499,10 +515,36 @@ async fn main() -> std::io::Result<()> {
         .filter(|s| !s.is_empty())
         .collect();
 
-    // Build generic DataStore adapter (SQL-backed for now)
+    // Build generic DataStore adapter: SQL by default, MongoDB when selected
     let store_adapter: Arc<dyn crate::storage::traits::DataStore> = {
-        let sql = crate::storage::sql_store::SqlStore::new(db_repo.clone(), db_type.clone());
-        Arc::new(sql)
+        match db_type.as_str() {
+            #[cfg(feature = "mongodb")]
+            "mongodb" => {
+                let uri = match env::var("MONGODB_URI") {
+                    Ok(v) => v,
+                    Err(_) => {
+                        eprintln!("Please set MONGODB_URI in .env for DB_TYPE=mongodb");
+                        std::process::exit(1);
+                    }
+                };
+                let dbname = match env::var("MONGODB_DB") {
+                    Ok(v) => v,
+                    Err(_) => {
+                        eprintln!("Please set MONGODB_DB in .env for DB_TYPE=mongodb");
+                        std::process::exit(1);
+                    }
+                };
+                let mongo = MongoStore::connect(&uri, &dbname).await.map_err(|e| {
+                    eprintln!("Failed to connect to MongoDB: {}", e);
+                    std::io::Error::new(std::io::ErrorKind::ConnectionRefused, e)
+                })?;
+                Arc::new(mongo)
+            }
+            _ => {
+                let sql = crate::storage::sql_store::SqlStore::new(db_repo.clone(), db_type.clone());
+                Arc::new(sql)
+            }
+        }
     };
 
     let app_state = web::Data::new(AppState {

@@ -56,10 +56,12 @@ calamine = { version = "0.30", default-features = false }
 rust_xlsxwriter = "0.79"
 redis = { version = "0.25", features = ["aio", "tokio-comp", "connection-manager"] }
 urlencoding = "2.1"
+mongodb = { version = "3.1", optional = true }
 
 [features]
-default = ["mysql", "postgres", "sqlite", "mssql"]
+default = ["mysql", "postgres", "sqlite", "mssql", "mongodb"]
 mysql = ["sqlx/mysql", "sqlx/chrono"]
 postgres = ["sqlx/postgres", "sqlx/chrono"]
 sqlite = ["sqlx/sqlite", "sqlx/chrono"]
 mssql = ["tiberius/chrono"]
+mongodb = ["dep:mongodb"]

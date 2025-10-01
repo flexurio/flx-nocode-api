@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use serde_json::Value;
 
-use crate::storage::ast::{Filter, Query};
+use crate::storage::ast::{Filter, Query, LogicalPlan};
 
 #[allow(dead_code)]
 #[derive(Clone, Debug, Default)]
@@ -27,6 +27,12 @@ pub trait TxStore: Send + Sync {
     ) -> anyhow::Result<u64>;
     #[allow(dead_code)]
     async fn delete(&mut self, collection: &str, filter: Option<Filter>) -> anyhow::Result<u64>;
+
+    // Optional: execute a storage-agnostic logical plan
+    #[allow(dead_code)]
+    async fn execute_plan(&mut self, _plan: &LogicalPlan) -> anyhow::Result<Vec<Value>> {
+        Err(anyhow::anyhow!("execute_plan unsupported by this backend (TxStore)"))
+    }
 
     // Optional: raw SQL escape hatch (used by legacy SQL hooks)
     async fn raw_sql(
@@ -62,6 +68,12 @@ pub trait DataStore: Send + Sync {
     ) -> anyhow::Result<u64>;
     #[allow(dead_code)]
     async fn delete(&self, collection: &str, filter: Option<Filter>) -> anyhow::Result<u64>;
+
+    // Optional: execute a storage-agnostic logical plan
+    #[allow(dead_code)]
+    async fn execute_plan(&self, _plan: &LogicalPlan) -> anyhow::Result<Vec<Value>> {
+        Err(anyhow::anyhow!("execute_plan unsupported by this backend"))
+    }
 
     // Optional: transactions
     async fn begin_tx(&self) -> anyhow::Result<Box<dyn TxStore>> {
