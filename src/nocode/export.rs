@@ -9,7 +9,7 @@ use crate::auth::{check_access, get_user_info_from_token, Claims};
 use crate::helpers::{filter_table_schema, multipart_to_json, split_column_operator};
 use crate::log::log_output;
 use crate::model::{ParamJoin, ReferenceForeignKey, TableSchema, WebResponse};
-use crate::storage::ast::{Filter as QF, Query as QQ, Val as QV};
+use crate::storage::ast::{Filter as QF, Query as QQ, Val as QV, Expr as QE};
 use crate::storage::sql_store::SqlStore;
 use crate::AppState;
 use chrono::Local;
@@ -424,9 +424,9 @@ pub async fn export(
                 logical = logical.replace(&pj.name, &safe_val);
             }
             if j.type_join.eq_ignore_ascii_case("left") {
-                q = q.join_left(j.table.clone(), logical);
+                q = q.join_left_expr(j.table.clone(), QE::Raw(logical));
             } else {
-                q = q.join_inner(j.table.clone(), logical);
+                q = q.join_inner_expr(j.table.clone(), QE::Raw(logical));
             }
         }
     }
@@ -436,7 +436,14 @@ pub async fn export(
         q = q.group_by(table_schema.get.column_groups.clone());
     }
     if !table_schema.get.having.is_empty() {
-        q = q.having_raw(table_schema.get.having.clone());
+        let hv = table_schema
+            .get
+            .having
+            .iter()
+            .cloned()
+            .map(QE::Raw)
+            .collect::<Vec<_>>();
+        q = q.having_expr(hv);
     }
 
     // LIMIT only (no pagination by default for export)

@@ -13,7 +13,7 @@ use crate::{
     AppState,
 };
 use crate::storage::sql_store::SqlStore;
-use crate::storage::ast::{Query as Q, Filter as F, Val as V};
+use crate::storage::ast::{Query as Q, Filter as F, Val as V, Expr as E};
 use std::sync::Arc;
 
 // NCO-TRACE
@@ -162,8 +162,8 @@ pub async fn process(
     // Joins
     for jt in table_schema.trace.join_tables.iter() {
         match jt.type_join.to_ascii_lowercase().as_str() {
-            "left" => { q = q.join_left(jt.table.clone(), jt.logical.clone()); }
-            _ => { q = q.join_inner(jt.table.clone(), jt.logical.clone()); }
+            "left" => { q = q.join_left_expr(jt.table.clone(), E::Raw(jt.logical.clone())); }
+            _ => { q = q.join_inner_expr(jt.table.clone(), E::Raw(jt.logical.clone())); }
         }
     }
     // Group by

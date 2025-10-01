@@ -83,21 +83,27 @@ pub async fn filter_table_schema(table_schemas: &[TableSchema], route: String) -
 
 // create function to split column and operator
 pub fn split_column_operator(key: &str, s_table: &str, value: &str) -> (String, String, String) {
-    let key_splitted: Vec<&str> = key.split('.').collect();
-    let jml_key = key_splitted.len();
+    let parts: Vec<&str> = key.split('.').collect();
+    let n = parts.len();
+    // If key doesn't have expected pattern, fall back to s_table.key = value
+    if n < 2 {
+        let col = format!("{}.{}", s_table, key);
+        return (col, "=".to_string(), value.to_string());
+    }
 
-    let mut column = key_splitted[jml_key - 2].to_string();
-    let opertr = key_splitted[jml_key - 1].to_string();
+    let mut column = parts[n - 2].to_string();
+    let opertr = parts[n - 1].to_string();
 
-    if jml_key >= 3 {
-        column = format!("{}.{}", key_splitted[jml_key - 3], column);
+    if n >= 3 {
+        column = format!("{}.{}", parts[n - 3], column);
     } else {
         column = format!("{}.{}", s_table, column);
     }
 
     let operator = operator_query(&opertr);
+    let operator = if operator.is_empty() { "=".to_string() } else { operator };
 
-    let value = if operator == "like" {
+    let value = if operator.eq_ignore_ascii_case("like") {
         format!("%{}%", value)
     } else {
         value.to_string()

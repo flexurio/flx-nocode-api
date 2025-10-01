@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use crate::database::state::{DbParam, DbRepository};
-use crate::storage::ast::{Filter, Query, Val, JoinKind};
+use crate::storage::ast::{Filter, Query, Val, JoinKind, Expr};
 use crate::storage::traits::{BackendCapabilities, DataStore, TxStore};
 use crate::storage::ddl::*;
 
@@ -778,23 +778,83 @@ fn compile_filter_for(db_type: &str, f: &Filter, params: &mut Vec<DbParam>, idx:
     }
 }
 
+// Compile boolean Expr trees (for JOIN ON and HAVING) into SQL with bound params
+fn compile_expr_for(db_type: &str, e: &Expr, params: &mut Vec<DbParam>, idx: &mut usize) -> String {
+    match e {
+        // Column vs literal value
+        Expr::Eq(col, v) => { *idx += 1; params.push(to_param(v)); format!("{} = {}", col, next_placeholder_for(db_type, *idx)) }
+        Expr::Ne(col, v) => { *idx += 1; params.push(to_param(v)); format!("{} <> {}", col, next_placeholder_for(db_type, *idx)) }
+        Expr::Gt(col, v) => { *idx += 1; params.push(to_param(v)); format!("{} > {}", col, next_placeholder_for(db_type, *idx)) }
+        Expr::Gte(col, v) => { *idx += 1; params.push(to_param(v)); format!("{} >= {}", col, next_placeholder_for(db_type, *idx)) }
+        Expr::Lt(col, v) => { *idx += 1; params.push(to_param(v)); format!("{} < {}", col, next_placeholder_for(db_type, *idx)) }
+        Expr::Lte(col, v) => { *idx += 1; params.push(to_param(v)); format!("{} <= {}", col, next_placeholder_for(db_type, *idx)) }
+        Expr::Like(col, pat) => { *idx += 1; params.push(DbParam::Str(pat.clone())); format!("{} LIKE {}", col, next_placeholder_for(db_type, *idx)) }
+        Expr::ILike(col, pat) => {
+            *idx += 1; params.push(DbParam::Str(pat.clone()));
+            if db_type == "postgres" { format!("{} ILIKE {}", col, next_placeholder_for(db_type, *idx)) }
+            else { format!("LOWER({}) LIKE LOWER({})", col, next_placeholder_for(db_type, *idx)) }
+        }
+        Expr::NotLike(col, pat) => { *idx += 1; params.push(DbParam::Str(pat.clone())); format!("{} NOT LIKE {}", col, next_placeholder_for(db_type, *idx)) }
+        Expr::In(col, xs) => {
+            if xs.is_empty() { return "1=0".into(); }
+            let mut phs = Vec::with_capacity(xs.len());
+            for v in xs { *idx += 1; params.push(to_param(v)); phs.push(next_placeholder_for(db_type, *idx)); }
+            format!("{} IN ({})", col, phs.join(","))
+        }
+        Expr::NotIn(col, xs) => {
+            if xs.is_empty() { return "1=1".into(); }
+            let mut phs = Vec::with_capacity(xs.len());
+            for v in xs { *idx += 1; params.push(to_param(v)); phs.push(next_placeholder_for(db_type, *idx)); }
+            format!("{} NOT IN ({})", col, phs.join(","))
+        }
+        Expr::Between(col, a, b) => {
+            *idx += 1; params.push(to_param(a)); let p1 = next_placeholder_for(db_type, *idx);
+            *idx += 1; params.push(to_param(b)); let p2 = next_placeholder_for(db_type, *idx);
+            format!("{} BETWEEN {} AND {}", col, p1, p2)
+        }
+        // Column vs column
+        Expr::ColEq(a, b) => format!("{} = {}", a, b),
+        Expr::ColNe(a, b) => format!("{} <> {}", a, b),
+        Expr::ColGt(a, b) => format!("{} > {}", a, b),
+        Expr::ColGte(a, b) => format!("{} >= {}", a, b),
+        Expr::ColLt(a, b) => format!("{} < {}", a, b),
+        Expr::ColLte(a, b) => format!("{} <= {}", a, b),
+        // Composition
+        Expr::And(xs) => {
+            let inner = xs.iter().map(|x| compile_expr_for(db_type, x, params, idx)).collect::<Vec<_>>().join(" AND ");
+            if inner.is_empty() { inner } else { format!("({})", inner) }
+        }
+        Expr::Or(xs) => {
+            let inner = xs.iter().map(|x| compile_expr_for(db_type, x, params, idx)).collect::<Vec<_>>().join(" OR ");
+            if inner.is_empty() { inner } else { format!("({})", inner) }
+        }
+        // Escape hatch
+        Expr::Raw(s) => s.clone(),
+    }
+}
+
 fn compile_query_with_dialect(db_type: &str, q: &Query) -> (String, Vec<DbParam>) {
     let mut sql = String::new();
     let mut params = Vec::<DbParam>::new();
     let mut idx = 0usize;
 
     if q.projection.is_empty() {
-        sql.push_str(&format!("SELECT {}* FROM {}", if q.distinct {"DISTINCT "} else {""}, q.collection));
+        sql.push_str(&format!("SELECT * FROM {}", q.collection));
     } else {
         let cols = q.projection.join(",");
-        sql.push_str(&format!("SELECT {}{} FROM {}", if q.distinct {"DISTINCT "} else {""}, cols, q.collection));
+        sql.push_str(&format!("SELECT {} FROM {}", cols, q.collection));
     }
 
     if !q.joins.is_empty() {
         for j in &q.joins {
+            let on_clause = if let Some(ref ex) = j.on_expr {
+                compile_expr_for(db_type, ex, &mut params, &mut idx)
+            } else {
+                j.on.clone()
+            };
             match j.kind {
-                JoinKind::Inner => sql.push_str(&format!(" INNER JOIN {} ON {}", j.table, j.on)),
-                JoinKind::Left => sql.push_str(&format!(" LEFT JOIN {} ON {}", j.table, j.on)),
+                JoinKind::Inner => sql.push_str(&format!(" INNER JOIN {} ON {}", j.table, on_clause)),
+                JoinKind::Left => sql.push_str(&format!(" LEFT JOIN {} ON {}", j.table, on_clause)),
             }
         }
     }
@@ -808,9 +868,18 @@ fn compile_query_with_dialect(db_type: &str, q: &Query) -> (String, Vec<DbParam>
         sql.push_str(" GROUP BY ");
         sql.push_str(&q.group_by.join(", "));
     }
-    if !q.having_raw.is_empty() {
-        sql.push_str(" HAVING ");
-        sql.push_str(&q.having_raw.join(" AND "));
+    // HAVING: compiled exprs only
+    if !q.having_exprs.is_empty() {
+        let compiled = q
+            .having_exprs
+            .iter()
+            .map(|e| compile_expr_for(db_type, e, &mut params, &mut idx))
+            .collect::<Vec<_>>()
+            .join(" AND ");
+        if !compiled.is_empty() {
+            sql.push_str(" HAVING ");
+            sql.push_str(&compiled);
+        }
     }
     if !q.sort.is_empty() {
         let ord = q.sort.iter().map(|s| format!("{} {}", s.field, if s.asc { "ASC" } else { "DESC" })).collect::<Vec<_>>().join(",");
@@ -935,5 +1004,24 @@ mod tests {
         let sql = first.get("sql").and_then(|v| v.as_str()).unwrap();
         assert!(sql.contains("status IN ($1,$2)"));
         assert!(sql.contains("deleted_at IS NULL"));
+    }
+
+    #[tokio::test]
+    async fn compiles_join_on_expr_and_having_exprs() {
+        let repo: Arc<dyn DbRepository> = Arc::new(MockRepo);
+        let store = SqlStore::new(repo, "postgres".to_string());
+        use crate::storage::ast::{Expr as E, Val as V};
+        // SELECT o.id FROM orders o INNER JOIN customers c ON o.customer_id = c.id GROUP BY o.customer_id HAVING SUM(o.total) > $1
+        let q = crate::storage::ast::Query::from("orders o")
+            .select(["o.id"]) 
+            .join_inner_expr("customers c", E::ColEq("o.customer_id".into(), "c.id".into()))
+            .group_by(["o.customer_id"]) 
+            .having_expr([E::Gt("SUM(o.total)".into(), V::F64(1000.0))]);
+        let rows = store.query(&q).await.unwrap();
+        let first = rows.first().unwrap();
+        let sql = first.get("sql").and_then(|v| v.as_str()).unwrap();
+        assert!(sql.contains("INNER JOIN customers c ON o.customer_id = c.id"));
+        assert!(sql.contains("GROUP BY o.customer_id"));
+        assert!(sql.contains("HAVING SUM(o.total) > $1"));
     }
 }

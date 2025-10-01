@@ -12,7 +12,7 @@ use crate::{
     rate_limit::RL_WINDOW_GET,
     AppState,
 };
-use crate::storage::ast::{Filter as QF, Query as QQ, Val as QV};
+use crate::storage::ast::{Filter as QF, Query as QQ, Val as QV, Expr as QE};
 use crate::storage::sql_store::SqlStore;
 use std::sync::Arc;
 use std::collections::HashSet;
@@ -107,6 +107,9 @@ pub async fn select(
             data: Value::Null,
         });
     }
+
+    
+
 
     let mut is_deleted_at = true;
 
@@ -210,6 +213,9 @@ pub async fn select(
                             // OR across multiple columns
                             let mut ors: Vec<QF> = Vec::new();
                             for part in p.split('|') {
+                                println!("Part: {}", part);
+                                println!("Value str: {}", value_str);
+                                println!("Table: {}", table_schema.table);
                                 let (column, operator, val) = split_column_operator(part, &table_schema.table, &value_str);
                                 let f = match operator.as_str() {
                                     "=" => QF::Eq(column, to_val(&val)),
@@ -496,9 +502,9 @@ pub async fn select(
                         logical = logical.replace(&pj.name, &safe_val);
                     }
                     if j.type_join.eq_ignore_ascii_case("left") {
-                        q = q.join_left(j.table.clone(), logical);
+                        q = q.join_left_expr(j.table.clone(), QE::Raw(logical));
                     } else {
-                        q = q.join_inner(j.table.clone(), logical);
+                        q = q.join_inner_expr(j.table.clone(), QE::Raw(logical));
                     }
                 }
             }
@@ -510,7 +516,14 @@ pub async fn select(
 
             // HAVING (raw-safe from config)
             if !table_schema.get.having.is_empty() {
-                q = q.having_raw(table_schema.get.having.clone());
+                let hv = table_schema
+                    .get
+                    .having
+                    .iter()
+                    .cloned()
+                    .map(QE::Raw)
+                    .collect::<Vec<_>>();
+                q = q.having_expr(hv);
             }
 
             // pagination
