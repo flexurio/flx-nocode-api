@@ -12,12 +12,12 @@ use crate::{
     helpers::filter_table_schema,
     log::log_output,
     model::{ReferenceForeignKey, TableSchema, WebResponse},
-    nocode::foreign_key::process_foreign_keys_delete_update,
+    nocode::foreign_key::process_foreign_keys_delete_update_txstore,
     AppState,
 };
 use chrono::Local;
 use std::sync::Arc;
-use crate::storage::sql_store::SqlStore;
+use crate::storage::sql_store::{SqlStore, InsertValue};
 use crate::storage::ast::{Filter as QF, Val as QV};
 
 // NCO-DELETE
@@ -117,15 +117,16 @@ pub async fn delete(
             .unwrap_or("int".to_string());
         log_output("TYPE", "deleted_by_id", route.as_str(), deleted_by_type.clone(), true);
 
-        let deleted_at = Local::now().to_rfc3339();
-        let mut patch = serde_json::Map::new();
-        patch.insert("deleted_at".to_string(), serde_json::json!(deleted_at));
+        // Build fields with a raw DB now() expression to avoid string conversion issues (MSSQL)
+        let mut fields: Vec<(String, InsertValue)> = vec![
+            ("deleted_at".to_string(), InsertValue::Raw(state.query_converter.datetime_now.clone())),
+        ];
         // Set deleted_by_id typed
         if deleted_by_type.contains("int") {
             if let Ok(n) = claims.id.parse::<i64>() {
-                patch.insert("deleted_by_id".to_string(), serde_json::json!(n));
+                fields.push(("deleted_by_id".into(), InsertValue::Param(crate::database::state::DbParam::I64(n))));
             } else {
-                patch.insert("deleted_by_id".to_string(), serde_json::json!(claims.id.clone()));
+                fields.push(("deleted_by_id".into(), InsertValue::Param(crate::database::state::DbParam::Str(claims.id.clone()))));
             }
         } else if deleted_by_type.contains("float")
             || deleted_by_type.contains("double")
@@ -133,18 +134,18 @@ pub async fn delete(
             || deleted_by_type.contains("money")
         {
             if let Ok(n) = claims.id.parse::<f64>() {
-                patch.insert("deleted_by_id".to_string(), serde_json::json!(n));
+                fields.push(("deleted_by_id".into(), InsertValue::Param(crate::database::state::DbParam::F64(n))));
             } else {
-                patch.insert("deleted_by_id".to_string(), serde_json::json!(claims.id.clone()));
+                fields.push(("deleted_by_id".into(), InsertValue::Param(crate::database::state::DbParam::Str(claims.id.clone()))));
             }
         } else {
-            patch.insert("deleted_by_id".to_string(), serde_json::json!(claims.id.clone()));
+            fields.push(("deleted_by_id".into(), InsertValue::Param(crate::database::state::DbParam::Str(claims.id.clone()))));
         }
 
         // Filter by id typed
         let id_filter_val = if let Ok(n) = id_raw.parse::<i64>() { QV::I64(n) } else { QV::Str(id_raw.clone()) };
         let ds = SqlStore::new(state.db.clone(), state.db_type.clone());
-        match ds.preview_update(&table_schema.table, Some(&QF::Eq("id".into(), id_filter_val)), &serde_json::Value::Object(patch)) {
+        match ds.preview_update_with(&table_schema.table, Some(&QF::Eq("id".into(), id_filter_val)), &fields) {
             Ok((sql, params)) => {
                 if *crate::ISDEBUG {
                     log_output("QUERY", "DELETE(AST-soft)", route.as_str(), sql.clone(), true);
@@ -187,9 +188,9 @@ pub async fn delete(
     }
     log_output("QUERY", "DELETE(AST)", route.as_str(), exec_sql.clone(), true);
 
-    // Begin transaction
-    let mut transaction = match state.db.begin_transaction().await {
-        Ok(tx) => tx,
+    // Begin transaction via generic store
+    let mut tx = match state.store.begin_tx().await {
+        Ok(t) => t,
         Err(err) => {
             return HttpResponse::InternalServerError().json(WebResponse {
                 success: false,
@@ -201,15 +202,13 @@ pub async fn delete(
     };
 
     // Execute main delete query
-    match transaction
-        .query_with_params(&exec_sql, exec_params.clone())
-        .await
-    {
+    match tx.raw_sql(&exec_sql, exec_params).await {
         Ok(_) => {
-            let (is_fk_ok, err_message) = process_foreign_keys_delete_update(
+            let (is_fk_ok, err_message) = process_foreign_keys_delete_update_txstore(
                 "DELETE", // "DELETE" or "UPDATE"
                 state.clone(),
-                &mut transaction,
+                route.clone(),
+                &mut tx,
                 reference_foreign_keys,
                 claims.id.clone(),
                 id_raw.clone(),
@@ -219,7 +218,7 @@ pub async fn delete(
 
             if is_fk_ok {
                 // Commit transaction if all operations succeeded
-                match transaction.commit().await {
+                match tx.commit().await {
                     Ok(_) => {
                         // Audit
                         write_audit(&AuditEntry {
@@ -246,7 +245,7 @@ pub async fn delete(
                 }
             } else {
                 // Rollback transaction due to foreign key failures
-                let _ = transaction.rollback().await;
+                let _ = tx.rollback().await;
                 HttpResponse::InternalServerError().json(WebResponse {
                     success: false,
                     message: format!(
@@ -260,7 +259,7 @@ pub async fn delete(
         }
         Err(err) => {
             // Rollback transaction due to main delete failure
-            let _ = transaction.rollback().await;
+            let _ = tx.rollback().await;
             HttpResponse::InternalServerError().json(WebResponse {
                 success: false,
                 message: format!("Error NCO-DELETE: {}", err),
