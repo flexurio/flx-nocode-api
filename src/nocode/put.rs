@@ -5,13 +5,13 @@ use actix_web::{
 };
 use serde_json::Value;
 
-use crate::audit::{write_audit, AuditEntry};
+use crate::{audit::{AuditEntry, write_audit}};
 use crate::helpers::get_client_ip;
 use crate::rate_limit::RL_WINDOW_MUTATE;
 use crate::{
     auth::{check_access, get_user_info_from_token, Claims},
     crypt::{encrypt, is_encrypted_string},
-    database::state::{execute_sql_formula, execute_sql_formula_with_transaction, DbParam},
+    database::state::{execute_sql_formula, DbParam},
     helpers::{filter_table_schema, multipart_to_json},
     log::log_output,
     model::{ReferenceForeignKey, TableSchema, WebResponse},
@@ -35,6 +35,7 @@ pub async fn update(
 ) -> impl Responder {
     let table_schemas = &schemas.0;
     let reference_foreign_keys = &schemas.1;
+    
     let mut claims = Claims::default();
     if !state.route_publics.contains(&route) {
         let req_for_auth = req.clone();
@@ -324,9 +325,9 @@ pub async fn update(
             }
         }
     }
-    // Begin transaction
-    let mut transaction = match state.db.begin_transaction().await {
-        Ok(tx) => tx,
+    // Begin transaction via generic store (TxStore)
+    let mut tx = match state.store.begin_tx().await {
+        Ok(t) => t,
         Err(err) => {
             return HttpResponse::InternalServerError().json(WebResponse {
                 success: false,
@@ -338,14 +339,15 @@ pub async fn update(
     };
 
     if table_schema.put.pre_process.contains("SQL:") {
-        if let Err(err) = execute_sql_formula_with_transaction(
-            &mut transaction,
+        if let Err(err) = crate::database::state::execute_sql_formula_with_txstore(
+            &mut tx,
             table_schema.put.pre_process,
             &body,
             route.as_str(),
         )
         .await
         {
+            let _ = tx.rollback().await;
             return HttpResponse::InternalServerError().json(WebResponse {
                 success: false,
                 message: format!("Error in pre-process: {}", err),
@@ -357,7 +359,6 @@ pub async fn update(
 
     // If this is a password-only update for flx_users, prefer DataStore for clarity and consistency
     if route == "flx_users" && password_override.is_some() && table_schema.put.columns.len() == 1 {
-        let ds = SqlStore::new(state.db.clone(), state.db_type.clone());
         let now = chrono::Local::now().naive_local().format("%Y-%m-%d %H:%M:%S").to_string();
         let mut doc = serde_json::json!({
             "password": password_override.unwrap(),
@@ -398,9 +399,9 @@ pub async fn update(
             // Preview as UPDATE, reusing compile logic by constructing a Query then logging
             log_output("QUERY", "PUT", route.as_str(), "AST password update flx_users".to_string(), true);
         }
-        match ds.update("flx_users", filter, doc).await {
+        match tx.update("flx_users", filter, doc).await {
             Ok(_) => {
-                let _ = transaction.commit().await; // ensure we end the surrounding TX cleanly
+                let _ = tx.commit().await;
                 return HttpResponse::Ok().json(WebResponse {
                     success: true,
                     message: "Data updated successfully".to_string(),
@@ -409,7 +410,7 @@ pub async fn update(
                 });
             }
             Err(err) => {
-                let _ = transaction.rollback().await;
+                let _ = tx.rollback().await;
                 return HttpResponse::InternalServerError().json(WebResponse {
                     success: false,
                     message: format!("Error NCO-PUT: {}", err),
@@ -420,18 +421,18 @@ pub async fn update(
         }
     }
 
-    match transaction.query_with_params(&s_sql, params_compiled).await {
+    match tx.raw_sql(&s_sql, params_compiled).await {
         Ok(_) => {
             if table_schema.put.post_process.contains("SQL:") {
-                if let Err(err) = execute_sql_formula_with_transaction(
-                    &mut transaction,
+                if let Err(err) = crate::database::state::execute_sql_formula_with_txstore(
+                    &mut tx,
                     table_schema.put.post_process,
                     &body,
                     route.as_str(),
                 )
                 .await
                 {
-                    let _ = transaction.rollback().await;
+                    let _ = tx.rollback().await;
                     // Rollback transaction if post-process SQL fails
                     return HttpResponse::InternalServerError().json(WebResponse {
                         success: false,
@@ -444,19 +445,20 @@ pub async fn update(
 
             // jika id_new TIDAK SAMA dg "" maka ada perubahan nilai id
             if !id_new.is_empty() {
-                let (is_fk_ok, err_message) = process_foreign_keys_delete_update(
+                let (is_fk_ok, err_message) = crate::nocode::foreign_key::process_foreign_keys_delete_update_txstore(
                     "UPDATE", // "DELETE" or "UPDATE"
                     state.clone(),
-                    &mut transaction,
+                    route.clone(),
+                    &mut tx,
                     reference_foreign_keys,
                     claims.id.clone(),
                     id_raw.clone(),
-                    id_new, // for UPDATE
+                    id_new, // for UPDATE                        
                 )
                 .await;
 
                 if !is_fk_ok {
-                    let _ = transaction.rollback().await;
+                    let _ = tx.rollback().await;
                     return HttpResponse::InternalServerError().json(WebResponse {
                         success: false,
                         message: format!(
@@ -470,7 +472,7 @@ pub async fn update(
             }
 
             // Commit transaction if all operations succeeded
-            match transaction.commit().await {
+            match tx.commit().await {
                 Ok(_) => {
                     // Audit
                     write_audit(&AuditEntry {
@@ -497,7 +499,7 @@ pub async fn update(
             }
         }
         Err(err) => {
-            let _ = transaction.rollback().await;
+            let _ = tx.rollback().await;
             HttpResponse::InternalServerError().json(WebResponse {
                 success: false,
                 message: format!("Error NCO-PUT: {}", err),

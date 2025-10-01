@@ -9,7 +9,7 @@ use crate::rate_limit::RL_WINDOW_MUTATE;
 use crate::{
     auth::{check_access, get_user_info_from_token, Claims},
     crypt::{encrypt, is_encrypted_string},
-    database::state::{execute_sql_formula, execute_sql_formula_with_transaction, DbParam},
+    database::state::{execute_sql_formula, DbParam},
     helpers::{extract_expressions, filter_table_schema, find_column_match, multipart_to_json},
     log::log_output,
     model::{Column, TableSchema, WebResponse},
@@ -522,9 +522,9 @@ pub async fn insert(
         }
     }
 
-    // Begin transaction
-    let mut transaction = match state.db.begin_transaction().await {
-        Ok(tx) => tx,
+    // Begin transaction via generic store
+    let mut tx = match state.store.begin_tx().await {
+        Ok(t) => t,
         Err(err) => {
             return HttpResponse::InternalServerError().json(WebResponse {
                 success: false,
@@ -536,15 +536,15 @@ pub async fn insert(
     };
 
     if table_schema.post.pre_process.contains("SQL:") {
-        if let Err(err) = execute_sql_formula_with_transaction(
-            &mut transaction,
+        if let Err(err) = crate::database::state::execute_sql_formula_with_txstore(
+            &mut tx,
             table_schema.post.pre_process,
             &body,
             route.as_str(),
         )
         .await
         {
-            transaction.rollback().await.ok();
+            let _ = tx.rollback().await;
             return HttpResponse::InternalServerError().json(WebResponse {
                 success: false,
                 message: format!("Error in pre-process: {}", err),
@@ -554,19 +554,18 @@ pub async fn insert(
         }
     }
 
-    match transaction.query_with_params(&exec_sql, exec_params).await {
+    match tx.raw_sql(&exec_sql, exec_params).await {
         Ok(_) => {
             if table_schema.post.post_process.contains("SQL:") {
-                if let Err(err) = execute_sql_formula_with_transaction(
-                    &mut transaction,
+                if let Err(err) = crate::database::state::execute_sql_formula_with_txstore(
+                    &mut tx,
                     table_schema.post.post_process,
                     &body,
                     route.as_str(),
                 )
                 .await
                 {
-                    transaction.rollback().await.ok();
-                    // Rollback transaction if post-process SQL fails
+                    let _ = tx.rollback().await;
                     return HttpResponse::InternalServerError().json(WebResponse {
                         success: false,
                         message: format!("Error executing post-process SQL: {}", err),
@@ -575,7 +574,7 @@ pub async fn insert(
                     });
                 }
             }
-            transaction.commit().await.ok();
+            let _ = tx.commit().await;
             // Audit trail
             write_audit(&AuditEntry {
                 at: Local::now().to_rfc3339(),
@@ -593,7 +592,7 @@ pub async fn insert(
             })
         }
         Err(err) => {
-            transaction.rollback().await.ok();
+            let _ = tx.rollback().await;
             let mut err_message = err.to_string().to_lowercase();
             if err_message.contains("created_by_id") {
                 err_message += format!(" \n id from token : {}", &claims.id).as_str();

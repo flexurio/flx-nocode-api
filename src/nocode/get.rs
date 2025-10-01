@@ -14,7 +14,6 @@ use crate::{
 };
 use crate::storage::ast::{Filter as QF, Query as QQ, Val as QV};
 use crate::storage::sql_store::SqlStore;
-use crate::storage::traits::DataStore;
 use std::sync::Arc;
 use std::collections::HashSet;
 
@@ -518,14 +517,14 @@ pub async fn select(
             let offset_ast = (i_page_ast - 1) * i_limit_ast;
             q = q.limit(i_limit_ast as u32).offset(offset_ast.max(0) as u32);
 
-            // Execute via DataStore
-            let ds = SqlStore::new(state.db.clone(), state.db_type.clone());
+            // Execute via generic DataStore; keep SQL preview for debug using a temporary SqlStore
             if *crate::ISDEBUG {
-                let (sql_dbg, params_dbg) = ds.preview_sql(&q);
+                let ds_prev = SqlStore::new(state.db.clone(), state.db_type.clone());
+                let (sql_dbg, params_dbg) = ds_prev.preview_sql(&q);
                 log_output("QUERY", "GET(AST)", route.as_str(), sql_dbg, true);
                 log_output("PARAMS", "GET(AST)", route.as_str(), format!("{:?}", params_dbg), true);
             }
-            let rows = match ds.query(&q).await {
+            let rows = match state.store.query(&q).await {
                 Ok(rs) => rs,
                 Err(e) => {
                     return HttpResponse::InternalServerError().json(WebResponse {

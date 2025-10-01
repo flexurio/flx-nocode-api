@@ -19,6 +19,8 @@ pub struct AppState {
     pub whitelist_ips: Vec<String>,
     pub route_publics: Vec<String>,
     pub converter_token: ClaimsConverter,
+    /// Backend-agnostic data store adapter (initially SQL-backed). Use this for new code paths.
+    pub store: Arc<dyn crate::storage::traits::DataStore>,
 }
 
 /// Simple cross-DB parameter type for binding values safely.
@@ -135,6 +137,53 @@ pub async fn execute_sql_formula_with_transaction(
                         "AFTER",
                         route,
                         format!("Error executing SQL query in transaction: {}", err),
+                        false,
+                    );
+                    Err(err)
+                }
+            }
+        }
+        Err(e) => {
+            log_output(
+                "ERROR",
+                "AFTER",
+                route,
+                format!("Error building SQL formula: {}", e),
+                false,
+            );
+            Err(e)
+        }
+    }
+}
+
+/// Execute a parameterized SQL formula string within a generic TxStore transaction.
+/// This mirrors `execute_sql_formula_with_transaction` but targets the new storage abstraction.
+pub async fn execute_sql_formula_with_txstore(
+    tx: &mut Box<dyn crate::storage::traits::TxStore>,
+    sql: String,
+    body: &serde_json::Value,
+    route: &str,
+) -> Result<(), anyhow::Error> {
+    match build_sql_and_params_from_formula(&sql, body) {
+        Ok((built_sql, params)) => {
+            log_output("QUERY", "AFTER", route, built_sql.clone(), true);
+            match tx.raw_sql(&built_sql, params).await {
+                Ok(_) => {
+                    log_output(
+                        "SUCCESS",
+                        "AFTER",
+                        route,
+                        "SQL formula executed successfully in txstore".to_string(),
+                        true,
+                    );
+                    Ok(())
+                }
+                Err(err) => {
+                    log_output(
+                        "ERROR",
+                        "AFTER",
+                        route,
+                        format!("Error executing SQL query in txstore: {}", err),
                         false,
                     );
                     Err(err)

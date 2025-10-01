@@ -5,7 +5,7 @@ use serde_json::Value;
 
 use crate::database::state::{DbParam, DbRepository};
 use crate::storage::ast::{Filter, Query, Val, JoinKind};
-use crate::storage::traits::{BackendCapabilities, DataStore};
+use crate::storage::traits::{BackendCapabilities, DataStore, TxStore};
 use crate::storage::ddl::*;
 
 pub struct SqlStore {
@@ -33,207 +33,7 @@ impl SqlStore {
 
     /// Compile the query into (SQL, params) for debugging or advanced use-cases.
     pub fn preview_sql(&self, q: &Query) -> (String, Vec<DbParam>) {
-        self.compile_query(q)
-    }
-
-    fn next_placeholder(&self, i: usize) -> String {
-        match self.db_type.as_str() {
-            "postgres" => format!("${}", i),
-            _ => "?".to_string(),
-        }
-    }
-
-    fn compile_filter(&self, f: &Filter, params: &mut Vec<DbParam>, idx: &mut usize) -> String {
-        match f {
-            Filter::Eq(col, v) => {
-                *idx += 1;
-                params.push(to_param(v));
-                format!("{} = {}", col, self.next_placeholder(*idx))
-            }
-            Filter::Ne(col, v) => {
-                *idx += 1;
-                params.push(to_param(v));
-                format!("{} <> {}", col, self.next_placeholder(*idx))
-            }
-            Filter::Gt(col, v) => {
-                *idx += 1;
-                params.push(to_param(v));
-                format!("{} > {}", col, self.next_placeholder(*idx))
-            }
-            Filter::Gte(col, v) => {
-                *idx += 1;
-                params.push(to_param(v));
-                format!("{} >= {}", col, self.next_placeholder(*idx))
-            }
-            Filter::Lt(col, v) => {
-                *idx += 1;
-                params.push(to_param(v));
-                format!("{} < {}", col, self.next_placeholder(*idx))
-            }
-            Filter::Lte(col, v) => {
-                *idx += 1;
-                params.push(to_param(v));
-                format!("{} <= {}", col, self.next_placeholder(*idx))
-            }
-            Filter::Like(col, pat) => {
-                *idx += 1;
-                params.push(DbParam::Str(pat.clone()));
-                format!("{} LIKE {}", col, self.next_placeholder(*idx))
-            }
-            Filter::ILike(col, pat) => {
-                *idx += 1;
-                params.push(DbParam::Str(pat.clone()));
-                match self.db_type.as_str() {
-                    "postgres" => format!("{} ILIKE {}", col, self.next_placeholder(*idx)),
-                    _ => format!("LOWER({}) LIKE LOWER({})", col, self.next_placeholder(*idx)),
-                }
-            }
-            Filter::NotLike(col, pat) => {
-                *idx += 1;
-                params.push(DbParam::Str(pat.clone()));
-                format!("{} NOT LIKE {}", col, self.next_placeholder(*idx))
-            }
-            Filter::IsNull(col) => format!("{} IS NULL", col),
-            Filter::IsNotNull(col) => format!("{} IS NOT NULL", col),
-            Filter::In(col, xs) => {
-                if xs.is_empty() {
-                    return "1=0".into();
-                }
-                let mut phs = Vec::with_capacity(xs.len());
-                for v in xs {
-                    *idx += 1;
-                    params.push(to_param(v));
-                    phs.push(self.next_placeholder(*idx));
-                }
-                format!("{} IN ({})", col, phs.join(","))
-            }
-            Filter::NotIn(col, xs) => {
-                if xs.is_empty() {
-                    return "1=1".into();
-                }
-                let mut phs = Vec::with_capacity(xs.len());
-                for v in xs {
-                    *idx += 1;
-                    params.push(to_param(v));
-                    phs.push(self.next_placeholder(*idx));
-                }
-                format!("{} NOT IN ({})", col, phs.join(","))
-            }
-            Filter::Between(col, a, b) => {
-                *idx += 1;
-                params.push(to_param(a));
-                let p1 = self.next_placeholder(*idx);
-                *idx += 1;
-                params.push(to_param(b));
-                let p2 = self.next_placeholder(*idx);
-                format!("{} BETWEEN {} AND {}", col, p1, p2)
-            }
-            Filter::And(fs) => {
-                let inner = fs
-                    .iter()
-                    .map(|g| self.compile_filter(g, params, idx))
-                    .collect::<Vec<_>>()
-                    .join(" AND ");
-                if inner.is_empty() { inner } else { format!("({})", inner) }
-            }
-            Filter::Or(fs) => {
-                let inner = fs
-                    .iter()
-                    .map(|g| self.compile_filter(g, params, idx))
-                    .collect::<Vec<_>>()
-                    .join(" OR ");
-                if inner.is_empty() { inner } else { format!("({})", inner) }
-            }
-        }
-    }
-
-    fn compile_query(&self, q: &Query) -> (String, Vec<DbParam>) {
-        let mut sql = String::new();
-        let mut params = Vec::<DbParam>::new();
-        let mut idx = 0usize;
-
-        // SELECT
-        if q.projection.is_empty() {
-            sql.push_str(&format!("SELECT {}* FROM {}", if q.distinct {"DISTINCT "} else {""}, q.collection));
-        } else {
-            let cols = q.projection.join(",");
-            sql.push_str(&format!("SELECT {}{} FROM {}", if q.distinct {"DISTINCT "} else {""}, cols, q.collection));
-        }
-
-        // JOINs
-        if !q.joins.is_empty() {
-            for j in &q.joins {
-                match j.kind {
-                    JoinKind::Inner => {
-                        sql.push_str(&format!(" INNER JOIN {} ON {}", j.table, j.on));
-                    }
-                    JoinKind::Left => {
-                        sql.push_str(&format!(" LEFT JOIN {} ON {}", j.table, j.on));
-                    }
-                }
-            }
-        }
-
-        // WHERE
-        if let Some(f) = &q.filter {
-            let clause = self.compile_filter(f, &mut params, &mut idx);
-            if !clause.is_empty() {
-                sql.push_str(" WHERE ");
-                sql.push_str(&clause);
-            }
-        }
-
-        // GROUP BY
-        if !q.group_by.is_empty() {
-            sql.push_str(" GROUP BY ");
-            sql.push_str(&q.group_by.join(", "));
-        }
-
-        // HAVING (raw-safe expressions from config)
-        // Note: SQL HAVING expects boolean expressions combined with AND/OR, not commas.
-        if !q.having_raw.is_empty() {
-            sql.push_str(" HAVING ");
-            // Default to AND between expressions; callers can include their own OR/AND groups if needed.
-            sql.push_str(&q.having_raw.join(" AND "));
-        }
-
-        // ORDER
-        if !q.sort.is_empty() {
-            let ord = q
-                .sort
-                .iter()
-                .map(|s| format!("{} {}", s.field, if s.asc { "ASC" } else { "DESC" }))
-                .collect::<Vec<_>>()
-                .join(",");
-            sql.push_str(" ORDER BY ");
-            sql.push_str(&ord);
-        }
-
-        // LIMIT/OFFSET with MSSQL support
-        match self.db_type.as_str() {
-            "mssql" => {
-                // MSSQL requires ORDER BY for OFFSET/FETCH, ensure exists
-                if q.limit.is_some() || q.offset.is_some() {
-                    if q.sort.is_empty() {
-                        // Fallback ORDER BY 1 to satisfy syntax; caller should set a deterministic order
-                        sql.push_str(" ORDER BY 1");
-                    }
-                    let off = q.offset.unwrap_or(0);
-                    let lim = q.limit.unwrap_or(100);
-                    sql.push_str(&format!(" OFFSET {} ROWS FETCH NEXT {} ROWS ONLY", off, lim));
-                }
-            }
-            _ => {
-                if let Some(l) = q.limit {
-                    sql.push_str(&format!(" LIMIT {}", l));
-                }
-                if let Some(o) = q.offset {
-                    sql.push_str(&format!(" OFFSET {}", o));
-                }
-            }
-        }
-
-        (sql, params)
+        compile_query_with_dialect(&self.db_type, q)
     }
 
     fn compile_default_expr(&self, d: &DefaultExpr) -> String {
@@ -422,27 +222,7 @@ impl SqlStore {
     }
 
     fn build_insert(&self, collection: &str, doc: &Value) -> anyhow::Result<(String, Vec<DbParam>)> {
-        let obj = doc
-            .as_object()
-            .ok_or_else(|| anyhow::anyhow!("insert expects object"))?;
-        let cols: Vec<_> = obj.keys().cloned().collect();
-        let mut params = Vec::<DbParam>::new();
-        let mut idx = 0usize;
-        let placeholders: Vec<_> = obj
-            .values()
-            .map(|v| {
-                idx += 1;
-                params.push(json_to_param(v));
-                self.next_placeholder(idx)
-            })
-            .collect();
-        let sql = format!(
-            "INSERT INTO {} ({}) VALUES ({})",
-            collection,
-            cols.join(","),
-            placeholders.join(",")
-        );
-        Ok((sql, params))
+        build_insert_with_dialect(&self.db_type, collection, doc)
     }
 
     pub fn preview_insert(&self, collection: &str, doc: &Value) -> anyhow::Result<(String, Vec<DbParam>)> {
@@ -458,8 +238,8 @@ impl SqlStore {
         if fields.is_empty() {
             return Err(anyhow::anyhow!("insert fields cannot be empty"));
         }
-        let mut params: Vec<DbParam> = Vec::new();
-        let mut idx = 0usize; // for placeholder numbering in postgres
+    let mut params: Vec<DbParam> = Vec::new();
+    let mut idx = 0usize; // for placeholder numbering in postgres
 
         let mut col_names: Vec<String> = Vec::with_capacity(fields.len());
         let mut val_frags: Vec<String> = Vec::with_capacity(fields.len());
@@ -470,7 +250,7 @@ impl SqlStore {
                 InsertValue::Param(p) => {
                     idx += 1;
                     params.push(p.clone());
-                    val_frags.push(self.next_placeholder(idx));
+                    val_frags.push(next_placeholder_for(&self.db_type, idx));
                 }
                 InsertValue::Raw(sql) => {
                     val_frags.push(sql.clone());
@@ -522,7 +302,7 @@ impl SqlStore {
                     InsertValue::Param(p) => {
                         idx += 1;
                         params.push(p.clone());
-                        frags.push(self.next_placeholder(idx));
+                        frags.push(next_placeholder_for(&self.db_type, idx));
                     }
                     InsertValue::Raw(sql) => {
                         frags.push(sql.clone());
@@ -563,7 +343,7 @@ impl SqlStore {
         for i in 0..bind_count {
             out.push_str(parts[i]);
             *idx += 1;
-            out.push_str(&self.next_placeholder(*idx));
+            out.push_str(&next_placeholder_for(&self.db_type, *idx));
             params.push(frag_params[i].clone());
         }
         // append remaining chunk(s)
@@ -581,13 +361,13 @@ impl SqlStore {
         param_len: usize,
         params: Vec<DbParam>,
     ) -> anyhow::Result<(String, Vec<DbParam>)> {
-        let proc_name = name.trim();
+    let proc_name = name.trim();
         if proc_name.is_empty() {
             return Err(anyhow::anyhow!("procedure name is empty"));
         }
 
         // Build placeholders according to dialect
-        let placeholders = match self.db_type.as_str() {
+    let placeholders = match self.db_type.as_str() {
             "postgres" => {
                 // $1, $2, ...
                 (1..=param_len).map(|i| format!("${}", i)).collect::<Vec<_>>().join(", ")
@@ -737,12 +517,12 @@ impl SqlStore {
             .map(|(k, v)| {
                 idx += 1;
                 params.push(json_to_param(v));
-                format!("{} = {}", k, self.next_placeholder(idx))
+                format!("{} = {}", k, next_placeholder_for(&self.db_type, idx))
             })
             .collect();
         let mut sql = format!("UPDATE {} SET {}", collection, sets.join(","));
         if let Some(f) = filter {
-            let clause = self.compile_filter(f, &mut params, &mut idx);
+            let clause = compile_filter_for(&self.db_type, f, &mut params, &mut idx);
             sql.push_str(" WHERE ");
             sql.push_str(&clause);
         }
@@ -768,8 +548,8 @@ impl SqlStore {
         if fields.is_empty() {
             return Err(anyhow::anyhow!("update fields cannot be empty"));
         }
-        let mut params: Vec<DbParam> = Vec::new();
-        let mut idx = 0usize;
+    let mut params: Vec<DbParam> = Vec::new();
+    let mut idx = 0usize;
 
         let sets: Vec<String> = fields
             .iter()
@@ -777,7 +557,7 @@ impl SqlStore {
                 InsertValue::Param(p) => {
                     idx += 1;
                     params.push(p.clone());
-                    format!("{} = {}", k, self.next_placeholder(idx))
+                    format!("{} = {}", k, next_placeholder_for(&self.db_type, idx))
                 }
                 InsertValue::Raw(sql) => format!("{} = {}", k, sql),
                 InsertValue::RawWithParams { sql, params: p } => {
@@ -789,7 +569,7 @@ impl SqlStore {
 
         let mut sql = format!("UPDATE {} SET {}", collection, sets.join(","));
         if let Some(f) = filter {
-            let clause = self.compile_filter(f, &mut params, &mut idx);
+            let clause = compile_filter_for(&self.db_type, f, &mut params, &mut idx);
             if !clause.is_empty() {
                 sql.push_str(" WHERE ");
                 sql.push_str(&clause);
@@ -807,7 +587,7 @@ impl SqlStore {
         let mut idx = 0usize;
         let mut sql = format!("DELETE FROM {}", collection);
         if let Some(f) = filter {
-            let clause = self.compile_filter(f, &mut params, &mut idx);
+            let clause = compile_filter_for(&self.db_type, f, &mut params, &mut idx);
             sql.push_str(" WHERE ");
             sql.push_str(&clause);
         }
@@ -863,7 +643,7 @@ impl DataStore for SqlStore {
     }
 
     async fn query(&self, q: &Query) -> anyhow::Result<Vec<Value>> {
-        let (sql, params) = self.compile_query(q);
+        let (sql, params) = compile_query_with_dialect(&self.db_type, q);
         self.inner.query_with_params(&sql, params).await
     }
 
@@ -889,6 +669,200 @@ impl DataStore for SqlStore {
         let _ = self.inner.query_with_params(&sql, params).await?;
         Ok(1)
     }
+
+    async fn begin_tx(&self) -> anyhow::Result<Box<dyn TxStore>> {
+        let tx = self.inner.begin_transaction().await?;
+        Ok(Box::new(SqlTxStore { 
+            db_type: self.db_type.clone(),
+            tx,
+        }))
+    }
+}
+
+struct SqlTxStore {
+    db_type: String,
+    tx: Box<dyn crate::database::state::DbTransaction>,
+}
+
+#[async_trait::async_trait]
+impl TxStore for SqlTxStore {
+    async fn query(&mut self, q: &Query) -> anyhow::Result<Vec<serde_json::Value>> {
+        let (sql, params) = compile_query_with_dialect(&self.db_type, q);
+        self.tx.query_with_params(&sql, params).await.map_err(Into::into)
+    }
+
+    async fn insert(&mut self, collection: &str, doc: serde_json::Value) -> anyhow::Result<serde_json::Value> {
+        let (sql, params) = build_insert_with_dialect(&self.db_type, collection, &doc)?;
+        let _ = self.tx.query_with_params(&sql, params).await?;
+        Ok(serde_json::Value::Null)
+    }
+
+    async fn update(&mut self, collection: &str, filter: Option<Filter>, patch: serde_json::Value) -> anyhow::Result<u64> {
+        let (sql, params) = build_update_with_dialect(&self.db_type, collection, filter.as_ref(), &patch)?;
+        let _ = self.tx.query_with_params(&sql, params).await?;
+        Ok(1)
+    }
+
+    async fn delete(&mut self, collection: &str, filter: Option<Filter>) -> anyhow::Result<u64> {
+        let (sql, params) = build_delete_with_dialect(&self.db_type, collection, filter.as_ref())?;
+        let _ = self.tx.query_with_params(&sql, params).await?;
+        Ok(1)
+    }
+
+    async fn raw_sql(&mut self, sql: &str, params: Vec<DbParam>) -> anyhow::Result<Vec<serde_json::Value>> {
+        self.tx.query_with_params(sql, params).await.map_err(Into::into)
+    }
+
+    async fn commit(self: Box<Self>) -> anyhow::Result<()> {
+        self.tx.commit().await.map_err(Into::into)
+    }
+
+    async fn rollback(self: Box<Self>) -> anyhow::Result<()> {
+        self.tx.rollback().await.map_err(Into::into)
+    }
+}
+
+// === Dialect-parametrized helpers (allow reuse without self/Arc lifetimes) ===
+fn next_placeholder_for(db_type: &str, i: usize) -> String {
+    match db_type {
+        "postgres" => format!("${}", i),
+        _ => "?".to_string(),
+    }
+}
+
+fn compile_filter_for(db_type: &str, f: &Filter, params: &mut Vec<DbParam>, idx: &mut usize) -> String {
+    match f {
+        Filter::Eq(col, v) => { *idx += 1; params.push(to_param(v)); format!("{} = {}", col, next_placeholder_for(db_type, *idx)) }
+        Filter::Ne(col, v) => { *idx += 1; params.push(to_param(v)); format!("{} <> {}", col, next_placeholder_for(db_type, *idx)) }
+        Filter::Gt(col, v) => { *idx += 1; params.push(to_param(v)); format!("{} > {}", col, next_placeholder_for(db_type, *idx)) }
+        Filter::Gte(col, v) => { *idx += 1; params.push(to_param(v)); format!("{} >= {}", col, next_placeholder_for(db_type, *idx)) }
+        Filter::Lt(col, v) => { *idx += 1; params.push(to_param(v)); format!("{} < {}", col, next_placeholder_for(db_type, *idx)) }
+        Filter::Lte(col, v) => { *idx += 1; params.push(to_param(v)); format!("{} <= {}", col, next_placeholder_for(db_type, *idx)) }
+        Filter::Like(col, pat) => { *idx += 1; params.push(DbParam::Str(pat.clone())); format!("{} LIKE {}", col, next_placeholder_for(db_type, *idx)) }
+        Filter::ILike(col, pat) => {
+            *idx += 1; params.push(DbParam::Str(pat.clone()));
+            if db_type == "postgres" { format!("{} ILIKE {}", col, next_placeholder_for(db_type, *idx)) }
+            else { format!("LOWER({}) LIKE LOWER({})", col, next_placeholder_for(db_type, *idx)) }
+        }
+        Filter::NotLike(col, pat) => { *idx += 1; params.push(DbParam::Str(pat.clone())); format!("{} NOT LIKE {}", col, next_placeholder_for(db_type, *idx)) }
+        Filter::IsNull(col) => format!("{} IS NULL", col),
+        Filter::IsNotNull(col) => format!("{} IS NOT NULL", col),
+        Filter::In(col, xs) => {
+            if xs.is_empty() { return "1=0".into(); }
+            let mut phs = Vec::with_capacity(xs.len());
+            for v in xs { *idx += 1; params.push(to_param(v)); phs.push(next_placeholder_for(db_type, *idx)); }
+            format!("{} IN ({})", col, phs.join(","))
+        }
+        Filter::NotIn(col, xs) => {
+            if xs.is_empty() { return "1=1".into(); }
+            let mut phs = Vec::with_capacity(xs.len());
+            for v in xs { *idx += 1; params.push(to_param(v)); phs.push(next_placeholder_for(db_type, *idx)); }
+            format!("{} NOT IN ({})", col, phs.join(","))
+        }
+        Filter::Between(col, a, b) => {
+            *idx += 1; params.push(to_param(a)); let p1 = next_placeholder_for(db_type, *idx);
+            *idx += 1; params.push(to_param(b)); let p2 = next_placeholder_for(db_type, *idx);
+            format!("{} BETWEEN {} AND {}", col, p1, p2)
+        }
+        Filter::And(fs) => {
+            let inner = fs.iter().map(|g| compile_filter_for(db_type, g, params, idx)).collect::<Vec<_>>().join(" AND ");
+            if inner.is_empty() { inner } else { format!("({})", inner) }
+        }
+        Filter::Or(fs) => {
+            let inner = fs.iter().map(|g| compile_filter_for(db_type, g, params, idx)).collect::<Vec<_>>().join(" OR ");
+            if inner.is_empty() { inner } else { format!("({})", inner) }
+        }
+    }
+}
+
+fn compile_query_with_dialect(db_type: &str, q: &Query) -> (String, Vec<DbParam>) {
+    let mut sql = String::new();
+    let mut params = Vec::<DbParam>::new();
+    let mut idx = 0usize;
+
+    if q.projection.is_empty() {
+        sql.push_str(&format!("SELECT {}* FROM {}", if q.distinct {"DISTINCT "} else {""}, q.collection));
+    } else {
+        let cols = q.projection.join(",");
+        sql.push_str(&format!("SELECT {}{} FROM {}", if q.distinct {"DISTINCT "} else {""}, cols, q.collection));
+    }
+
+    if !q.joins.is_empty() {
+        for j in &q.joins {
+            match j.kind {
+                JoinKind::Inner => sql.push_str(&format!(" INNER JOIN {} ON {}", j.table, j.on)),
+                JoinKind::Left => sql.push_str(&format!(" LEFT JOIN {} ON {}", j.table, j.on)),
+            }
+        }
+    }
+
+    if let Some(f) = &q.filter {
+        let clause = compile_filter_for(db_type, f, &mut params, &mut idx);
+        if !clause.is_empty() { sql.push_str(" WHERE "); sql.push_str(&clause); }
+    }
+
+    if !q.group_by.is_empty() {
+        sql.push_str(" GROUP BY ");
+        sql.push_str(&q.group_by.join(", "));
+    }
+    if !q.having_raw.is_empty() {
+        sql.push_str(" HAVING ");
+        sql.push_str(&q.having_raw.join(" AND "));
+    }
+    if !q.sort.is_empty() {
+        let ord = q.sort.iter().map(|s| format!("{} {}", s.field, if s.asc { "ASC" } else { "DESC" })).collect::<Vec<_>>().join(",");
+        sql.push_str(" ORDER BY ");
+        sql.push_str(&ord);
+    }
+    match db_type {
+        "mssql" => {
+            if q.limit.is_some() || q.offset.is_some() {
+                if q.sort.is_empty() { sql.push_str(" ORDER BY 1"); }
+                let off = q.offset.unwrap_or(0);
+                let lim = q.limit.unwrap_or(100);
+                sql.push_str(&format!(" OFFSET {} ROWS FETCH NEXT {} ROWS ONLY", off, lim));
+            }
+        }
+        _ => {
+            if let Some(l) = q.limit { sql.push_str(&format!(" LIMIT {}", l)); }
+            if let Some(o) = q.offset { sql.push_str(&format!(" OFFSET {}", o)); }
+        }
+    }
+    (sql, params)
+}
+
+fn build_insert_with_dialect(db_type: &str, collection: &str, doc: &Value) -> anyhow::Result<(String, Vec<DbParam>)> {
+    let obj = doc.as_object().ok_or_else(|| anyhow::anyhow!("insert expects object"))?;
+    let cols: Vec<_> = obj.keys().cloned().collect();
+    let mut params = Vec::<DbParam>::new();
+    let mut idx = 0usize;
+    let placeholders: Vec<_> = obj.values().map(|v| { idx += 1; params.push(json_to_param(v)); next_placeholder_for(db_type, idx) }).collect();
+    let sql = format!("INSERT INTO {} ({}) VALUES ({})", collection, cols.join(","), placeholders.join(","));
+    Ok((sql, params))
+}
+
+fn build_update_with_dialect(db_type: &str, collection: &str, filter: Option<&Filter>, patch: &Value) -> anyhow::Result<(String, Vec<DbParam>)> {
+    let obj = patch.as_object().ok_or_else(|| anyhow::anyhow!("update expects object"))?;
+    let mut params = Vec::<DbParam>::new();
+    let mut idx = 0usize;
+    let sets: Vec<_> = obj.iter().map(|(k, v)| { idx += 1; params.push(json_to_param(v)); format!("{} = {}", k, next_placeholder_for(db_type, idx)) }).collect();
+    let mut sql = format!("UPDATE {} SET {}", collection, sets.join(","));
+    if let Some(f) = filter {
+        let clause = compile_filter_for(db_type, f, &mut params, &mut idx);
+        sql.push_str(" WHERE "); sql.push_str(&clause);
+    }
+    Ok((sql, params))
+}
+
+fn build_delete_with_dialect(db_type: &str, collection: &str, filter: Option<&Filter>) -> anyhow::Result<(String, Vec<DbParam>)> {
+    let mut params = Vec::<DbParam>::new();
+    let mut idx = 0usize;
+    let mut sql = format!("DELETE FROM {}", collection);
+    if let Some(f) = filter {
+        let clause = compile_filter_for(db_type, f, &mut params, &mut idx);
+        sql.push_str(" WHERE "); sql.push_str(&clause);
+    }
+    Ok((sql, params))
 }
 
 #[cfg(test)]

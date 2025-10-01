@@ -499,6 +499,12 @@ async fn main() -> std::io::Result<()> {
         .filter(|s| !s.is_empty())
         .collect();
 
+    // Build generic DataStore adapter (SQL-backed for now)
+    let store_adapter: Arc<dyn crate::storage::traits::DataStore> = {
+        let sql = crate::storage::sql_store::SqlStore::new(db_repo.clone(), db_type.clone());
+        Arc::new(sql)
+    };
+
     let app_state = web::Data::new(AppState {
         db: db_repo,
         db_type,
@@ -508,6 +514,7 @@ async fn main() -> std::io::Result<()> {
         whitelist_ips,
         route_publics: CONFIG.route_publics.clone().to_vec(),
         converter_token: CONFIG.converter_token.clone(),
+        store: store_adapter,
     });
 
     generate_users(app_state.clone()).await;

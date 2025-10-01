@@ -13,6 +13,26 @@ pub struct BackendCapabilities {
 
 #[async_trait]
 pub trait TxStore: Send + Sync {
+    // Query (transaction-scoped)
+    async fn query(&mut self, q: &Query) -> anyhow::Result<Vec<Value>>;
+    async fn insert(&mut self, collection: &str, doc: Value) -> anyhow::Result<Value>;
+    async fn update(
+        &mut self,
+        collection: &str,
+        filter: Option<Filter>,
+        patch: Value,
+    ) -> anyhow::Result<u64>;
+    async fn delete(&mut self, collection: &str, filter: Option<Filter>) -> anyhow::Result<u64>;
+
+    // Optional: raw SQL escape hatch (used by legacy SQL hooks)
+    async fn raw_sql(
+        &mut self,
+        _sql: &str,
+        _params: Vec<crate::database::state::DbParam>,
+    ) -> anyhow::Result<Vec<Value>> {
+        Err(anyhow::anyhow!("raw_sql unsupported by this backend"))
+    }
+
     async fn commit(self: Box<Self>) -> anyhow::Result<()>;
     async fn rollback(self: Box<Self>) -> anyhow::Result<()>;
 }
