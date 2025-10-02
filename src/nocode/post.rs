@@ -59,7 +59,7 @@ pub async fn insert(
 
     let mut function_id_split: Vec<String> = Vec::new();
 
-    let body = match multipart_to_json(multipart).await {
+    let mut body = match multipart_to_json(multipart).await {
         Ok(json) => json,
         Err(e) => {
             return HttpResponse::BadRequest().json(WebResponse {
@@ -473,7 +473,10 @@ pub async fn insert(
     let (exec_sql, exec_params) = if state.db_type == "mongodb" {
         (String::new(), vec![])
     } else {
-        match ds.preview_insert_with(&table_schema.table, &insert_fields) {
+        // Try to include RETURNING id when supported
+        let returning_cols: Vec<&str> = vec!["id"]; // core id fetch
+        let attempt = ds.preview_insert_with_returning(&table_schema.table, &insert_fields, &returning_cols);
+        match attempt.or_else(|_| ds.preview_insert_with(&table_schema.table, &insert_fields)) {
             Ok((sql_dbg, params_dbg)) => {
                 if *crate::ISDEBUG {
                     log_output("QUERY", "POST(AST)", route.as_str(), sql_dbg.clone(), true);
@@ -570,6 +573,7 @@ pub async fn insert(
         let doc = Value::Object(doc_map.clone());
         match state.store.insert(&table_schema.table, doc).await {
             Ok(_) => {
+                let id_resp = doc_map.get("id").cloned().unwrap_or(Value::Null);
                 // Audit trail
                 write_audit(&AuditEntry {
                     at: Local::now().to_rfc3339(),
@@ -583,7 +587,7 @@ pub async fn insert(
                     success: true,
                     message: "Data inserted".to_string(),
                     total_data: 1,
-                    data: Value::Null,
+                    data: serde_json::json!({ "id": id_resp }),
                 });
             }
             Err(err) => {
@@ -600,7 +604,47 @@ pub async fn insert(
     let mut tx = tx_opt.take().unwrap();
     match tx.raw_sql(&exec_sql, exec_params).await {
         Ok(result) => {
-            log_output("RESULT", "INSERT", route.as_str(), format!("{:?}", result), true);
+            // Try to capture returned id when supported
+            let mut returned_id: Option<Value> = None;
+            if let Some(first) = result.first() {
+                if let Some(obj) = first.as_object() {
+                    if let Some(idv) = obj.get("id") { returned_id = Some(idv.clone()); }
+                }
+            }
+            // MySQL fallback: fetch LAST_INSERT_ID() when INSERT has no RETURNING and id wasn't provided
+            if returned_id.is_none() && state.db_type == "mysql" {
+                if let Ok(rows) = tx.raw_sql("SELECT LAST_INSERT_ID() AS id", vec![]).await {
+                    if let Some(first) = rows.first() {
+                        if let Some(obj) = first.as_object() {
+                            if let Some(idv) = obj.get("id") { returned_id = Some(idv.clone()); }
+                        }
+                    }
+                }
+            }
+            // If LAST_INSERT_ID() yields 0 (common when custom id is supplied), treat as None to allow fallback to doc_map id
+            if let Some(Value::Number(n)) = &returned_id {
+                if n.as_i64() == Some(0) || n.as_u64() == Some(0) {
+                    returned_id = None;
+                }
+            }
+            // log_output body
+            log_output("INFO", "BODY", route.as_str(), format!("{:?}", body), true);
+
+            if returned_id.is_none() {
+                returned_id = doc_map.get("id").cloned();
+            }
+
+            body = body.as_object_mut().map(|map| {
+                map.insert("id_new".to_string(), returned_id.clone().unwrap_or(Value::Null));
+                Value::Object(map.clone())
+            }).unwrap();
+            
+            // log_output body
+            log_output("INFO", "BODY", route.as_str(), format!("{:?}", body), true);
+
+            // log_output returned_id
+            log_output("INFO", "RETURNED ID", route.as_str(), format!("{:?}", returned_id), true);
+
             if state.db_type != "mongodb" && table_schema.post.post_process.contains("SQL:") {
                 if let Err(err) = crate::database::state::execute_sql_formula_with_txstore(
                     &mut tx,
@@ -633,7 +677,7 @@ pub async fn insert(
                 success: true,
                 message: "Data inserted".to_string(),
                 total_data: 1,
-                data: Value::Null,
+                data: serde_json::json!({ "id": returned_id.unwrap_or(Value::Null) }),
             })
         }
         Err(err) => {

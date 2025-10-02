@@ -533,8 +533,8 @@ pub async fn update(
             }
 
             // jika id_new TIDAK SAMA dg "" maka ada perubahan nilai id
-            if !id_new.is_empty() {
-                if state.db_type != "mongodb" {
+            if !id_new.is_empty()
+                && state.db_type != "mongodb" {
                     let (is_fk_ok, err_message) = crate::nocode::foreign_key::process_foreign_keys_delete_update_txstore(
                         "UPDATE", // "DELETE" or "UPDATE"
                         state.clone(),
@@ -560,7 +560,6 @@ pub async fn update(
                         });
                     }
                 }
-            }
 
             // Commit transaction if all operations succeeded
             match tx.commit().await {

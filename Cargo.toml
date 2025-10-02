@@ -1,6 +1,6 @@
 [package]
 name = "flx-nocode-api"
-version = "0.1.24"
+version = "0.1.25"
 edition = "2021"
 
 # Optimization settings for performance
@@ -59,8 +59,8 @@ urlencoding = "2.1"
 mongodb = { version = "3.1", optional = true }
 
 [features]
-# default = ["mysql", "postgres", "sqlite", "mssql", "mongodb"]
-default = ["mysql"]
+default = ["mysql", "postgres", "sqlite", "mssql", "mongodb"]
+# default = ["mysql"]
 mysql = ["sqlx/mysql", "sqlx/chrono"]
 postgres = ["sqlx/postgres", "sqlx/chrono"]
 sqlite = ["sqlx/sqlite", "sqlx/chrono"]

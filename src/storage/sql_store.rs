@@ -326,6 +326,76 @@ impl SqlStore {
         Ok((sql, params))
     }
 
+    /// Build an INSERT statement with a dialect-aware RETURNING of specified columns.
+    /// - Postgres/SQLite: appends `RETURNING col1, col2`
+    /// - MSSQL: injects `OUTPUT INSERTED.col1, INSERTED.col2`
+    /// - Others: returns plain INSERT (no returning support)
+    pub fn preview_insert_with_returning(
+        &self,
+        collection: &str,
+        fields: &[(String, InsertValue)],
+        returning_cols: &[&str],
+    ) -> anyhow::Result<(String, Vec<DbParam>)> {
+        if fields.is_empty() { return Err(anyhow::anyhow!("insert fields cannot be empty")); }
+
+        let mut params: Vec<DbParam> = Vec::new();
+        let mut idx = 0usize; // for placeholder numbering in postgres
+        let mut col_names: Vec<String> = Vec::with_capacity(fields.len());
+        let mut val_frags: Vec<String> = Vec::with_capacity(fields.len());
+
+        for (col, val) in fields.iter() {
+            col_names.push(col.clone());
+            match val {
+                InsertValue::Param(p) => {
+                    idx += 1;
+                    params.push(p.clone());
+                    val_frags.push(next_placeholder_for(&self.db_type, idx));
+                }
+                InsertValue::Raw(sql) => { val_frags.push(sql.clone()); }
+                InsertValue::RawWithParams { sql, params: p } => {
+                    let reb = self.rebind_fragment(sql, p, &mut idx, &mut params);
+                    val_frags.push(reb);
+                }
+            }
+        }
+
+        let base_cols = col_names.join(",");
+        let base_vals = val_frags.join(",");
+
+        let sql = match self.db_type.as_str() {
+            // Inject OUTPUT between INSERT and VALUES
+            "mssql" => {
+                let outs = if returning_cols.is_empty() {
+                    String::new()
+                } else {
+                    let list = returning_cols.iter().map(|c| format!("INSERTED.{}", c)).collect::<Vec<_>>().join(", ");
+                    format!(" OUTPUT {}", list)
+                };
+                format!("INSERT INTO {} ({}){} VALUES ({})", collection, base_cols, outs, base_vals)
+            }
+            // Append RETURNING at the end
+            "postgres" | "sqlite" => {
+                if returning_cols.is_empty() {
+                    format!("INSERT INTO {} ({}) VALUES ({})", collection, base_cols, base_vals)
+                } else {
+                    format!(
+                        "INSERT INTO {} ({}) VALUES ({}) RETURNING {}",
+                        collection,
+                        base_cols,
+                        base_vals,
+                        returning_cols.join(", ")
+                    )
+                }
+            }
+            _ => {
+                // Fallback: no returning support
+                format!("INSERT INTO {} ({}) VALUES ({})", collection, base_cols, base_vals)
+            }
+        };
+
+        Ok((sql, params))
+    }
+
     fn rebind_fragment(
         &self,
         sql: &str,

@@ -95,10 +95,12 @@ pub fn mysqlrows_to_json(rows: Vec<MySqlRow>) -> Vec<Value> {
                     }
                 }
             } else if type_info_debug.contains("TIMESTAMP") {
-                match row.try_get::<chrono::DateTime<chrono::Local>, _>(name) {
-                    Ok(dt) => Value::String(dt.to_rfc3339()),
-                    Err(_) => match row.try_get::<chrono::NaiveDateTime, _>(name) {
-                        Ok(dt) => Value::String(dt.to_string()),
+                match row.try_get::<Option<chrono::DateTime<chrono::Local>>, _>(name) {
+                    Ok(Some(dt)) => Value::String(dt.to_rfc3339()),
+                    Ok(None) => Value::Null,
+                    Err(_) => match row.try_get::<Option<chrono::NaiveDateTime>, _>(name) {
+                        Ok(Some(dt)) => Value::String(dt.to_string()),
+                        Ok(None) => Value::Null,
                         Err(e) => {
                             eprintln!(
                                 "TIMESTAMP Failed to get {} as chrono types: {:?}, {} \n",

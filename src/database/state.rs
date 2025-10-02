@@ -74,7 +74,16 @@ pub async fn execute_sql_formula_with_txstore(
 ) -> Result<(), anyhow::Error> {
     match build_sql_and_params_from_formula(&sql, body) {
         Ok((built_sql, params)) => {
-            log_output("QUERY", "AFTER", route, built_sql.clone(), true);
+            log_output("QUERY", "build_sql_and_params_from_formula", route, built_sql.clone(), true);
+            log_output("BODY", "build_sql_and_params_from_formula", route, format!("{:?}", body), true);
+            // Log params explicitly to verify only placeholders become params
+            log_output(
+                "PARAMS",
+                "build_sql_and_params_from_formula",
+                route,
+                format!("{:?}", params),
+                true,
+            );
             match tx.raw_sql(&built_sql, params).await {
                 Ok(_) => {
                     log_output(
@@ -259,6 +268,9 @@ pub fn build_sql_and_params_from_formula(
         .strip_prefix("SQL:")
         .unwrap_or(sql_formula)
         .to_string();
+
+    // log_output SQL
+    log_output("QUERY", "BEFORE/AFTER", "build_sql_and_params_from_formula", sql.clone(), true);
     let mut params: Vec<DbParam> = Vec::new();
 
     // Helper: get nested value by dotted path, e.g. "user.id" or "items.0.price"
@@ -279,13 +291,19 @@ pub fn build_sql_and_params_from_formula(
         }
         Some(cur)
     }
+    
 
     // 1) Resolve nested subselects that include an inner {request.*}, deterministically.
     // Example: {products[{request.product_id}].price}
     while let Some(cap) = RE_NESTED.captures(&sql) {
+        // log_output cap
+        log_output("INFO", "CAP", "build_sql_and_params_from_formula", format!("{:?}", cap), true);
         let table = cap.get(1).unwrap().as_str();
         let inner = cap.get(2).unwrap().as_str(); // e.g., request.product_id
         let field = cap.get(3).unwrap().as_str();
+
+        // log_output table, inner, field
+        log_output("INFO", "NESTED", "build_sql_and_params_from_formula", format!("table:{}, inner: {} field: {}", table, inner, field), true);
 
         // Validate identifiers strictly
         if !RE_IDENT.is_match(table) || !RE_IDENT.is_match(field) {
@@ -297,7 +315,7 @@ pub fn build_sql_and_params_from_formula(
         }
 
         // resolve inner value from body with dotted path support
-        let key = inner.strip_prefix("request.").unwrap_or(inner);
+        let key: &str = inner.strip_prefix("request.").unwrap_or(inner);
         // Prefer numeric id, fallback to NULL
         let id_param = match get_by_path(body, key) {
             Some(serde_json::Value::Number(n)) => {

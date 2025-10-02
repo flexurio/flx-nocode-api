@@ -108,8 +108,8 @@
         "post":{
                 "validate_data":"",
                 "pre_process":"",
-                "post_process":"",
-                "columns":["name", "notes"]
+                "post_process":"SQL:SELECT * FROM bank_types  WHERE id = {request.id_new};",
+                "columns":["name"]
         },
         "put":{
                 "validate_data":"",
