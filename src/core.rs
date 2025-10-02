@@ -1,4 +1,4 @@
-use std::{error::Error, fs::File, io, path::Path};
+use std::{error::Error, fs::File, io, path::Path, result};
 
 use actix_multipart::Multipart;
 use actix_web::{
@@ -291,6 +291,85 @@ pub async fn register(state: Data<AppState>, multipart: Multipart) -> impl Respo
 
 // NCO-POST
 pub async fn generate_users(state: Data<AppState>) -> impl Responder {
+    // MongoDB: no DDL. Seed collections and default data using DataStore.
+    if state.db_type == "mongodb" {
+        use crate::storage::ast::{Query as QQ, Filter as QF, Val as QV};
+        // Check if admin exists
+        let q_admin = QQ::from("flx_users")
+            .select(["id"]) // expect numeric id if we seed
+            .r#where(QF::Eq("email".into(), QV::Str("admin".into())))
+            .limit(1);
+        if *crate::ISDEBUG {
+            log_output(
+                "QUERY",
+                "POST",
+                "generate/table/select-flx_users-admin",
+                "AST(mongo) flx_users where email='admin'".to_string(),
+                true,
+            );
+        }
+        let rows = state.store.query(&q_admin).await.unwrap_or_default();
+        let mut id_user: i64 = rows.first()
+            .and_then(|row| row.get("id"))
+            .and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse::<i64>().ok())))
+            .unwrap_or(0);
+
+        if id_user == 0 {
+            id_user = 1;
+            // create random password, encrypt, then insert admin
+            let random_pass = rand::rng().random_range(1000..9999).to_string();
+            let encrypt_password = encrypt(state.encrypt_key.clone(), random_pass.clone());
+
+            println!("==========================================");
+            println!("Your admin Password: {:?}", random_pass);
+            println!("==========================================");
+
+            let now_iso = chrono::Local::now().to_rfc3339();
+            let user_doc = serde_json::json!({
+                "id": id_user,
+                "email": "admin",
+                "phone": "5758",
+                "password": encrypt_password,
+                "name": "Admin Flexurio",
+                "created_at": now_iso,
+                "updated_at": now_iso,
+                "enabled": true
+            });
+            if *crate::ISDEBUG { log_output("INSERT", "POST", "generate/mongodb/insert-flx_users-admin", user_doc.to_string(), true); }
+            let result = state.store.insert("flx_users", user_doc).await;
+
+            if result.is_err() {
+                // log_output error message and kill the process
+                log_output("ERROR", "POST", "generate/mongodb/insert-flx_users-admin", format!("Failed to insert admin user: {}", result.err().unwrap()), true);
+                std::process::exit(1);
+            }
+
+            // Insert default roles
+            let role1 = serde_json::json!({
+                "id_users": id_user,
+                "endpoint": "flx_users",
+                "role": 127,
+                "created_at": now_iso
+            });
+            let role2 = serde_json::json!({
+                "id_users": id_user,
+                "endpoint": "flx_roles",
+                "role": 127,
+                "created_at": now_iso
+            });
+            if *crate::ISDEBUG { log_output("INSERT", "POST", "generate/mongodb/insert-flx_roles", format!("{} | {}", role1, role2), true); }
+            let _ = state.store.insert("flx_roles", role1).await;
+            let _ = state.store.insert("flx_roles", role2).await;
+        }
+
+        return HttpResponse::Ok().json(WebResponse {
+            success: true,
+            message: "Generate (Mongo) users & roles".to_string(),
+            total_data: 1,
+            data: Value::Null,
+        });
+    }
+
     // Create tables via DDL AST (vendor-aware)
     let ds = SqlStore::new(state.db.clone(), state.db_type.clone());
 
