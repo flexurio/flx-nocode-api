@@ -2,6 +2,7 @@ use actix_multipart::Multipart;
 use actix_web::{web::Data, HttpResponse, Responder};
 use serde_json::Value;
 use std::collections::HashSet;
+use std::result;
 
 use crate::audit::{write_audit, AuditEntry};
 use crate::helpers::get_client_ip;
@@ -164,14 +165,17 @@ pub async fn insert(
         .collect();
 
     // check if table_schema.columns.id auto_increment false then insert_columns & filtered_columns must contain "id"
-    if let Some(col) = filtered_columns.iter().find(|c| c.name == "id") {
+    if let Some(col) = table_schema
+        .columns
+        .iter().find(|c| c.name == "id") {
         if !col.auto_increment {
             insert_columns.push("id");
             filtered_columns.push(col);
         }
     }
 
-    log_output("COLUMNS", "INSERT", route.as_str(), format!("{:?}", insert_columns), true);
+    log_output("COLUMNS", "insert_columns", route.as_str(), format!("{:?}", insert_columns), true);
+    log_output("COLUMNS", "filtered_columns", route.as_str(), format!("{:?}", filtered_columns), true);
 
     // Helper: build formula with placeholders and collect params
     fn build_formula_value(raw: &str, body: &Value) -> (String, Vec<DbParam>) {
@@ -595,7 +599,8 @@ pub async fn insert(
 
     let mut tx = tx_opt.take().unwrap();
     match tx.raw_sql(&exec_sql, exec_params).await {
-        Ok(_) => {
+        Ok(result) => {
+            log_output("RESULT", "INSERT", route.as_str(), format!("{:?}", result), true);
             if state.db_type != "mongodb" && table_schema.post.post_process.contains("SQL:") {
                 if let Err(err) = crate::database::state::execute_sql_formula_with_txstore(
                     &mut tx,
