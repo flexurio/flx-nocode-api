@@ -183,7 +183,7 @@ fn plan_to_pipeline(plan: &LogicalPlan) -> Result<(String, Vec<Document>)> {
             let (coll, mut stages) = plan_to_pipeline(input)?;
             // Resolve base and join aliases to support dotted qualifiers like o.customer_id = c.id
             let (base_table, base_alias) = leftmost_scan_collection(input)
-                .map(|c| extract_table_and_alias(c))
+                .map(extract_table_and_alias)
                 .unwrap_or_else(|| (String::new(), None));
             let (join_table, join_alias) = extract_table_and_alias(table);
             let base_prefixes: Vec<String> = vec![base_alias.clone().unwrap_or_default(), base_table.clone()]
@@ -261,7 +261,7 @@ impl DataStore for MongoStore {
 
     async fn update(&self, collection: &str, filter: Option<Filter>, patch: JsonValue) -> Result<u64> {
         let coll = self.coll(collection);
-        let filt = filter.map(|f| filter_to_bson(&f)).unwrap_or_else(Document::new);
+        let filt = filter.map(|f| filter_to_bson(&f)).unwrap_or_default();
         let update_doc: Document = mongodb::bson::to_document(&serde_json::json!({ "$set": patch }))?;
     let res = coll.update_many(filt, update_doc).await?;
         Ok(res.modified_count as u64)
@@ -269,7 +269,7 @@ impl DataStore for MongoStore {
 
     async fn delete(&self, collection: &str, filter: Option<Filter>) -> Result<u64> {
         let coll = self.coll(collection);
-        let filt = filter.map(|f| filter_to_bson(&f)).unwrap_or_else(Document::new);
+        let filt = filter.map(|f| filter_to_bson(&f)).unwrap_or_default();
     let res = coll.delete_many(filt).await?;
         Ok(res.deleted_count as u64)
     }

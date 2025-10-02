@@ -255,6 +255,16 @@ pub async fn process(
         log_output("PARAMS", "TRACE(AST)", route.as_str(), format!("{:?}", compiled_params), true);
     }
 
+    // MongoDB: current TRACE path relies on SQL upsert; return explicit unsupported for Mongo
+    if state.db_type == "mongodb" {
+        return HttpResponse::BadRequest().json(WebResponse {
+            success: false,
+            message: "TRACE insert-select upsert is not supported for MongoDB yet".to_string(),
+            total_data: 0,
+            data: Value::Null,
+        });
+    }
+
     // Begin transaction via generic store
     let mut tx = match state.store.begin_tx().await {
         Ok(t) => t,

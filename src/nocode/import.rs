@@ -282,30 +282,176 @@ pub async fn import(
     if include_id {
         if let Some(func) = id_fn.as_ref() {
             let (prefix, width) = derive_id_prefix_and_width(func);
-            // Query once for max existing id with this prefix
-            let id_find = prefix.clone();
-            // AST: fetch highest id matching prefix pattern via DataStore
-            let q = Q::from(table_schema.table.clone())
-                .select(["COALESCE(MAX(id), 0) as max_id"]) // aggregate
-                .r#where(F::Like("id".into(), format!("%{}%", id_find)));
-            let max_id: String = match state.store.query(&q).await {
-                Ok(rows) if !rows.is_empty() => {
-                    let v = rows[0].get("max_id");
-                    if let Some(s) = v.and_then(|x| x.as_str()) { s.to_string() }
-                    else if let Some(n) = v.and_then(|x| x.as_i64()) { n.to_string() }
-                    else if let Some(f) = v.and_then(|x| x.as_f64()) { f.to_string() }
-                    else { "0".to_string() }
-                }
-                _ => "0".to_string(),
-            };
-            let last = max_id.rsplit('/').next().unwrap_or("0");
-            let next_num: i64 = last.trim_start_matches('0').parse().unwrap_or(0);
-            // next number to use will be +1 on first row build
-            id_ctx = Some((prefix, width, next_num));
+            if state.db_type == "mongodb" {
+                // Use AST aggregation for Mongo: MAX(id) with prefix% (case-insensitive)
+                use crate::storage::ast::{Query as QQ};
+                let qmax = QQ::from(table_schema.table.clone())
+                    .agg_max("max_id", "id")
+                    .r#where(F::ILike("id".into(), format!("{}%", prefix)))
+                    .limit(1);
+                let max_id: String = match state.store.query(&qmax).await {
+                    Ok(rows) if !rows.is_empty() => rows[0]
+                        .get("max_id")
+                        .and_then(|v| v.as_str().map(|s| s.to_string()))
+                        .unwrap_or_else(|| "0".to_string()),
+                    _ => "0".to_string(),
+                };
+                let last = max_id.rsplit('/').next().unwrap_or("0");
+                let next_num: i64 = last.trim_start_matches('0').parse().unwrap_or(0);
+                id_ctx = Some((prefix, width, next_num));
+            } else {
+                // SQL path: allow COALESCE(MAX(id), 0) projection
+                let id_find = prefix.clone();
+                let q = Q::from(table_schema.table.clone())
+                    .select(["COALESCE(MAX(id), 0) as max_id"]) // aggregate
+                    .r#where(F::Like("id".into(), format!("%{}%", id_find)));
+                let max_id: String = match state.store.query(&q).await {
+                    Ok(rows) if !rows.is_empty() => {
+                        let v = rows[0].get("max_id");
+                        if let Some(s) = v.and_then(|x| x.as_str()) { s.to_string() }
+                        else if let Some(n) = v.and_then(|x| x.as_i64()) { n.to_string() }
+                        else if let Some(f) = v.and_then(|x| x.as_f64()) { f.to_string() }
+                        else { "0".to_string() }
+                    }
+                    _ => "0".to_string(),
+                };
+                let last = max_id.rsplit('/').next().unwrap_or("0");
+                let next_num: i64 = last.trim_start_matches('0').parse().unwrap_or(0);
+                id_ctx = Some((prefix, width, next_num));
+            }
         }
     }
 
-    // Start transaction via generic store
+    // MongoDB path: no transactions, insert each row via DataStore
+    if state.db_type == "mongodb" {
+        let mut inserted: i32 = 0;
+        let now_iso = Local::now().to_rfc3339();
+        // detect created_by_id type
+        let created_by_type = table_schema
+            .columns
+            .iter()
+            .find(|c| c.name == "created_by_id")
+            .map(|c| c.type_data.clone())
+            .unwrap_or("int".to_string());
+        for (i_row, row) in rows.iter().enumerate() {
+            let mut doc = serde_json::Map::new();
+            for col in final_columns.iter() {
+                let mut value_str = if let Some(additional_value) = additional_columns.get(&col.name) {
+                    json_value_to_string(additional_value)
+                } else {
+                    row.get(&col.name).map(json_value_to_string).unwrap_or_default()
+                };
+
+                // Special handling for id
+                if col.name == "id" && value_str.is_empty() {
+                    if let Some((ref prefix, width, ref mut next_num)) = id_ctx {
+                        *next_num += 1;
+                        let num_str = format!("{:0>len$}", *next_num, len = width);
+                        value_str = format!("{}/{}", prefix, num_str);
+                    } else if !all_rows_have_id {
+                        return HttpResponse::BadRequest().json(WebResponse {
+                            success: false,
+                            message: format!("Row {} missing id and no function configured", inserted as usize + i_row + 1),
+                            total_data: inserted,
+                            data: Value::Null,
+                        });
+                    }
+                }
+
+                // FK validation when value present
+                if !value_str.is_empty() {
+                    for fk in table_schema.foreign_keys.iter() {
+                        if fk.column == col.name {
+                            let ok = check_data_foreign_key(
+                                &state,
+                                fk.reference_table.clone(),
+                                fk.reference_column.clone(),
+                                value_str.clone(),
+                            )
+                            .await;
+                            if !ok {
+                                return HttpResponse::BadRequest().json(WebResponse {
+                                    success: false,
+                                    message: format!(
+                                        "Invalid foreign key value '{}' for column '{}' at row {}",
+                                        value_str, col.name, inserted as usize + i_row + 1
+                                    ),
+                                    total_data: inserted,
+                                    data: Value::Null,
+                                });
+                            }
+                        }
+                    }
+                }
+
+                // Encrypt if needed
+                if col.encrypt && !value_str.is_empty() {
+                    let is_encrypted = is_encrypted_string(&value_str);
+                    if !is_encrypted {
+                        value_str = encrypt(state.encrypt_key.clone(), value_str);
+                    }
+                }
+
+                // Decide JSON value type to insert
+                let json_val = if value_str.is_empty() && col.nullable {
+                    Value::Null
+                } else if (col.type_data.contains("int") || col.type_data.contains("float") || col.type_data.contains("double") || col.type_data.contains("decimal") || col.type_data.contains("money")) && !value_str.is_empty() {
+                    if let Ok(n) = value_str.parse::<i64>() { Value::from(n) }
+                    else if let Ok(f) = value_str.parse::<f64>() { Value::from(f) }
+                    else { Value::from(value_str) }
+                } else {
+                    Value::from(value_str)
+                };
+                doc.insert(col.name.clone(), json_val);
+            }
+
+            // created_at and created_by_id
+            doc.insert("created_at".to_string(), Value::from(now_iso.clone()));
+            if created_by_type.contains("int") {
+                if let Ok(n) = claims.id.parse::<i64>() { doc.insert("created_by_id".into(), Value::from(n)); }
+                else { doc.insert("created_by_id".into(), Value::from(claims.id.clone())); }
+            } else if created_by_type.contains("float")
+                || created_by_type.contains("double")
+                || created_by_type.contains("decimal")
+                || created_by_type.contains("money")
+            {
+                if let Ok(n) = claims.id.parse::<f64>() { doc.insert("created_by_id".into(), Value::from(n)); }
+                else { doc.insert("created_by_id".into(), Value::from(claims.id.clone())); }
+            } else {
+                doc.insert("created_by_id".into(), Value::from(claims.id.clone()));
+            }
+
+            if let Err(e) = state.store.insert(&table_schema.table, Value::Object(doc)).await {
+                return HttpResponse::BadRequest().json(WebResponse {
+                    success: false,
+                    message: format!("Insert error: {} (at row {} after {})", e, inserted as usize + i_row + 1, inserted),
+                    total_data: inserted,
+                    data: Value::Null,
+                });
+            }
+
+            inserted += 1;
+        }
+
+        // Audit
+        write_audit(&AuditEntry {
+            at: Local::now().to_rfc3339(),
+            actor_id: claims.id.clone(),
+            action: "IMPORT",
+            route: &route,
+            id: None,
+            ip: Some(get_client_ip(&req)).as_deref(),
+        });
+
+        return HttpResponse::Ok().json(WebResponse {
+            success: true,
+            message: format!("Imported {} rows", inserted),
+            total_data: inserted,
+            data: Value::Null,
+        });
+    }
+
+    // Start transaction via generic store (SQL backends)
     let mut tx = match state.store.begin_tx().await {
         Ok(t) => t,
         Err(e) => {

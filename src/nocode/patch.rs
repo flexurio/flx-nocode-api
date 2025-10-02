@@ -165,6 +165,16 @@ pub async fn process_sp(
         }
     };
 
+    // MongoDB does not support raw SQL stored procedure execution; return explicit unsupported
+    if state.db_type == "mongodb" {
+        return HttpResponse::BadRequest().json(WebResponse {
+            success: false,
+            message: "PATCH procedure execution is not supported for MongoDB".to_string(),
+            total_data: 0,
+            data: Value::Null,
+        });
+    }
+
     // Begin transaction via generic store
     let mut tx = match state.store.begin_tx().await {
         Ok(t) => t,

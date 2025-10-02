@@ -188,7 +188,75 @@ pub async fn delete(
     }
     log_output("QUERY", "DELETE(AST)", route.as_str(), exec_sql.clone(), true);
 
-    // Begin transaction via generic store
+    // MongoDB path: no transactions; perform direct update/delete
+    if state.db_type == "mongodb" {
+        // Build filter by id with numeric inference
+        let id_filter_val = if let Ok(n) = id_raw.parse::<i64>() { QV::I64(n) } else { QV::Str(id_raw.clone()) };
+        let filter = Some(QF::Eq("id".into(), id_filter_val));
+        let result = if type_delete == "soft" {
+            // patch deleted_at and deleted_by_id
+            let mut patch = serde_json::Map::new();
+            patch.insert("deleted_at".into(), serde_json::json!(Local::now().to_rfc3339()));
+            // type for deleted_by_id
+            let deleted_by_type = table_schema
+                .columns
+                .iter()
+                .find(|c| c.name == "deleted_by_id")
+                .map(|c| c.type_data.clone())
+                .unwrap_or("int".to_string());
+            if deleted_by_type.contains("int") {
+                if let Ok(n) = claims.id.parse::<i64>() {
+                    patch.insert("deleted_by_id".into(), serde_json::json!(n));
+                } else {
+                    patch.insert("deleted_by_id".into(), serde_json::json!(claims.id.clone()));
+                }
+            } else if deleted_by_type.contains("float")
+                || deleted_by_type.contains("double")
+                || deleted_by_type.contains("decimal")
+                || deleted_by_type.contains("money")
+            {
+                if let Ok(n) = claims.id.parse::<f64>() {
+                    patch.insert("deleted_by_id".into(), serde_json::json!(n));
+                } else {
+                    patch.insert("deleted_by_id".into(), serde_json::json!(claims.id.clone()));
+                }
+            } else {
+                patch.insert("deleted_by_id".into(), serde_json::json!(claims.id.clone()));
+            }
+            state.store.update(&table_schema.table, filter, Value::Object(patch)).await.map(|_| ())
+        } else {
+            state.store.delete(&table_schema.table, filter).await.map(|_| ())
+        };
+        return match result {
+            Ok(()) => {
+                // Audit
+                write_audit(&AuditEntry {
+                    at: Local::now().to_rfc3339(),
+                    actor_id: claims.id.clone(),
+                    action: "DELETE",
+                    route: &route,
+                    id: Some(&id_raw),
+                    ip: Some(get_client_ip(&req)).as_deref(),
+                });
+                HttpResponse::Ok().json(WebResponse {
+                    success: true,
+                    message: if type_delete == "soft" { "Data soft-deleted".to_string() } else { "Data deleted".to_string() },
+                    total_data: 1,
+                    data: Value::Null,
+                })
+            }
+            Err(err) => {
+                HttpResponse::InternalServerError().json(WebResponse {
+                    success: false,
+                    message: format!("Error NCO-DELETE (mongo): {}", err),
+                    total_data: 0,
+                    data: Value::Null,
+                })
+            }
+        };
+    }
+
+    // Begin transaction via generic store (SQL backends)
     let mut tx = match state.store.begin_tx().await {
         Ok(t) => t,
         Err(err) => {
