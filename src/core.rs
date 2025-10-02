@@ -88,13 +88,14 @@ pub async fn login(state: web::Data<AppState>, req: actix_web::HttpRequest) -> i
     let email = parts.next().unwrap_or("");
     let pass_in = parts.next().unwrap_or("");
 
-    // Query via DataStore (SqlStore adapter)
+    // Query via DataStore; for SQL we can still use SqlStore preview in debug
     let ds = SqlStore::new(state.db.clone(), state.db_type.clone());
-    // DB-specific cast for password so we always read it as string
+    // DB-specific cast for password so we always read it as string (skip casts for Mongo)
     let pass_expr: &str = match state.db_type.as_str() {
         "mysql" | "postgres" => "CAST(password as CHAR(255)) as password",
         "sqlite" => "CAST(password as TEXT) as password",
         "mssql" => "CAST(password as NVARCHAR(255)) as password",
+        "mongodb" => "password",
         _ => "password",
     };
     let q_user = QQ::from("flx_users")
@@ -105,12 +106,16 @@ pub async fn login(state: web::Data<AppState>, req: actix_web::HttpRequest) -> i
         ]))
         .limit(1);
     if *crate::ISDEBUG {
-        let (sql_dbg, _params_dbg) = ds.preview_sql(&q_user);
-        log_output("QUERY", "POST", "login", sql_dbg.clone(), true);
+        if state.db_type == "mongodb" {
+            log_output("QUERY", "POST", "login", "AST (mongo) flx_users by email".to_string(), true);
+        } else {
+            let (sql_dbg, _params_dbg) = ds.preview_sql(&q_user);
+            log_output("QUERY", "POST", "login", sql_dbg.clone(), true);
+        }
     } else {
         log_output("QUERY", "POST", "login", format!("AST flx_users where email=? (db={})", state.db_type), true);
     }
-    let rows = ds.query(&q_user).await.unwrap_or_default();
+    let rows = state.store.query(&q_user).await.unwrap_or_default();
     let (password_db, id_user, name) = if let Some(row0) = rows.first() {
         let password = row0
             .get("password")
@@ -184,7 +189,7 @@ pub async fn login(state: web::Data<AppState>, req: actix_web::HttpRequest) -> i
         .select(["endpoint", "role"]) 
         .r#where(QF::Eq("id_users".into(), QV::I64(id_user)));
     log_output("QUERY", "core.rs/login", "flx_roles", format!("AST id_users=? ~ {}", id_user), true);
-    let roles_rows = ds.query(&q_roles).await.unwrap_or_default();
+    let roles_rows = state.store.query(&q_roles).await.unwrap_or_default();
     let roles_data = roles_rows
         .into_iter()
         .filter_map(|v| {
@@ -241,7 +246,7 @@ pub async fn register(state: Data<AppState>, multipart: Multipart) -> impl Respo
 
     let encrypt_password = encrypt(state.encrypt_key.clone(), password);
 
-    // Use DataStore (SqlStore) insert with app-side timestamps for cross-DB compatibility
+    // Use DataStore insert with app-side timestamps for cross-DB compatibility
     let ds = SqlStore::new(state.db.clone(), state.db_type.clone());
     let now = chrono::Local::now().naive_local().format("%Y-%m-%d %H:%M:%S").to_string();
     let email = body["email"].to_string().trim_matches('"').to_string();
@@ -250,7 +255,7 @@ pub async fn register(state: Data<AppState>, multipart: Multipart) -> impl Respo
 
     // enabled type depends on DB: Postgres expects boolean, others accept 1/0
     let enabled_val = match state.db_type.as_str() {
-        "postgres" => Value::Bool(true),
+        "postgres" | "mongodb" => Value::Bool(true),
         _ => Value::Number(1.into()),
     };
 
@@ -265,7 +270,9 @@ pub async fn register(state: Data<AppState>, multipart: Multipart) -> impl Respo
     });
 
     if *crate::ISDEBUG {
-        if let Ok((sql_dbg, params_dbg)) = ds.preview_insert("flx_users", &doc) {
+        if state.db_type == "mongodb" {
+            log_output("QUERY", "POST", "register", "AST(mongo) insert flx_users".to_string(), true);
+        } else if let Ok((sql_dbg, params_dbg)) = ds.preview_insert("flx_users", &doc) {
             log_output("QUERY", "POST", "register", sql_dbg, true);
             log_output("PARAM", "POST", "register", format!("{:?}", params_dbg), true);
         }
@@ -273,7 +280,7 @@ pub async fn register(state: Data<AppState>, multipart: Multipart) -> impl Respo
         log_output("QUERY", "POST", "register", "AST insert flx_users".to_string(), true);
     }
 
-    match ds.insert("flx_users", doc).await {
+    match state.store.insert("flx_users", doc).await {
         Ok(_) => HttpResponse::Ok().json(WebResponse {
             success: true,
             message: "Register Success".to_string(),

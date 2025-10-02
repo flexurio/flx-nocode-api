@@ -311,18 +311,21 @@ pub async fn insert(
 
     // Note: we no longer build insert_values manually; using insert_fields per column
 
-    // Begin transaction early so ID generation (MAX lookup) runs in the same TX
-    let mut tx = match state.store.begin_tx().await {
-        Ok(t) => t,
-        Err(err) => {
-            return HttpResponse::InternalServerError().json(WebResponse {
-                success: false,
-                message: format!("Error starting transaction: {}", err),
-                total_data: 0,
-                data: Value::Null,
-            });
+    // Begin transaction early for SQL backends so ID generation runs in the same TX
+    let mut tx_opt: Option<Box<dyn crate::storage::traits::TxStore>> = None;
+    if state.db_type != "mongodb" {
+        match state.store.begin_tx().await {
+            Ok(t) => tx_opt = Some(t),
+            Err(err) => {
+                return HttpResponse::InternalServerError().json(WebResponse {
+                    success: false,
+                    message: format!("Error starting transaction: {}", err),
+                    total_data: 0,
+                    data: Value::Null,
+                });
+            }
         }
-    };
+    }
 
     if !function_id_split.is_empty() {
         // Build parts without leading slash; join with '/'
@@ -340,26 +343,29 @@ pub async fn insert(
                 let len_id = s_append.len();
                 let id_prefix = parts.join("/");
 
-                // Query max id by prefix (match start: prefix%)
+                // Find latest id by prefix. For Mongo, use simple sort by id DESC; for SQL, you can still sort.
                 let like_pat = if id_prefix.is_empty() { "%".to_string() } else { format!("{}%", id_prefix) };
-                let q = Q::from(table_schema.table.clone())
-                    .select(["MAX(id) as max_id"]).r#where(F::ILike("id".into(), like_pat));
-                // Debug preview of MAX query
-                if *crate::ISDEBUG {
-                    let ds_dbg = SqlStore::new(state.db.clone(), state.db_type.clone());
-                    let (sql_dbg, params_dbg) = ds_dbg.preview_sql(&q);
-                    log_output("QUERY", "MAX-ID", route.as_str(), sql_dbg, true);
-                    log_output("PARAMS", "MAX-ID", route.as_str(), format!("{:?}", params_dbg), true);
-                }
-                let max_id: String = match tx.query(&q).await {
-                    Ok(rows) if !rows.is_empty() => {
-                        let v = rows[0].get("max_id");
-                        if let Some(s) = v.and_then(|x| x.as_str()) { s.to_string() }
-                        else if let Some(n) = v.and_then(|x| x.as_i64()) { n.to_string() }
-                        else if let Some(f) = v.and_then(|x| x.as_f64()) { f.to_string() }
-                        else { "0".to_string() }
+                // Build: SELECT id FROM table WHERE id ILIKE prefix% ORDER BY id DESC LIMIT 1
+                let q_max = Q::from(table_schema.table.clone())
+                    .select(["id"]).r#where(F::ILike("id".into(), like_pat))
+                    .order_by("id", false).limit(1);
+                let max_id: String = if state.db_type == "mongodb" {
+                    match state.store.query(&q_max).await {
+                        Ok(rows) if !rows.is_empty() => rows[0].get("id").and_then(|v| v.as_str().map(|s| s.to_string())).unwrap_or_else(|| "0".to_string()),
+                        _ => "0".to_string(),
                     }
-                    _ => "0".to_string(),
+                } else {
+                    // Debug SQL preview for SQL backends
+                    if *crate::ISDEBUG {
+                        let ds_dbg = SqlStore::new(state.db.clone(), state.db_type.clone());
+                        let (sql_dbg, params_dbg) = ds_dbg.preview_sql(&q_max);
+                        log_output("QUERY", "MAX-ID", route.as_str(), sql_dbg, true);
+                        log_output("PARAMS", "MAX-ID", route.as_str(), format!("{:?}", params_dbg), true);
+                    }
+                    match tx_opt.as_mut().unwrap().query(&q_max).await {
+                        Ok(rows) if !rows.is_empty() => rows[0].get("id").and_then(|v| v.as_str().map(|s| s.to_string())).unwrap_or_else(|| "0".to_string()),
+                        _ => "0".to_string(),
+                    }
                 };
                 // Extract numeric suffix (width = len_id) and increment
                 let mut current_num: i64 = 0;
@@ -446,43 +452,44 @@ pub async fn insert(
         insert_fields.push(("created_by_id".to_string(), InsertValue::Param(DbParam::Str(claims.id.clone()))));
     }
 
-    // Determine execution SQL and params via dialect-aware builder (always AST path)
+    // For MongoDB, directly insert JSON doc without SQL; for SQL, compile INSERT
     let ds = SqlStore::new(state.db.clone(), state.db_type.clone());
-    let (exec_sql, exec_params) = match ds.preview_insert_with(&table_schema.table, &insert_fields) {
-        Ok((sql_dbg, params_dbg)) => {
-            if *crate::ISDEBUG {
-                log_output("QUERY", "POST(AST)", route.as_str(), sql_dbg.clone(), true);
-                log_output("PARAMS", "POST(AST)", route.as_str(), format!("{:?}", params_dbg), true);
+    let (exec_sql, exec_params) = if state.db_type == "mongodb" {
+        (String::new(), vec![])
+    } else {
+        match ds.preview_insert_with(&table_schema.table, &insert_fields) {
+            Ok((sql_dbg, params_dbg)) => {
+                if *crate::ISDEBUG {
+                    log_output("QUERY", "POST(AST)", route.as_str(), sql_dbg.clone(), true);
+                    log_output("PARAMS", "POST(AST)", route.as_str(), format!("{:?}", params_dbg), true);
+                }
+                (sql_dbg, params_dbg)
             }
-            (sql_dbg, params_dbg)
-        }
-        Err(e) => {
-            return HttpResponse::InternalServerError().json(WebResponse {
-                success: false,
-                message: format!("Error compiling AST INSERT: {}", e),
-                total_data: 0,
-                data: Value::Null,
-            });
+            Err(e) => {
+                return HttpResponse::InternalServerError().json(WebResponse {
+                    success: false,
+                    message: format!("Error compiling AST INSERT: {}", e),
+                    total_data: 0,
+                    data: Value::Null,
+                });
+            }
         }
     };
 
-    // (moved) validation_data will be executed inside the transaction below
-
-    // tx already started above
-
-    // Run validate_data inside transaction (expects boolean in first column of first row)
-    if table_schema.post.validate_data.contains("SQL:") {
+    // (moved) validation_data will be executed inside the transaction below (SQL only)
+    // Run validate_data inside transaction for SQL backends
+    if state.db_type != "mongodb" && table_schema.post.validate_data.contains("SQL:") {
         match crate::database::state::build_sql_and_params_from_formula(
             &table_schema.post.validate_data,
             &body,
         ) {
             Ok((built_sql, params)) => {
-                match tx.raw_sql(&built_sql, params).await {
+                match tx_opt.as_mut().unwrap().raw_sql(&built_sql, params).await {
                     Ok(row) => {
                         if !row.is_empty() {
                             let is_valid = row[0].get(0).and_then(|v| v.as_bool()).unwrap_or(true);
                             if !is_valid {
-                                let _ = tx.rollback().await;
+                                let _ = tx_opt.take().unwrap().rollback().await;
                                 return HttpResponse::BadRequest().json(WebResponse {
                                     success: false,
                                     message: "Validation data from table is not valid. Please contact your administrator".to_string(),
@@ -491,7 +498,7 @@ pub async fn insert(
                                 });
                             }
                         } else {
-                            let _ = tx.rollback().await;
+                            let _ = tx_opt.take().unwrap().rollback().await;
                             return HttpResponse::BadRequest().json(WebResponse {
                                 success: false,
                                 message: "Validation data from table is empty. Please contact your administrator".to_string(),
@@ -501,7 +508,7 @@ pub async fn insert(
                         }
                     }
                     Err(err) => {
-                        let _ = tx.rollback().await;
+                        let _ = tx_opt.take().unwrap().rollback().await;
                         return HttpResponse::BadRequest().json(WebResponse {
                             success: false,
                             message: format!("Error in validation_data: {}", err),
@@ -512,7 +519,7 @@ pub async fn insert(
                 }
             }
             Err(e) => {
-                let _ = tx.rollback().await;
+                let _ = tx_opt.take().unwrap().rollback().await;
                 return HttpResponse::BadRequest().json(WebResponse {
                     success: false,
                     message: format!("Error building validation formula: {}", e),
@@ -523,16 +530,16 @@ pub async fn insert(
         }
     }
 
-    if table_schema.post.pre_process.contains("SQL:") {
+    if state.db_type != "mongodb" && table_schema.post.pre_process.contains("SQL:") {
         if let Err(err) = crate::database::state::execute_sql_formula_with_txstore(
-            &mut tx,
+            tx_opt.as_mut().unwrap(),
             table_schema.post.pre_process,
             &body,
             route.as_str(),
         )
         .await
         {
-            let _ = tx.rollback().await;
+            let _ = tx_opt.take().unwrap().rollback().await;
             return HttpResponse::InternalServerError().json(WebResponse {
                 success: false,
                 message: format!("Error in pre-process: {}", err),
@@ -542,9 +549,42 @@ pub async fn insert(
         }
     }
 
+    if state.db_type == "mongodb" {
+        // Insert using document map
+        let doc = Value::Object(doc_map.clone());
+        match state.store.insert(&table_schema.table, doc).await {
+            Ok(_) => {
+                // Audit trail
+                write_audit(&AuditEntry {
+                    at: Local::now().to_rfc3339(),
+                    actor_id: claims.id.clone(),
+                    action: "POST",
+                    route: &route,
+                    id: None,
+                    ip: Some(get_client_ip(&req)).as_deref(),
+                });
+                return HttpResponse::Ok().json(WebResponse {
+                    success: true,
+                    message: "Data inserted".to_string(),
+                    total_data: 1,
+                    data: Value::Null,
+                });
+            }
+            Err(err) => {
+                return HttpResponse::InternalServerError().json(WebResponse {
+                    success: false,
+                    message: format!("Error NCO-POST (mongo): {}", err),
+                    total_data: 0,
+                    data: Value::Null,
+                });
+            }
+        }
+    }
+
+    let mut tx = tx_opt.take().unwrap();
     match tx.raw_sql(&exec_sql, exec_params).await {
         Ok(_) => {
-            if table_schema.post.post_process.contains("SQL:") {
+            if state.db_type != "mongodb" && table_schema.post.post_process.contains("SQL:") {
                 if let Err(err) = crate::database::state::execute_sql_formula_with_txstore(
                     &mut tx,
                     table_schema.post.post_process,

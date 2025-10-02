@@ -56,6 +56,23 @@ pub async fn create_table(
         });
     }
 
+    // MongoDB: No DDL needed. Consider this a success to match behavior.
+    if state.db_type == "mongodb" {
+        log_output(
+            "INFO",
+            "GENERATE TABLE",
+            route.as_str(),
+            format!("MongoDB backend: skipping DDL for collection '{}'.", table_schema.table),
+            true,
+        );
+        return HttpResponse::Ok().json(WebResponse {
+            success: true,
+            message: "Table created (MongoDB - no DDL)".to_string(),
+            total_data: 1,
+            data: Value::Null,
+        });
+    }
+
     let ds = SqlStore::new(state.db.clone(), state.db_type.clone());
     let (sql_create_table, sql_create_index) = generate_table(&ds, &table_schema);
     let mut err_message = String::new();
