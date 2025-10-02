@@ -9,6 +9,7 @@ use crate::storage::traits::{BackendCapabilities, DataStore, TxStore};
 use anyhow::{anyhow, Result};
 
 use mongodb::bson::{doc, Bson, Document};
+use mongodb::bson::oid::ObjectId;
 use mongodb::{Client, Collection, Database, options::ClientOptions};
 
 // Helpers for parsing table aliases and stripping dotted qualifiers
@@ -40,6 +41,12 @@ fn strip_alias_prefix(path: &str, prefixes: &[String]) -> String {
     path.to_string()
 }
 
+fn sanitize_ident(s: &str) -> String {
+    s.chars()
+        .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
+        .collect()
+}
+
 fn parse_on_raw_eq(raw: &str) -> Option<(String, String)> {
     let s = raw.replace("==", "=");
     let (l, r) = s.split_once('=')?;
@@ -57,14 +64,31 @@ fn val_to_bson(v: &Val) -> Bson {
     }
 }
 
+fn try_oid_from_str(s: &str) -> Option<Bson> {
+    if s.len() == 24 && s.chars().all(|c| c.is_ascii_hexdigit()) {
+        ObjectId::parse_str(s).ok().map(Bson::ObjectId)
+    } else {
+        None
+    }
+}
+
+fn val_to_bson_for(key: &str, v: &Val) -> Bson {
+    // If targeting _id path, attempt to coerce string to ObjectId
+    let targets_oid = key == "_id" || key.ends_with("._id");
+    match v {
+        Val::Str(s) if targets_oid => try_oid_from_str(s).unwrap_or_else(|| Bson::String(s.clone())),
+        _ => val_to_bson(v),
+    }
+}
+
 fn filter_to_bson(f: &Filter) -> Document {
     match f {
-        Filter::Eq(k, v) => doc! { k: val_to_bson(v) },
-        Filter::Ne(k, v) => doc! { k: { "$ne": val_to_bson(v) } },
-        Filter::Gt(k, v) => doc! { k: { "$gt": val_to_bson(v) } },
-        Filter::Gte(k, v) => doc! { k: { "$gte": val_to_bson(v) } },
-        Filter::Lt(k, v) => doc! { k: { "$lt": val_to_bson(v) } },
-        Filter::Lte(k, v) => doc! { k: { "$lte": val_to_bson(v) } },
+    Filter::Eq(k, v) => doc! { k: val_to_bson_for(k, v) },
+    Filter::Ne(k, v) => doc! { k: { "$ne": val_to_bson_for(k, v) } },
+    Filter::Gt(k, v) => doc! { k: { "$gt": val_to_bson_for(k, v) } },
+    Filter::Gte(k, v) => doc! { k: { "$gte": val_to_bson_for(k, v) } },
+    Filter::Lt(k, v) => doc! { k: { "$lt": val_to_bson_for(k, v) } },
+    Filter::Lte(k, v) => doc! { k: { "$lte": val_to_bson_for(k, v) } },
         Filter::Like(k, pat) | Filter::ILike(k, pat) | Filter::NotLike(k, pat) => {
             // Convert SQL LIKE to regex: % -> .*, _ -> ., escape others
             let mut re = String::with_capacity(pat.len() * 2);
@@ -83,11 +107,11 @@ fn filter_to_bson(f: &Filter) -> Document {
             };
             doc! { k: expr }
         }
-        Filter::In(k, vals) => doc! { k: { "$in": vals.iter().map(val_to_bson).collect::<Vec<_>>() } },
-        Filter::NotIn(k, vals) => doc! { k: { "$nin": vals.iter().map(val_to_bson).collect::<Vec<_>>() } },
+    Filter::In(k, vals) => doc! { k: { "$in": vals.iter().map(|v| val_to_bson_for(k, v)).collect::<Vec<_>>() } },
+    Filter::NotIn(k, vals) => doc! { k: { "$nin": vals.iter().map(|v| val_to_bson_for(k, v)).collect::<Vec<_>>() } },
         Filter::IsNull(k) => doc! { k: Bson::Null },
         Filter::IsNotNull(k) => doc! { k: { "$ne": Bson::Null } },
-        Filter::Between(k, a, b) => doc! { k: { "$gte": val_to_bson(a), "$lte": val_to_bson(b) } },
+    Filter::Between(k, a, b) => doc! { k: { "$gte": val_to_bson_for(k, a), "$lte": val_to_bson_for(k, b) } },
         Filter::And(fs) => {
             let parts: Vec<Document> = fs.iter().map(filter_to_bson).collect();
             doc! { "$and": parts }
@@ -97,6 +121,53 @@ fn filter_to_bson(f: &Filter) -> Document {
             doc! { "$or": parts }
         }
     }
+}
+
+// Rewrite filter keys for Mongo: strip base prefixes, map join table prefixes to join_<table>., and id -> _id
+fn rewrite_filter_keys(f: &Filter, base_prefixes: &[String], join_tables: &[String]) -> Filter {
+    let map_key = |k: &str| -> String {
+        // Strip base alias/table prefix
+        let stripped = strip_alias_prefix(k, base_prefixes);
+        if stripped != k {
+            if stripped == "id" { return "_id".to_string(); }
+            return stripped;
+        }
+        // Map join table prefixes to join_<table>
+        if let Some((head, tail)) = k.split_once('.') {
+            for jt in join_tables {
+                let (jt_coll, _jt_alias) = extract_table_and_alias(jt);
+                if head == jt || head == jt_coll {
+                    let mapped_tail = if tail == "id" { "_id" } else { tail };
+                    return format!("join_{}.{}", jt, mapped_tail);
+                }
+            }
+        }
+        // Plain key: map id -> _id
+        if k == "id" { "_id".to_string() } else { k.to_string() }
+    };
+
+    fn walk(f: &Filter, map: &dyn Fn(&str) -> String) -> Filter {
+        match f {
+            Filter::Eq(k, v) => Filter::Eq(map(k), v.clone()),
+            Filter::Ne(k, v) => Filter::Ne(map(k), v.clone()),
+            Filter::Gt(k, v) => Filter::Gt(map(k), v.clone()),
+            Filter::Gte(k, v) => Filter::Gte(map(k), v.clone()),
+            Filter::Lt(k, v) => Filter::Lt(map(k), v.clone()),
+            Filter::Lte(k, v) => Filter::Lte(map(k), v.clone()),
+            Filter::Like(k, s) => Filter::Like(map(k), s.clone()),
+            Filter::ILike(k, s) => Filter::ILike(map(k), s.clone()),
+            Filter::NotLike(k, s) => Filter::NotLike(map(k), s.clone()),
+            Filter::In(k, vs) => Filter::In(map(k), vs.clone()),
+            Filter::NotIn(k, vs) => Filter::NotIn(map(k), vs.clone()),
+            Filter::IsNull(k) => Filter::IsNull(map(k)),
+            Filter::IsNotNull(k) => Filter::IsNotNull(map(k)),
+            Filter::Between(k, a, b) => Filter::Between(map(k), a.clone(), b.clone()),
+            Filter::And(fs) => Filter::And(fs.iter().map(|x| walk(x, map)).collect()),
+            Filter::Or(fs) => Filter::Or(fs.iter().map(|x| walk(x, map)).collect()),
+        }
+    }
+
+    walk(f, &map_key)
 }
 
 fn sort_to_bson(sort: &[Sort]) -> Document {
@@ -114,13 +185,133 @@ fn plan_to_pipeline(plan: &LogicalPlan) -> Result<(String, Vec<Document>)> {
         LogicalPlan::Scan { collection } => Ok((collection.clone(), vec![])),
         LogicalPlan::Filter { input, predicate } => {
             let (coll, mut stages) = plan_to_pipeline(input)?;
-            stages.push(doc! { "$match": filter_to_bson(predicate) });
+            // Build base/join context similar to Project
+            let (base_table, base_alias) = leftmost_scan_collection(input)
+                .map(extract_table_and_alias)
+                .unwrap_or_else(|| (String::new(), None));
+            let base_prefixes: Vec<String> = vec![base_alias.clone().unwrap_or_default(), base_table.clone()]
+                .into_iter().filter(|s| !s.is_empty()).collect();
+            let mut join_tables: Vec<String> = Vec::new();
+            fn collect_join_tables(plan: &LogicalPlan, out: &mut Vec<String>) {
+                match plan {
+                    LogicalPlan::Join { input, table, .. } => { out.push(table.clone()); collect_join_tables(input, out); }
+                    LogicalPlan::Filter { input, .. }
+                    | LogicalPlan::Project { input, .. }
+                    | LogicalPlan::Sort { input, .. }
+                    | LogicalPlan::Limit { input, .. }
+                    | LogicalPlan::Aggregate { input, .. } => collect_join_tables(input, out),
+                    _ => {}
+                }
+            }
+            collect_join_tables(input, &mut join_tables);
+            let pred_rew = rewrite_filter_keys(predicate, &base_prefixes, &join_tables);
+            stages.push(doc! { "$match": filter_to_bson(&pred_rew) });
             Ok((coll, stages))
         }
         LogicalPlan::Project { input, fields } => {
             let (coll, mut stages) = plan_to_pipeline(input)?;
+            // Derive base prefixes and list of join tables from the input plan
+            let (base_table, base_alias) = leftmost_scan_collection(input)
+                .map(extract_table_and_alias)
+                .unwrap_or_else(|| (String::new(), None));
+            let base_prefixes: Vec<String> = vec![base_alias.clone().unwrap_or_default(), base_table.clone()]
+                .into_iter().filter(|s| !s.is_empty()).collect();
+
+            // Collect join table identifiers from the input plan so we can map fields like `bank_types.name`
+            fn collect_join_tables(plan: &LogicalPlan, out: &mut Vec<String>) {
+                match plan {
+                    LogicalPlan::Join { input, table, .. } => {
+                        out.push(table.clone());
+                        collect_join_tables(input, out);
+                    }
+                    LogicalPlan::Filter { input, .. }
+                    | LogicalPlan::Project { input, .. }
+                    | LogicalPlan::Sort { input, .. }
+                    | LogicalPlan::Limit { input, .. }
+                    | LogicalPlan::Aggregate { input, .. } => collect_join_tables(input, out),
+                    _ => {}
+                }
+            }
+            let mut join_tables: Vec<String> = Vec::new();
+            collect_join_tables(input, &mut join_tables);
+
+            // Helper to map a logical field path to Mongo field path considering base prefixes and joins
+            let map_path = |p: &str| -> String {
+                let p_trim = p.trim();
+                // Try base prefixes first
+                let stripped = strip_alias_prefix(p_trim, &base_prefixes);
+                if stripped != p_trim {
+                    // Special-case common primary key name 'id' -> Mongo '_id'
+                    if stripped == "id" { return "_id".to_string(); }
+                    return stripped;
+                }
+                // Try join mapping: if the path starts with a joined table name, rewrite to join_<table>.<rest>
+                if let Some((head, tail)) = p_trim.split_once('.') {
+                    for jt in &join_tables {
+                        // Compare head with the raw `table` string's collection token (before any alias)
+                        let (jt_coll, jt_alias) = extract_table_and_alias(jt);
+                        if head == jt || head == jt_coll || jt_alias.as_deref() == Some(head) {
+                            let mapped_tail = if tail == "id" { "_id" } else { tail };
+                            let suffix = sanitize_ident(jt_alias.as_deref().unwrap_or(&jt_coll));
+                            return format!("join_{}.{}", suffix, mapped_tail);
+                        }
+                    }
+                }
+                // Fallback: return as-is
+                p_trim.to_string()
+            };
+
+            // Build $project document with proper aliasing
             let mut proj = Document::new();
-            for f in fields { proj.insert(f, 1); }
+            let mut suppress_mongo_id = false;
+            for f in fields {
+                let f_str = f.as_str();
+                // Support case-insensitive " as " aliasing
+                if let Some((left_l, alias_l)) = f_str.to_lowercase().split_once(" as ") {
+                    // Reconstruct actual alias using original string to preserve case
+                    let alias = if let Some((_l, a)) = f_str.split_once(" as ") {
+                        a.trim().to_string()
+                    } else if let Some((_l, a)) = f_str.split_once(" AS ") {
+                        a.trim().to_string()
+                    } else {
+                        alias_l.trim().to_string()
+                    };
+                    // Left side before AS: use the portion from the original string up to the length of left_l
+                    let left = f_str[..left_l.len()].trim();
+                    let mongo_path = map_path(left);
+                    if alias == "id" {
+                        suppress_mongo_id = true;
+                        // if alias id refers to _id or any ._id, cast to string
+                        if mongo_path == "_id" || mongo_path.ends_with("._id") {
+                            proj.insert("id", doc!{ "$toString": format!("${}", mongo_path) });
+                        } else {
+                            proj.insert("id", format!("${}", mongo_path));
+                        }
+                    } else {
+                        proj.insert(alias, format!("${}", mongo_path));
+                    }
+                } else if f_str.contains('.') {
+                    // Qualified name without alias: strip/translate and alias to last token of original
+                    let path_mapped = map_path(f_str);
+                    let key = f_str.rsplit('.').next().unwrap_or(f_str).trim();
+                    let key_final = if proj.contains_key(key) { format!("fld_{}", key) } else { key.to_string() };
+                    if key_final == "id" && (path_mapped == "_id" || path_mapped.ends_with("._id")) {
+                        suppress_mongo_id = true;
+                        proj.insert("id", doc!{ "$toString": format!("${}", path_mapped) });
+                    } else {
+                        proj.insert(key_final, format!("${}", path_mapped));
+                    }
+                } else {
+                    // Simple field, include directly; map 'id' -> '_id' but keep key as 'id'
+                    if f_str == "id" {
+                        suppress_mongo_id = true;
+                        proj.insert("id", doc!{ "$toString": "$_id" });
+                    } else {
+                        proj.insert(f_str, 1);
+                    }
+                }
+            }
+            if suppress_mongo_id { proj.insert("_id", 0); }
             stages.push(doc! { "$project": proj });
             Ok((coll, stages))
         }
@@ -204,12 +395,16 @@ fn plan_to_pipeline(plan: &LogicalPlan) -> Result<(String, Vec<Document>)> {
             let a_base = base_prefixes.iter().any(|p| a_raw.starts_with(&format!("{}.", p)));
             let b_base = base_prefixes.iter().any(|p| b_raw.starts_with(&format!("{}.", p)));
             let (local_raw, foreign_raw) = if a_base || (!b_base) { (a_raw, b_raw) } else { (b_raw, a_raw) };
-            let local_field = strip_alias_prefix(&local_raw, &base_prefixes);
-            let foreign_field = strip_alias_prefix(&foreign_raw, &join_prefixes);
-            let as_field = format!("join_{}", table);
+            let mut local_field = strip_alias_prefix(&local_raw, &base_prefixes);
+            let mut foreign_field = strip_alias_prefix(&foreign_raw, &join_prefixes);
+            if local_field == "id" { local_field = "_id".to_string(); }
+            if foreign_field == "id" { foreign_field = "_id".to_string(); }
+            // Sanitize $lookup as name using alias if present, else collection name
+            let as_suffix = sanitize_ident(join_alias.as_deref().unwrap_or(&join_table));
+            let as_field = format!("join_{}", as_suffix);
             stages.push(doc!{
                 "$lookup": {
-                    "from": table,
+                    "from": join_table,
                     "localField": local_field,
                     "foreignField": foreign_field,
                     "as": &as_field
@@ -254,16 +449,40 @@ impl DataStore for MongoStore {
 
     async fn insert(&self, collection: &str, docv: JsonValue) -> Result<JsonValue> {
         let coll = self.coll(collection);
-        let bson_doc: Document = mongodb::bson::to_bson(&docv)?.as_document().cloned().unwrap_or_else(Document::new);
-    let res = coll.insert_one(bson_doc).await?;
+        // Map JSON 'id' to Mongo '_id' if present
+        let mut bson_doc: Document = mongodb::bson::to_bson(&docv)?.as_document().cloned().unwrap_or_else(Document::new);
+        if let Some(id_val) = bson_doc.remove("id") {
+            // Only set _id if not already present
+            if !bson_doc.contains_key("_id") {
+                let id_bson = match id_val {
+                    Bson::String(ref s) => try_oid_from_str(s).unwrap_or(id_val),
+                    other => other,
+                };
+                bson_doc.insert("_id", id_bson);
+            }
+        }
+        let res = coll.insert_one(bson_doc).await?;
         Ok(serde_json::json!({ "inserted_id": res.inserted_id }))
     }
 
     async fn update(&self, collection: &str, filter: Option<Filter>, patch: JsonValue) -> Result<u64> {
         let coll = self.coll(collection);
-        let filt = filter.map(|f| filter_to_bson(&f)).unwrap_or_default();
-        let update_doc: Document = mongodb::bson::to_document(&serde_json::json!({ "$set": patch }))?;
-    let res = coll.update_many(filt, update_doc).await?;
+        // Build base prefixes and joins for rewrite context (best-effort: only have collection name here)
+        let base_prefixes: Vec<String> = vec![collection.to_string()];
+        let join_tables: Vec<String> = vec![];
+        let filt = filter
+            .map(|f| rewrite_filter_keys(&f, &base_prefixes, &join_tables))
+            .map(|f| filter_to_bson(&f))
+            .unwrap_or_default();
+        // Remap 'id' key in patch to '_id' if present, but generally _id shouldn't be updated; keep other fields
+        let mut patch_value = patch;
+        if let Some(obj) = patch_value.as_object_mut() {
+            if let Some(id_json) = obj.remove("id") {
+                obj.insert("_id".to_string(), id_json);
+            }
+        }
+        let update_doc: Document = mongodb::bson::to_document(&serde_json::json!({ "$set": patch_value }))?;
+        let res = coll.update_many(filt, update_doc).await?;
         Ok(res.modified_count as u64)
     }
 

@@ -106,7 +106,7 @@ pub fn validate_token(
 
 // Handler untuk login dan generate token
 pub async fn create_token(
-    id_user: i64,
+    id_user: String,
     name: String,
     state: web::Data<AppState>,
     roles: String,
@@ -122,7 +122,7 @@ pub async fn create_token(
         sql_query = sql_query.to_lowercase();
 
         if !sql_query.is_empty() {
-            sql_query = sql_query.replace("{:?}", &id_user.to_string());
+            sql_query = sql_query.replace("{:?}", &id_user);
 
             addjwt = match state.db.query(&sql_query).await {
                 Ok(results) => results
@@ -138,7 +138,7 @@ pub async fn create_token(
     }
 
     let claims = Claims {
-        id: id_user.to_string(),
+        id: id_user,
         nm: name,
         exp: expiration,
         at: Utc::now().timestamp() as usize,

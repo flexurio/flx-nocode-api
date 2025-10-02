@@ -11,7 +11,7 @@ use reqwest::Client;
 use serde_json::{json, Value};
 use zip::ZipArchive;
 
-use crate::rate_limit::{RL_WINDOW_LOGIN, RL_WINDOW_LOGIN_FAIL};
+use crate::{log, rate_limit::{RL_WINDOW_LOGIN, RL_WINDOW_LOGIN_FAIL}};
 use crate::{
     auth::create_token,
     crypt::{decrypt, encrypt},
@@ -116,14 +116,23 @@ pub async fn login(state: web::Data<AppState>, req: actix_web::HttpRequest) -> i
         log_output("QUERY", "POST", "login", format!("AST flx_users where email=? (db={})", state.db_type), true);
     }
     let rows = state.store.query(&q_user).await.unwrap_or_default();
-    let (password_db, id_user, name) = if let Some(row0) = rows.first() {
+    let (password_db, id_user_str, name) = if let Some(row0) = rows.first() {
         let password = row0
             .get("password")
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string()
             .replace(" ", "");
-        let id = row0.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+        // Accept id either as number or string; normalize to String for JWT
+        let id = row0
+            .get("id")
+            .and_then(|v| {
+                if let Some(n) = v.as_i64() { Some(n.to_string()) }
+                else if let Some(s) = v.as_str() { Some(s.to_string()) }
+                else if let Some(obj) = v.as_object() { obj.get("$oid").and_then(|x| x.as_str()).map(|s| s.to_string()) }
+                else { None }
+            })
+            .unwrap_or_default();
         let name = row0
             .get("name")
             .and_then(|v| v.as_str())
@@ -131,7 +140,7 @@ pub async fn login(state: web::Data<AppState>, req: actix_web::HttpRequest) -> i
             .to_string();
         (password, id, name)
     } else {
-        ("".to_string(), 0_i64, "".to_string())
+        ("".to_string(), String::new(), "".to_string())
     };
 
     let decrypt_password = decrypt(state.encrypt_key.clone(), password_db);
@@ -185,10 +194,12 @@ pub async fn login(state: web::Data<AppState>, req: actix_web::HttpRequest) -> i
     }
 
     // Cross-DB: fetch endpoint & role and join in Rust via DataStore
+    // Build roles query using id_users type that matches id_user_str (numeric vs string)
+    let id_roles_filter = if let Ok(n) = id_user_str.parse::<i64>() { QV::I64(n) } else { QV::Str(id_user_str.clone()) };
     let q_roles = QQ::from("flx_roles")
         .select(["endpoint", "role"]) 
-        .r#where(QF::Eq("id_users".into(), QV::I64(id_user)));
-    log_output("QUERY", "core.rs/login", "flx_roles", format!("AST id_users=? ~ {}", id_user), true);
+        .r#where(QF::Eq("id_users".into(), id_roles_filter.clone()));
+    log_output("QUERY", "core.rs/login", "flx_roles", format!("AST id_users=? ~ {}", match id_roles_filter { QV::I64(n) => n.to_string(), QV::Str(s) => s, _ => String::new() }), true);
     let roles_rows = state.store.query(&q_roles).await.unwrap_or_default();
     let roles_data = roles_rows
         .into_iter()
@@ -205,7 +216,7 @@ pub async fn login(state: web::Data<AppState>, req: actix_web::HttpRequest) -> i
         .collect::<Vec<_>>()
         .join(",");
 
-    let token = create_token(id_user, name, state.clone(), roles_data);
+    let token = create_token(id_user_str, name, state.clone(), roles_data);
     HttpResponse::Ok().json(WebResponse {
         success: true,
         message: "Login Success".to_string(),
@@ -306,23 +317,20 @@ pub async fn generate_users(state: Data<AppState>) -> impl Responder {
             .select(["id"]) // expect numeric id if we seed
             .r#where(QF::Eq("email".into(), QV::Str("admin".into())))
             .limit(1);
-        if *crate::ISDEBUG {
-            log_output(
-                "QUERY",
-                "POST",
-                "generate/table/select-flx_users-admin",
-                "AST(mongo) flx_users where email='admin'".to_string(),
-                true,
-            );
-        }
-        let rows = state.store.query(&q_admin).await.unwrap_or_default();
-        let mut id_user: i64 = rows.first()
-            .and_then(|row| row.get("id"))
-            .and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse::<i64>().ok())))
-            .unwrap_or(0);
 
-        if id_user == 0 {
-            id_user = 1;
+        let rows = state.store.query(&q_admin).await.unwrap_or_default();
+
+        let mut id_user_str: String = rows.first()
+            .and_then(|row| row.get("id"))
+            .and_then(|v| {
+                if let Some(n) = v.as_i64() { Some(n.to_string()) }
+                else if let Some(s) = v.as_str() { Some(s.to_string()) }
+                else if let Some(obj) = v.as_object() { obj.get("$oid").and_then(|x| x.as_str()).map(|s| s.to_string()) }
+                else { None }
+            })
+            .unwrap_or_default();
+
+        if id_user_str.is_empty() {
             // create random password, encrypt, then insert admin
             let random_pass = rand::rng().random_range(1000..9999).to_string();
             let encrypt_password = encrypt(state.encrypt_key.clone(), random_pass.clone());
@@ -332,8 +340,8 @@ pub async fn generate_users(state: Data<AppState>) -> impl Responder {
             println!("==========================================");
 
             let now_iso = chrono::Local::now().to_rfc3339();
+            // Do not set explicit id; let Mongo generate _id, then capture it
             let user_doc = serde_json::json!({
-                "id": id_user,
                 "email": "admin",
                 "phone": "5758",
                 "password": encrypt_password,
@@ -343,23 +351,39 @@ pub async fn generate_users(state: Data<AppState>) -> impl Responder {
                 "enabled": true
             });
             if *crate::ISDEBUG { log_output("INSERT", "POST", "generate/mongodb/insert-flx_users-admin", user_doc.to_string(), true); }
-            let result = state.store.insert("flx_users", user_doc).await;
-
-            if result.is_err() {
-                // log_output error message and kill the process
-                log_output("ERROR", "POST", "generate/mongodb/insert-flx_users-admin", format!("Failed to insert admin user: {}", result.err().unwrap()), true);
-                std::process::exit(1);
+            match state.store.insert("flx_users", user_doc).await {
+                Ok(resp) => {
+                    // Expect { inserted_id: ... }
+                    if let Some(v) = resp.get("inserted_id") {
+                        if let Some(s) = v.as_str() { id_user_str = s.to_string(); }
+                        else if let Some(n) = v.as_i64() { id_user_str = n.to_string(); }
+                        else if v.is_object() {
+                            // Try $oid style
+                            if let Some(oid) = v.get("$oid").and_then(|x| x.as_str()) { id_user_str = oid.to_string(); }
+                        }
+                    }
+                }
+                Err(err) => {
+                    // Do not terminate app; log and continue (duplicate key or other)
+                    log_output(
+                        "ERROR",
+                        "POST",
+                        "generate/mongodb/insert-flx_users-admin",
+                        format!("Failed to insert admin user (continuing): {}", err),
+                        true,
+                    );
+                }
             }
 
             // Insert default roles
             let role1 = serde_json::json!({
-                "id_users": id_user,
+                "id_users": id_user_str,
                 "endpoint": "flx_users",
                 "role": 127,
                 "created_at": now_iso
             });
             let role2 = serde_json::json!({
-                "id_users": id_user,
+                "id_users": id_user_str,
                 "endpoint": "flx_roles",
                 "role": 127,
                 "created_at": now_iso
@@ -369,7 +393,7 @@ pub async fn generate_users(state: Data<AppState>) -> impl Responder {
             let _ = state.store.insert("flx_roles", role2).await;
         }
 
-        return HttpResponse::Ok().json(WebResponse {
+    return HttpResponse::Ok().json(WebResponse {
             success: true,
             message: "Generate (Mongo) users & roles".to_string(),
             total_data: 1,

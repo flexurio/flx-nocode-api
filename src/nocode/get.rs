@@ -12,7 +12,7 @@ use crate::{
     rate_limit::RL_WINDOW_GET,
     AppState,
 };
-use crate::storage::ast::{Filter as QF, Query as QQ, Val as QV, Expr as QE};
+use crate::storage::ast::{Filter as QF, Query as QQ, Val as QV, Expr as QE, Join as QJ, JoinKind as QJK};
 use crate::storage::sql_store::SqlStore;
 use std::sync::Arc;
 use std::collections::HashSet;
@@ -557,10 +557,29 @@ pub async fn select(
                             .collect();
                         logical = logical.replace(&pj.name, &safe_val);
                     }
-                    if j.type_join.eq_ignore_ascii_case("left") {
-                        q = q.join_left_expr(j.table.clone(), QE::Raw(logical));
+                    // Try to parse a simple column equality: `<lhs> = <rhs>`
+                    let parse_col_eq = |s: &str| -> Option<(String, String)> {
+                        // split on '=' once
+                        let (l, r) = s.split_once('=')?;
+                        let lhs = l.trim();
+                        let rhs = r.trim();
+                        if lhs.is_empty() || rhs.is_empty() { return None; }
+                        // Require both sides look like column refs (contain a dot)
+                        if !lhs.contains('.') || !rhs.contains('.') { return None; }
+                        Some((lhs.to_string(), rhs.to_string()))
+                    };
+
+                    if let Some((lhs, rhs)) = parse_col_eq(&logical) {
+                        // Structured join expression so Mongo adapter can map ColEq(local, foreign)
+                        if j.type_join.eq_ignore_ascii_case("left") {
+                            q = q.join_left_expr(j.table.clone(), QE::ColEq(lhs, rhs));
+                        } else {
+                            q = q.join_inner_expr(j.table.clone(), QE::ColEq(lhs, rhs));
+                        }
                     } else {
-                        q = q.join_inner_expr(j.table.clone(), QE::Raw(logical));
+                        // Fall back to raw join string; place it in legacy `on` so executors can parse on_raw
+                        let kind = if j.type_join.eq_ignore_ascii_case("left") { QJK::Left } else { QJK::Inner };
+                        q.joins.push(QJ { kind, table: j.table.clone(), on: logical, on_expr: None });
                     }
                 }
             }
