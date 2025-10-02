@@ -260,54 +260,61 @@ pub async fn update(
     
     // legacy set_clause kept only for logging; actual SQL compiled via AST
 
-    // Compile AST update (to run inside our transaction below)
-    let ds = SqlStore::new(state.db.clone(), state.db_type.clone());
-    let filter = Some(QF::Eq("id".into(), QV::Str(id_raw.clone())));
-    let (s_sql, params_compiled) = match ds.preview_update_with(&table_schema.table, filter.as_ref(), &update_fields) {
-        Ok(pair) => pair,
-        Err(e) => {
-            return HttpResponse::InternalServerError().json(WebResponse {
-                success: false,
-                message: format!("Error compiling AST UPDATE: {}", e),
-                total_data: 0,
-                data: Value::Null,
-            });
+    // Compile AST update (SQL only). For MongoDB we'll use DataStore.update with patch_fields
+    let (s_sql, params_compiled) = if state.db_type == "mongodb" {
+        (String::new(), vec![])
+    } else {
+        let ds = SqlStore::new(state.db.clone(), state.db_type.clone());
+        let filter = Some(QF::Eq("id".into(), QV::Str(id_raw.clone())));
+        match ds.preview_update_with(&table_schema.table, filter.as_ref(), &update_fields) {
+            Ok(pair) => pair,
+            Err(e) => {
+                return HttpResponse::InternalServerError().json(WebResponse {
+                    success: false,
+                    message: format!("Error compiling AST UPDATE: {}", e),
+                    total_data: 0,
+                    data: Value::Null,
+                });
+            }
         }
     };
 
     // Preview AST-style update for debug (filter id, patch keys from body + timestamps)
-    if *crate::ISDEBUG {
+    if *crate::ISDEBUG && state.db_type != "mongodb" {
         log_output("QUERY", "PUT(AST)", route.as_str(), s_sql.clone(), true);
         log_output("PARAM", "PUT(AST)", route.as_str(), format!("{:?}", params_compiled), true);
     }
 
     // validation_data moved to run inside the transaction below
-    // Begin transaction via generic store (TxStore)
-    let mut tx = match state.store.begin_tx().await {
-        Ok(t) => t,
-        Err(err) => {
-            return HttpResponse::InternalServerError().json(WebResponse {
-                success: false,
-                message: format!("Error starting transaction: {}", err),
-                total_data: 0,
-                data: Value::Null,
-            });
+    // Begin transaction for SQL backends only
+    let mut tx_opt: Option<Box<dyn crate::storage::traits::TxStore>> = None;
+    if state.db_type != "mongodb" {
+        match state.store.begin_tx().await {
+            Ok(t) => tx_opt = Some(t),
+            Err(err) => {
+                return HttpResponse::InternalServerError().json(WebResponse {
+                    success: false,
+                    message: format!("Error starting transaction: {}", err),
+                    total_data: 0,
+                    data: Value::Null,
+                });
+            }
         }
-    };
+    }
 
     // Run validate_data inside transaction (expects boolean in first column of first row)
-    if table_schema.put.validate_data.contains("SQL:") {
+    if state.db_type != "mongodb" && table_schema.put.validate_data.contains("SQL:") {
         match crate::database::state::build_sql_and_params_from_formula(
             &table_schema.put.validate_data,
             &body,
         ) {
             Ok((built_sql, params)) => {
-                match tx.raw_sql(&built_sql, params).await {
+                match tx_opt.as_mut().unwrap().raw_sql(&built_sql, params).await {
                     Ok(row) => {
                         if !row.is_empty() {
                             let is_valid = row[0].get(0).and_then(|v| v.as_bool()).unwrap_or(true);
                             if !is_valid {
-                                let _ = tx.rollback().await;
+                                let _ = tx_opt.take().unwrap().rollback().await;
                                 return HttpResponse::BadRequest().json(WebResponse {
                                     success: false,
                                     message: "Validation data from table is not valid. Please contact your administrator".to_string(),
@@ -316,7 +323,7 @@ pub async fn update(
                                 });
                             }
                         } else {
-                            let _ = tx.rollback().await;
+                            let _ = tx_opt.take().unwrap().rollback().await;
                             return HttpResponse::BadRequest().json(WebResponse {
                                 success: false,
                                 message: "Validation data from table is empty. Please contact your administrator".to_string(),
@@ -326,7 +333,7 @@ pub async fn update(
                         }
                     }
                     Err(err) => {
-                        let _ = tx.rollback().await;
+                        let _ = tx_opt.take().unwrap().rollback().await;
                         return HttpResponse::BadRequest().json(WebResponse {
                             success: false,
                             message: format!("Error in validation_data: {}", err),
@@ -337,7 +344,7 @@ pub async fn update(
                 }
             }
             Err(e) => {
-                let _ = tx.rollback().await;
+                let _ = tx_opt.take().unwrap().rollback().await;
                 return HttpResponse::BadRequest().json(WebResponse {
                     success: false,
                     message: format!("Error building validation formula: {}", e),
@@ -348,16 +355,16 @@ pub async fn update(
         }
     }
 
-    if table_schema.put.pre_process.contains("SQL:") {
+    if state.db_type != "mongodb" && table_schema.put.pre_process.contains("SQL:") {
         if let Err(err) = crate::database::state::execute_sql_formula_with_txstore(
-            &mut tx,
+            tx_opt.as_mut().unwrap(),
             table_schema.put.pre_process,
             &body,
             route.as_str(),
         )
         .await
         {
-            let _ = tx.rollback().await;
+            let _ = tx_opt.take().unwrap().rollback().await;
             return HttpResponse::InternalServerError().json(WebResponse {
                 success: false,
                 message: format!("Error in pre-process: {}", err),
@@ -405,13 +412,84 @@ pub async fn update(
         // Build WHERE id = ? by calling update with Filter
         use crate::storage::ast::{Filter as QF, Val as QV};
         let filter = Some(QF::Eq("id".into(), QV::Str(id_raw.clone())));
-        if *crate::ISDEBUG {
-            // Preview as UPDATE, reusing compile logic by constructing a Query then logging
-            log_output("QUERY", "PUT", route.as_str(), "AST password update flx_users".to_string(), true);
+        if state.db_type == "mongodb" {
+            if *crate::ISDEBUG {
+                log_output("QUERY", "PUT", route.as_str(), "Mongo password update flx_users".to_string(), true);
+            }
+            match state.store.update("flx_users", filter, doc).await {
+                Ok(_) => {
+                    // Audit
+                    write_audit(&AuditEntry {
+                        at: Local::now().to_rfc3339(),
+                        actor_id: claims.id.clone(),
+                        action: "PUT",
+                        route: &route,
+                        id: Some(&id_raw),
+                        ip: Some(get_client_ip(&req)).as_deref(),
+                    });
+                    return HttpResponse::Ok().json(WebResponse {
+                        success: true,
+                        message: "Data updated successfully".to_string(),
+                        total_data: 1,
+                        data: Value::Null,
+                    });
+                }
+                Err(err) => {
+                    return HttpResponse::InternalServerError().json(WebResponse {
+                        success: false,
+                        message: format!("Error NCO-PUT (mongo): {}", err),
+                        total_data: 0,
+                        data: Value::Null,
+                    });
+                }
+            }
+        } else {
+            if *crate::ISDEBUG {
+                log_output("QUERY", "PUT", route.as_str(), "AST password update flx_users".to_string(), true);
+            }
+            let mut tx = tx_opt.take().unwrap();
+            match tx.update("flx_users", filter, doc).await {
+                Ok(_) => {
+                    let _ = tx.commit().await;
+                    return HttpResponse::Ok().json(WebResponse {
+                        success: true,
+                        message: "Data updated successfully".to_string(),
+                        total_data: 1,
+                        data: Value::Null,
+                    });
+                }
+                Err(err) => {
+                    let _ = tx.rollback().await;
+                    return HttpResponse::InternalServerError().json(WebResponse {
+                        success: false,
+                        message: format!("Error NCO-PUT: {}", err),
+                        total_data: 0,
+                        data: Value::Null,
+                    });
+                }
+            }
         }
-        match tx.update("flx_users", filter, doc).await {
+    }
+
+    // MongoDB main update path (no transaction)
+    if state.db_type == "mongodb" {
+        // Ensure updated_at exists in patch_fields for Mongo (ISO timestamp)
+        let now_iso = Local::now().to_rfc3339();
+        patch_fields.insert("updated_at".to_string(), serde_json::json!(now_iso));
+        // Build filter by id (attempt numeric, fallback to string)
+        let filt_val = if let Ok(n) = id_raw.parse::<i64>() { QV::I64(n) } else { QV::Str(id_raw.clone()) };
+        let filter = Some(QF::Eq("id".into(), filt_val));
+        match state.store.update(&table_schema.table, filter, Value::Object(patch_fields.clone())).await {
             Ok(_) => {
-                let _ = tx.commit().await;
+                // Audit
+                write_audit(&AuditEntry {
+                    at: Local::now().to_rfc3339(),
+                    actor_id: claims.id.clone(),
+                    action: "PUT",
+                    route: &route,
+                    id: Some(&id_raw),
+                    ip: Some(get_client_ip(&req)).as_deref(),
+                });
                 return HttpResponse::Ok().json(WebResponse {
                     success: true,
                     message: "Data updated successfully".to_string(),
@@ -420,10 +498,9 @@ pub async fn update(
                 });
             }
             Err(err) => {
-                let _ = tx.rollback().await;
                 return HttpResponse::InternalServerError().json(WebResponse {
                     success: false,
-                    message: format!("Error NCO-PUT: {}", err),
+                    message: format!("Error NCO-PUT (mongo): {}", err),
                     total_data: 0,
                     data: Value::Null,
                 });
@@ -431,9 +508,11 @@ pub async fn update(
         }
     }
 
+    // SQL path below
+    let mut tx = tx_opt.take().unwrap();
     match tx.raw_sql(&s_sql, params_compiled).await {
         Ok(_) => {
-            if table_schema.put.post_process.contains("SQL:") {
+            if state.db_type != "mongodb" && table_schema.put.post_process.contains("SQL:") {
                 if let Err(err) = crate::database::state::execute_sql_formula_with_txstore(
                     &mut tx,
                     table_schema.put.post_process,
@@ -455,29 +534,31 @@ pub async fn update(
 
             // jika id_new TIDAK SAMA dg "" maka ada perubahan nilai id
             if !id_new.is_empty() {
-                let (is_fk_ok, err_message) = crate::nocode::foreign_key::process_foreign_keys_delete_update_txstore(
-                    "UPDATE", // "DELETE" or "UPDATE"
-                    state.clone(),
-                    route.clone(),
-                    &mut tx,
-                    reference_foreign_keys,
-                    claims.id.clone(),
-                    id_raw.clone(),
-                    id_new, // for UPDATE                        
-                )
-                .await;
+                if state.db_type != "mongodb" {
+                    let (is_fk_ok, err_message) = crate::nocode::foreign_key::process_foreign_keys_delete_update_txstore(
+                        "UPDATE", // "DELETE" or "UPDATE"
+                        state.clone(),
+                        route.clone(),
+                        &mut tx,
+                        reference_foreign_keys,
+                        claims.id.clone(),
+                        id_raw.clone(),
+                        id_new, // for UPDATE                        
+                    )
+                    .await;
 
-                if !is_fk_ok {
-                    let _ = tx.rollback().await;
-                    return HttpResponse::InternalServerError().json(WebResponse {
-                        success: false,
-                        message: format!(
-                            "Transaction rolled back due to foreign key failures: {}",
-                            err_message
-                        ),
-                        total_data: 0,
-                        data: Value::Null,
-                    });
+                    if !is_fk_ok {
+                        let _ = tx.rollback().await;
+                        return HttpResponse::InternalServerError().json(WebResponse {
+                            success: false,
+                            message: format!(
+                                "Transaction rolled back due to foreign key failures: {}",
+                                err_message
+                            ),
+                            total_data: 0,
+                            data: Value::Null,
+                        });
+                    }
                 }
             }
 
