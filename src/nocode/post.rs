@@ -5,6 +5,7 @@ use std::collections::HashSet;
 
 use crate::audit::{write_audit, AuditEntry};
 use crate::helpers::get_client_ip;
+use crate::log;
 use crate::rate_limit::RL_WINDOW_MUTATE;
 use crate::{
     auth::{check_access, get_user_info_from_token, Claims},
@@ -149,17 +150,28 @@ pub async fn insert(
     .collect();
 
     // **1️⃣ Filter kolom yang valid untuk INSERT**
-    let filtered_columns: Vec<&Column> = table_schema
+    let mut filtered_columns: Vec<&Column> = table_schema
         .columns
         .iter()
-        .filter(|col| !col.auto_increment && !skip_columns.contains(col.name.as_str()))
+        .filter(|col| !col.auto_increment && !skip_columns.contains(col.name.as_str()) && table_schema.post.columns.contains(&col.name))
         .collect();
 
-    // **2️⃣ Buat daftar kolom untuk INSERT**
+    // **2️⃣ Buat daftar kolom untuk INSERT, kolom hanya ambil dari nama kolom yang di sebutkan di table_schema.post.columns**
     let mut insert_columns: Vec<&str> = filtered_columns
         .iter()
+        .filter(|col| table_schema.post.columns.contains(&col.name))
         .map(|col| col.name.as_str())
         .collect();
+
+    // check if table_schema.columns.id auto_increment false then insert_columns & filtered_columns must contain "id"
+    if let Some(col) = filtered_columns.iter().find(|c| c.name == "id") {
+        if !col.auto_increment {
+            insert_columns.push("id");
+            filtered_columns.push(col);
+        }
+    }
+
+    log_output("COLUMNS", "INSERT", route.as_str(), format!("{:?}", insert_columns), true);
 
     // Helper: build formula with placeholders and collect params
     fn build_formula_value(raw: &str, body: &Value) -> (String, Vec<DbParam>) {

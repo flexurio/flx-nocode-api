@@ -779,8 +779,6 @@ async fn main() -> std::io::Result<()> {
                     );
                 }
 
-                println!("\n");
-
                 // setup endpoint for each route
                 for route in CONFIG.routes.iter() {
                     let route_get = route.clone();
@@ -1088,8 +1086,9 @@ async fn main() -> std::io::Result<()> {
                             )),
                         );
                     }
-
-                    println!("\n");
+                    if do_log {
+                        println!("\n");
+                    }
                 }
             })
     })

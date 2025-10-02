@@ -19,6 +19,14 @@
                         "auto_increment":false,
                         "nullable":false,
                         "function":"",
+                        "type_data":"varchar(100)",
+                        "encrypt":false
+                },
+                {
+                        "name":"notes",
+                        "auto_increment":false,
+                        "nullable":true,
+                        "function":"",
                         "type_data":"varchar(255)",
                         "encrypt":false
                 },
@@ -83,7 +91,7 @@
                 "ttl":3600
         },
         "get":{
-                "columns":["id", "name", "created_at"],
+                "columns":["id", "name","notes", "created_at"],
                 "parameters":[
                         "name.like",
                         "name.like|id.like",
@@ -101,7 +109,7 @@
                 "validate_data":"",
                 "pre_process":"",
                 "post_process":"",
-                "columns":["name"]
+                "columns":["name", "notes"]
         },
         "put":{
                 "validate_data":"",
