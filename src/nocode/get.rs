@@ -26,14 +26,20 @@ pub async fn select(
     table_schemas: Arc<Vec<TableSchema>>,
     req: actix_web::HttpRequest,
 ) -> impl Responder {
-    // Default cache tenant scope
+    // Default cache tenant scope (use &str to avoid allocation)
     let mut cache_tenant = String::from("public");
     // Per-IP GET rate limit per second
     let ip_key = get_client_ip(&req);
-    let get_limit_i64: i64 = std::env::var("RATE_LIMIT_GET_PER_SEC")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(20);
+    
+    // Cache rate limit config (read once)
+    use once_cell::sync::Lazy;
+    static RATE_LIMIT_GET: Lazy<i64> = Lazy::new(|| {
+        std::env::var("RATE_LIMIT_GET_PER_SEC")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(20)
+    });
+    let get_limit_i64 = *RATE_LIMIT_GET;
     if get_limit_i64 > 0
         && !RL_WINDOW_GET
             .check_and_increment(&format!("get:{}:{}", route, ip_key), get_limit_i64 as u32)

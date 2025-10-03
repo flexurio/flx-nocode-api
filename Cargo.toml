@@ -31,6 +31,7 @@ sqlx = { version = "0.8.6", default-features = false, features = ["runtime-async
 tiberius = { version = "0.12", default-features = false, features = ["chrono", "rustls"] }
 tokio-util = { version = "0.7", features = ["compat"] }
 url = "2.5"
+bb8 = { version = "0.8", optional = true }
 futures-util = "0.3"
 tokio = { version = "1.47", features = ["rt-multi-thread", "macros", "net", "time"] }
 chrono = { version = "0.4.42", features = ["serde"] }
@@ -64,5 +65,5 @@ default = ["mysql", "postgres", "sqlite", "mssql", "mongodb"]
 mysql = ["sqlx/mysql", "sqlx/chrono"]
 postgres = ["sqlx/postgres", "sqlx/chrono"]
 sqlite = ["sqlx/sqlite", "sqlx/chrono"]
-mssql = ["tiberius/chrono"]
+mssql = ["tiberius/chrono", "bb8"]
 mongodb = ["dep:mongodb"]

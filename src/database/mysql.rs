@@ -14,9 +14,14 @@ pub struct MySqlRepo {
 pub fn mysqlrows_to_json(rows: Vec<MySqlRow>) -> Vec<Value> {
     // Pre-allocate with exact capacity to avoid reallocations
     let mut json_array = Vec::with_capacity(rows.len());
+    
+    if rows.is_empty() {
+        return json_array; // Early return for empty result
+    }
 
     for row in rows {
-        let mut obj = Map::with_capacity(row.columns().len()); // Pre-allocate columns
+        let columns_count = row.columns().len();
+        let mut obj = Map::with_capacity(columns_count); // Pre-allocate columns
 
         for column in row.columns() {
             let name = column.name();

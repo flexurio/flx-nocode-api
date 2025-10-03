@@ -57,19 +57,25 @@ pub async fn filter_table_schema(table_schemas: &[TableSchema], route: String) -
     }) {
         let mut table_schema_clone = schema.clone();
 
-        // Pre-calculate mandatory parameters
-        let deleted_at_param = format!("{}.deleted_at", table_schema_clone.table);
-        let params_mandatory = ["page", "sort", "ascending", "limit", "search", "redis"];
-
-        // Use HashSet for O(1) lookup instead of O(n) contains
+        // Build HashSet from existing params for O(1) lookup
         let existing_params: HashSet<String> =
             table_schema_clone.get.parameters.iter().cloned().collect();
 
+        // Pre-calculate mandatory parameters
+        let deleted_at_param = format!("{}.deleted_at", table_schema_clone.table);
+        
+        // Static array, no heap allocation
+        const PARAMS_MANDATORY: &[&str] = &["page", "sort", "ascending", "limit", "search", "redis"];
+        
+        // Reserve capacity upfront to avoid multiple reallocations
+        let potential_additions = PARAMS_MANDATORY.len() + 1;
+        table_schema_clone.get.parameters.reserve(potential_additions);
+        
         if !existing_params.contains(&deleted_at_param) {
             table_schema_clone.get.parameters.push(deleted_at_param);
         }
-
-        for &param in &params_mandatory {
+        
+        for &param in PARAMS_MANDATORY {
             if !existing_params.contains(param) {
                 table_schema_clone.get.parameters.push(param.to_string());
             }

@@ -34,7 +34,9 @@ use database::postgres::PostgresRepo;
 #[cfg(feature = "sqlite")]
 use database::sqlite::SqliteRepo;
 #[cfg(feature = "mssql")]
-use database::mssql::{MssqlRepo, connect_mssql};
+use database::mssql::MssqlRepo;
+#[cfg(all(feature = "mssql", feature = "bb8"))]
+use database::mssql::MssqlConnectionManager;
 mod nocode;
 use nocode::{
     delete::delete, export::export, generate::create_table, get::select, import::import,
@@ -489,11 +491,43 @@ async fn main() -> std::io::Result<()> {
                 }
             };
             let tcp_timeout = acquire_secs;
-            let client = connect_mssql(&url, tcp_timeout).await.map_err(|e| {
-                eprintln!("Failed to connect to MSSQL: {}", e);
-                std::io::Error::new(std::io::ErrorKind::ConnectionRefused, e)
-            })?;
-            Arc::new(MssqlRepo { client: std::sync::Arc::new(tokio::sync::Mutex::new(client)) })
+            
+            #[cfg(feature = "bb8")]
+            {
+                // Use BB8 connection pool for high performance
+                let manager = MssqlConnectionManager::new(url.clone(), tcp_timeout);
+                let pool = bb8::Pool::builder()
+                    .max_size(max_pool)
+                    .build(manager)
+                    .await
+                    .map_err(|e| {
+                        eprintln!("Failed to create MSSQL pool: {}", e);
+                        std::io::Error::new(std::io::ErrorKind::ConnectionRefused, e)
+                    })?;
+                
+                log_output(
+                    "INFO",
+                    "MSSQL",
+                    "CONNECTION POOL",
+                    format!("✅ BB8 pool created with max_size={}", max_pool),
+                    false,
+                );
+                
+                Arc::new(MssqlRepo { pool })
+            }
+            
+            #[cfg(not(feature = "bb8"))]
+            {
+                // Fallback to single client (not recommended for production)
+                let client = connect_mssql(&url, tcp_timeout).await.map_err(|e| {
+                    eprintln!("Failed to connect to MSSQL: {}", e);
+                    std::io::Error::new(std::io::ErrorKind::ConnectionRefused, e)
+                })?;
+                
+                eprintln!("⚠️  WARNING: MSSQL running with single client. Enable 'bb8' feature for better performance!");
+                
+                Arc::new(MssqlRepo { client: std::sync::Arc::new(tokio::sync::Mutex::new(client)) })
+            }
             }
         }
         #[cfg(feature = "mongodb")]

@@ -13,10 +13,16 @@ pub struct SqliteRepo {
 }
 
 pub fn sqliterows_to_json(rows: Vec<SqliteRow>) -> Vec<Value> {
-    let mut json_array = Vec::new();
+    // Pre-allocate with exact capacity
+    let mut json_array = Vec::with_capacity(rows.len());
+    
+    if rows.is_empty() {
+        return json_array;
+    }
 
     for row in rows {
-        let mut obj = Map::new();
+        let columns_count = row.columns().len();
+        let mut obj = Map::with_capacity(columns_count);
 
         for column in row.columns() {
             let name = column.name();
@@ -73,6 +79,7 @@ pub fn sqliterows_to_json(rows: Vec<SqliteRow>) -> Vec<Value> {
         json_array.push(Value::Object(obj));
     }
 
+    json_array.shrink_to_fit();
     json_array
 }
 
