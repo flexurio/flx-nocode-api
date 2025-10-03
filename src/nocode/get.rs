@@ -157,9 +157,13 @@ pub async fn select(
         params_map.remove("redis");
 
     }
-    // Build cache key if redis usage requested or TTL configured
+    
+    // OPTIMIZATION: Auto-enable caching when TTL configured (not just opt-in via ?redis=true)
+    let use_cache = isredis || table_schema.redis.ttl > 0;
+    
+    // Build cache key if caching enabled
     let mut cache_key: Option<String> = None;
-    if isredis || table_schema.redis.ttl > 0 {
+    if use_cache {
         let prefix = build_key_prefix(&cache_tenant, &route);
         // include stable request parameters in the key (sorted by name)
         let mut keys: Vec<_> = params_map
@@ -172,19 +176,27 @@ pub async fn select(
         cache_key = Some(full_key);
     }
 
-    // Try read-through cache when explicitly requested via ?redis=true
-    if isredis {
+    // OPTIMIZATION: Automatic cache read-through (cache-aside pattern)
+    // Try cache first if enabled (either by TTL config or explicit ?redis=true)
+    if use_cache {
         if let Some(ref k) = cache_key {
             if let Ok(Some(cached)) = redis_get_json::<WebResponse>(k).await {
-                // log_output data from redis
                 log_output(
                     "REDIS",
-                    "GET",
+                    "CACHE HIT",
                     &route,
-                    format!("Cache hit for key: {}, {}", k, cached.data),
+                    format!("Key: {}, Records: {}", k, cached.total_data),
                     true,
                 );
                 return HttpResponse::Ok().json(cached);
+            } else {
+                log_output(
+                    "REDIS",
+                    "CACHE MISS",
+                    &route,
+                    format!("Key: {}, will query DB", k),
+                    true,
+                );
             }
         }
     }
@@ -205,9 +217,10 @@ pub async fn select(
             let mut i_page_ast = 1i32;
             let mut order_col_ast = table_schema.get.order_by.clone().join(", ");
             let mut order_type_ast = "ASC".to_string();
-            let mut filters: Vec<QF> = Vec::new();
+            // Pre-allocate with estimated capacity to reduce reallocations (optimization)
+            let mut filters: Vec<QF> = Vec::with_capacity(table_schema.get.parameters.len());
             // collect paramjoin values if provided
-            let mut paramjoins_ast: Vec<ParamJoin> = Vec::new();
+            let mut paramjoins_ast: Vec<ParamJoin> = Vec::with_capacity(4);
             for p in &table_schema.get.parameters {
                 if p.contains("paramjoin") {
                     if let Some(v) = params_map.get(p).and_then(|vv| vv.as_str()) {
@@ -637,13 +650,36 @@ pub async fn select(
                 total_data,
                 data: Value::Array(rows),
             };
-            // Save to cache if TTL configured
-            if let Some(ref k) = cache_key {
-                if table_schema.redis.ttl > 0 {
-                    let ttl = table_schema.redis.ttl as usize;
-                    let _ = redis_set_json(k, &result, Some(ttl)).await;
+            
+            // OPTIMIZATION: Automatic cache write-through when caching enabled
+            if use_cache {
+                if let Some(ref k) = cache_key {
+                    if table_schema.redis.ttl > 0 {
+                        let ttl = table_schema.redis.ttl as usize;
+                        match redis_set_json(k, &result, Some(ttl)).await {
+                            Ok(_) => {
+                                log_output(
+                                    "REDIS",
+                                    "CACHE WRITE",
+                                    route.as_str(),
+                                    format!("Key: {}, TTL: {}s, Records: {}", k, ttl, total_data),
+                                    true,
+                                );
+                            }
+                            Err(e) => {
+                                log_output(
+                                    "ERROR",
+                                    "CACHE WRITE",
+                                    route.as_str(),
+                                    format!("Failed to cache: {}", e),
+                                    false,
+                                );
+                            }
+                        }
+                    }
                 }
             }
+            
             HttpResponse::Ok().json(result)
     }
 

@@ -15,7 +15,6 @@ use once_cell::sync::Lazy;
 use serde_json::Value;
 use std::collections::HashSet;
 use std::fs;
-use std::fs::{create_dir_all, File};
 use std::process::exit;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -841,16 +840,21 @@ async fn main() -> std::io::Result<()> {
 
                 // setup endpoint for each route
                 for route in CONFIG.routes.iter() {
-                    let route_get = route.clone();
-                    let route_trace = route.clone();
-                    let route_patch = route.clone();
-                    let route_post = route.clone();
-                    let route_delete = route.clone();
-                    let route_import = route.clone();
-                    let route_export = route.clone();
-                    let route_put = route.clone();
-                    let route_validate = route.clone();
-                    let route_generate_table = route.clone();
+                    // Use Arc<str> for efficient shared ownership - cheap to clone, reduces heap allocations
+                    let route_arc: Arc<str> = Arc::from(route.as_str());
+                    let port_str = port.to_string(); // Cache port string conversion
+                    
+                    // Clone Arc only when needed (Arc clone is just pointer increment, very cheap)
+                    let route_get = Arc::clone(&route_arc);
+                    let route_trace = Arc::clone(&route_arc);
+                    let route_patch = Arc::clone(&route_arc);
+                    let route_post = Arc::clone(&route_arc);
+                    let route_delete = Arc::clone(&route_arc);
+                    let route_import = Arc::clone(&route_arc);
+                    let route_export = Arc::clone(&route_arc);
+                    let route_put = Arc::clone(&route_arc);
+                    let route_validate = Arc::clone(&route_arc);
+                    let route_generate_table = Arc::clone(&route_arc);
 
                     if do_log {
                         log_output(
@@ -860,8 +864,8 @@ async fn main() -> std::io::Result<()> {
                             format!(
                                 "http://{}:{}/{}",
                                 host.red(),
-                                port.clone().to_string().green(),
-                                route_get.clone().purple()
+                                port_str.green(),
+                                route_get.as_ref().purple()
                             ),
                             false,
                         );
@@ -872,8 +876,8 @@ async fn main() -> std::io::Result<()> {
                             format!(
                                 "http://{}:{}/{}",
                                 host.red(),
-                                port.clone().to_string().green(),
-                                route_post.clone().purple()
+                                port_str.green(),
+                                route_post.as_ref().purple()
                             ),
                             false,
                         );
@@ -884,8 +888,8 @@ async fn main() -> std::io::Result<()> {
                             format!(
                                 "http://{}:{}/{}",
                                 host.red(),
-                                port.clone().to_string().green(),
-                                route_trace.clone().purple()
+                                port_str.green(),
+                                route_trace.as_ref().purple()
                             ),
                             false,
                         );
@@ -896,15 +900,15 @@ async fn main() -> std::io::Result<()> {
                             format!(
                                 "http://{}:{}/{}",
                                 host.red(),
-                                port.clone().to_string().green(),
-                                route_patch.clone().purple()
+                                port_str.green(),
+                                route_patch.as_ref().purple()
                             ),
                             false,
                         );
                     }
 
                     cfg.service(
-                        web::resource((*(route_get.clone())).to_string())
+                        web::resource(route_get.as_ref())
                             // register nocode_get
                             .route(web::get().to(
                                 move |state: web::Data<AppState>,
@@ -913,7 +917,7 @@ async fn main() -> std::io::Result<()> {
                                     select(
                                         state,
                                         parameters,
-                                        route_get.clone(),
+                                        route_get.to_string(),
                                         SCHEMAS.0.clone().into(),
                                         req,
                                     )
@@ -926,7 +930,7 @@ async fn main() -> std::io::Result<()> {
                                       req: actix_web::HttpRequest| {
                                     insert(
                                         state,
-                                        route_post.clone(),
+                                        route_post.to_string(),
                                         SCHEMAS.0.clone().into(),
                                         multipart,
                                         req,
@@ -941,7 +945,7 @@ async fn main() -> std::io::Result<()> {
                                     process(
                                         state,
                                         parameters,
-                                        route_trace.clone(),
+                                        route_trace.to_string(),
                                         SCHEMAS.0.clone().into(),
                                         req,
                                     )
@@ -955,7 +959,7 @@ async fn main() -> std::io::Result<()> {
                                     process_sp(
                                         state,
                                         parameters,
-                                        route_patch.clone(),
+                                        route_patch.to_string(),
                                         SCHEMAS.0.clone().into(),
                                         req,
                                     )
@@ -972,8 +976,8 @@ async fn main() -> std::io::Result<()> {
                             format!(
                                 "http://{}:{}/{}",
                                 host.red(),
-                                port.clone().to_string().green(),
-                                route_delete.clone().purple()
+                                port_str.green(),
+                                route_delete.as_ref().purple()
                             ),
                             false,
                         );
@@ -984,21 +988,21 @@ async fn main() -> std::io::Result<()> {
                             format!(
                                 "http://{}:{}/{}",
                                 host.red(),
-                                port.clone().to_string().green(),
-                                route_put.clone().purple()
+                                port_str.green(),
+                                route_put.as_ref().purple()
                             ),
                             false,
                         );
                     }
 
                     cfg.service(
-                        web::resource(format!("{}/{{id}}", &*route_delete))
+                        web::resource(format!("{}/{{id}}", route_delete.as_ref()))
                             // register delete_nocode
                             .route(web::delete().to(
                                 move |state: web::Data<AppState>,
                                       path: Path<String>,
                                       req: actix_web::HttpRequest| {
-                                    delete(state, route_delete.clone(), SCHEMAS.clone(), path, req)
+                                    delete(state, route_delete.to_string(), SCHEMAS.clone(), path, req)
                                 },
                             ))
                             // register create_nocode
@@ -1009,7 +1013,7 @@ async fn main() -> std::io::Result<()> {
                                       req: actix_web::HttpRequest| {
                                     update(
                                         state,
-                                        route_put.clone(),
+                                        route_put.to_string(),
                                         SCHEMAS.clone(),
                                         multipart,
                                         path,
@@ -1029,21 +1033,21 @@ async fn main() -> std::io::Result<()> {
                             format!(
                                 "http://{}:{}/import/{}",
                                 host.red(),
-                                port.clone().to_string().green(),
-                                route_import.clone().purple()
+                                port_str.green(),
+                                route_import.as_ref().purple()
                             ),
                             false,
                         );
                     }
                     cfg.service(
-                        web::resource(format!("/import/{}", &*route_import))
+                        web::resource(format!("/import/{}", route_import.as_ref()))
                             .route(web::post().to(
                                 move |state: web::Data<AppState>,
                                       multipart: Multipart,
                                       req: actix_web::HttpRequest| {
                                     import(
                                         state,
-                                        route_import.clone(),
+                                        route_import.to_string(),
                                         SCHEMAS.clone(),
                                         multipart,
                                         req,
@@ -1053,7 +1057,7 @@ async fn main() -> std::io::Result<()> {
                     );
 
 
-                    // register import BEFORE the dynamic {id} route to avoid conflicts
+                    // register export endpoint
                     if do_log {
                         log_output(
                             "ENDPOINT",
@@ -1062,21 +1066,21 @@ async fn main() -> std::io::Result<()> {
                             format!(
                                 "http://{}:{}/export/{}",
                                 host.red(),
-                                port.clone().to_string().green(),
-                                route_export.clone().purple()
+                                port_str.green(),
+                                route_export.as_ref().purple()
                             ),
                             false,
                         );
                     }
                     cfg.service(
-                        web::resource(format!("/export/{}", &*route_export))
+                        web::resource(format!("/export/{}", route_export.as_ref()))
                             .route(web::get().to(
                                 move |state: web::Data<AppState>,
                                       multipart: Multipart,
                                       req: actix_web::HttpRequest| {
                                     export(
                                         state,
-                                        route_export.clone(),
+                                        route_export.to_string(),
                                         SCHEMAS.clone(),
                                         multipart,
                                         req,
@@ -1094,20 +1098,20 @@ async fn main() -> std::io::Result<()> {
                             format!(
                                 "http://{}:{}/{}/{}",
                                 host.red(),
-                                port.clone().to_string().green(),
+                                port_str.green(),
                                 "validate".yellow(),
-                                route_validate.clone().purple()
+                                route_validate.as_ref().purple()
                             ),
                             false,
                         );
                     }
                     cfg.service(
-                        web::resource(format!("validate/{}", &*route_validate)).route(
+                        web::resource(format!("validate/{}", route_validate.as_ref())).route(
                             web::get().to(
                                 move |state: web::Data<AppState>, req: actix_web::HttpRequest| {
                                     check_table_design(
                                         state,
-                                        route_validate.clone(),
+                                        route_validate.to_string(),
                                         SCHEMAS.0.clone().into(),
                                         req,
                                     )
@@ -1116,7 +1120,7 @@ async fn main() -> std::io::Result<()> {
                         ),
                     );
 
-                    if route_generate_table != "flx_users" && route_generate_table != "flx_roles" {
+                    if route_generate_table.as_ref() != "flx_users" && route_generate_table.as_ref() != "flx_roles" {
                         if do_log {
                             log_output(
                                 "ENDPOINT",
@@ -1125,20 +1129,20 @@ async fn main() -> std::io::Result<()> {
                                 format!(
                                     "http://{}:{}/{}/{}",
                                     host.red(),
-                                    port.clone().to_string().green(),
+                                    port_str.green(),
                                     "generate/table".yellow(),
-                                    route_generate_table.clone().purple()
+                                    route_generate_table.as_ref().purple()
                                 ),
                                 false,
                             );
                         }
                         cfg.service(
-                            web::resource(format!("generate/table/{}", &*route_generate_table))
+                            web::resource(format!("generate/table/{}", route_generate_table.as_ref()))
                                 .route(web::post().to(
                                 move |state: web::Data<AppState>, req: actix_web::HttpRequest| {
                                     create_table(
                                         state,
-                                        route_generate_table.clone(),
+                                        route_generate_table.to_string(),
                                         SCHEMAS.0.clone().into(),
                                         req,
                                     )

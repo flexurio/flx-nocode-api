@@ -16,13 +16,71 @@ use crate::{
     helpers::{extract_expressions, filter_table_schema, find_column_match, multipart_to_json},
     log::log_output,
     model::{Column, TableSchema, WebResponse},
-    nocode::foreign_key::check_data_foreign_key,
     AppState,
 };
 use chrono::Local;
 use std::sync::Arc;
 use crate::storage::sql_store::{SqlStore, InsertValue};
 use crate::storage::ast::{Query as Q, Filter as F, Val as V};
+
+/// Batch validate foreign keys in a single query for better performance (optimization)
+/// This replaces N sequential DB queries with 1 UNION ALL query
+async fn validate_foreign_keys_batch(
+    state: &Data<AppState>,
+    fk_checks: &[(String, String, String, String)], // (col_name, ref_table, ref_column, value)
+) -> Result<(), String> {
+    if fk_checks.is_empty() {
+        return Ok(());
+    }
+    
+    log_output(
+        "OPTIMIZATION",
+        "FK BATCH CHECK",
+        "POST",
+        format!("Validating {} foreign keys in batch", fk_checks.len()),
+        true,
+    );
+    
+    // Build UNION ALL query for batch validation - much faster than N queries
+    let mut queries = Vec::with_capacity(fk_checks.len());
+    let mut params = Vec::with_capacity(fk_checks.len());
+    
+    for (col_name, ref_table, ref_column, value) in fk_checks {
+        queries.push(format!(
+            "SELECT '{}' as _col, '{}' as _table, EXISTS(SELECT 1 FROM {} WHERE {} = ?) as _valid",
+            col_name, ref_table, ref_table, ref_column
+        ));
+        params.push(DbParam::Str(value.clone()));
+    }
+    
+    let union_sql = queries.join(" UNION ALL ");
+    
+    log_output("QUERY", "FK BATCH", "POST", union_sql.clone(), true);
+    log_output("PARAMS", "FK BATCH", "POST", format!("{:?}", params), true);
+    
+    let results = state.db.query_with_params(&union_sql, params).await
+        .map_err(|e| format!("FK batch validation failed: {}", e))?;
+    
+    // Check all results
+    for row in results {
+        if let Some(valid) = row.get("_valid").and_then(|v| v.as_bool()) {
+            if !valid {
+                let col = row.get("_col").and_then(|v| v.as_str()).unwrap_or("unknown");
+                let tbl = row.get("_table").and_then(|v| v.as_str()).unwrap_or("unknown");
+                log_output(
+                    "ERROR",
+                    "FK VALIDATION",
+                    "POST",
+                    format!("Invalid foreign key: column={}, reference_table={}", col, tbl),
+                    false,
+                );
+                return Err(format!("Invalid foreign key value for column '{}' referencing table '{}'", col, tbl));
+            }
+        }
+    }
+    
+    Ok(())
+}
 
 // NCO-POST
 pub async fn insert(
@@ -152,18 +210,23 @@ pub async fn insert(
     .collect();
 
     // **1️⃣ Filter kolom yang valid untuk INSERT**
-    let mut filtered_columns: Vec<&Column> = table_schema
-        .columns
-        .iter()
-        .filter(|col| !col.auto_increment && !skip_columns.contains(col.name.as_str()) && table_schema.post.columns.contains(&col.name))
-        .collect();
+    // Pre-allocate with estimated capacity (optimization)
+    let mut filtered_columns: Vec<&Column> = Vec::with_capacity(table_schema.post.columns.len());
+    filtered_columns.extend(
+        table_schema
+            .columns
+            .iter()
+            .filter(|col| !col.auto_increment && !skip_columns.contains(col.name.as_str()) && table_schema.post.columns.contains(&col.name))
+    );
 
     // **2️⃣ Buat daftar kolom untuk INSERT, kolom hanya ambil dari nama kolom yang di sebutkan di table_schema.post.columns**
-    let mut insert_columns: Vec<&str> = filtered_columns
-        .iter()
-        .filter(|col| table_schema.post.columns.contains(&col.name))
-        .map(|col| col.name.as_str())
-        .collect();
+    let mut insert_columns: Vec<&str> = Vec::with_capacity(filtered_columns.len() + 2);
+    insert_columns.extend(
+        filtered_columns
+            .iter()
+            .filter(|col| table_schema.post.columns.contains(&col.name))
+            .map(|col| col.name.as_str())
+    );
 
     // check if table_schema.columns.id auto_increment false then insert_columns & filtered_columns must contain "id"
     if let Some(col) = table_schema
@@ -213,13 +276,17 @@ pub async fn insert(
         (sql, params)
     }
 
-    // Param list for INSERT
-    let mut bind_params: Vec<DbParam> = Vec::new();
+    // Param list for INSERT - pre-allocate with estimated capacity (optimization)
+    let mut bind_params: Vec<DbParam> = Vec::with_capacity(filtered_columns.len() + 3);
 
     // **3️⃣ Buat daftar nilai untuk INSERT** (fragment SQL per kolom)
-    let mut doc_map = serde_json::Map::new();
+    let mut doc_map = serde_json::Map::with_capacity(filtered_columns.len() + 3);
     // Collect explicit (column, value) pairs for dialect-aware insert builder
-    let mut insert_fields: Vec<(String, InsertValue)> = Vec::new();
+    let mut insert_fields: Vec<(String, InsertValue)> = Vec::with_capacity(filtered_columns.len() + 3);
+    
+    // Collect FK checks for batch validation (optimization)
+    let mut fk_checks: Vec<(String, String, String, String)> = Vec::new();
+    
     for col in filtered_columns.iter() {
         if col.auto_increment {
             continue;
@@ -261,35 +328,15 @@ pub async fn insert(
                 .map(|v| v.to_string().replace('"', "").replace("null", ""))
                 .unwrap_or_default();
 
-            // check if col.name is equal with foreign key column
+            // Collect FK checks for batch validation instead of sequential queries (optimization)
             for fk in table_schema.foreign_keys.iter() {
-                if fk.column == col.name {
-                    // check if value is valid !
-                    let isok = check_data_foreign_key(
-                        &state,
+                if fk.column == col.name && !value.is_empty() {
+                    fk_checks.push((
+                        col.name.clone(),
                         fk.reference_table.clone(),
                         fk.reference_column.clone(),
                         value.clone(),
-                    )
-                    .await;
-                    if !isok {
-                        log_output(
-                            "ERROR",
-                            "CHECK FOREIGN KEY",
-                            "DATA",
-                            format!("Invalid foreign key value: {}", value),
-                            false,
-                        );
-                        return HttpResponse::BadRequest().json(WebResponse {
-                            success: false,
-                            message: format!(
-                                "Invalid foreign key value: {} from table {}",
-                                value, fk.reference_table
-                            ),
-                            total_data: 0,
-                            data: Value::Null,
-                        });
-                    }
+                    ));
                 }
             }
 
@@ -323,6 +370,18 @@ pub async fn insert(
                 doc_map.insert(col.name.clone(), body.get(&col.name).cloned().unwrap_or(Value::String(String::new())));
                 insert_fields.push((col.name.clone(), InsertValue::Param(DbParam::Str(value))));
             }
+        }
+    }
+
+    // Batch validate all foreign keys in one query (optimization - replaces N queries with 1)
+    if !fk_checks.is_empty() {
+        if let Err(err_msg) = validate_foreign_keys_batch(&state, &fk_checks).await {
+            return HttpResponse::BadRequest().json(WebResponse {
+                success: false,
+                message: err_msg,
+                total_data: 0,
+                data: Value::Null,
+            });
         }
     }
 
