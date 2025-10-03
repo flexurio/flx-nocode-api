@@ -1,12 +1,13 @@
 use actix_multipart::Multipart;
 use actix_web::{web::Data, HttpResponse, Responder};
 use serde_json::Value;
+use regex::Regex;
 use std::collections::HashSet;
-use std::result;
+// use std::result; // unused
 
 use crate::audit::{write_audit, AuditEntry};
 use crate::helpers::get_client_ip;
-use crate::log;
+// use crate::log; // unused
 use crate::rate_limit::RL_WINDOW_MUTATE;
 use crate::{
     auth::{check_access, get_user_info_from_token, Claims},
@@ -21,7 +22,7 @@ use crate::{
 use chrono::Local;
 use std::sync::Arc;
 use crate::storage::sql_store::{SqlStore, InsertValue};
-use crate::storage::ast::{Query as Q, Filter as F};
+use crate::storage::ast::{Query as Q, Filter as F, Val as V};
 
 // NCO-POST
 pub async fn insert(
@@ -572,8 +573,11 @@ pub async fn insert(
         // Insert using document map
         let doc = Value::Object(doc_map.clone());
         match state.store.insert(&table_schema.table, doc).await {
-            Ok(_) => {
-                let id_resp = doc_map.get("id").cloned().unwrap_or(Value::Null);
+            Ok(result) => {
+                // log_output result
+                log_output("INFO", "MONGO INSERT RESULT", route.as_str(), format!("{:?}", result), true);
+                // Try to capture returned id when supported
+                let returned_id = result.get("inserted_id").cloned().unwrap_or(Value::Null).get("$oid").cloned().unwrap_or(Value::Null);
                 // Audit trail
                 write_audit(&AuditEntry {
                     at: Local::now().to_rfc3339(),
@@ -583,11 +587,154 @@ pub async fn insert(
                     id: None,
                     ip: Some(get_client_ip(&req)).as_deref(),
                 });
+
+                body = body.as_object_mut().map(|map| {
+                    map.insert("id_new".to_string(), returned_id.clone());
+                    Value::Object(map.clone())
+                }).unwrap();
+
+                if table_schema.post.post_process.contains("SQL:") {
+                    // Execute a simplified MongoDB equivalent of a SQL SELECT post_process.
+                    // We support basic patterns like: SQL:SELECT <cols> FROM <table> WHERE <col> = {request.x}
+                    match crate::database::state::build_sql_and_params_from_formula(
+                        &table_schema.post.post_process,
+                        &body,
+                    ) {
+                        Ok((built_sql, params)) => {
+                            // Try to parse a simple SELECT ... FROM ... [WHERE ...] statement
+                            // Note: we intentionally keep this conservative; unsupported forms are no-ops.
+                            let re = Regex::new(
+                                r"(?is)^\s*select\s+(?P<cols>.+?)\s+from\s+(?P<table>[A-Za-z_][A-Za-z0-9_]*)\s*(?:where\s+(?P<where>.+?))?\s*;?\s*$",
+                            )
+                            .unwrap();
+                            if let Some(cap) = re.captures(&built_sql) {
+                                let table = cap.name("table").unwrap().as_str().to_string();
+                                let cols_raw = cap.name("cols").unwrap().as_str().trim().to_string();
+                                let where_raw = cap.name("where").map(|m| m.as_str().trim().to_string());
+
+                                let mut q = Q::from(table.clone());
+                                if cols_raw != "*" {
+                                    let cols: Vec<&str> = cols_raw
+                                        .split(',')
+                                        .map(|s| s.trim())
+                                        .filter(|s| !s.is_empty())
+                                        .collect();
+                                    if !cols.is_empty() {
+                                        q = q.select(cols);
+                                    }
+                                }
+
+                                if let Some(w) = where_raw {
+                                    // Support a single predicate in the form: <col> = ? | <col> like ? | <col> ilike ?
+                                    // If multiple predicates exist, take the first recognizable one.
+                                    let w_eq = Regex::new(r"(?i)^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\?\s*$").unwrap();
+                                    let w_like = Regex::new(r"(?i)^\s*([A-Za-z_][A-Za-z0-9_]*)\s+like\s*\?\s*$").unwrap();
+                                    let w_ilike = Regex::new(r"(?i)^\s*([A-Za-z_][A-Za-z0-9_]*)\s+ilike\s*\?\s*$").unwrap();
+
+                                    // In case of compound conditions (AND ...), try the first recognizable segment
+                                    let re_and = Regex::new(r"(?i)\s+AND\s+").unwrap();
+                                    let first_part = re_and
+                                        .split(&w)
+                                        .next()
+                                        .unwrap_or(w.as_str())
+                                        .trim()
+                                        .to_string();
+
+                                    let mut applied_filter = false;
+                                    if let Some(capw) = w_eq.captures(first_part.trim()) {
+                                        let col = capw.get(1).unwrap().as_str().to_string();
+                                        if let Some(p) = params.first() {
+                                            let val = match p.clone() {
+                                                crate::database::state::DbParam::I64(n) => V::I64(n),
+                                                crate::database::state::DbParam::F64(n) => V::F64(n),
+                                                crate::database::state::DbParam::Bool(b) => V::Bool(b),
+                                                crate::database::state::DbParam::Str(s) => V::Str(s),
+                                                crate::database::state::DbParam::Null => V::Null,
+                                            };
+                                            q = q.r#where(F::Eq(col, val));
+                                            applied_filter = true;
+                                        }
+                                    } else if let Some(capw) = w_ilike.captures(first_part.trim()) {
+                                        let col = capw.get(1).unwrap().as_str().to_string();
+                                        if let Some(p) = params.first() {
+                                            if let crate::database::state::DbParam::Str(s) = p.clone() {
+                                                q = q.r#where(F::ILike(col, s));
+                                                applied_filter = true;
+                                            }
+                                        }
+                                    } else if let Some(capw) = w_like.captures(first_part.trim()) {
+                                        let col = capw.get(1).unwrap().as_str().to_string();
+                                        if let Some(p) = params.first() {
+                                            if let crate::database::state::DbParam::Str(s) = p.clone() {
+                                                q = q.r#where(F::Like(col, s));
+                                                applied_filter = true;
+                                            }
+                                        }
+                                    }
+
+                                    if !applied_filter {
+                                        // Not a supported WHERE form; log and continue
+                                        log_output(
+                                            "WARN",
+                                            "POST(MONGO) post_process",
+                                            route.as_str(),
+                                            format!("Unsupported WHERE clause for Mongo: {}", w),
+                                            false,
+                                        );
+                                    }
+                                }
+
+                                // Execute via DataStore (Mongo adapter). Ignore result; log errors only.
+                                match state.store.query(&q).await {
+                                    Ok(_rows) => {
+                                        if *crate::ISDEBUG {
+                                            log_output(
+                                                "INFO",
+                                                "POST(MONGO) post_process",
+                                                route.as_str(),
+                                                "Executed SELECT-equivalent on Mongo".to_string(),
+                                                true,
+                                            );
+                                        }
+                                    }
+                                    Err(e) => {
+                                        log_output(
+                                            "ERROR",
+                                            "POST(MONGO) post_process",
+                                            route.as_str(),
+                                            format!("Error executing Mongo post_process: {}", e),
+                                            false,
+                                        );
+                                    }
+                                }
+                            } else {
+                                // Non-SELECT forms are not supported on Mongo; just log.
+                                log_output(
+                                    "WARN",
+                                    "POST(MONGO) post_process",
+                                    route.as_str(),
+                                    "Only simple SELECT post_process is supported on Mongo".to_string(),
+                                    false,
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            log_output(
+                                "ERROR",
+                                "POST(MONGO) post_process",
+                                route.as_str(),
+                                format!("Error building SQL formula for Mongo: {}", e),
+                                false,
+                            );
+                        }
+                    }
+                }
+
                 return HttpResponse::Ok().json(WebResponse {
                     success: true,
                     message: "Data inserted".to_string(),
                     total_data: 1,
-                    data: serde_json::json!({ "id": id_resp }),
+                    data: serde_json::json!({ "id": returned_id }),
                 });
             }
             Err(err) => {
@@ -627,8 +774,6 @@ pub async fn insert(
                     returned_id = None;
                 }
             }
-            // log_output body
-            log_output("INFO", "BODY", route.as_str(), format!("{:?}", body), true);
 
             if returned_id.is_none() {
                 returned_id = doc_map.get("id").cloned();
@@ -639,11 +784,6 @@ pub async fn insert(
                 Value::Object(map.clone())
             }).unwrap();
             
-            // log_output body
-            log_output("INFO", "BODY", route.as_str(), format!("{:?}", body), true);
-
-            // log_output returned_id
-            log_output("INFO", "RETURNED ID", route.as_str(), format!("{:?}", returned_id), true);
 
             if state.db_type != "mongodb" && table_schema.post.post_process.contains("SQL:") {
                 if let Err(err) = crate::database::state::execute_sql_formula_with_txstore(
