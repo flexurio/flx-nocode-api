@@ -186,7 +186,16 @@ pub async fn select(
     // AST path (now supports MSSQL, JOINs, GROUP BY, HAVING, and paramjoin)
     {
             // Build AST query
-            let mut i_limit_ast = 100i32;
+            // Tuneable limits via env to control memory usage per request
+            let limit_default_env: i32 = std::env::var("LIMIT_DEFAULT")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(200);
+            let limit_max_env: i32 = std::env::var("LIMIT_MAX")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(2000);
+            let mut i_limit_ast = limit_default_env;
             let mut i_page_ast = 1i32;
             let mut order_col_ast = table_schema.get.order_by.clone().join(", ");
             let mut order_type_ast = "ASC".to_string();
@@ -232,7 +241,11 @@ pub async fn select(
                             order_type_ast = if value_str.eq_ignore_ascii_case("true") { "ASC".into() } else { "DESC".into() };
                         }
                         "limit" => {
-                            i_limit_ast = value_str.parse::<i32>().ok().map(|v| v.clamp(1, 1000)).unwrap_or(100);
+                            i_limit_ast = value_str
+                                .parse::<i32>()
+                                .ok()
+                                .map(|v| v.clamp(1, limit_max_env))
+                                .unwrap_or(limit_default_env);
                         }
                         p if p.contains("paramjoin") => {
                             // handled via join logical substitution below

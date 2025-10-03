@@ -4,6 +4,7 @@ use actix_multipart::Multipart;
 use actix_web::dev::{Service, ServiceRequest};
 use actix_web::web::Path;
 use actix_web::{web, App, HttpResponse, HttpServer};
+use actix_web::middleware::Compress;
 use actix_web::middleware::Condition;
 use auth::validate_token;
 use colored::Colorize;
@@ -699,6 +700,8 @@ async fn main() -> std::io::Result<()> {
                     .unwrap_or(false),
                 cors,
             ))
+            // Enable response compression to reduce memory/bandwidth
+            .wrap(Compress::default())
             .configure(|cfg: &mut web::ServiceConfig| {
                 let static_loc =
                     std::env::var("LOC_STATIC").unwrap_or_else(|_| "static".to_string());
@@ -1120,6 +1123,12 @@ async fn main() -> std::io::Result<()> {
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(1),
+    )
+    .max_connections(
+        env::var("HTTP_MAX_CONNECTIONS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(25000)
     )
     .client_request_timeout(std::time::Duration::from_secs(30)) // 30 second timeout
     .client_disconnect_timeout(std::time::Duration::from_secs(5)) // 5 second disconnect timeout
