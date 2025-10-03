@@ -1,4 +1,4 @@
-use std::{error::Error, fs::File, io, path::Path, result};
+use std::{error::Error, fs::File, io, path::Path};
 
 use actix_multipart::Multipart;
 use actix_web::{
@@ -11,7 +11,7 @@ use reqwest::Client;
 use serde_json::{json, Value};
 use zip::ZipArchive;
 
-use crate::{log, rate_limit::{RL_WINDOW_LOGIN, RL_WINDOW_LOGIN_FAIL}};
+use crate::rate_limit::{RL_WINDOW_LOGIN, RL_WINDOW_LOGIN_FAIL};
 use crate::{
     auth::create_token,
     crypt::{decrypt, encrypt},
@@ -23,7 +23,7 @@ use crate::{
 use crate::storage::ast::{Filter as QF, Query as QQ, Val as QV};
 use crate::storage::sql_store::SqlStore;
 use crate::storage::prelude::{Ddl, CreateTable, ColumnDef, ColumnType, TableConstraint, DefaultExpr, ForeignAction};
-use crate::storage::traits::DataStore;
+// removed unused import: DataStore trait not needed in scope for method calls on trait objects
 
 pub async fn login(state: web::Data<AppState>, req: actix_web::HttpRequest) -> impl Responder {
     // Rate limit by IP (fixed window) — allow disabling with 0 or -1

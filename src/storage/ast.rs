@@ -63,6 +63,7 @@ pub struct Query {
     pub aggs: Vec<Agg>,              // aggregate functions with aliases
 }
 
+#[allow(dead_code)]
 impl Query {
     pub fn from<S: Into<String>>(collection: S) -> Self { Self { collection: collection.into(), ..Default::default() } }
     pub fn select<I, S2>(mut self, fields: I) -> Self where I: IntoIterator<Item = S2>, S2: Into<String> { self.projection = fields.into_iter().map(Into::into).collect(); self }

@@ -1,4 +1,4 @@
-#![cfg(feature = "mongodb")]
+// cfg is already applied from storage/mod.rs; avoid duplicated attribute for clippy
 
 use async_trait::async_trait;
 use serde_json::Value as JsonValue;
@@ -504,6 +504,7 @@ impl DataStore for MongoStore {
     }
 }
 
+#[allow(dead_code)]
 pub struct MongoTxStore {
     store: MongoStore,
 }
