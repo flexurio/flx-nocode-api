@@ -151,6 +151,7 @@ pub enum LogicalPlan {
 impl Query {
     /// Lower the high-level Query into a storage-agnostic LogicalPlan.
     /// This preserves the order of operations commonly used by executors.
+    #[allow(dead_code)]
     pub fn to_logical_plan(&self) -> LogicalPlan {
         // Start with a Scan over the base collection
         let mut plan = LogicalPlan::Scan { collection: self.collection.clone() };

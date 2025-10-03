@@ -381,7 +381,7 @@ async fn main() -> std::io::Result<()> {
             #[cfg(not(feature = "postgres"))]
             {
                 eprintln!("Feature 'postgres' not enabled at compile time");
-                return Err(std::io::Error::new(std::io::ErrorKind::Other, "postgres feature disabled"));
+                return Err(std::io::Error::other("postgres feature disabled"));
             }
             #[cfg(feature = "postgres")]
             {
@@ -421,7 +421,7 @@ async fn main() -> std::io::Result<()> {
             #[cfg(not(feature = "sqlite"))]
             {
                 eprintln!("Feature 'sqlite' not enabled at compile time");
-                return Err(std::io::Error::new(std::io::ErrorKind::Other, "sqlite feature disabled"));
+                return Err(std::io::Error::other("sqlite feature disabled"));
             }
             #[cfg(feature = "sqlite")]
             {
@@ -442,11 +442,11 @@ async fn main() -> std::io::Result<()> {
             let db_path = std::path::Path::new(&path_db);
 
             if let Some(parent) = db_path.parent() {
-                create_dir_all(parent)?;
+                std::fs::create_dir_all(parent)?;
             }
 
             if !db_path.exists() {
-                File::create(db_path)?;
+                std::fs::File::create(db_path)?;
                 println!("File {} berhasil dibuat.", db_path.display());
             }
 
@@ -472,7 +472,7 @@ async fn main() -> std::io::Result<()> {
             #[cfg(not(feature = "mssql"))]
             {
                 eprintln!("Feature 'mssql' not enabled at compile time");
-                return Err(std::io::Error::new(std::io::ErrorKind::Other, "mssql feature disabled"));
+                return Err(std::io::Error::other("mssql feature disabled"));
             }
             #[cfg(feature = "mssql")]
             {
