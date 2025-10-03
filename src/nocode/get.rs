@@ -46,7 +46,6 @@ pub async fn select(
         });
     }
     if !state.route_publics.contains(&route) {
-        println!("Route: {}", route);
         
         let claims = match get_user_info_from_token(req, state.clone()) {
             Ok(c) => c,
@@ -59,8 +58,6 @@ pub async fn select(
                 });
             }
         };
-
-        println!("Claims: {:?}", claims);
 
         // Capture tenant for cache key scoping
         if !claims.id.is_empty() {
@@ -148,10 +145,7 @@ pub async fn select(
 
     // check if in parameters contain redis 
     if params_map_awal.contains_key("redis"){
-        println!("Ada redis");
         if params_map_awal.get("redis").unwrap() == &Value::Bool(true) || params_map_awal.get("redis").unwrap() == &Value::String("true".to_string()) {
-            // if redis is true, try to get from redis
-            println!("Using redis ------- ");
             isredis = true;
         }
         params_map.remove("redis");
@@ -187,10 +181,7 @@ pub async fn select(
                 return HttpResponse::Ok().json(cached);
             }
         }
-    } else {
-        println!("Not using redis");
     }
-    println!("Params map outer remove redis: {:?}", params_map);
 
     // AST path (now supports MSSQL, JOINs, GROUP BY, HAVING, and paramjoin)
     {
@@ -269,9 +260,6 @@ pub async fn select(
                             // OR across multiple columns
                             let mut ors: Vec<QF> = Vec::new();
                             for part in p.split('|') {
-                                println!("Part: {}", part);
-                                println!("Value str: {}", value_str);
-                                println!("Table: {}", table_schema.table);
                                 let (column, operator, val) = split_column_operator(part, &table_schema.table, &value_str);
                                 let f = match operator.as_str() {
                                     "=" => QF::Eq(column, to_val(&val)),

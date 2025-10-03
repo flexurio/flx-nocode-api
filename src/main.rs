@@ -20,6 +20,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use std::env;
+use std::time::Duration;
 
 mod auth;
 mod crypt;
@@ -323,6 +324,16 @@ async fn main() -> std::io::Result<()> {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(5);
+    // Optional pool tunings
+    let min_pool: Option<u32> = env::var("MIN_POOL").ok().and_then(|s| s.parse().ok());
+    let max_lifetime: Option<Duration> = env::var("POOL_MAX_LIFETIME_SECS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .map(Duration::from_secs);
+    let idle_timeout: Option<Duration> = env::var("POOL_IDLE_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .map(Duration::from_secs);
     let db_repo: Arc<dyn DbRepository> = match db_type.as_str() {
         "mysql" => {
             #[cfg(not(feature = "mysql"))]
@@ -347,9 +358,13 @@ async fn main() -> std::io::Result<()> {
             };
 
             // Optimized MySQL connection pool with PoolOptions
-            let pool = sqlx::mysql::MySqlPoolOptions::new()
+            let mut opts = sqlx::mysql::MySqlPoolOptions::new()
                 .max_connections(max_pool)
-                .acquire_timeout(std::time::Duration::from_secs(acquire_secs))
+                .acquire_timeout(Duration::from_secs(acquire_secs));
+            if let Some(min) = min_pool { opts = opts.min_connections(min); }
+            if let Some(d) = max_lifetime { opts = opts.max_lifetime(d); }
+            if let Some(d) = idle_timeout { opts = opts.idle_timeout(d); }
+            let pool = opts
                 .connect(&url)
                 .await
                 .map_err(|e| {
@@ -383,9 +398,13 @@ async fn main() -> std::io::Result<()> {
             };
 
             // Optimized PostgreSQL connection pool with PoolOptions
-            let pool = sqlx::postgres::PgPoolOptions::new()
+            let mut opts = sqlx::postgres::PgPoolOptions::new()
                 .max_connections(max_pool)
-                .acquire_timeout(std::time::Duration::from_secs(acquire_secs))
+                .acquire_timeout(Duration::from_secs(acquire_secs));
+            if let Some(min) = min_pool { opts = opts.min_connections(min); }
+            if let Some(d) = max_lifetime { opts = opts.max_lifetime(d); }
+            if let Some(d) = idle_timeout { opts = opts.idle_timeout(d); }
+            let pool = opts
                 .connect(&url)
                 .await
                 .map_err(|e| {
@@ -430,9 +449,13 @@ async fn main() -> std::io::Result<()> {
             }
 
             // Optimized SQLite connection with PoolOptions
-            let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            let mut opts = sqlx::sqlite::SqlitePoolOptions::new()
                 .max_connections(max_pool)
-                .acquire_timeout(std::time::Duration::from_secs(acquire_secs))
+                .acquire_timeout(Duration::from_secs(acquire_secs));
+            if let Some(min) = min_pool { opts = opts.min_connections(min); }
+            if let Some(d) = max_lifetime { opts = opts.max_lifetime(d); }
+            if let Some(d) = idle_timeout { opts = opts.idle_timeout(d); }
+            let pool = opts
                 .connect(&url)
                 .await
                 .map_err(|e| {
