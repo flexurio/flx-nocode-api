@@ -318,7 +318,7 @@ async fn main() -> std::io::Result<()> {
     let max_pool: u32 = env::var("MAX_POOL")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(10);
+        .unwrap_or(100);
     let acquire_secs: u64 = env::var("CONNECT_TIMEOUT")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -1098,7 +1098,6 @@ async fn main() -> std::io::Result<()> {
             .and_then(|s| s.parse().ok())
             .unwrap_or(1),
     )
-    .max_connections(25000) // Limit concurrent connections
     .client_request_timeout(std::time::Duration::from_secs(30)) // 30 second timeout
     .client_disconnect_timeout(std::time::Duration::from_secs(5)) // 5 second disconnect timeout
     .bind((host, port))

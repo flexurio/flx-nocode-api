@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use crate::database::state::{DbParam, DbRepository};
-use crate::storage::ast::{Filter, Query, Val, JoinKind, Expr};
+use crate::storage::ast::{Filter, Query, Val, JoinKind, Expr, Agg, AggFunc};
 use crate::storage::traits::{BackendCapabilities, DataStore, TxStore};
 use crate::storage::ddl::*;
 
@@ -903,17 +903,38 @@ fn compile_expr_for(db_type: &str, e: &Expr, params: &mut Vec<DbParam>, idx: &mu
     }
 }
 
+fn render_agg_sql(a: &Agg) -> String {
+    match &a.func {
+        AggFunc::CountAll => format!("COUNT(*) AS {}", a.alias),
+        AggFunc::Count(f) => format!("COUNT({}) AS {}", f, a.alias),
+        AggFunc::Sum(f) => format!("SUM({}) AS {}", f, a.alias),
+        AggFunc::Avg(f) => format!("AVG({}) AS {}", f, a.alias),
+        AggFunc::Min(f) => format!("MIN({}) AS {}", f, a.alias),
+        AggFunc::Max(f) => format!("MAX({}) AS {}", f, a.alias),
+    }
+}
+
 fn compile_query_with_dialect(db_type: &str, q: &Query) -> (String, Vec<DbParam>) {
     let mut sql = String::new();
     let mut params = Vec::<DbParam>::new();
     let mut idx = 0usize;
 
-    if q.projection.is_empty() {
-        sql.push_str(&format!("SELECT * FROM {}", q.collection));
+    // Build SELECT list: honor explicit projection if provided; otherwise, derive from group_by/aggs or fallback to *
+    let select_list = if !q.projection.is_empty() {
+        q.projection.join(",")
+    } else if !q.aggs.is_empty() || !q.group_by.is_empty() {
+        let mut cols: Vec<String> = Vec::new();
+        if !q.group_by.is_empty() {
+            cols.extend(q.group_by.clone());
+        }
+        if !q.aggs.is_empty() {
+            cols.extend(q.aggs.iter().map(render_agg_sql));
+        }
+        if cols.is_empty() { "*".to_string() } else { cols.join(",") }
     } else {
-        let cols = q.projection.join(",");
-        sql.push_str(&format!("SELECT {} FROM {}", cols, q.collection));
-    }
+        "*".to_string()
+    };
+    sql.push_str(&format!("SELECT {} FROM {}", select_list, q.collection));
 
     if !q.joins.is_empty() {
         for j in &q.joins {
@@ -1093,5 +1114,37 @@ mod tests {
         assert!(sql.contains("INNER JOIN customers c ON o.customer_id = c.id"));
         assert!(sql.contains("GROUP BY o.customer_id"));
         assert!(sql.contains("HAVING SUM(o.total) > $1"));
+    }
+
+    #[tokio::test]
+    async fn compiles_aggs_with_group_by_into_select() {
+        let repo: Arc<dyn DbRepository> = Arc::new(MockRepo);
+        let store = SqlStore::new(repo, "postgres".to_string());
+        use crate::storage::ast::{Query as Q};
+        let q = Q::from("orders o")
+            .group_by(["o.customer_id"]) 
+            .agg_count_all("order_count")
+            .agg_sum("amount_sum", "o.total");
+        let rows = store.query(&q).await.unwrap();
+        let first = rows.first().unwrap();
+        let sql = first.get("sql").and_then(|v| v.as_str()).unwrap();
+        assert!(sql.contains("SELECT o.customer_id,COUNT(*) AS order_count,SUM(o.total) AS amount_sum FROM orders o"));
+        assert!(sql.contains("GROUP BY o.customer_id"));
+    }
+
+    #[tokio::test]
+    async fn compiles_global_aggs_into_select_without_group_by() {
+        let repo: Arc<dyn DbRepository> = Arc::new(MockRepo);
+        let store = SqlStore::new(repo, "mysql".to_string());
+        use crate::storage::ast::Query as Q;
+        let q = Q::from("orders")
+            .agg_avg("avg_total", "total")
+            .agg_max("max_total", "total");
+        let rows = store.query(&q).await.unwrap();
+        let first = rows.first().unwrap();
+        let sql = first.get("sql").and_then(|v| v.as_str()).unwrap();
+        assert!(sql.contains("SELECT AVG(total) AS avg_total,MAX(total) AS max_total FROM orders"));
+        // No GROUP BY expected
+        assert!(!sql.contains("GROUP BY"));
     }
 }
