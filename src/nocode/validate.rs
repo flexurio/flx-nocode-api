@@ -25,7 +25,7 @@ pub async fn check_table_design(
             Err(_) => {
                 return HttpResponse::Unauthorized().json(WebResponse {
                     success: false,
-                    message: "Invalid token".to_string(),
+                    message: crate::constants::ERR_INVALID_TOKEN.to_string(),
                     total_data: 0,
                     data: Value::Null,
                 });
@@ -35,7 +35,7 @@ pub async fn check_table_design(
         if !check_access(&claims, &route, "execute") {
             return HttpResponse::Unauthorized().json(WebResponse {
                 success: false,
-                message: "Unauthorized".to_string(),
+                message: crate::constants::ERR_UNAUTHORIZED.to_string(),
                 total_data: 0,
                 data: Value::Null,
             });

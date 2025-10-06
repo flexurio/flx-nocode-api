@@ -98,7 +98,7 @@ pub async fn insert(
             Err(_) => {
                 return HttpResponse::Unauthorized().json(WebResponse {
                     success: false,
-                    message: "Invalid token".to_string(),
+                    message: crate::constants::ERR_INVALID_TOKEN.to_string(),
                     total_data: 0,
                     data: Value::Null,
                 });
@@ -109,7 +109,7 @@ pub async fn insert(
         if !check_access(&claims, &route, "write") {
             return HttpResponse::Unauthorized().json(WebResponse {
                 success: false,
-                message: "Unauthorized".to_string(),
+                message: crate::constants::ERR_UNAUTHORIZED.to_string(),
                 total_data: 0,
                 data: Value::Null,
             });
@@ -405,14 +405,21 @@ pub async fn insert(
 
     if !function_id_split.is_empty() {
         // Build parts without leading slash; join with '/'
-        let mut parts: Vec<String> = Vec::new();
+        let mut parts: Vec<String> = Vec::with_capacity(function_id_split.len());
+        
+        // Cache datetime to avoid multiple Utc::now() calls
+        let now = chrono::Utc::now();
+        let year = now.format("%Y").to_string();
+        let month = now.format("%m").to_string();
+        let day = now.format("%d").to_string();
+        
         for token in function_id_split.iter() {
             if token == "%Y" {
-                parts.push(chrono::Utc::now().format("%Y").to_string());
+                parts.push(year.clone());
             } else if token == "%m" {
-                parts.push(chrono::Utc::now().format("%m").to_string());
+                parts.push(month.clone());
             } else if token == "%d" {
-                parts.push(chrono::Utc::now().format("%d").to_string());
+                parts.push(day.clone());
             } else if token.contains("ID") {
                 // Numeric suffix with zero-padding based on token, e.g. 000ID -> width 3
                 let s_append = token.replace("ID", "");

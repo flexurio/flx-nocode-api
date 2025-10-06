@@ -49,6 +49,7 @@ use model::TableSchema;
 use crate::auth::ClaimsConverter;
 use crate::model::{ReferenceForeignKey, ReferenceForeignKeyAction};
 mod audit;
+mod constants;
 mod helpers;
 mod log;
 mod rate_limit;
@@ -552,17 +553,17 @@ async fn main() -> std::io::Result<()> {
         }
     };
 
-    // Inline per-dialect datetime SQL function
-    let datetime_now: String = match db_type.as_str() {
-        "mysql" => "NOW()".to_string(),
-        "postgres" => "NOW()".to_string(),
-        "sqlite" => "CURRENT_TIMESTAMP".to_string(),
-        "mssql" => "GETDATE()".to_string(),
-        _ => "CURRENT_TIMESTAMP".to_string(),
+    // Inline per-dialect datetime SQL function - use static str to avoid allocation
+    let datetime_now: &'static str = match db_type.as_str() {
+        crate::constants::DB_MYSQL => crate::constants::DATETIME_MYSQL,
+        crate::constants::DB_POSTGRES => crate::constants::DATETIME_POSTGRES,
+        crate::constants::DB_SQLITE => crate::constants::DATETIME_SQLITE,
+        crate::constants::DB_MSSQL => crate::constants::DATETIME_MSSQL,
+        _ => crate::constants::DATETIME_DEFAULT,
     };
 
     let query_converter = QueryConverter {
-        datetime_now: datetime_now.clone(),
+        datetime_now: datetime_now.to_string(),
     };
 
     let whitelist_ips: Vec<String> = env::var("WHITE_LIST_IP")

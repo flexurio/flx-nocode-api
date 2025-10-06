@@ -56,11 +56,11 @@ pub struct TableSchema {
     pub trace: Trace,
 }
 
-// default value for TableSchema
+// default value for TableSchema - optimized with String::new() instead of "".to_string()
 impl Default for TableSchema {
     fn default() -> Self {
         TableSchema {
-            table: "".to_string(),
+            table: String::new(),
             primary_key: PrimaryKey { columns: vec![] },
             columns: vec![],
             foreign_keys: vec![],
@@ -78,36 +78,36 @@ impl Default for TableSchema {
                 order_by: vec![],
             },
             post: OperationPostPut {
-                validate_data: "".to_string(),
-                pre_process: "".to_string(),
+                validate_data: String::new(),
+                pre_process: String::new(),
                 columns: vec![],
-                post_process: "".to_string(),
+                post_process: String::new(),
             },
             put: OperationPostPut {
-                validate_data: "".to_string(),
-                pre_process: "".to_string(),
+                validate_data: String::new(),
+                pre_process: String::new(),
                 columns: vec![],
-                post_process: "".to_string(),
+                post_process: String::new(),
             },
             del: OperationDelete {
-                pre_process: "".to_string(),
+                pre_process: String::new(),
                 columns: vec![],
-                type_delete: "soft".to_string(),
-                post_process: "".to_string(),
+                type_delete: "soft".to_string(), // Keep this as it's a meaningful default
+                post_process: String::new(),
             },
             patch: Patch {
-                pre_process_sp: "".to_string(),
+                pre_process_sp: String::new(),
                 parameters: vec![],
-                return_mode: "".to_string(),
+                return_mode: String::new(),
             },
             trace: Trace {
-                insert_into: "".to_string(),
+                insert_into: String::new(),
+                parameters: vec![],
+                column_conflicts: vec![],
                 column_inserts: vec![],
                 column_selects: vec![],
-                parameters: vec![],
                 join_tables: vec![],
                 column_groups: vec![],
-                column_conflicts: vec![],
             },
         }
     }

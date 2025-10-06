@@ -238,7 +238,7 @@ pub async fn login(state: web::Data<AppState>, req: actix_web::HttpRequest) -> i
     let token = create_token(id_user_str, name, state.clone(), roles_data);
     HttpResponse::Ok().json(WebResponse {
         success: true,
-        message: "Login Success".to_string(),
+        message: crate::constants::MSG_LOGIN_SUCCESS.to_string(),
         total_data: 1,
         data: json!(token.await),
     })

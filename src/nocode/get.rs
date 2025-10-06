@@ -58,7 +58,7 @@ pub async fn select(
             Err(_) => {
                 return HttpResponse::Unauthorized().json(WebResponse {
                     success: false,
-                    message: "Invalid token".to_string(),
+                    message: crate::constants::ERR_INVALID_TOKEN.to_string(),
                     total_data: 0,
                     data: Value::Null,
                 });
@@ -73,7 +73,7 @@ pub async fn select(
         if !check_access(&claims, &route, "read") {
             return HttpResponse::Unauthorized().json(WebResponse {
                 success: false,
-                message: "Unauthorized".to_string(),
+                message: crate::constants::ERR_UNAUTHORIZED.to_string(),
                 total_data: 0,
                 data: Value::Null,
             });
