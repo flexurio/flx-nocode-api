@@ -6,8 +6,8 @@ edition = "2021"
 # Optimization settings for performance
 [profile.release]
 opt-level = 3          # Maximum optimization
-lto = true            # Link-time optimization
-codegen-units = 1     # Better optimization with slower compile
+lto = "thin"          # Faster than full LTO with good optimization
+codegen-units = 16    # Balance between speed and size
 panic = "abort"       # Smaller binary size
 strip = true          # Remove debug symbols
 
@@ -58,10 +58,14 @@ rust_xlsxwriter = "0.79"
 redis = { version = "0.25", features = ["aio", "tokio-comp", "connection-manager"] }
 urlencoding = "2.1"
 mongodb = { version = "3.3", optional = true }
+# Performance optimizations
+parking_lot = "0.12"
+ahash = "0.8"
+smallvec = "1.11"
 
 [features]
-# default = ["mysql", "postgres", "sqlite", "mssql", "mongodb"]
-default = ["mysql"]
+default = ["mysql", "postgres", "sqlite", "mssql", "mongodb"]
+# default = ["mysql"]
 mysql = ["sqlx/mysql", "sqlx/chrono"]
 postgres = ["sqlx/postgres", "sqlx/chrono"]
 sqlite = ["sqlx/sqlite", "sqlx/chrono"]

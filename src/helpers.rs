@@ -404,19 +404,16 @@ pub async fn multipart_to_json(mut multipart: Multipart) -> Result<Value, actix_
 
 // (removed duplicate is_safe_mime_type; using the public version defined earlier)
 
+// Static compiled regex for performance - compiled only once instead of every call
+use once_cell::sync::Lazy;
+static EXPR_REGEX: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"\{([^{}]+)\}").expect("Failed to compile expression regex")
+});
+
 pub fn extract_expressions(input: &str) -> HashSet<String> {
-    let mut results = HashSet::new();
+    let mut results = HashSet::with_capacity(8); // Pre-allocate for common case
 
-    // Regex untuk ekspresi dalam kurung kurawal { ... }
-    let re_braces = match Regex::new(r"\{([^{}]+)\}") {
-        Ok(regex) => regex,
-        Err(e) => {
-            eprintln!("Failed to compile regex: {}", e);
-            return results;
-        }
-    };
-
-    for cap in re_braces.captures_iter(input) {
+    for cap in EXPR_REGEX.captures_iter(input) {
         let expr = cap[1].to_string();
         results.insert(expr.clone());
 

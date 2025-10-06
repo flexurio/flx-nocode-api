@@ -285,7 +285,7 @@ pub async fn insert(
     let mut insert_fields: Vec<(String, InsertValue)> = Vec::with_capacity(filtered_columns.len() + 3);
     
     // Collect FK checks for batch validation (optimization)
-    let mut fk_checks: Vec<(String, String, String, String)> = Vec::new();
+    let mut fk_checks: Vec<(String, String, String, String)> = Vec::with_capacity(filtered_columns.len()); // Pre-allocate
     
     for col in filtered_columns.iter() {
         if col.auto_increment {

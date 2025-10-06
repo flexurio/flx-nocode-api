@@ -317,11 +317,11 @@ async fn main() -> std::io::Result<()> {
     }
 
     let db_type = env::var("DB_TYPE").unwrap_or_else(|_| "mysql".to_string());
-    // Pool configuration via env
+    // Pool configuration via env - optimized defaults for better resource management
     let max_pool: u32 = env::var("MAX_POOL")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(100);
+        .unwrap_or(10); // Reduced from 100 to 10 for better memory usage
     let acquire_secs: u64 = env::var("CONNECT_TIMEOUT")
         .ok()
         .and_then(|s| s.parse().ok())

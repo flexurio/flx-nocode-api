@@ -201,20 +201,39 @@ pub async fn login(state: web::Data<AppState>, req: actix_web::HttpRequest) -> i
         .r#where(QF::Eq("id_users".into(), id_roles_filter.clone()));
     log_output("QUERY", "core.rs/login", "flx_roles", format!("AST id_users=? ~ {}", match id_roles_filter { QV::I64(n) => n.to_string(), QV::Str(s) => s, _ => String::new() }), true);
     let roles_rows = state.store.query(&q_roles).await.unwrap_or_default();
-    let roles_data = roles_rows
-        .into_iter()
-        .filter_map(|v| {
-            let obj = v.as_object()?;
-            let ep = obj.get("endpoint")?.as_str()?.to_string();
-            let rl = obj
-                .get("role")?
-                .as_i64()
-                .map(|n| n.to_string())
-                .or_else(|| obj.get("role")?.as_str().map(|s| s.to_string()))?;
-            Some(format!("{}/{}", ep, rl))
-        })
-        .collect::<Vec<_>>()
-        .join(",");
+    
+    // Optimized: reduce string allocations by pre-allocating and avoiding multiple clones
+    let roles_data = {
+        let mut result = String::with_capacity(roles_rows.len() * 20); // Pre-allocate
+        let mut first = true;
+        
+        for v in roles_rows {
+            if let Some(obj) = v.as_object() {
+                if let (Some(ep), Some(rl)) = (
+                    obj.get("endpoint").and_then(|v| v.as_str()),
+                    obj.get("role")
+                ) {
+                    if !first { 
+                        result.push(','); 
+                    }
+                    first = false;
+                    
+                    result.push_str(ep);
+                    result.push('/');
+                    
+                    match rl {
+                        serde_json::Value::Number(n) if n.is_i64() => {
+                            use std::fmt::Write;
+                            let _ = write!(result, "{}", n.as_i64().unwrap());
+                        }
+                        serde_json::Value::String(s) => result.push_str(s),
+                        _ => continue,
+                    }
+                }
+            }
+        }
+        result
+    };
 
     let token = create_token(id_user_str, name, state.clone(), roles_data);
     HttpResponse::Ok().json(WebResponse {

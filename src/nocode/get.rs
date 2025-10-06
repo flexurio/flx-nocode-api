@@ -272,7 +272,13 @@ pub async fn select(
                         "search" => {
                             let v = value_str;
                             if !v.is_empty() {
-                                let mut ors: Vec<QF> = Vec::new();
+                                // Pre-calculate capacity for OR filters
+                                let pk_count = table_schema.primary_key.columns.len();
+                                let idx_count: usize = table_schema.indexes.iter()
+                                    .map(|idx| idx.columns.len())
+                                    .sum();
+                                let mut ors: Vec<QF> = Vec::with_capacity(pk_count + idx_count);
+                                
                                 // primary key columns
                                 for column in table_schema.primary_key.columns.iter() {
                                     let col = if column.contains('.') { column.clone() } else { format!("{}.{}", table_schema.table, column) };
@@ -290,7 +296,8 @@ pub async fn select(
                         }
                         p if p.contains('|') => {
                             // OR across multiple columns
-                            let mut ors: Vec<QF> = Vec::new();
+                            let parts_count = p.matches('|').count() + 1;
+                            let mut ors: Vec<QF> = Vec::with_capacity(parts_count); // Pre-allocate
                             for part in p.split('|') {
                                 let (column, operator, val) = split_column_operator(part, &table_schema.table, &value_str);
                                 let f = match operator.as_str() {

@@ -1,6 +1,6 @@
 use once_cell::sync::Lazy;
-use std::collections::HashMap;
-use std::sync::Mutex;
+use ahash::AHashMap;
+use parking_lot::Mutex;
 use std::time::{Duration, Instant};
 
 struct Entry {
@@ -9,7 +9,7 @@ struct Entry {
 }
 
 pub struct RateLimiter {
-    inner: Mutex<HashMap<String, Entry>>, // key -> entry
+    inner: Mutex<AHashMap<String, Entry>>, // key -> entry (using faster AHashMap)
     window: Duration,
     max_keys: usize,
 }
@@ -17,7 +17,7 @@ pub struct RateLimiter {
 impl RateLimiter {
     pub fn new(window_secs: u64) -> Self {
         Self {
-            inner: Mutex::new(HashMap::new()),
+            inner: Mutex::new(AHashMap::with_capacity(1000)), // Pre-allocate capacity
             window: Duration::from_secs(window_secs),
             max_keys: 10_000,
         }
@@ -25,26 +25,40 @@ impl RateLimiter {
 
     /// Returns true if allowed, false if rate-limited.
     pub fn check_and_increment(&self, key: &str, limit: u32) -> bool {
-        let mut map = self.inner.lock().unwrap();
         let now = Instant::now();
-        if !map.contains_key(key) && map.len() >= self.max_keys {
-            // Drop oldest-ish key to keep memory bounded (simple O(n) scan)
-            if let Some((old_key, _)) = map
-                .iter()
+        
+        // Phase 1: Quick check if cleanup is needed (minimize lock time)
+        let needs_cleanup = {
+            let map = self.inner.lock();
+            !map.contains_key(key) && map.len() >= self.max_keys
+        };
+        
+        // Phase 2: Find key to remove if needed (outside main lock)
+        let old_key = if needs_cleanup {
+            let map = self.inner.lock();
+            map.iter()
                 .min_by_key(|(_, e)| e.window_start)
-                .map(|(k, v)| (k.clone(), v.window_start))
-            {
-                map.remove(&old_key);
-            }
+                .map(|(k, _)| k.clone())
+        } else {
+            None
+        };
+        
+        // Phase 3: Update with minimal lock time
+        let mut map = self.inner.lock();
+        
+        if let Some(k) = old_key {
+            map.remove(&k);
         }
+        
         let entry = map.entry(key.to_string()).or_insert(Entry {
             count: 0,
             window_start: now,
         });
 
         if now.duration_since(entry.window_start) >= self.window {
-            entry.count = 0;
+            entry.count = 1;
             entry.window_start = now;
+            return true;
         }
 
         if entry.count >= limit {

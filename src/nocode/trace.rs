@@ -100,8 +100,9 @@ pub async fn process(
     let mut q = Q::from(table_schema.table.clone());
 
     let mut is_deleted_at = true;
-    let mut filters: Vec<F> = Vec::new();
     let params_obj = parameters.clone().into_inner();
+    let param_count = table_schema.trace.parameters.len();
+    let mut filters: Vec<F> = Vec::with_capacity(param_count + 1); // Pre-allocate
     for param in table_schema.trace.parameters.iter() {
         for (key, value) in params_obj.as_object().unwrap_or(&serde_json::Map::new()).iter() {
             if key.contains("deleted_at") { is_deleted_at = false; }
@@ -113,7 +114,7 @@ pub async fn process(
                 // Handle OR pipe: a|b|c kita jadikan Or([...])
                 if param.contains('|') {
                     let ps: Vec<&str> = param.split('|').collect();
-                    let mut or_terms: Vec<F> = Vec::new();
+                    let mut or_terms: Vec<F> = Vec::with_capacity(ps.len()); // Pre-allocate
                     for p in ps {
                         let (c2, op2, v2) = split_column_operator(p, &table_schema.table, val_str);
                         let filt = match op2.as_str() {

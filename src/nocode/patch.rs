@@ -101,9 +101,10 @@ pub async fn process_sp(
     }
 
     // Build ordered parameters according to schema.patch.parameters
-    let mut param_sp: Vec<String> = Vec::new();
-    let mut bind_params: Vec<DbParam> = Vec::new();
     let params_map = parameters.into_inner();
+    let param_count = table_schema.patch.parameters.len();
+    let mut param_sp: Vec<String> = Vec::with_capacity(param_count); // Pre-allocate
+    let mut bind_params: Vec<DbParam> = Vec::with_capacity(param_count); // Pre-allocate
 
     for name in table_schema.patch.parameters.iter() {
         match params_map.get(name) {
