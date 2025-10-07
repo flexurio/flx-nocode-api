@@ -54,7 +54,7 @@ pub async fn check_table_design(
         });
     }
 
-    table_schemas = Arc::new(vec![validate_table_design(table_schema.clone())]);
+    table_schemas = Arc::new(vec![validate_table_design((*table_schema).clone())]);
 
     // Convert Vec<TableSchema> to Value via debug/serialize fallback (assuming TableSchema implements Serialize elsewhere).
     // If not, fallback to string representation.

@@ -11,7 +11,7 @@ use crate::{
     auth::{check_access, get_user_info_from_token, Claims},
     helpers::filter_table_schema,
     log::log_output,
-    model::{ReferenceForeignKey, TableSchema, WebResponse},
+    model::{TableSchema, WebResponse},
     nocode::foreign_key::process_foreign_keys_delete_update_txstore,
     AppState,
 };
@@ -24,12 +24,10 @@ use crate::storage::ast::{Filter as QF, Val as QV};
 pub async fn delete(
     state: Data<AppState>,
     route: Arc<str>,
-    schemas: Arc<(Vec<TableSchema>, Vec<ReferenceForeignKey>)>,
+    table_schemas: Arc<Vec<TableSchema>>,
     path: Path<String>,
     req: actix_web::HttpRequest,
 ) -> impl Responder {
-    let table_schemas = &schemas.0;
-    let reference_foreign_keys = &schemas.1;
     let mut claims = Claims::default();
     if !state.route_publics.iter().any(|r| r == route.as_ref()) {
         let req_for_auth = req.clone();
@@ -72,7 +70,7 @@ pub async fn delete(
     }
     // Per-user limit (for non-public routes only)
     if !state.route_publics.iter().any(|r| r == route.as_ref()) {
-        let user_key = claims.id.clone();
+    let user_key = &claims.id;
         if limit_i64 > 0 && !user_key.is_empty() && !RL_WINDOW_MUTATE.check_and_increment(&build_key(RateOp::Delete, route.as_ref(), &format!("user:{}", user_key)), limit_i64 as u32) {
             return HttpResponse::TooManyRequests().json(WebResponse {
                 success: false,
@@ -83,7 +81,7 @@ pub async fn delete(
         }
     }
 
-    let table_schema = filter_table_schema(table_schemas, route.as_ref());
+    let table_schema = filter_table_schema(&table_schemas, route.as_ref());
     if table_schema.table.is_empty() {
     let message_error = format!("Entity {} on folder config/{}.json not found", route, route);
         return HttpResponse::FailedDependency().json(WebResponse {
@@ -119,7 +117,7 @@ pub async fn delete(
             if let Ok(n) = claims.id.parse::<i64>() {
                 fields.push(("deleted_by_id".into(), InsertValue::Param(crate::database::state::DbParam::I64(n))));
             } else {
-                fields.push(("deleted_by_id".into(), InsertValue::Param(crate::database::state::DbParam::Str(claims.id.clone()))));
+                fields.push(("deleted_by_id".into(), InsertValue::Param(crate::database::state::DbParam::Str(claims.id.clone())))); // clone still needed for ownership into DbParam
             }
         } else if deleted_by_type.contains("float")
             || deleted_by_type.contains("double")
@@ -200,7 +198,7 @@ pub async fn delete(
                 if let Ok(n) = claims.id.parse::<i64>() {
                     patch.insert("deleted_by_id", json!(n));
                 } else {
-                    patch.insert("deleted_by_id", json!(claims.id.clone()));
+                    patch.insert("deleted_by_id", json!(claims.id));
                 }
             } else if deleted_by_type.contains("float")
                 || deleted_by_type.contains("double")
@@ -210,10 +208,10 @@ pub async fn delete(
                 if let Ok(n) = claims.id.parse::<f64>() {
                     patch.insert("deleted_by_id", json!(n));
                 } else {
-                    patch.insert("deleted_by_id", json!(claims.id.clone()));
+                    patch.insert("deleted_by_id", json!(claims.id));
                 }
             } else {
-                patch.insert("deleted_by_id", json!(claims.id.clone()));
+                patch.insert("deleted_by_id", json!(claims.id));
             }
             state.store.update(&table_schema.table, filter, Value::from(patch)).await.map(|_| ())
         } else {
@@ -269,7 +267,7 @@ pub async fn delete(
                 state.clone(),
                 route.to_string(),
                 &mut tx,
-                reference_foreign_keys,
+                &crate::SCHEMA_REF_FOREIGN_KEYS,
                 claims.id.clone(),
                 id_raw.clone(),
                 "".to_string(), // for UPDATE
@@ -283,7 +281,7 @@ pub async fn delete(
                         // Audit
                         write_audit(&AuditEntry {
                             at: Local::now().to_rfc3339(),
-                            actor_id: claims.id.clone(),
+                            actor_id: claims.id.clone(), // needs owned String for audit struct
                             action: "DELETE",
                             route: &route,
                             id: Some(&id_raw),

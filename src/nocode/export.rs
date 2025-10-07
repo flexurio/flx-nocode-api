@@ -8,7 +8,7 @@ use crate::audit::{write_audit, AuditEntry};
 use crate::auth::{check_access, get_user_info_from_token, Claims};
 use crate::helpers::{filter_table_schema, multipart_to_json, split_column_operator};
 use crate::log::log_output;
-use crate::model::{ReferenceForeignKey, TableSchema, WebResponse};
+use crate::model::{TableSchema, WebResponse};
 use crate::storage::ast::{Filter as QF, Query as QQ, Val as QV, Expr as QE};
 use crate::storage::sql_store::SqlStore;
 use crate::AppState;
@@ -20,11 +20,11 @@ use chrono::Local;
 pub async fn export(
     state: web::Data<AppState>,
     route: Arc<str>,
-    schemas: Arc<(Vec<TableSchema>, Vec<ReferenceForeignKey>)>,
+    table_schemas: Arc<Vec<TableSchema>>,
     multipart: Multipart,
     req: actix_web::HttpRequest,
 ) -> impl Responder {
-    let table_schemas = &schemas.0;
+    let table_schemas = &table_schemas;
 
     // AuthZ like GET (read)
     let mut claims = Claims::default();
@@ -70,7 +70,7 @@ pub async fn export(
         .unwrap_or(&route);
 
     // Schema lookup
-    let table_schema: TableSchema = filter_table_schema(table_schemas, route.as_ref());
+    let table_schema = filter_table_schema(table_schemas, route.as_ref());
     if table_schema.table.is_empty() {
         let message_error = format!(
             "Entity {} on folder config/{}.json not found",

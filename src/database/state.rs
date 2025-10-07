@@ -71,11 +71,11 @@ pub trait DbTransaction: Send + Sync {
 /// This mirrors `execute_sql_formula_with_transaction` but targets the new storage abstraction.
 pub async fn execute_sql_formula_with_txstore(
     tx: &mut Box<dyn crate::storage::traits::TxStore>,
-    sql: String,
+    sql: &str,
     body: &Value,
     route: &str,
 ) -> Result<(), anyhow::Error> {
-    match build_sql_and_params_from_formula(&sql, body) {
+    match build_sql_and_params_from_formula(sql, body) {
         Ok((built_sql, params)) => {
             log_output("QUERY", "build_sql_and_params_from_formula", route, built_sql.clone(), true);
             log_output("BODY", "build_sql_and_params_from_formula", route, format!("{:?}", body), true);

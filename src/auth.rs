@@ -69,9 +69,12 @@ pub fn validate_token(
     state: web::Data<AppState>,
 ) -> Result<web::Data<AppState>, HttpResponse> {
     // Fast path: check IP whitelist first to avoid expensive token operations
-    if is_ip_whitelisted(&req, &state.whitelist_ips) || 
-        state.route_publics.contains(&req.path().to_string()) ||
-        state.converter_token != ClaimsConverter::default() {
+    // Compare path without allocating new String repeatedly
+    let path_no_slash = req.path().trim_start_matches('/');
+    if is_ip_whitelisted(&req, &state.whitelist_ips)
+        || state.route_publics.iter().any(|r| r == path_no_slash)
+        || state.converter_token != ClaimsConverter::default()
+    {
         return Ok(state);
     }
 

@@ -15,7 +15,7 @@ use crate::{
     database::state::{DbParam},
     helpers::{filter_table_schema, multipart_to_json},
     log::log_output,
-    model::{ReferenceForeignKey, TableSchema, WebResponse},
+    model::{TableSchema, WebResponse},
     nocode::foreign_key::check_data_foreign_key,
     AppState,
 };
@@ -28,13 +28,12 @@ use crate::storage::ast::{Filter as QF, Val as QV};
 pub async fn update(
     state: Data<AppState>,
     route: Arc<str>,
-    schemas: Arc<(Vec<TableSchema>, Vec<ReferenceForeignKey>)>,
+    table_schemas: Arc<Vec<TableSchema>>,
     multipart: Multipart,
     path: Path<String>,
     req: actix_web::HttpRequest,
 ) -> impl Responder {
-    let table_schemas = &schemas.0;
-    let reference_foreign_keys = &schemas.1;
+    let table_schemas = &table_schemas;
     
     let mut claims = Claims::default();
     if !state.route_publics.iter().any(|r| r == route.as_ref()) {
@@ -355,7 +354,7 @@ pub async fn update(
     if state.db_type != "mongodb" && table_schema.put.pre_process.contains("SQL:") {
         if let Err(err) = crate::database::state::execute_sql_formula_with_txstore(
             tx_opt.as_mut().unwrap(),
-            table_schema.put.pre_process,
+            &table_schema.put.pre_process,
             &body,
             route.as_ref(),
         )
@@ -518,7 +517,7 @@ pub async fn update(
             if state.db_type != "mongodb" && table_schema.put.post_process.contains("SQL:") {
                 if let Err(err) = crate::database::state::execute_sql_formula_with_txstore(
                     &mut tx,
-                    table_schema.put.post_process,
+                    &table_schema.put.post_process,
                     &body,
                     route.as_ref(),
                 )
@@ -543,7 +542,7 @@ pub async fn update(
                         state.clone(),
                         route.to_string(),
                         &mut tx,
-                        reference_foreign_keys,
+                        &crate::SCHEMA_REF_FOREIGN_KEYS,
                         claims.id.clone(),
                         id_raw.clone(),
                         id_new, // for UPDATE                        

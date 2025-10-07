@@ -7,7 +7,8 @@ use std::fs::OpenOptions;
 use std::io::Write;
 
 pub fn log_to_file(message: &str) {
-    let file_path = LOC_LOGGING.clone() + "/.log.txt";
+    // avoid cloning full path string each call; format directly
+    let file_path = format!("{}/.log.txt", *LOC_LOGGING);
     let path = std::path::Path::new(&file_path);
     if let Some(parent) = path.parent() {
         if !parent.exists() {

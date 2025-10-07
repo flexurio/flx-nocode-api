@@ -8,7 +8,7 @@ use std::collections::HashSet;
 
 use crate::{log::log_output, model::TableSchema, ISDEBUG};
 use ahash::AHashMap;
-use std::sync::OnceLock;
+use std::sync::{OnceLock, Arc};
 use crate::model::ReferenceForeignKey;
 
 pub fn cetak_label(host: String, port: u16) {
@@ -50,50 +50,32 @@ fn is_safe_mime_type(mime: &str) -> bool {
 // create function to get data from table_schemas where table is equal to route
 // One-time built global schema map (table_name => augmented TableSchema)
 // Augmentation adds mandatory query params so handlers avoid per-request cloning.
-static SCHEMA_MAP: OnceLock<AHashMap<String, TableSchema>> = OnceLock::new();
+// Use Arc to avoid expensive clones - shared ownership without copying
+static SCHEMA_MAP: OnceLock<AHashMap<String, Arc<TableSchema>>> = OnceLock::new();
 static FK_MAP: OnceLock<AHashMap<String, Vec<ReferenceForeignKey>>> = OnceLock::new();
 
-pub fn filter_table_schema(table_schemas: &[TableSchema], route: &str) -> TableSchema {
-    // Fast path: map already built
-    if let Some(map) = SCHEMA_MAP.get() {
-        return map.get(route).cloned().unwrap_or_default();
-    }
-
-    // Build the map exactly once (first caller wins). Any race loses but that's fine; we just reuse the initialized map.
-    SCHEMA_MAP.get_or_init(|| {
-        let mut map: AHashMap<String, TableSchema> = AHashMap::with_capacity(table_schemas.len());
+pub fn filter_table_schema(table_schemas: &[TableSchema], route: &str) -> Arc<TableSchema> {
+    // Build full augmented map once (predictable & thread-safe)
+    let map = SCHEMA_MAP.get_or_init(|| {
+        let mut map: AHashMap<String, Arc<TableSchema>> = AHashMap::with_capacity(table_schemas.len());
         for schema in table_schemas.iter() {
-            // Derive logical route name (strip prefix before last '.')
-            let table_name = if schema.table.contains('.') {
+            let logical = if schema.table.contains('.') {
                 schema.table.split('.').next_back().unwrap_or(&schema.table)
             } else {
                 &schema.table
             };
-
-            // Clone & augment parameters exactly like old implementation
             let mut augmented = schema.clone();
-            let existing_params: HashSet<String> = augmented.get.parameters.iter().cloned().collect();
+            let existing: HashSet<String> = augmented.get.parameters.iter().cloned().collect();
             let deleted_at_param = format!("{}.deleted_at", augmented.table);
             const PARAMS_MANDATORY: &[&str] = &["page", "sort", "ascending", "limit", "search", "redis"];
             augmented.get.parameters.reserve(PARAMS_MANDATORY.len() + 1);
-            if !existing_params.contains(&deleted_at_param) {
-                augmented.get.parameters.push(deleted_at_param);
-            }
-            for &param in PARAMS_MANDATORY {
-                if !existing_params.contains(param) {
-                    augmented.get.parameters.push(param.to_string());
-                }
-            }
-            map.insert(table_name.to_string(), augmented);
+            if !existing.contains(&deleted_at_param) { augmented.get.parameters.push(deleted_at_param); }
+            for &p in PARAMS_MANDATORY { if !existing.contains(p) { augmented.get.parameters.push(p.to_string()); } }
+            map.insert(logical.to_string(), Arc::new(augmented));
         }
         map
     });
-
-    // Now guaranteed initialized
-    SCHEMA_MAP
-        .get()
-        .and_then(|m| m.get(route).cloned())
-        .unwrap_or_default()
+    map.get(route).cloned().unwrap_or_else(|| Arc::new(TableSchema::default()))
 }
 
 /// Build (if needed) and return vector of referencing foreign key actions for a target table.
@@ -117,6 +99,7 @@ pub fn get_reference_foreign_keys<'a>(
 
 
 // create function to split column and operator
+// Optimized to reduce string allocations
 pub fn split_column_operator(key: &str, s_table: &str, value: &str) -> (String, String, String) {
     let parts: Vec<&str> = key.split('.').collect();
     let n = parts.len();
@@ -126,17 +109,13 @@ pub fn split_column_operator(key: &str, s_table: &str, value: &str) -> (String, 
         return (col, "=".to_string(), value.to_string());
     }
 
-    let mut column = parts[n - 2].to_string();
-    let opertr = parts[n - 1].to_string();
-
-    if n >= 3 {
-        column = format!("{}.{}", parts[n - 3], column);
+    let column = if n >= 3 {
+        format!("{}.{}", parts[n - 3], parts[n - 2])
     } else {
-        column = format!("{}.{}", s_table, column);
-    }
+        format!("{}.{}", s_table, parts[n - 2])
+    };
 
-    let operator = operator_query(&opertr);
-    let operator = if operator.is_empty() { "=".to_string() } else { operator };
+    let operator = operator_query(parts[n - 1]).to_string();
 
     let value = if operator.eq_ignore_ascii_case("like") {
         format!("%{}%", value)
@@ -170,8 +149,9 @@ pub fn get_client_ip(req: &actix_web::HttpRequest) -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
-pub fn operator_query(symbol: &str) -> String {
-    let operator = match symbol {
+// Return &'static str to avoid string allocations
+pub fn operator_query(symbol: &str) -> &'static str {
+    match symbol {
         "eq" => "=",
         "like" => "like",
         "lt" => "<",
@@ -182,10 +162,8 @@ pub fn operator_query(symbol: &str) -> String {
         // new operators
         "nin" => "nin",
         "between" => "between",
-        _ => "",
-    };
-
-    operator.to_string()
+        _ => "=", // Default to "=" instead of empty string
+    }
 }
 
 // create function convert MultiPart to Json with security and memory optimizations
@@ -280,15 +258,19 @@ pub async fn multipart_to_json(mut multipart: Multipart) -> Result<Value, actix_
             let image_storage = std::env::var("LOC_IMAGE").unwrap_or("DB".to_string());
             if image_storage == "DB" {
                 // Base64 (still buffered) — keep strict size limit
-                let mut buffer = Vec::new();
+                // Pre-allocate buffer with reasonable size to reduce reallocations
+                let mut buffer = Vec::with_capacity(max_file_size.min(4 * 1024 * 1024)); // Max 4MB pre-alloc
                 let mut total_size = 0usize;
                 let mut sniff_buf: Vec<u8> = Vec::with_capacity(8192);
                 while let Some(chunk) = field.next().await {
                     let data = chunk?;
-                    total_size += data.len();
-                    if total_size > max_file_size {
+                    let chunk_len = data.len();
+                    
+                    if total_size + chunk_len > max_file_size {
                         return Err(actix_web::error::ErrorPayloadTooLarge("File too large"));
                     }
+                    
+                    total_size += chunk_len;
                     if sniff_buf.len() < 8192 {
                         let take = 8192 - sniff_buf.len();
                         sniff_buf.extend_from_slice(&data[..data.len().min(take)]);

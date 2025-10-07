@@ -159,7 +159,7 @@ pub async fn insert(
     }
 
     // Generate SQL query INSERT to table in variable route, from data structure table in table_schemas
-    let table_schema: TableSchema = filter_table_schema(&table_schemas, route.as_ref());
+    let table_schema = filter_table_schema(&table_schemas, route.as_ref());
     if table_schema.table.is_empty() {
         let message_error = format!("Entity {} on folder config/{}.json not found", route, route);
         return HttpResponse::FailedDependency().json(WebResponse {
@@ -617,7 +617,7 @@ pub async fn insert(
     if state.db_type != "mongodb" && table_schema.post.pre_process.contains("SQL:") {
         if let Err(err) = crate::database::state::execute_sql_formula_with_txstore(
             tx_opt.as_mut().unwrap(),
-            table_schema.post.pre_process,
+            &table_schema.post.pre_process,
             &body,
             route.as_ref(),
         )
@@ -852,7 +852,7 @@ pub async fn insert(
             if state.db_type != "mongodb" && table_schema.post.post_process.contains("SQL:") {
                 if let Err(err) = crate::database::state::execute_sql_formula_with_txstore(
                     &mut tx,
-                    table_schema.post.post_process,
+                    &table_schema.post.post_process,
                     &body,
                     route.as_ref(),
                 )

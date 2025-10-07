@@ -82,7 +82,7 @@ pub async fn select(
         }
     }
 
-    let table_schema: TableSchema = filter_table_schema(&table_schemas, route.as_ref());
+    let table_schema = filter_table_schema(&table_schemas, route.as_ref());
     // legacy SQL variables removed; using AST end-to-end
 
     log_output(

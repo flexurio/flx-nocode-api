@@ -85,7 +85,7 @@ pub async fn process_sp(
     // get parameters value only allowed from table_schema.trace.parameters
     // loop every table_schema.trace.parameters
 
-    let table_schema: TableSchema = filter_table_schema(&table_schemas, route.as_ref());
+    let table_schema = filter_table_schema(&table_schemas, route.as_ref());
     if table_schema.table.is_empty() {
         let message_error = format!("Entity {} on folder config/{}.json not found", route, route);
         return HttpResponse::FailedDependency().json(WebResponse {

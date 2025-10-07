@@ -135,11 +135,11 @@ static ENDPOINT_LOG_ONCE: Lazy<AtomicBool> = Lazy::new(|| AtomicBool::new(false)
 // Static Routes for once initialization
 static FOREIGNKEY_ACTION: [&str; 4] = ["cascade", "set null", "restrict", "no action"];
 
-static SCHEMAS: Lazy<Arc<(Vec<TableSchema>, Vec<ReferenceForeignKey>)>> = Lazy::new(|| {
+// Separate Arcs to avoid accidentally cloning entire Vec<TableSchema> during handlers
+pub(crate) static SCHEMA_TABLES: Lazy<Arc<Vec<TableSchema>>> = Lazy::new(|| {
     let config_location = env::var("LOC_CONFIG").unwrap_or_else(|_| "config/example".to_string());
     let config_dir = format!("{}/entity", config_location);
     let mut schemas = Vec::with_capacity(CONFIG.routes.len()); // Pre-allocate capacity
-    let mut ref_foreign_keys: Vec<ReferenceForeignKey> = Vec::with_capacity(CONFIG.routes.len());
 
     for route in CONFIG.routes.iter() {
         let file_path = format!("{}/{}.json", config_dir, route);
@@ -223,11 +223,17 @@ static SCHEMAS: Lazy<Arc<(Vec<TableSchema>, Vec<ReferenceForeignKey>)>> = Lazy::
             }
         }
 
-        // check if schema.foreign_keys is not empty
+        schemas.push(schema);
+    }
+    schemas.shrink_to_fit();
+    Arc::new(schemas)
+});
+
+pub(crate) static SCHEMA_REF_FOREIGN_KEYS: Lazy<Arc<Vec<ReferenceForeignKey>>> = Lazy::new(|| {
+    let mut refs: Vec<ReferenceForeignKey> = Vec::new();
+    for schema in SCHEMA_TABLES.iter() {
         if !schema.foreign_keys.is_empty() {
-            // loop througt all schema.foreign_keys
             for fk in schema.foreign_keys.iter() {
-                // check if fk.on_delete not in FOREIGNKEY_ACTION
                 if !FOREIGNKEY_ACTION.contains(&fk.on_delete.as_str()) {
                     eprintln!("ERROR FK_Check Delete : Foreign key on_delete action '{}' is not supported", fk.on_delete);
                     exit(1);
@@ -236,38 +242,33 @@ static SCHEMAS: Lazy<Arc<(Vec<TableSchema>, Vec<ReferenceForeignKey>)>> = Lazy::
                     eprintln!("ERROR FK_Check Update : Foreign key on_update action '{}' is not supported", fk.on_update);
                     exit(1);
                 }
-                ref_foreign_keys.push(ReferenceForeignKey {
+                refs.push(ReferenceForeignKey {
                     table: fk.reference_table.clone(),
                     column: fk.reference_column.clone(),
                     on_delete_action: ReferenceForeignKeyAction {
                         table: schema.table.clone(),
                         column: fk.column.clone(),
                         action: fk.on_delete.clone(),
-                        type_delete: schema.del.type_delete.clone(), // soft or hard
+                        type_delete: schema.del.type_delete.clone(),
                     },
                     on_update_action: ReferenceForeignKeyAction {
                         table: schema.table.clone(),
                         column: fk.column.clone(),
                         action: fk.on_update.clone(),
-                        type_delete: "soft".to_string(), // on_update always soft
+                        type_delete: "soft".to_string(),
                     },
                 });
             }
         }
-
-        schemas.push(schema);
     }
-
     log_output(
         "INFO",
         "FOREIGN KEY",
         "ref_foreign_keys",
-        format!("{:?}", ref_foreign_keys),
+        format!("{:?}", refs),
         true,
     );
-    // Shrink to fit to reduce memory overhead
-    schemas.shrink_to_fit();
-    Arc::new((schemas, ref_foreign_keys))
+    Arc::new(refs)
 });
 
 #[actix_web::main]
@@ -619,7 +620,7 @@ async fn main() -> std::io::Result<()> {
         encrypt_key,
         query_converter,
         whitelist_ips,
-        route_publics: CONFIG.route_publics.clone().to_vec(),
+    route_publics: CONFIG.route_publics.clone(),
         converter_token: CONFIG.converter_token.clone(),
         store: store_adapter,
         sql_store: sql_store_instance,
@@ -629,7 +630,7 @@ async fn main() -> std::io::Result<()> {
 
     // Initialize Routes only once, using Lazy
     let _ = &*CONFIG;
-    let _ = &*SCHEMAS;
+    let _ = &*SCHEMA_TABLES;
     let _ = &*ISDEBUG;
 
     if CONFIG.routes.is_empty() {
@@ -641,7 +642,7 @@ async fn main() -> std::io::Result<()> {
 
     // check if any table name in SCHEMAS is double
     let mut table_names: HashSet<String> = HashSet::new();
-    for schema in SCHEMAS.0.iter() {
+    for schema in SCHEMA_TABLES.iter() {
         if !table_names.insert(schema.table.clone()) {
             println!("--------------------------------------");
             println!(
@@ -920,13 +921,7 @@ async fn main() -> std::io::Result<()> {
                                       parameters: web::Query<HashMap<String,String>>,
                                       req: actix_web::HttpRequest| {
                                     let route_get = Arc::clone(&route_get);
-                                    select(
-                                        state,
-                                        parameters,
-                                        route_get,
-                                        SCHEMAS.0.clone().into(),
-                                        req,
-                                    )
+                                    select(state, parameters, route_get, Arc::clone(&SCHEMA_TABLES), req)
                                 }
                             }))
                             // register create_nocode
@@ -935,13 +930,7 @@ async fn main() -> std::io::Result<()> {
                                       multipart: Multipart,
                                       req: actix_web::HttpRequest| {
                                     let route_post = Arc::clone(&route_post);
-                                    insert(
-                                        state,
-                                        route_post,
-                                        SCHEMAS.0.clone().into(),
-                                        multipart,
-                                        req,
-                                    )
+                                    insert(state, route_post, Arc::clone(&SCHEMA_TABLES), multipart, req)
                                 }
                             }))
                             // register nocode_trace
@@ -951,13 +940,7 @@ async fn main() -> std::io::Result<()> {
                                       parameters: web::Query<HashMap<String,String>>,
                                       req: actix_web::HttpRequest| {
                                     let route_trace = Arc::clone(&route_trace);
-                                    process(
-                                        state,
-                                        parameters,
-                                        route_trace,
-                                        SCHEMAS.0.clone().into(),
-                                        req,
-                                    )
+                                    process(state, parameters, route_trace, Arc::clone(&SCHEMA_TABLES), req)
                                 }
                             }))
                             // register nocode_patch
@@ -967,13 +950,7 @@ async fn main() -> std::io::Result<()> {
                                       parameters: web::Query<HashMap<String,String>>,
                                       req: actix_web::HttpRequest| {
                                     let route_patch = Arc::clone(&route_patch);
-                                    process_sp(
-                                        state,
-                                        parameters,
-                                        route_patch,
-                                        SCHEMAS.0.clone().into(),
-                                        req,
-                                    )
+                                    process_sp(state, parameters, route_patch, Arc::clone(&SCHEMA_TABLES), req)
                                 }
                             })),
                     );
@@ -1015,7 +992,7 @@ async fn main() -> std::io::Result<()> {
                                       path: Path<String>,
                                       req: actix_web::HttpRequest| {
                                     let route_delete = Arc::clone(&route_delete);
-                                    delete(state, route_delete, SCHEMAS.clone(), path, req)
+                                    delete(state, route_delete, Arc::clone(&SCHEMA_TABLES), path, req)
                                 }
                             }))
                             // register create_nocode
@@ -1026,14 +1003,7 @@ async fn main() -> std::io::Result<()> {
                                       path: Path<String>,
                                       req: actix_web::HttpRequest| {
                                     let route_put = Arc::clone(&route_put);
-                                    update(
-                                        state,
-                                        route_put,
-                                        SCHEMAS.clone(),
-                                        multipart,
-                                        path,
-                                        req,
-                                    )
+                                    update(state, route_put, Arc::clone(&SCHEMA_TABLES), multipart, path, req)
                                 }
                             })),
                             
@@ -1062,13 +1032,7 @@ async fn main() -> std::io::Result<()> {
                                       multipart: Multipart,
                                       req: actix_web::HttpRequest| {
                                     let route_import = Arc::clone(&route_import);
-                                    import(
-                                        state,
-                                        route_import,
-                                        SCHEMAS.clone(),
-                                        multipart,
-                                        req,
-                                    )
+                                    import(state, route_import, Arc::clone(&SCHEMA_TABLES), multipart, req)
                                 }
                             })),
                     );
@@ -1097,13 +1061,7 @@ async fn main() -> std::io::Result<()> {
                                       multipart: Multipart,
                                       req: actix_web::HttpRequest| {
                                     let route_export = Arc::clone(&route_export);
-                                    export(
-                                        state,
-                                        route_export,
-                                        SCHEMAS.clone(),
-                                        multipart,
-                                        req,
-                                    )
+                                    export(state, route_export, Arc::clone(&SCHEMA_TABLES), multipart, req)
                                 }
                             })),
                     );
@@ -1130,12 +1088,7 @@ async fn main() -> std::io::Result<()> {
                                 let route_validate = Arc::clone(&route_validate);
                                 move |state: web::Data<AppState>, req: actix_web::HttpRequest| {
                                     let route_validate = Arc::clone(&route_validate);
-                                    check_table_design(
-                                        state,
-                                        route_validate,
-                                        SCHEMAS.0.clone().into(),
-                                        req,
-                                    )
+                                    check_table_design(state, route_validate, Arc::clone(&SCHEMA_TABLES), req)
                                 }
                             }),
                         ),
@@ -1163,12 +1116,7 @@ async fn main() -> std::io::Result<()> {
                                         let route_generate_table = Arc::clone(&route_generate_table);
                                         move |state: web::Data<AppState>, req: actix_web::HttpRequest| {
                                             let route_generate_table = Arc::clone(&route_generate_table);
-                                            create_table(
-                                                state,
-                                                route_generate_table,
-                                                SCHEMAS.0.clone().into(),
-                                                req,
-                                            )
+                                            create_table(state, route_generate_table, Arc::clone(&SCHEMA_TABLES), req)
                                         }
                                     })),
                         );
