@@ -6,6 +6,7 @@ use actix_web::{
 };
 use sonic_rs::{Value, json};
 use crate::json_compat::{JsonValueTrait, JsonContainerTrait, value_from_f64};
+use crate::storage::ast::Val as AstVal;
 
 use crate::{audit::{AuditEntry, write_audit}};
 use crate::helpers::get_client_ip; // still used for logging if needed
@@ -23,6 +24,40 @@ use chrono::Local;
 use std::sync::Arc;
 use crate::storage::sql_store::{InsertValue};
 use crate::storage::ast::{Filter as QF, Val as QV};
+
+/// Internal lightweight structure for update data (AST-based)
+/// Avoids heavy JSON manipulation until final serialization
+#[derive(Debug, Clone)]
+struct UpdateData {
+    fields: Vec<(String, AstVal)>,
+}
+
+impl UpdateData {
+    fn new() -> Self {
+        Self { fields: Vec::new() }
+    }
+
+    fn add_field(&mut self, key: String, value: AstVal) {
+        self.fields.push((key, value));
+    }
+
+    /// Convert to InsertValue vector for SQL operations
+    fn to_insert_values(&self) -> Vec<(String, InsertValue)> {
+        self.fields
+            .iter()
+            .map(|(k, v)| {
+                let param = match v {
+                    AstVal::I64(n) => DbParam::I64(*n),
+                    AstVal::F64(f) => DbParam::F64(*f),
+                    AstVal::Bool(b) => DbParam::Bool(*b),
+                    AstVal::Str(s) => DbParam::Str(s.clone()),
+                    AstVal::Null => DbParam::Null,
+                };
+                (k.clone(), InsertValue::Param(param))
+            })
+            .collect()
+    }
+}
 
 // NCO-PUT
 pub async fn update(
@@ -87,11 +122,10 @@ pub async fn update(
         });
     }
 
-    // Collect update fields using expression-aware builder
-    let mut update_fields: Vec<(String, InsertValue)> = Vec::new();
+    // Collect update fields using lightweight AST-based structure
+    let mut update_data = UpdateData::new();
     let mut id_new = "".to_string();
     let mut password_override: Option<String> = None;
-    let mut patch_fields = sonic_rs::Object::new(); // kept for special-case flx_users password-only path
 
     // loop every column in table_schemas.put.columns
     if let Some(body_obj) = body.as_object() {
@@ -171,18 +205,14 @@ pub async fn update(
                     // check if value from body is number
                     if col.type_data.contains("int") || col.type_data.contains("float") || col.type_data.contains("double") || col.type_data.contains("decimal") || col.type_data.contains("money") {
                         if let Ok(n) = value_x.parse::<i64>() {
-                            update_fields.push((column.clone(), InsertValue::Param(DbParam::I64(n))));
-                            patch_fields.insert(column.as_str(), json!(n));
+                            update_data.add_field(column.clone(), AstVal::I64(n));
                         } else if let Ok(f) = value_x.parse::<f64>() {
-                            update_fields.push((column.clone(), InsertValue::Param(DbParam::F64(f))));
-                            patch_fields.insert(column.as_str(), value_from_f64(f));
+                            update_data.add_field(column.clone(), AstVal::F64(f));
                         } else {
-                            update_fields.push((column.clone(), InsertValue::Param(DbParam::Str(value_x.clone()))));
-                            patch_fields.insert(column.as_str(), Value::from(value_x.as_str()));
+                            update_data.add_field(column.clone(), AstVal::Str(value_x.clone()));
                         }
                     } else {
-                        update_fields.push((column.clone(), InsertValue::Param(DbParam::Str(value_x.clone()))));
-                        patch_fields.insert(column.as_str(), Value::from(value_x.as_str()));
+                        update_data.add_field(column.clone(), AstVal::Str(value_x.clone()));
                     }
                 }
             }
@@ -190,6 +220,9 @@ pub async fn update(
         }
     }
 
+    // Convert UpdateData to InsertValue vector for SQL compilation
+    let mut update_fields = update_data.to_insert_values();
+    
     // add updated_at/by into update_fields (server-side now expression)
     update_fields.push(("updated_at".to_string(), InsertValue::Raw(state.query_converter.datetime_now.clone())));
 
@@ -206,10 +239,8 @@ pub async fn update(
     if created_by_type.contains("int") {
         if let Ok(n) = claims.id.parse::<i64>() {
             update_fields.push(("updated_by_id".to_string(), InsertValue::Param(DbParam::I64(n))));
-                            patch_fields.insert("updated_by_id", json!(n));
         } else {
             update_fields.push(("updated_by_id".to_string(), InsertValue::Param(DbParam::Str(claims.id.clone()))));
-            patch_fields.insert("updated_by_id", Value::from(claims.id.as_str()));
         }
     } else if created_by_type.contains("float") || 
         created_by_type.contains("double") || 
@@ -217,14 +248,11 @@ pub async fn update(
         created_by_type.contains("money") {
         if let Ok(n) = claims.id.parse::<f64>() {
             update_fields.push(("updated_by_id".to_string(), InsertValue::Param(DbParam::F64(n))));
-            patch_fields.insert("updated_by_id", value_from_f64(n));
         } else {
             update_fields.push(("updated_by_id".to_string(), InsertValue::Param(DbParam::Str(claims.id.clone()))));
-            patch_fields.insert("updated_by_id", Value::from(claims.id.as_str()));
         }
     } else {
         update_fields.push(("updated_by_id".to_string(), InsertValue::Param(DbParam::Str(claims.id.clone()))));
-    patch_fields.insert("updated_by_id", Value::from(claims.id.as_str()));
     }
     
     // legacy set_clause kept only for logging; actual SQL compiled via AST
@@ -451,13 +479,53 @@ pub async fn update(
 
     // MongoDB main update path (no transaction)
     if state.db_type == "mongodb" {
-        // Ensure updated_at exists in patch_fields for Mongo (ISO timestamp)
+        // Convert UpdateData to JSON only for MongoDB (with timestamps)
         let now_iso = Local::now().to_rfc3339();
-    patch_fields.insert("updated_at", json!(now_iso));
+        let mut patch_obj = sonic_rs::Object::new();
+        
+        // Add all fields from UpdateData
+        for (k, v) in &update_data.fields {
+            let json_val = match v {
+                AstVal::I64(n) => json!(*n),
+                AstVal::F64(f) => value_from_f64(*f),
+                AstVal::Bool(b) => json!(*b),
+                AstVal::Str(s) => json!(s.as_str()),
+                AstVal::Null => Value::default(),
+            };
+            patch_obj.insert(k.as_str(), json_val);
+        }
+        
+        // Add timestamps and updated_by
+        patch_obj.insert("updated_at", json!(now_iso));
+        
+        // Add updated_by_id with proper type
+        if created_by_type.contains("int") {
+            if let Ok(n) = claims.id.parse::<i64>() {
+                patch_obj.insert("updated_by_id", json!(n));
+            } else {
+                patch_obj.insert("updated_by_id", json!(claims.id));
+            }
+        } else if created_by_type.contains("float")
+            || created_by_type.contains("double")
+            || created_by_type.contains("decimal")
+            || created_by_type.contains("money")
+        {
+            if let Ok(n) = claims.id.parse::<f64>() {
+                patch_obj.insert("updated_by_id", value_from_f64(n));
+            } else {
+                patch_obj.insert("updated_by_id", json!(claims.id));
+            }
+        } else {
+            patch_obj.insert("updated_by_id", json!(claims.id));
+        }
+        
+        let patch_json = Value::from(patch_obj);
+        
         // Build filter by id (attempt numeric, fallback to string)
         let filt_val = if let Ok(n) = id_raw.parse::<i64>() { QV::I64(n) } else { QV::Str(id_raw.clone()) };
         let filter = Some(QF::Eq("id".into(), filt_val));
-    match state.store.update(&table_schema.table, filter, Value::from(patch_fields.clone())).await {
+        
+        match state.store.update(&table_schema.table, filter, patch_json).await {
             Ok(_) => {
                 // Audit
                 write_audit(&AuditEntry {

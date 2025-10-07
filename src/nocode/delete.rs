@@ -19,6 +19,43 @@ use chrono::Local;
 use std::sync::Arc;
 use crate::storage::sql_store::{InsertValue};
 use crate::storage::ast::{Filter as QF, Val as QV};
+use crate::storage::ast::Val as AstVal;
+use crate::database::state::DbParam;
+use crate::json_compat::value_from_f64;
+
+/// Internal lightweight structure for soft delete data (AST-based)
+/// Avoids heavy JSON manipulation until final serialization
+#[derive(Debug, Clone)]
+struct DeleteData {
+    fields: Vec<(String, AstVal)>,
+}
+
+impl DeleteData {
+    fn new() -> Self {
+        Self { fields: Vec::new() }
+    }
+
+    fn add_field(&mut self, key: String, value: AstVal) {
+        self.fields.push((key, value));
+    }
+
+    /// Convert to InsertValue vector for SQL operations
+    fn to_insert_values(&self) -> Vec<(String, InsertValue)> {
+        self.fields
+            .iter()
+            .map(|(k, v)| {
+                let param = match v {
+                    AstVal::I64(n) => DbParam::I64(*n),
+                    AstVal::F64(f) => DbParam::F64(*f),
+                    AstVal::Bool(b) => DbParam::Bool(*b),
+                    AstVal::Str(s) => DbParam::Str(s.clone()),
+                    AstVal::Null => DbParam::Null,
+                };
+                (k.clone(), InsertValue::Param(param))
+            })
+            .collect()
+    }
+}
 
 // NCO-DELETE
 pub async fn delete(
@@ -75,25 +112,25 @@ pub async fn delete(
     let mut exec_params: Vec<crate::database::state::DbParam> = Vec::new();
 
     if type_delete == "soft" {
-        // Decide types for deleted_by_id and id
+        // Use lightweight AST structure for soft delete data
+        let mut delete_data = DeleteData::new();
+        
+        // Decide types for deleted_by_id
         let deleted_by_type = table_schema
             .columns
             .iter()
             .find(|c| c.name == "deleted_by_id")
             .map(|c| c.type_data.clone())
             .unwrap_or("int".to_string());
-    log_output("TYPE", "deleted_by_id", route.as_ref(), deleted_by_type.clone(), true);
+        
+        log_output("TYPE", "deleted_by_id", route.as_ref(), deleted_by_type.clone(), true);
 
-        // Build fields with a raw DB now() expression to avoid string conversion issues (MSSQL)
-        let mut fields: Vec<(String, InsertValue)> = vec![
-            ("deleted_at".to_string(), InsertValue::Raw(state.query_converter.datetime_now.clone())),
-        ];
-        // Set deleted_by_id typed
+        // Add deleted_by_id with proper type
         if deleted_by_type.contains("int") {
             if let Ok(n) = claims.id.parse::<i64>() {
-                fields.push(("deleted_by_id".into(), InsertValue::Param(crate::database::state::DbParam::I64(n))));
+                delete_data.add_field("deleted_by_id".to_string(), AstVal::I64(n));
             } else {
-                fields.push(("deleted_by_id".into(), InsertValue::Param(crate::database::state::DbParam::Str(claims.id.clone())))); // clone still needed for ownership into DbParam
+                delete_data.add_field("deleted_by_id".to_string(), AstVal::Str(claims.id.clone()));
             }
         } else if deleted_by_type.contains("float")
             || deleted_by_type.contains("double")
@@ -101,13 +138,19 @@ pub async fn delete(
             || deleted_by_type.contains("money")
         {
             if let Ok(n) = claims.id.parse::<f64>() {
-                fields.push(("deleted_by_id".into(), InsertValue::Param(crate::database::state::DbParam::F64(n))));
+                delete_data.add_field("deleted_by_id".to_string(), AstVal::F64(n));
             } else {
-                fields.push(("deleted_by_id".into(), InsertValue::Param(crate::database::state::DbParam::Str(claims.id.clone()))));
+                delete_data.add_field("deleted_by_id".to_string(), AstVal::Str(claims.id.clone()));
             }
         } else {
-            fields.push(("deleted_by_id".into(), InsertValue::Param(crate::database::state::DbParam::Str(claims.id.clone()))));
+            delete_data.add_field("deleted_by_id".to_string(), AstVal::Str(claims.id.clone()));
         }
+        
+        // Convert DeleteData to InsertValue vector for SQL compilation
+        let mut fields = delete_data.to_insert_values();
+        
+        // Add deleted_at as raw DB expression (server-side timestamp)
+        fields.push(("deleted_at".to_string(), InsertValue::Raw(state.query_converter.datetime_now.clone())));
 
         // Filter by id typed
     let id_filter_val = if let Ok(n) = id_raw.parse::<i64>() { QV::I64(n) } else { QV::Str(id_raw.clone()) };
@@ -159,22 +202,22 @@ pub async fn delete(
         let id_filter_val = if let Ok(n) = id_raw.parse::<i64>() { QV::I64(n) } else { QV::Str(id_raw.clone()) };
         let filter = Some(QF::Eq("id".into(), id_filter_val));
         let result = if type_delete == "soft" {
-            // patch deleted_at and deleted_by_id
-            let now_ts = Local::now().to_rfc3339();
-            let mut patch = sonic_rs::Object::new();
-            patch.insert("deleted_at", json!(now_ts));
-            // type for deleted_by_id
+            // Use DeleteData structure for MongoDB soft delete
+            let mut delete_data = DeleteData::new();
+            
             let deleted_by_type = table_schema
                 .columns
                 .iter()
                 .find(|c| c.name == "deleted_by_id")
                 .map(|c| c.type_data.clone())
                 .unwrap_or("int".to_string());
+            
+            // Add deleted_by_id with proper type
             if deleted_by_type.contains("int") {
                 if let Ok(n) = claims.id.parse::<i64>() {
-                    patch.insert("deleted_by_id", json!(n));
+                    delete_data.add_field("deleted_by_id".to_string(), AstVal::I64(n));
                 } else {
-                    patch.insert("deleted_by_id", json!(claims.id));
+                    delete_data.add_field("deleted_by_id".to_string(), AstVal::Str(claims.id.clone()));
                 }
             } else if deleted_by_type.contains("float")
                 || deleted_by_type.contains("double")
@@ -182,14 +225,32 @@ pub async fn delete(
                 || deleted_by_type.contains("money")
             {
                 if let Ok(n) = claims.id.parse::<f64>() {
-                    patch.insert("deleted_by_id", json!(n));
+                    delete_data.add_field("deleted_by_id".to_string(), AstVal::F64(n));
                 } else {
-                    patch.insert("deleted_by_id", json!(claims.id));
+                    delete_data.add_field("deleted_by_id".to_string(), AstVal::Str(claims.id.clone()));
                 }
             } else {
-                patch.insert("deleted_by_id", json!(claims.id));
+                delete_data.add_field("deleted_by_id".to_string(), AstVal::Str(claims.id.clone()));
             }
-            state.store.update(&table_schema.table, filter, Value::from(patch)).await.map(|_| ())
+            
+            // Add deleted_at timestamp
+            let now_ts = Local::now().to_rfc3339();
+            delete_data.add_field("deleted_at".to_string(), AstVal::Str(now_ts));
+            
+            // Convert to JSON only for MongoDB
+            let mut patch_obj = sonic_rs::Object::new();
+            for (k, v) in &delete_data.fields {
+                let json_val = match v {
+                    AstVal::I64(n) => json!(*n),
+                    AstVal::F64(f) => value_from_f64(*f),
+                    AstVal::Bool(b) => json!(*b),
+                    AstVal::Str(s) => json!(s.as_str()),
+                    AstVal::Null => Value::default(),
+                };
+                patch_obj.insert(k.as_str(), json_val);
+            }
+            
+            state.store.update(&table_schema.table, filter, Value::from(patch_obj)).await.map(|_| ())
         } else {
             state.store.delete(&table_schema.table, filter).await.map(|_| ())
         };

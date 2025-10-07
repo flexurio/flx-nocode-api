@@ -19,6 +19,40 @@ use crate::{
     AppState,
 };
 use crate::storage::ast::{Query as Q, Filter as F};
+use crate::storage::ast::Val as AstVal;
+use crate::json_compat::value_from_f64;
+
+/// Internal lightweight structure for import data (AST-based)
+#[derive(Debug, Clone)]
+struct ImportData {
+    fields: Vec<(String, AstVal)>,
+}
+
+impl ImportData {
+    fn new() -> Self {
+        Self { fields: Vec::new() }
+    }
+
+    fn add_field(&mut self, key: String, value: AstVal) {
+        self.fields.push((key, value));
+    }
+
+    /// Convert to sonic_rs::Value for DataStore insert
+    fn to_json_value(&self) -> sonic_rs::Value {
+        let mut obj = sonic_rs::Object::new();
+        for (k, v) in &self.fields {
+            let json_val = match v {
+                AstVal::I64(n) => sonic_rs::json!(*n),
+                AstVal::F64(f) => value_from_f64(*f),
+                AstVal::Bool(b) => sonic_rs::json!(*b),
+                AstVal::Str(s) => sonic_rs::json!(s.as_str()),
+                AstVal::Null => Value::default(),
+            };
+            obj.insert(k.as_str(), json_val);
+        }
+        Value::from(obj)
+    }
+}
 
 type Row = sonic_rs::Object;
 
@@ -69,7 +103,8 @@ pub async fn import(
     let mut id_ctx:Option<(String,usize,i64)>=None; if include_id { if let Some(f)=id_func.as_ref(){ let (prefix,width)=derive_id_prefix_and_width(f); if state.db_type=="mongodb" { use crate::storage::ast::Query as QQ; let q=QQ::from(table_schema.table.clone()).agg_max("max_id","id").r#where(F::ILike("id".into(),format!("{}%",prefix))).limit(1); let max_id:String=match state.store.query(&q).await { Ok(r) if !r.is_empty()=>r[0].get("max_id").and_then(|v|v.as_str()).unwrap_or("0").to_string(), _=>"0".into() }; let last=max_id.rsplit('/').next().unwrap_or("0"); let next=last.trim_start_matches('0').parse().unwrap_or(0); id_ctx=Some((prefix,width,next)); } else { let q=Q::from(table_schema.table.clone()).select(["COALESCE(MAX(id), 0) as max_id"]).r#where(F::Like("id".into(),format!("%{}%",prefix))); let max_id:String=match state.store.query(&q).await { Ok(r) if !r.is_empty()=>{ let v=r[0].get("max_id"); if let Some(s)=v.and_then(|x|x.as_str()){s.to_string()} else if let Some(n)=v.and_then(|x|x.as_i64()){n.to_string()} else if let Some(fl)=v.and_then(|x|x.as_f64()){fl.to_string()} else {"0".into()} }, _=>"0".into() }; let last=max_id.rsplit('/').next().unwrap_or("0"); let next=last.trim_start_matches('0').parse().unwrap_or(0); id_ctx=Some((prefix,width,next)); } } }
     let created_by_type=table_schema.columns.iter().find(|c|c.name=="created_by_id").map(|c|c.type_data.clone()).unwrap_or("int".into()); let mut inserted=0i32; let now=Local::now().to_rfc3339();
     for (i, row) in rows.iter().enumerate() {
-        let mut doc = sonic_rs::Object::new();
+        let mut import_data = ImportData::new();
+        
         for col in cols.iter() {
             let mut v = if let Some(add) = additional.get(&col.name) {
                 value_to_string(add)
@@ -103,32 +138,51 @@ pub async fn import(
                     v = encrypt(state.encrypt_key.clone(), v);
                 }
 
-            let json_val = if v.is_empty() && col.nullable {
-                Value::default()
+            // Store in lightweight AST structure
+            if v.is_empty() && col.nullable {
+                import_data.add_field(col.name.clone(), AstVal::Null);
             } else if (col.type_data.contains("int")
                 || col.type_data.contains("float")
                 || col.type_data.contains("double")
                 || col.type_data.contains("decimal")
                 || col.type_data.contains("money")) && !v.is_empty() {
-                if let Ok(n) = v.parse::<i64>() { json!(n) }
-                else if let Ok(f) = v.parse::<f64>() { json!(f) }
-                else { json!(v) }
+                if let Ok(n) = v.parse::<i64>() { 
+                    import_data.add_field(col.name.clone(), AstVal::I64(n)); 
+                }
+                else if let Ok(f) = v.parse::<f64>() { 
+                    import_data.add_field(col.name.clone(), AstVal::F64(f)); 
+                }
+                else { 
+                    import_data.add_field(col.name.clone(), AstVal::Str(v)); 
+                }
             } else {
-                json!(v)
-            };
-            doc.insert(col.name.as_str(), json_val);
+                import_data.add_field(col.name.clone(), AstVal::Str(v));
+            }
         }
 
-        doc.insert("created_at", json!(now.clone()));
+        // Add created_at and created_by_id
+        import_data.add_field("created_at".to_string(), AstVal::Str(now.clone()));
+        
         if created_by_type.contains("int") {
-            if let Ok(n)=claims.id.parse::<i64>() { doc.insert("created_by_id", json!(n)); } else { doc.insert("created_by_id", json!(claims.id.clone())); }
+            if let Ok(n)=claims.id.parse::<i64>() { 
+                import_data.add_field("created_by_id".to_string(), AstVal::I64(n)); 
+            } else { 
+                import_data.add_field("created_by_id".to_string(), AstVal::Str(claims.id.clone())); 
+            }
         } else if created_by_type.contains("float") || created_by_type.contains("double") || created_by_type.contains("decimal") || created_by_type.contains("money") {
-            if let Ok(fv)=claims.id.parse::<f64>() { doc.insert("created_by_id", json!(fv)); } else { doc.insert("created_by_id", json!(claims.id.clone())); }
+            if let Ok(fv)=claims.id.parse::<f64>() { 
+                import_data.add_field("created_by_id".to_string(), AstVal::F64(fv)); 
+            } else { 
+                import_data.add_field("created_by_id".to_string(), AstVal::Str(claims.id.clone())); 
+            }
         } else {
-            doc.insert("created_by_id", json!(claims.id.clone()));
+            import_data.add_field("created_by_id".to_string(), AstVal::Str(claims.id.clone()));
         }
 
-        if let Err(e) = state.store.insert(&table_schema.table, Value::from(doc)).await {
+        // Convert to JSON only at the final step
+        let doc = import_data.to_json_value();
+        
+        if let Err(e) = state.store.insert(&table_schema.table, doc).await {
             return HttpResponse::BadRequest().json(WebResponse { success:false,message:format!("Insert error: {} at row {}", e, inserted as usize + i + 1), total_data:inserted, data:Value::default() });
         }
         inserted += 1;

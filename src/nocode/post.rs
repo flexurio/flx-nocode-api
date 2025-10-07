@@ -22,6 +22,58 @@ use std::sync::Arc;
 use crate::storage::sql_store::{SqlStore, InsertValue};
 // (compat helpers unused currently)
 use crate::storage::ast::{Query as Q, Filter as F, Val as V};
+use crate::storage::ast::Val as AstVal;
+use crate::json_compat::value_from_f64;
+
+/// Internal lightweight structure for insert data (AST-based)
+/// Avoids heavy JSON manipulation until final serialization
+#[derive(Debug, Clone)]
+struct InsertData {
+    fields: Vec<(String, AstVal)>,
+}
+
+impl InsertData {
+    fn new() -> Self {
+        Self { fields: Vec::new() }
+    }
+
+    fn add_field(&mut self, key: String, value: AstVal) {
+        self.fields.push((key, value));
+    }
+
+    /// Convert to InsertValue vector for SQL operations
+    fn to_insert_values(&self) -> Vec<(String, InsertValue)> {
+        self.fields
+            .iter()
+            .map(|(k, v)| {
+                let param = match v {
+                    AstVal::I64(n) => DbParam::I64(*n),
+                    AstVal::F64(f) => DbParam::F64(*f),
+                    AstVal::Bool(b) => DbParam::Bool(*b),
+                    AstVal::Str(s) => DbParam::Str(s.clone()),
+                    AstVal::Null => DbParam::Null,
+                };
+                (k.clone(), InsertValue::Param(param))
+            })
+            .collect()
+    }
+
+    /// Convert to sonic_rs::Value for MongoDB or logging
+    fn to_json_value(&self) -> sonic_rs::Value {
+        let mut obj = sonic_rs::Object::new();
+        for (k, v) in &self.fields {
+            let json_val = match v {
+                AstVal::I64(n) => sonic_rs::json!(*n),
+                AstVal::F64(f) => value_from_f64(*f),
+                AstVal::Bool(b) => sonic_rs::json!(*b),
+                AstVal::Str(s) => sonic_rs::json!(s.as_str()),
+                AstVal::Null => Value::default(),
+            };
+            obj.insert(k.as_str(), json_val);
+        }
+        Value::from(obj)
+    }
+}
 
 /// Batch validate foreign keys in a single query for better performance (optimization)
 /// This replaces N sequential DB queries with 1 UNION ALL query
@@ -245,13 +297,11 @@ pub async fn insert(
         (sql, params)
     }
 
-    // Param list for INSERT - pre-allocate with estimated capacity (optimization)
-    let mut bind_params: Vec<DbParam> = Vec::with_capacity(filtered_columns.len() + 3);
-
-    // **3️⃣ Buat daftar nilai untuk INSERT** (fragment SQL per kolom)
-    let mut doc_map = sonic_rs::Object::new();
-    // Collect explicit (column, value) pairs for dialect-aware insert builder
-    let mut insert_fields: Vec<(String, InsertValue)> = Vec::with_capacity(filtered_columns.len() + 3);
+    // Use lightweight AST-based structure for collecting insert data
+    let mut insert_data = InsertData::new();
+    
+    // Track formula-based columns separately (will be added as InsertValue::Raw later)
+    let mut formula_fields: Vec<(String, InsertValue)> = Vec::new();
     
     // Collect FK checks for batch validation (optimization)
     let mut fk_checks: Vec<(String, String, String, String)> = Vec::with_capacity(filtered_columns.len()); // Pre-allocate
@@ -278,10 +328,10 @@ pub async fn insert(
                 let rhs = string_formula.replace(&format!("{}=", col.name), "");
                 let (frag, params) = build_formula_value(&rhs, &body);
                 if params.is_empty() {
-                    insert_fields.push((col.name.clone(), InsertValue::Raw(frag)));
+                    formula_fields.push((col.name.clone(), InsertValue::Raw(frag)));
                 } else {
                     // Raw fragment with its own params (will be rebound per dialect later)
-                    insert_fields.push((col.name.clone(), InsertValue::RawWithParams { sql: frag, params: params.clone() }));
+                    formula_fields.push((col.name.clone(), InsertValue::RawWithParams { sql: frag, params: params.clone() }));
                 }
             }
         }
@@ -314,31 +364,17 @@ pub async fn insert(
                     value = encrypt_ref(&state.encrypt_key, &value);
                 }
 
-            // push param by type and mirror into doc_map for AST
+            // Store in lightweight AST structure
             if col.type_data.contains("int") || col.type_data.contains("float") {
                 if let Ok(n) = value.parse::<i64>() {
-                    bind_params.push(DbParam::I64(n));
-                    doc_map.insert(&col.name, Value::from(n));
-                    insert_fields.push((col.name.clone(), InsertValue::Param(DbParam::I64(n))));
+                    insert_data.add_field(col.name.clone(), AstVal::I64(n));
                 } else if let Ok(f) = value.parse::<f64>() {
-                    bind_params.push(DbParam::F64(f));
-                    let vnum = Value::new_f64(f).unwrap_or_else(|| Value::from(0));
-                    doc_map.insert(&col.name, vnum);
-                    insert_fields.push((col.name.clone(), InsertValue::Param(DbParam::F64(f))));
+                    insert_data.add_field(col.name.clone(), AstVal::F64(f));
                 } else {
-                    // Reuse constructed DbParam for both vectors to reduce duplicate string clones
-                    let param = DbParam::Str(value);
-                    bind_params.push(param.clone());
-                    let fallback = body.get(&col.name).cloned().unwrap_or_else(|| Value::from(""));
-                    doc_map.insert(&col.name, fallback);
-                    insert_fields.push((col.name.clone(), InsertValue::Param(param)));
+                    insert_data.add_field(col.name.clone(), AstVal::Str(value));
                 }
             } else {
-                let param = DbParam::Str(value);
-                bind_params.push(param.clone());
-                let fallback = body.get(&col.name).cloned().unwrap_or_else(|| Value::from(""));
-                doc_map.insert(&col.name, fallback);
-                insert_fields.push((col.name.clone(), InsertValue::Param(param)));
+                insert_data.add_field(col.name.clone(), AstVal::Str(value));
             }
         }
     }
@@ -445,19 +481,19 @@ pub async fn insert(
             }
         }
         let id = parts.join("/");
-        // after building from tokens, bind id into params and AST fields
-        bind_params.push(DbParam::Str(id.clone()));
-        doc_map.insert("id", Value::from(id.as_str()));
-        insert_fields.push(("id".to_string(), InsertValue::Param(DbParam::Str(id))));
+        // Store id in AST structure
+        insert_data.add_field("id".to_string(), AstVal::Str(id));
     }
 
-    // **Tambahkan created_at** (app-side timestamp for AST)
-    let now = Local::now().to_rfc3339();
+    // Convert InsertData to InsertValue vector for SQL compilation
+    let mut insert_fields = insert_data.to_insert_values();
+    
+    // Add formula-based fields
+    insert_fields.extend(formula_fields);
+    
+    // **Tambahkan created_at** (server-side raw expression)
     insert_columns.push("created_at");
-    // always use raw expression for created_at to keep server-side clock consistent
     insert_fields.push(("created_at".to_string(), InsertValue::Raw(state.query_converter.datetime_now.clone())));
-    // keep doc for audit/debug
-    doc_map.insert("created_at", Value::from(now.as_str()));
 
     // **Tambahkan created_by_id**
     insert_columns.push("created_by_id");
@@ -474,14 +510,9 @@ pub async fn insert(
 
     if created_by_type.contains("int") {
         if let Ok(n) = claims.id.parse::<i64>() {
-            bind_params.push(DbParam::I64(n));
-            doc_map.insert("created_by_id", Value::from(n));
             insert_fields.push(("created_by_id".to_string(), InsertValue::Param(DbParam::I64(n))));
         } else {
-            let param = DbParam::Str(claims.id.clone());
-            bind_params.push(param.clone());
-            doc_map.insert("created_by_id", Value::from(claims.id.as_str()));
-            insert_fields.push(("created_by_id".to_string(), InsertValue::Param(param)));
+            insert_fields.push(("created_by_id".to_string(), InsertValue::Param(DbParam::Str(claims.id.clone()))));
         }
     } else if created_by_type.contains("float")
         || created_by_type.contains("double")
@@ -489,21 +520,12 @@ pub async fn insert(
         || created_by_type.contains("money")
     {
         if let Ok(n) = claims.id.parse::<f64>() {
-            bind_params.push(DbParam::F64(n));
-            let vnum = Value::new_f64(n).unwrap_or_else(|| Value::from(0));
-            doc_map.insert("created_by_id", vnum);
             insert_fields.push(("created_by_id".to_string(), InsertValue::Param(DbParam::F64(n))));
         } else {
-            let param = DbParam::Str(claims.id.clone());
-            bind_params.push(param.clone());
-            doc_map.insert("created_by_id", Value::from(claims.id.as_str()));
-            insert_fields.push(("created_by_id".to_string(), InsertValue::Param(param)));
+            insert_fields.push(("created_by_id".to_string(), InsertValue::Param(DbParam::Str(claims.id.clone()))));
         }
     } else {
-        let param = DbParam::Str(claims.id.clone());
-        bind_params.push(param.clone());
-        doc_map.insert("created_by_id", Value::from(claims.id.as_str()));
-        insert_fields.push(("created_by_id".to_string(), InsertValue::Param(param)));
+        insert_fields.push(("created_by_id".to_string(), InsertValue::Param(DbParam::Str(claims.id.clone()))));
     }
 
     // For MongoDB, directly insert JSON doc without SQL; for SQL, compile INSERT
@@ -609,8 +631,47 @@ pub async fn insert(
     }
 
     if state.db_type == "mongodb" {
-        // Insert using document map
-        let doc = Value::from(doc_map.clone());
+        // Convert InsertData to JSON for MongoDB with timestamps
+        let mut doc_obj = sonic_rs::Object::new();
+        
+        // Add all fields from InsertData
+        for (k, v) in &insert_data.fields {
+            let json_val = match v {
+                AstVal::I64(n) => sonic_rs::json!(*n),
+                AstVal::F64(f) => value_from_f64(*f),
+                AstVal::Bool(b) => sonic_rs::json!(*b),
+                AstVal::Str(s) => sonic_rs::json!(s.as_str()),
+                AstVal::Null => Value::default(),
+            };
+            doc_obj.insert(k.as_str(), json_val);
+        }
+        
+        // Add timestamps
+        let now_iso = Local::now().to_rfc3339();
+        doc_obj.insert("created_at", sonic_rs::json!(now_iso));
+        
+        // Add created_by_id with proper type
+        if created_by_type.contains("int") {
+            if let Ok(n) = claims.id.parse::<i64>() {
+                doc_obj.insert("created_by_id", sonic_rs::json!(n));
+            } else {
+                doc_obj.insert("created_by_id", sonic_rs::json!(claims.id));
+            }
+        } else if created_by_type.contains("float")
+            || created_by_type.contains("double")
+            || created_by_type.contains("decimal")
+            || created_by_type.contains("money")
+        {
+            if let Ok(n) = claims.id.parse::<f64>() {
+                doc_obj.insert("created_by_id", value_from_f64(n));
+            } else {
+                doc_obj.insert("created_by_id", sonic_rs::json!(claims.id));
+            }
+        } else {
+            doc_obj.insert("created_by_id", sonic_rs::json!(claims.id));
+        }
+        
+        let doc = Value::from(doc_obj);
         match state.store.insert(&table_schema.table, doc).await {
             Ok(result) => {
                 // log_output result
@@ -814,7 +875,8 @@ pub async fn insert(
             }
 
             if returned_id.is_none() {
-                let tmp_val = Value::from(doc_map.clone());
+                // Try to get id from InsertData
+                let tmp_val = insert_data.to_json_value();
                 if let Some(v) = tmp_val.get("id") { returned_id = Some(v.clone()); }
             }
 
