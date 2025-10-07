@@ -8,7 +8,6 @@ use std::collections::HashMap;
 use crate::{
     auth::{check_access, get_user_info_from_token},
     helpers::{filter_table_schema, split_column_operator},
-    rate_limit::{RL_WINDOW_MUTATE, build_key, RateOp},
     log::log_output,
     model::{TableSchema, WebResponse},
     AppState,
@@ -24,25 +23,10 @@ pub async fn process(
     table_schemas: Arc<Vec<TableSchema>>,
     req: actix_web::HttpRequest,
 ) -> impl Responder {
-    // Rate-limit per IP and per user (for non-public)
-    let ip_key = crate::helpers::get_client_ip(&req);
-    let limit_i64: i64 = std::env::var("RATE_LIMIT_MUTATE_PER_SEC")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(10);
-    if limit_i64 > 0 {
-        let limit = (limit_i64.min(u32::MAX as i64)) as u32;
-        if !RL_WINDOW_MUTATE.check_and_increment(&build_key(RateOp::Trace, route.as_ref(), &ip_key), limit) {
-            return HttpResponse::TooManyRequests().json(WebResponse {
-                success: false,
-                message: "Too many requests".into(),
-                total_data: 0,
-                data: Value::default(),
-            });
-        }
-    }
+    // Global rate limiting handled by middleware. Keep IP for potential auditing.
+    let _ip_key = crate::helpers::get_client_ip(&req);
 
-    let mut actor_id: Option<String> = None;
+    let mut _actor_id: Option<String> = None; // retained for potential future audit usage
     if !state.route_publics.iter().any(|r| r == route.as_ref()) {
         let claims = match get_user_info_from_token(req, state.clone()) {
             Ok(c) => c,
@@ -64,21 +48,9 @@ pub async fn process(
                 data: Value::default(),
             });
         }
-        actor_id = Some(claims.id);
+    _actor_id = Some(claims.id);
     }
-    // Per-user limit
-    if !state.route_publics.iter().any(|r| r == route.as_ref()) {
-        if let Some(ref uid) = actor_id {
-            if limit_i64 > 0 && !uid.is_empty() && !RL_WINDOW_MUTATE.check_and_increment(&build_key(RateOp::Trace, route.as_ref(), &format!("user:{}", uid)), limit_i64 as u32) {
-                return HttpResponse::TooManyRequests().json(WebResponse {
-                    success: false,
-                    message: "Too many requests".into(),
-                    total_data: 0,
-                    data: Value::default(),
-                });
-            }
-        }
-    }
+    // Per-user limit removed (can add separate layer if needed)
 
     // Resolve schema first
     let table_schema = filter_table_schema(&table_schemas, route.as_ref());

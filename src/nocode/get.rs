@@ -6,7 +6,7 @@ use sonic_rs::{Value, JsonValueTrait, json, Object};
 use std::collections::HashMap;
 
 use crate::{
-    AppState, auth::{check_access, get_user_info_from_token}, database::redis::redis_del_key, helpers::{filter_table_schema, get_client_ip, split_column_operator}, log::log_output, model::{TableSchema, WebResponse}, rate_limit::{RL_WINDOW_GET, build_key, RateOp}
+    AppState, auth::{check_access, get_user_info_from_token}, database::redis::redis_del_key, helpers::{filter_table_schema, get_client_ip, split_column_operator}, log::log_output, model::{TableSchema, WebResponse}
 };
 use crate::storage::ast::{Filter as QF, Query as QQ, Val as QV, Expr as QE, Join as QJ, JoinKind as QJK};
 use std::sync::Arc;
@@ -23,26 +23,8 @@ pub async fn select(
 ) -> impl Responder {
     // Default cache tenant scope (use &str to avoid allocation)
     let mut cache_tenant = String::from("public");
-    // Per-IP GET rate limit per second
-    let ip_key = get_client_ip(&req);
-    
-    // Cache rate limit config (read once)
-    use once_cell::sync::Lazy;
-    static RATE_LIMIT_GET: Lazy<i64> = Lazy::new(|| {
-        std::env::var("RATE_LIMIT_GET_PER_SEC")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(20)
-    });
-    let get_limit_i64 = *RATE_LIMIT_GET;
-    if get_limit_i64 > 0 && !RL_WINDOW_GET.check_and_increment(&build_key(RateOp::Get, route.as_ref(), &ip_key), get_limit_i64 as u32) {
-        return HttpResponse::TooManyRequests().json(WebResponse {
-            success: false,
-            message: "Too many requests".to_string(),
-            total_data: 0,
-            data: Value::default(),
-        });
-    }
+    // Rate limiting now handled by global middleware in main.rs
+    let _ip_key = get_client_ip(&req); // still used later for logging/audit if needed
     if !state.route_publics.iter().any(|r| r == route.as_ref()) {
         
         let claims = match get_user_info_from_token(req, state.clone()) {
@@ -71,15 +53,7 @@ pub async fn select(
             });
         }
 
-        // Per-user GET rate limit per second
-        if get_limit_i64 > 0 && !claims.id.is_empty() && !RL_WINDOW_GET.check_and_increment(&build_key(RateOp::Get, route.as_ref(), &format!("user:{}", claims.id)), get_limit_i64 as u32) {
-            return HttpResponse::TooManyRequests().json(WebResponse {
-                success: false,
-                message: "Too many requests".to_string(),
-                total_data: 0,
-                data: Value::default(),
-            });
-        }
+        // Per-user GET rate limiting removed (can be reintroduced globally if required)
     }
 
     let table_schema = filter_table_schema(&table_schemas, route.as_ref());

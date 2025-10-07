@@ -8,8 +8,8 @@ use sonic_rs::{Value, json};
 use crate::json_compat::{JsonValueTrait, JsonContainerTrait, value_from_f64};
 
 use crate::{audit::{AuditEntry, write_audit}};
-use crate::helpers::get_client_ip;
-use crate::rate_limit::{RL_WINDOW_MUTATE, build_key, RateOp};
+use crate::helpers::get_client_ip; // still used for logging if needed
+// Global rate limiting now handled in main.rs (removed RL_WINDOW_MUTATE usage)
 use crate::{
     auth::{check_access, get_user_info_from_token, Claims},
     database::state::{DbParam},
@@ -71,32 +71,8 @@ pub async fn update(
             });
         }
     };
-    // Rate-limit per IP
-    let ip_key = get_client_ip(&req);
-    let limit_i64: i64 = std::env::var("RATE_LIMIT_MUTATE_PER_SEC")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(10);
-    if limit_i64 > 0 && !RL_WINDOW_MUTATE.check_and_increment(&build_key(RateOp::Put, route.as_ref(), &ip_key), limit_i64 as u32) {
-        return HttpResponse::TooManyRequests().json(WebResponse {
-            success: false,
-            message: "Too many requests".into(),
-            total_data: 0,
-            data: Value::default(),
-        });
-    }
-    // Per-user limit (for non-public routes only)
-    if !state.route_publics.iter().any(|r| r == route.as_ref()) {
-        let user_key = claims.id.clone();
-        if limit_i64 > 0 && !user_key.is_empty() && !RL_WINDOW_MUTATE.check_and_increment(&build_key(RateOp::Put, route.as_ref(), &format!("user:{}", user_key)), limit_i64 as u32) {
-            return HttpResponse::TooManyRequests().json(WebResponse {
-                success: false,
-                message: "Too many requests".into(),
-                total_data: 0,
-                data: Value::default(),
-            });
-        }
-    }
+    // Rate limiting removed (handled globally). Keep IP if needed.
+    let _ip_key = get_client_ip(&req);
     let id_raw: String = path.into_inner();
 
     // get body from request and compare with table_schemas.put.columns

@@ -1,12 +1,11 @@
 use actix_cors::Cors;
 use actix_files::Files;
 use actix_multipart::Multipart;
-use actix_web::dev::{Service, ServiceRequest};
 use actix_web::web::Path;
 use actix_web::{web, App, HttpServer, Responder};
 use actix_web::middleware::Compress;
 use actix_web::middleware::Condition;
-use auth::validate_token;
+// Authentication moved to AuthMiddleware (see middleware.rs)
 use colored::Colorize;
 use dotenv::dotenv;
 use helpers::cetak_label;
@@ -61,7 +60,9 @@ mod helpers;
 mod json_compat; // JSON compatibility layer for sonic_rs
 mod log;
 mod rate_limit;
+mod middleware; // global middleware (rate limiting, etc.)
 mod storage; // new optional storage abstraction (not used yet)
+use crate::middleware::GlobalRateLimit; // global rate limit middleware
 #[cfg(feature = "mongodb")]
 use crate::storage::mongodb_store::MongoStore;
 
@@ -108,8 +109,6 @@ static CONFIG: Lazy<crate::model::Config> = Lazy::new(|| {
     }
 });
 
-// Static whitelist for unauthenticated endpoints
-const ROUTE_WHITELIST: [&str; 3] = ["/login", "/register", "/healthz"];
 
 pub(crate) static ISDEBUG: Lazy<bool> = Lazy::new(|| match env::var("DEBUG") {
     Ok(val) => matches!(val.to_lowercase().as_str(), "1" | "true" | "yes"),
@@ -716,27 +715,9 @@ async fn main() -> std::io::Result<()> {
                         .into()
                     })
             })
-            .wrap_fn({
-                // clone AppState handle into middleware closure so it owns it (satisfies 'static)
-                let app_state = app_state.clone();
-                move |req: ServiceRequest, srv| {
-                    // check if route contain in whitelist or not
-                    let route = req.path().trim_start_matches('/').to_string();
-                    if ROUTE_WHITELIST.contains(&req.path())
-                        || app_state.route_publics.contains(&route)
-                    {
-                        return srv.call(req);
-                    }
-
-                    let app_data = req
-                        .app_data::<web::Data<AppState>>()
-                        .expect("AppState missing");
-                    match validate_token(req.request().clone(), app_data.clone()) {
-                        Ok(_) => srv.call(req),
-                        Err(e) => Box::pin(async move { Ok(req.into_response(e)) }),
-                    }
-                }
-            })
+            // Global rate limiting (IP + method + first path segment) centralized
+            .wrap(GlobalRateLimit)
+            .wrap(crate::middleware::AuthMiddleware)
             .wrap(Condition::new(
                 env::var("ALLOW_ANY_ORIGINS")
                     .map(|v| matches!(v.to_lowercase().as_str(), "1" | "true" | "yes"))
