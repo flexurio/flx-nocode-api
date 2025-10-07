@@ -21,7 +21,7 @@ use std::sync::Arc;
 pub async fn process(
     state: web::Data<AppState>,
     parameters: web::Query<HashMap<String, String>>,
-    route: String,
+    route: Arc<str>,
     table_schemas: Arc<Vec<TableSchema>>,
     req: actix_web::HttpRequest,
 ) -> impl Responder {
@@ -44,7 +44,7 @@ pub async fn process(
     }
 
     let mut actor_id: Option<String> = None;
-    if !state.route_publics.contains(&route) {
+    if !state.route_publics.iter().any(|r| r == route.as_ref()) {
         let claims = match get_user_info_from_token(req, state.clone()) {
             Ok(c) => c,
             Err(_) => {
@@ -57,7 +57,7 @@ pub async fn process(
             }
         };
 
-        if !check_access(&claims, &route, "execute") {
+    if !check_access(&claims, route.as_ref(), "execute") {
             return HttpResponse::Unauthorized().json(WebResponse {
                 success: false,
                 message: crate::constants::ERR_UNAUTHORIZED.to_string(),
@@ -68,7 +68,7 @@ pub async fn process(
         actor_id = Some(claims.id);
     }
     // Per-user limit
-    if !state.route_publics.contains(&route) {
+    if !state.route_publics.iter().any(|r| r == route.as_ref()) {
         if let Some(ref uid) = actor_id {
             if limit_i64 > 0
                 && !uid.is_empty()
@@ -86,9 +86,9 @@ pub async fn process(
     }
 
     // Resolve schema first
-    let table_schema: TableSchema = filter_table_schema(&table_schemas, route.clone()).await;
+    let table_schema: TableSchema = filter_table_schema(&table_schemas, route.as_ref()).await;
     if table_schema.table.is_empty() {
-        let message_error = format!("Entity {} on folder config/{}.json not found", route, route);
+    let message_error = format!("Entity {} on folder config/{}.json not found", route, route);
         return HttpResponse::FailedDependency().json(WebResponse {
             success: false,
             message: message_error,
@@ -230,8 +230,8 @@ pub async fn process(
     // Compile SELECT via AST to SQL and params
     let (select_sql, select_params) = ds.preview_sql(&q);
     if *crate::ISDEBUG {
-        log_output("QUERY", "TRACE(AST-SELECT)", route.as_str(), select_sql.clone(), true);
-        log_output("PARAMS", "TRACE(AST-SELECT)", route.as_str(), format!("{:?}", select_params), true);
+    log_output("QUERY", "TRACE(AST-SELECT)", route.as_ref(), select_sql.clone(), true);
+    log_output("PARAMS", "TRACE(AST-SELECT)", route.as_ref(), format!("{:?}", select_params), true);
     }
 
     let ds = SqlStore::new(state.db.clone(), state.db_type.clone());
@@ -255,8 +255,8 @@ pub async fn process(
     };
 
     if *crate::ISDEBUG {
-        log_output("QUERY", "TRACE(AST)", route.as_str(), s_sql.clone(), true);
-        log_output("PARAMS", "TRACE(AST)", route.as_str(), format!("{:?}", compiled_params), true);
+    log_output("QUERY", "TRACE(AST)", route.as_ref(), s_sql.clone(), true);
+    log_output("PARAMS", "TRACE(AST)", route.as_ref(), format!("{:?}", compiled_params), true);
     }
 
     // MongoDB: current TRACE path relies on SQL upsert; return explicit unsupported for Mongo

@@ -18,7 +18,7 @@ use crate::database::redis::{redis_get_json, redis_set_json, build_key_prefix};
 pub async fn select(
     state: web::Data<AppState>,
     parameters: web::Query<HashMap<String, String>>,
-    route: String,
+    route: Arc<str>,
     table_schemas: Arc<Vec<TableSchema>>,
     req: actix_web::HttpRequest,
 ) -> impl Responder {
@@ -47,7 +47,7 @@ pub async fn select(
             data: Value::default(),
         });
     }
-    if !state.route_publics.contains(&route) {
+    if !state.route_publics.iter().any(|r| r == route.as_ref()) {
         
         let claims = match get_user_info_from_token(req, state.clone()) {
             Ok(c) => c,
@@ -66,7 +66,7 @@ pub async fn select(
             cache_tenant = claims.id.clone();
         }
 
-        if !check_access(&claims, &route, "read") {
+    if !check_access(&claims, route.as_ref(), "read") {
             return HttpResponse::Unauthorized().json(WebResponse {
                 success: false,
                 message: crate::constants::ERR_UNAUTHORIZED.to_string(),
@@ -90,7 +90,7 @@ pub async fn select(
         }
     }
 
-    let table_schema: TableSchema = filter_table_schema(&table_schemas, route.clone()).await;
+    let table_schema: TableSchema = filter_table_schema(&table_schemas, route.as_ref()).await;
     // legacy SQL variables removed; using AST end-to-end
 
     log_output(
@@ -144,7 +144,7 @@ pub async fn select(
     }
     
     // Build cache key if caching enabled
-    let prefix = build_key_prefix(&cache_tenant, &route);
+    let prefix = build_key_prefix(&cache_tenant, route.as_ref());
     // include stable request parameters in the key (sorted by name)
     let mut keys: Vec<_> = params_map
         .iter()
@@ -164,7 +164,7 @@ pub async fn select(
                 log_output(
                     "REDIS",
                     "CACHE HIT",
-                    &route,
+                    route.as_ref(),
                     format!("Key: {}, Records: {}", k, cached.total_data),
                     true,
                 );
@@ -173,7 +173,7 @@ pub async fn select(
                 log_output(
                     "REDIS",
                     "CACHE MISS",
-                    &route,
+                    route.as_ref(),
                     format!("Key: {}, will query DB", k),
                     true,
                 );
@@ -602,8 +602,8 @@ pub async fn select(
             if *crate::ISDEBUG {
                 let ds_prev = SqlStore::new(state.db.clone(), state.db_type.clone());
                 let (sql_dbg, params_dbg) = ds_prev.preview_sql(&q);
-                log_output("QUERY", "GET(AST)", route.as_str(), sql_dbg, true);
-                log_output("PARAMS", "GET(AST)", route.as_str(), format!("{:?}", params_dbg), true);
+                log_output("QUERY", "GET(AST)", route.as_ref(), sql_dbg, true);
+                log_output("PARAMS", "GET(AST)", route.as_ref(), format!("{:?}", params_dbg), true);
             }
             let rows = match state.store.query(&q).await {
                 Ok(rs) => rs,
@@ -634,7 +634,7 @@ pub async fn select(
                                 log_output(
                                     "REDIS",
                                     "CACHE WRITE",
-                                    route.as_str(),
+                                    route.as_ref(),
                                     format!("Key: {}, TTL: {}s, Records: {}", k, ttl, total_data),
                                     true,
                                 );
@@ -643,7 +643,7 @@ pub async fn select(
                                 log_output(
                                     "ERROR",
                                     "CACHE WRITE",
-                                    route.as_str(),
+                                    route.as_ref(),
                                     format!("Failed to cache: {}", e),
                                     false,
                                 );

@@ -23,12 +23,12 @@ use std::sync::Arc;
 pub async fn process_sp(
     state: web::Data<AppState>,
     parameters: web::Query<HashMap<String, String>>,
-    route: String,
+    route: Arc<str>,
     table_schemas: Arc<Vec<TableSchema>>,
     req: actix_web::HttpRequest,
 ) -> impl Responder {
     let mut actor_id: Option<String> = None;
-    if !state.route_publics.contains(&route) {
+    if !state.route_publics.iter().any(|r| r == route.as_ref()) {
         let req_for_auth = req.clone();
         let claims = match get_user_info_from_token(req_for_auth, state.clone()) {
             Ok(c) => c,
@@ -42,7 +42,7 @@ pub async fn process_sp(
             }
         };
 
-        if !check_access(&claims, &route, "execute") {
+    if !check_access(&claims, route.as_ref(), "execute") {
             return HttpResponse::Unauthorized().json(WebResponse {
                 success: false,
                 message: crate::constants::ERR_UNAUTHORIZED.to_string(),
@@ -70,7 +70,7 @@ pub async fn process_sp(
         }
     }
     // Per-user limit (for non-public routes only)
-    if !state.route_publics.contains(&route) {
+    if !state.route_publics.iter().any(|r| r == route.as_ref()) {
         if let Some(ref uid) = actor_id {
             if limit_i64 > 0
                 && !uid.is_empty()
@@ -90,7 +90,7 @@ pub async fn process_sp(
     // get parameters value only allowed from table_schema.trace.parameters
     // loop every table_schema.trace.parameters
 
-    let table_schema: TableSchema = filter_table_schema(&table_schemas, route.clone()).await;
+    let table_schema: TableSchema = filter_table_schema(&table_schemas, route.as_ref()).await;
     if table_schema.table.is_empty() {
         let message_error = format!("Entity {} on folder config/{}.json not found", route, route);
         return HttpResponse::FailedDependency().json(WebResponse {
@@ -152,8 +152,8 @@ pub async fn process_sp(
     let (s_sql, compiled_params) = match ds.preview_call_procedure(&table_schema.patch.pre_process_sp, param_count, bind_params.clone()) {
         Ok((sql, params)) => {
             if *crate::ISDEBUG {
-                log_output("QUERY", "PATCH(CALL)", route.as_str(), sql.clone(), true);
-                log_output("PARAMS", "PATCH(CALL)", route.as_str(), format!("{:?}", params), true);
+                log_output("QUERY", "PATCH(CALL)", route.as_ref(), sql.clone(), true);
+                log_output("PARAMS", "PATCH(CALL)", route.as_ref(), format!("{:?}", params), true);
             }
             (sql, params)
         }

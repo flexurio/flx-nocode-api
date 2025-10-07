@@ -45,7 +45,7 @@ fn is_safe_mime_type(mime: &str) -> bool {
 }
 
 // create function to get data from table_schemas where table is equal to route
-pub async fn filter_table_schema(table_schemas: &[TableSchema], route: String) -> TableSchema {
+pub async fn filter_table_schema(table_schemas: &[TableSchema], route: &str) -> TableSchema {
     // Use iterator for better performance instead of loop
     if let Some(schema) = table_schemas.iter().find(|schema| {
         let table_name = if schema.table.contains('.') {
@@ -53,7 +53,7 @@ pub async fn filter_table_schema(table_schemas: &[TableSchema], route: String) -
         } else {
             &schema.table
         };
-        table_name == route
+    table_name == route
     }) {
         let mut table_schema_clone = schema.clone();
 

@@ -23,7 +23,7 @@ use crate::storage::ast::{Filter as QF, Val as QV};
 // NCO-DELETE
 pub async fn delete(
     state: Data<AppState>,
-    route: String,
+    route: Arc<str>,
     schemas: Arc<(Vec<TableSchema>, Vec<ReferenceForeignKey>)>,
     path: Path<String>,
     req: actix_web::HttpRequest,
@@ -31,7 +31,7 @@ pub async fn delete(
     let table_schemas = &schemas.0;
     let reference_foreign_keys = &schemas.1;
     let mut claims = Claims::default();
-    if !state.route_publics.contains(&route) {
+    if !state.route_publics.iter().any(|r| r == route.as_ref()) {
         let req_for_auth = req.clone();
         claims = match get_user_info_from_token(req_for_auth, state.clone()) {
             Ok(c) => c,
@@ -45,7 +45,7 @@ pub async fn delete(
             }
         };
 
-        if !check_access(&claims, &route, "delete") {
+    if !check_access(&claims, route.as_ref(), "delete") {
             return HttpResponse::Unauthorized().json(WebResponse {
                 success: false,
                 message: crate::constants::ERR_UNAUTHORIZED.to_string(),
@@ -74,7 +74,7 @@ pub async fn delete(
         });
     }
     // Per-user limit (for non-public routes only)
-    if !state.route_publics.contains(&route) {
+    if !state.route_publics.iter().any(|r| r == route.as_ref()) {
         let user_key = claims.id.clone();
         if limit_i64 > 0
             && !user_key.is_empty()
@@ -90,9 +90,9 @@ pub async fn delete(
         }
     }
 
-    let table_schema = filter_table_schema(table_schemas, route.clone()).await;
+    let table_schema = filter_table_schema(table_schemas, route.as_ref()).await;
     if table_schema.table.is_empty() {
-        let message_error = format!("Entity {} on folder config/{}.json not found", route, route);
+    let message_error = format!("Entity {} on folder config/{}.json not found", route, route);
         return HttpResponse::FailedDependency().json(WebResponse {
             success: false,
             message: message_error,
@@ -115,7 +115,7 @@ pub async fn delete(
             .find(|c| c.name == "deleted_by_id")
             .map(|c| c.type_data.clone())
             .unwrap_or("int".to_string());
-        log_output("TYPE", "deleted_by_id", route.as_str(), deleted_by_type.clone(), true);
+    log_output("TYPE", "deleted_by_id", route.as_ref(), deleted_by_type.clone(), true);
 
         // Build fields with a raw DB now() expression to avoid string conversion issues (MSSQL)
         let mut fields: Vec<(String, InsertValue)> = vec![
@@ -148,8 +148,8 @@ pub async fn delete(
         match ds.preview_update_with(&table_schema.table, Some(&QF::Eq("id".into(), id_filter_val)), &fields) {
             Ok((sql, params)) => {
                 if *crate::ISDEBUG {
-                    log_output("QUERY", "DELETE(AST-soft)", route.as_str(), sql.clone(), true);
-                    log_output("PARAMS", "DELETE(AST-soft)", route.as_str(), format!("{:?}", params), true);
+                    log_output("QUERY", "DELETE(AST-soft)", route.as_ref(), sql.clone(), true);
+                    log_output("PARAMS", "DELETE(AST-soft)", route.as_ref(), format!("{:?}", params), true);
                 }
                 exec_sql = sql;
                 exec_params = params;
@@ -170,8 +170,8 @@ pub async fn delete(
         match ds.preview_delete(&table_schema.table, Some(&QF::Eq("id".into(), id_filter_val))) {
             Ok((sql, params)) => {
                 if *crate::ISDEBUG {
-                    log_output("QUERY", "DELETE(AST-hard)", route.as_str(), sql.clone(), true);
-                    log_output("PARAMS", "DELETE(AST-hard)", route.as_str(), format!("{:?}", params), true);
+                    log_output("QUERY", "DELETE(AST-hard)", route.as_ref(), sql.clone(), true);
+                    log_output("PARAMS", "DELETE(AST-hard)", route.as_ref(), format!("{:?}", params), true);
                 }
                 exec_sql = sql;
                 exec_params = params;
@@ -186,7 +186,7 @@ pub async fn delete(
             }
         }
     }
-    log_output("QUERY", "DELETE(AST)", route.as_str(), exec_sql.clone(), true);
+    log_output("QUERY", "DELETE(AST)", route.as_ref(), exec_sql.clone(), true);
 
     // MongoDB path: no transactions; perform direct update/delete
     if state.db_type == "mongodb" {
@@ -276,7 +276,7 @@ pub async fn delete(
             let (is_fk_ok, err_message) = process_foreign_keys_delete_update_txstore(
                 "DELETE", // "DELETE" or "UPDATE"
                 state.clone(),
-                route.clone(),
+                route.to_string(),
                 &mut tx,
                 reference_foreign_keys,
                 claims.id.clone(),

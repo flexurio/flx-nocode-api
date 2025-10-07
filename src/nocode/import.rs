@@ -24,12 +24,12 @@ type Row = sonic_rs::Object;
 
 pub async fn import(
     state: Data<AppState>,
-    route: String,
+    route: Arc<str>,
     schemas: Arc<(Vec<TableSchema>, Vec<ReferenceForeignKey>)>,
     mut multipart: Multipart,
     req: actix_web::HttpRequest,
 ) -> impl Responder { 
-    let table_schemas=&schemas.0; let mut claims=Claims::default(); if !state.route_publics.contains(&route){ match get_user_info_from_token(req.clone(), state.clone()){ Ok(c)=>claims=c, Err(_)=>return HttpResponse::Unauthorized().json(WebResponse{success:false,message:crate::constants::ERR_INVALID_TOKEN.into(),total_data:0,data:Value::default()}) } if !check_access(&claims,&route,"write"){ return HttpResponse::Unauthorized().json(WebResponse{success:false,message:crate::constants::ERR_UNAUTHORIZED.into(),total_data:0,data:Value::default()}); } }
+    let table_schemas=&schemas.0; let mut claims=Claims::default(); if !state.route_publics.iter().any(|r| r == route.as_ref()){ match get_user_info_from_token(req.clone(), state.clone()){ Ok(c)=>claims=c, Err(_)=>return HttpResponse::Unauthorized().json(WebResponse{success:false,message:crate::constants::ERR_INVALID_TOKEN.into(),total_data:0,data:Value::default()}) } if !check_access(&claims,route.as_ref(),"write"){ return HttpResponse::Unauthorized().json(WebResponse{success:false,message:crate::constants::ERR_UNAUTHORIZED.into(),total_data:0,data:Value::default()}); } }
     if let Some(limit) = std::env::var("RATE_LIMIT_MUTATE_PER_SEC").ok().and_then(|v| v.parse::<u32>().ok()) {
         if limit > 0 {
             let key = format!("import:{}:{}", route, get_client_ip(&req));
@@ -38,7 +38,7 @@ pub async fn import(
             }
         }
     }
-    let table_schema=filter_table_schema(table_schemas,route.clone()).await; if table_schema.table.is_empty(){ return HttpResponse::FailedDependency().json(WebResponse{success:false,message:format!("Entity {} on folder config/{}.json not found",route,route),total_data:0,data:Value::default()}); }
+    let table_schema=filter_table_schema(table_schemas,route.as_ref()).await; if table_schema.table.is_empty(){ return HttpResponse::FailedDependency().json(WebResponse{success:false,message:format!("Entity {} on folder config/{}.json not found",route,route),total_data:0,data:Value::default()}); }
     let max_file_size=std::env::var("UPLOAD_LIMIT_MB").ok().and_then(|v|v.parse::<usize>().ok()).unwrap_or(10)*1024*1024; let mut file_bytes=None; let mut filename=String::new(); let mut declared_mime=None; let mut additional=sonic_rs::Object::new();
     while let Some(item)=multipart.next().await { let mut field=match item{Ok(f)=>f,Err(e)=>return HttpResponse::BadRequest().json(WebResponse{success:false,message:format!("Multipart error: {}",e),total_data:0,data:Value::default()})}; let cd=field.content_disposition().cloned(); let name=cd.as_ref().and_then(|c|c.get_name()).unwrap_or(""); if name=="file" { if let Some(fname)=cd.as_ref().and_then(|c|c.get_filename()){filename=fname.to_string();} declared_mime=field.content_type().map(|t|t.to_string()); let mut buf=Vec::new(); let mut total=0usize; while let Some(chunk)=field.next().await { let data=match chunk{Ok(c)=>c,Err(e)=>return HttpResponse::BadRequest().json(WebResponse{success:false,message:format!("Read chunk error: {}",e),total_data:0,data:Value::default()})}; total+=data.len(); if total>max_file_size { return HttpResponse::PayloadTooLarge().json(WebResponse{success:false,message:"File too large".into(),total_data:0,data:Value::default()}); } buf.extend_from_slice(&data);} file_bytes=Some(buf);} else if !name.is_empty(){ let mut val=String::new(); while let Some(chunk)=field.next().await { let data=match chunk{Ok(c)=>c,Err(e)=>return HttpResponse::BadRequest().json(WebResponse{success:false,message:format!("Read field '{}' error: {}",name,e),total_data:0,data:Value::default()})}; val.push_str(&String::from_utf8_lossy(&data)); } additional.insert(name,json!(val)); } }
     let file_bytes=match file_bytes {Some(b)=>b,None=>return HttpResponse::BadRequest().json(WebResponse{success:false,message:"No file provided (field name 'file')".into(),total_data:0,data:Value::default()})};

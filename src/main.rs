@@ -913,61 +913,67 @@ async fn main() -> std::io::Result<()> {
                     cfg.service(
                         web::resource(route_get.as_ref())
                             // register nocode_get
-                            .route(web::get().to(
+                            .route(web::get().to({
                                 move |state: web::Data<AppState>,
                                       parameters: web::Query<HashMap<String,String>>,
                                       req: actix_web::HttpRequest| {
+                                    let route_get = Arc::clone(&route_get);
                                     select(
                                         state,
                                         parameters,
-                                        route_get.to_string(),
+                                        route_get,
                                         SCHEMAS.0.clone().into(),
                                         req,
                                     )
-                                },
-                            ))
+                                }
+                            }))
                             // register create_nocode
-                            .route(web::post().to(
+                            .route(web::post().to({
                                 move |state: web::Data<AppState>,
                                       multipart: Multipart,
                                       req: actix_web::HttpRequest| {
+                                    let route_post = Arc::clone(&route_post);
                                     insert(
                                         state,
-                                        route_post.to_string(),
+                                        route_post,
                                         SCHEMAS.0.clone().into(),
                                         multipart,
                                         req,
                                     )
-                                },
-                            ))
+                                }
+                            }))
                             // register nocode_trace
-                            .route(web::trace().to(
+                            .route(web::trace().to({
+                                let route_trace = Arc::clone(&route_trace);
                                 move |state: web::Data<AppState>,
                                       parameters: web::Query<HashMap<String,String>>,
                                       req: actix_web::HttpRequest| {
+                                    let route_trace = Arc::clone(&route_trace);
                                     process(
                                         state,
                                         parameters,
-                                        route_trace.to_string(),
+                                        route_trace,
                                         SCHEMAS.0.clone().into(),
                                         req,
                                     )
-                                },
-                            ))
+                                }
+                            }))
                             // register nocode_patch
-                            .route(web::patch().to(
+                            .route(web::patch().to({
+                                let route_patch = Arc::clone(&route_patch);
                                 move |state: web::Data<AppState>,
                                       parameters: web::Query<HashMap<String,String>>,
                                       req: actix_web::HttpRequest| {
+                                    let route_patch = Arc::clone(&route_patch);
                                     process_sp(
                                         state,
                                         parameters,
-                                        route_patch.to_string(),
+                                        route_patch,
                                         SCHEMAS.0.clone().into(),
                                         req,
                                     )
-                                },
-                            )),
+                                }
+                            })),
                     );
 
 
@@ -1001,29 +1007,33 @@ async fn main() -> std::io::Result<()> {
                     cfg.service(
                         web::resource(format!("{}/{{id}}", route_delete.as_ref()))
                             // register delete_nocode
-                            .route(web::delete().to(
+                            .route(web::delete().to({
+                                let route_delete = Arc::clone(&route_delete);
                                 move |state: web::Data<AppState>,
                                       path: Path<String>,
                                       req: actix_web::HttpRequest| {
-                                    delete(state, route_delete.to_string(), SCHEMAS.clone(), path, req)
-                                },
-                            ))
+                                    let route_delete = Arc::clone(&route_delete);
+                                    delete(state, route_delete, SCHEMAS.clone(), path, req)
+                                }
+                            }))
                             // register create_nocode
-                            .route(web::put().to(
+                            .route(web::put().to({
+                                let route_put = Arc::clone(&route_put);
                                 move |state: web::Data<AppState>,
                                       multipart: Multipart,
                                       path: Path<String>,
                                       req: actix_web::HttpRequest| {
+                                    let route_put = Arc::clone(&route_put);
                                     update(
                                         state,
-                                        route_put.to_string(),
+                                        route_put,
                                         SCHEMAS.clone(),
                                         multipart,
                                         path,
                                         req,
                                     )
-                                },
-                            )),
+                                }
+                            })),
                             
                     );
 
@@ -1044,19 +1054,21 @@ async fn main() -> std::io::Result<()> {
                     }
                     cfg.service(
                         web::resource(format!("/import/{}", route_import.as_ref()))
-                            .route(web::post().to(
+                            .route(web::post().to({
+                                let route_import = Arc::clone(&route_import);
                                 move |state: web::Data<AppState>,
                                       multipart: Multipart,
                                       req: actix_web::HttpRequest| {
+                                    let route_import = Arc::clone(&route_import);
                                     import(
                                         state,
-                                        route_import.to_string(),
+                                        route_import,
                                         SCHEMAS.clone(),
                                         multipart,
                                         req,
                                     )
-                                },
-                            )),
+                                }
+                            })),
                     );
 
 
@@ -1077,19 +1089,21 @@ async fn main() -> std::io::Result<()> {
                     }
                     cfg.service(
                         web::resource(format!("/export/{}", route_export.as_ref()))
-                            .route(web::get().to(
+                            .route(web::get().to({
+                                let route_export = Arc::clone(&route_export);
                                 move |state: web::Data<AppState>,
                                       multipart: Multipart,
                                       req: actix_web::HttpRequest| {
+                                    let route_export = Arc::clone(&route_export);
                                     export(
                                         state,
-                                        route_export.to_string(),
+                                        route_export,
                                         SCHEMAS.clone(),
                                         multipart,
                                         req,
                                     )
-                                },
-                            )),
+                                }
+                            })),
                     );
 
 
@@ -1110,16 +1124,18 @@ async fn main() -> std::io::Result<()> {
                     }
                     cfg.service(
                         web::resource(format!("validate/{}", route_validate.as_ref())).route(
-                            web::get().to(
+                            web::get().to({
+                                let route_validate = Arc::clone(&route_validate);
                                 move |state: web::Data<AppState>, req: actix_web::HttpRequest| {
+                                    let route_validate = Arc::clone(&route_validate);
                                     check_table_design(
                                         state,
-                                        route_validate.to_string(),
+                                        route_validate,
                                         SCHEMAS.0.clone().into(),
                                         req,
                                     )
-                                },
-                            ),
+                                }
+                            }),
                         ),
                     );
 
@@ -1140,17 +1156,19 @@ async fn main() -> std::io::Result<()> {
                             );
                         }
                         cfg.service(
-                            web::resource(format!("generate/table/{}", route_generate_table.as_ref()))
-                                .route(web::post().to(
-                                move |state: web::Data<AppState>, req: actix_web::HttpRequest| {
-                                    create_table(
-                                        state,
-                                        route_generate_table.to_string(),
-                                        SCHEMAS.0.clone().into(),
-                                        req,
-                                    )
-                                },
-                            )),
+                                web::resource(format!("generate/table/{}", route_generate_table.as_ref()))
+                                    .route(web::post().to({
+                                        let route_generate_table = Arc::clone(&route_generate_table);
+                                        move |state: web::Data<AppState>, req: actix_web::HttpRequest| {
+                                            let route_generate_table = Arc::clone(&route_generate_table);
+                                            create_table(
+                                                state,
+                                                route_generate_table,
+                                                SCHEMAS.0.clone().into(),
+                                                req,
+                                            )
+                                        }
+                                    })),
                         );
                     }
                     if do_log {

@@ -19,7 +19,7 @@ use chrono::Local;
 /// - filters according to schema.get.parameters
 pub async fn export(
     state: web::Data<AppState>,
-    route: String,
+    route: Arc<str>,
     schemas: Arc<(Vec<TableSchema>, Vec<ReferenceForeignKey>)>,
     multipart: Multipart,
     req: actix_web::HttpRequest,
@@ -28,7 +28,7 @@ pub async fn export(
 
     // AuthZ like GET (read)
     let mut claims = Claims::default();
-    if !state.route_publics.contains(&route) {
+    if !state.route_publics.iter().any(|r| r == route.as_ref()) {
         let req_for_auth = req.clone();
         claims = match get_user_info_from_token(req_for_auth, state.clone()) {
             Ok(c) => c,
@@ -70,7 +70,7 @@ pub async fn export(
         .unwrap_or(&route);
 
     // Schema lookup
-    let table_schema: TableSchema = filter_table_schema(table_schemas, route.clone()).await;
+    let table_schema: TableSchema = filter_table_schema(table_schemas, route.as_ref()).await;
     if table_schema.table.is_empty() {
         let message_error = format!(
             "Entity {} on folder config/{}.json not found",
@@ -434,8 +434,8 @@ pub async fn export(
     let ds = SqlStore::new(state.db.clone(), state.db_type.clone());
     if *crate::ISDEBUG {
         let (s_sql_dbg, params_dbg) = ds.preview_sql(&q);
-        log_output("QUERY", "EXPORT(AST)", route.as_str(), s_sql_dbg.clone(), true);
-        log_output("PARAMS", "EXPORT(AST)", route.as_str(), format!("{:?}", params_dbg), true);
+    log_output("QUERY", "EXPORT(AST)", route.as_ref(), s_sql_dbg.clone(), true);
+    log_output("PARAMS", "EXPORT(AST)", route.as_ref(), format!("{:?}", params_dbg), true);
     }
     let rows = match state.store.query(&q).await {
         Ok(res) => res,
@@ -484,7 +484,7 @@ pub async fn export(
             log_output(
                 "WARN",
                 "EXPORT",
-                route.as_str(),
+                route.as_ref(),
                 format!("Falling back to CSV: {}", e),
                 true,
             );

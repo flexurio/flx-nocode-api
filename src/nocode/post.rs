@@ -86,13 +86,13 @@ async fn validate_foreign_keys_batch(
 // NCO-POST
 pub async fn insert(
     state: Data<AppState>,
-    route: String,
+    route: Arc<str>,
     table_schemas: Arc<Vec<TableSchema>>,
     multipart: Multipart,
     req: actix_web::HttpRequest,
 ) -> impl Responder {
     let mut claims = Claims::default();
-    if !state.route_publics.contains(&route) {
+    if !state.route_publics.iter().any(|r| r == route.as_ref()) {
         let req_for_auth = req.clone();
         claims = match get_user_info_from_token(req_for_auth, state.clone()) {
             Ok(c) => c,
@@ -107,7 +107,7 @@ pub async fn insert(
         };
 
 
-        if !check_access(&claims, &route, "write") {
+    if !check_access(&claims, route.as_ref(), "write") {
             return HttpResponse::Unauthorized().json(WebResponse {
                 success: false,
                 message: crate::constants::ERR_UNAUTHORIZED.to_string(),
@@ -149,7 +149,7 @@ pub async fn insert(
         });
     }
     // Per-user limit (for non-public routes only)
-    if !state.route_publics.contains(&route) {
+    if !state.route_publics.iter().any(|r| r == route.as_ref()) {
         let user_key = claims.id.clone();
         if limit_i64 > 0
             && !user_key.is_empty()
@@ -166,7 +166,7 @@ pub async fn insert(
     }
 
     // Generate SQL query INSERT to table in variable route, from data structure table in table_schemas
-    let table_schema: TableSchema = filter_table_schema(&table_schemas, route.clone()).await;
+    let table_schema: TableSchema = filter_table_schema(&table_schemas, route.as_ref()).await;
     if table_schema.table.is_empty() {
         let message_error = format!("Entity {} on folder config/{}.json not found", route, route);
         return HttpResponse::FailedDependency().json(WebResponse {
@@ -239,8 +239,8 @@ pub async fn insert(
         }
     }
 
-    log_output("COLUMNS", "insert_columns", route.as_str(), format!("{:?}", insert_columns), true);
-    log_output("COLUMNS", "filtered_columns", route.as_str(), format!("{:?}", filtered_columns), true);
+    log_output("COLUMNS", "insert_columns", route.as_ref(), format!("{:?}", insert_columns), true);
+    log_output("COLUMNS", "filtered_columns", route.as_ref(), format!("{:?}", filtered_columns), true);
 
     // Helper: build formula with placeholders and collect params
     fn build_formula_value(raw: &str, body: &Value) -> (String, Vec<DbParam>) {
@@ -441,8 +441,8 @@ pub async fn insert(
                     if *crate::ISDEBUG {
                         let ds_dbg = SqlStore::new(state.db.clone(), state.db_type.clone());
                         let (sql_dbg, params_dbg) = ds_dbg.preview_sql(&q_max);
-                        log_output("QUERY", "MAX-ID", route.as_str(), sql_dbg, true);
-                        log_output("PARAMS", "MAX-ID", route.as_str(), format!("{:?}", params_dbg), true);
+                        log_output("QUERY", "MAX-ID", route.as_ref(), sql_dbg, true);
+                        log_output("PARAMS", "MAX-ID", route.as_ref(), format!("{:?}", params_dbg), true);
                     }
                     match tx_opt.as_mut().unwrap().query(&q_max).await {
                         Ok(rows) if !rows.is_empty() => rows[0].get("id").and_then(|v| v.as_str().map(|s| s.to_string())).unwrap_or_else(|| "0".to_string()),
@@ -501,7 +501,7 @@ pub async fn insert(
         .map(|c| c.type_data.clone())
         .unwrap_or("int".to_string());
 
-    log_output("TYPE", "created_by_id", route.as_str(), created_by_type.clone(), true);
+    log_output("TYPE", "created_by_id", route.as_ref(), created_by_type.clone(), true);
 
     if created_by_type.contains("int") {
         if let Ok(n) = claims.id.parse::<i64>() {
@@ -545,8 +545,8 @@ pub async fn insert(
         match attempt.or_else(|_| ds.preview_insert_with(&table_schema.table, &insert_fields)) {
             Ok((sql_dbg, params_dbg)) => {
                 if *crate::ISDEBUG {
-                    log_output("QUERY", "POST(AST)", route.as_str(), sql_dbg.clone(), true);
-                    log_output("PARAMS", "POST(AST)", route.as_str(), format!("{:?}", params_dbg), true);
+                    log_output("QUERY", "POST(AST)", route.as_ref(), sql_dbg.clone(), true);
+                    log_output("PARAMS", "POST(AST)", route.as_ref(), format!("{:?}", params_dbg), true);
                 }
                 (sql_dbg, params_dbg)
             }
@@ -623,7 +623,7 @@ pub async fn insert(
             tx_opt.as_mut().unwrap(),
             table_schema.post.pre_process,
             &body,
-            route.as_str(),
+            route.as_ref(),
         )
         .await
         {
@@ -643,7 +643,7 @@ pub async fn insert(
         match state.store.insert(&table_schema.table, doc).await {
             Ok(result) => {
                 // log_output result
-                log_output("INFO", "MONGO INSERT RESULT", route.as_str(), format!("{:?}", result), true);
+                log_output("INFO", "MONGO INSERT RESULT", route.as_ref(), format!("{:?}", result), true);
                 // Try to capture returned id when supported
                 let returned_id = result.get("inserted_id").cloned().unwrap_or(Value::default()).get("$oid").cloned().unwrap_or(Value::default());
                 // Audit trail
@@ -745,7 +745,7 @@ pub async fn insert(
                                         log_output(
                                             "WARN",
                                             "POST(MONGO) post_process",
-                                            route.as_str(),
+                                            route.as_ref(),
                                             format!("Unsupported WHERE clause for Mongo: {}", w),
                                             false,
                                         );
@@ -759,7 +759,7 @@ pub async fn insert(
                                             log_output(
                                                 "INFO",
                                                 "POST(MONGO) post_process",
-                                                route.as_str(),
+                                                route.as_ref(),
                                                 "Executed SELECT-equivalent on Mongo".to_string(),
                                                 true,
                                             );
@@ -769,7 +769,7 @@ pub async fn insert(
                                         log_output(
                                             "ERROR",
                                             "POST(MONGO) post_process",
-                                            route.as_str(),
+                                            route.as_ref(),
                                             format!("Error executing Mongo post_process: {}", e),
                                             false,
                                         );
@@ -780,7 +780,7 @@ pub async fn insert(
                                 log_output(
                                     "WARN",
                                     "POST(MONGO) post_process",
-                                    route.as_str(),
+                                    route.as_ref(),
                                     "Only simple SELECT post_process is supported on Mongo".to_string(),
                                     false,
                                 );
@@ -790,7 +790,7 @@ pub async fn insert(
                             log_output(
                                 "ERROR",
                                 "POST(MONGO) post_process",
-                                route.as_str(),
+                                route.as_ref(),
                                 format!("Error building SQL formula for Mongo: {}", e),
                                 false,
                             );
@@ -858,7 +858,7 @@ pub async fn insert(
                     &mut tx,
                     table_schema.post.post_process,
                     &body,
-                    route.as_str(),
+                    route.as_ref(),
                 )
                 .await
                 {

@@ -27,7 +27,7 @@ use crate::storage::ast::{Filter as QF, Val as QV};
 // NCO-PUT
 pub async fn update(
     state: Data<AppState>,
-    route: String,
+    route: Arc<str>,
     schemas: Arc<(Vec<TableSchema>, Vec<ReferenceForeignKey>)>,
     multipart: Multipart,
     path: Path<String>,
@@ -37,7 +37,7 @@ pub async fn update(
     let reference_foreign_keys = &schemas.1;
     
     let mut claims = Claims::default();
-    if !state.route_publics.contains(&route) {
+    if !state.route_publics.iter().any(|r| r == route.as_ref()) {
         let req_for_auth = req.clone();
         claims = match get_user_info_from_token(req_for_auth, state.clone()) {
             Ok(c) => c,
@@ -51,7 +51,7 @@ pub async fn update(
             }
         };
 
-        if !check_access(&claims, &route, "write") {
+    if !check_access(&claims, route.as_ref(), "write") {
             return HttpResponse::Unauthorized().json(WebResponse {
                 success: false,
                 message: crate::constants::ERR_UNAUTHORIZED.to_string(),
@@ -90,7 +90,7 @@ pub async fn update(
         });
     }
     // Per-user limit (for non-public routes only)
-    if !state.route_publics.contains(&route) {
+    if !state.route_publics.iter().any(|r| r == route.as_ref()) {
         let user_key = claims.id.clone();
         if limit_i64 > 0
             && !user_key.is_empty()
@@ -108,9 +108,9 @@ pub async fn update(
     let id_raw: String = path.into_inner();
 
     // get body from request and compare with table_schemas.put.columns
-    let table_schema = filter_table_schema(table_schemas, route.clone()).await;
+    let table_schema = filter_table_schema(table_schemas, route.as_ref()).await;
     if table_schema.table.is_empty() {
-        let message_error = format!("Entity {} on folder config/{}.json not found", route, route);
+    let message_error = format!("Entity {} on folder config/{}.json not found", route, route);
         return HttpResponse::FailedDependency().json(WebResponse {
             success: false,
             message: message_error,
@@ -196,7 +196,7 @@ pub async fn update(
                         if !is_encrypted {
                             value_x = encrypt(state.encrypt_key.clone(), value_x.clone());
                         }
-                        if route == "flx_users" && column == "password" {
+                        if route.as_ref() == "flx_users" && column == "password" {
                             password_override = Some(value_x.clone());
                         }
                     }
@@ -234,7 +234,7 @@ pub async fn update(
         .map(|c| c.type_data.clone())
         .unwrap_or("int".to_string());
 
-    log_output("TYPE", "updated_by_id", route.as_str(), created_by_type.clone(), true);
+    log_output("TYPE", "updated_by_id", route.as_ref(), created_by_type.clone(), true);
 
     if created_by_type.contains("int") {
         if let Ok(n) = claims.id.parse::<i64>() {
@@ -287,8 +287,8 @@ pub async fn update(
 
     // Preview AST-style update for debug (filter id, patch keys from body + timestamps)
     if *crate::ISDEBUG && state.db_type != "mongodb" {
-        log_output("QUERY", "PUT(AST)", route.as_str(), s_sql.clone(), true);
-        log_output("PARAM", "PUT(AST)", route.as_str(), format!("{:?}", params_compiled), true);
+    log_output("QUERY", "PUT(AST)", route.as_ref(), s_sql.clone(), true);
+    log_output("PARAM", "PUT(AST)", route.as_ref(), format!("{:?}", params_compiled), true);
     }
 
     // validation_data moved to run inside the transaction below
@@ -366,7 +366,7 @@ pub async fn update(
             tx_opt.as_mut().unwrap(),
             table_schema.put.pre_process,
             &body,
-            route.as_str(),
+            route.as_ref(),
         )
         .await
         {
@@ -381,7 +381,7 @@ pub async fn update(
     }
 
     // If this is a password-only update for flx_users, prefer DataStore for clarity and consistency
-    if route == "flx_users" && password_override.is_some() && table_schema.put.columns.len() == 1 {
+    if route.as_ref() == "flx_users" && password_override.is_some() && table_schema.put.columns.len() == 1 {
         let now = chrono::Local::now().naive_local().format("%Y-%m-%d %H:%M:%S").to_string();
         let mut doc_obj = sonic_rs::Object::new();
         if let Some(pass_tmp) = password_override {
@@ -426,7 +426,7 @@ pub async fn update(
         ));
         if state.db_type == "mongodb" {
             if *crate::ISDEBUG {
-                log_output("QUERY", "PUT", route.as_str(), "Mongo password update flx_users".to_string(), true);
+                log_output("QUERY", "PUT", route.as_ref(), "Mongo password update flx_users".to_string(), true);
             }
             match state.store.update("flx_users", filter, doc).await {
                 Ok(_) => {
@@ -457,7 +457,7 @@ pub async fn update(
             }
         } else {
             if *crate::ISDEBUG {
-                log_output("QUERY", "PUT", route.as_str(), "AST password update flx_users".to_string(), true);
+                log_output("QUERY", "PUT", route.as_ref(), "AST password update flx_users".to_string(), true);
             }
             let mut tx = tx_opt.take().unwrap();
             match tx.update("flx_users", filter, doc).await {
@@ -529,7 +529,7 @@ pub async fn update(
                     &mut tx,
                     table_schema.put.post_process,
                     &body,
-                    route.as_str(),
+                    route.as_ref(),
                 )
                 .await
                 {
@@ -550,7 +550,7 @@ pub async fn update(
                     let (is_fk_ok, err_message) = crate::nocode::foreign_key::process_foreign_keys_delete_update_txstore(
                         "UPDATE", // "DELETE" or "UPDATE"
                         state.clone(),
-                        route.clone(),
+                        route.to_string(),
                         &mut tx,
                         reference_foreign_keys,
                         claims.id.clone(),

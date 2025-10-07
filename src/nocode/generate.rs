@@ -18,11 +18,11 @@ use std::sync::Arc;
 // NCO-GENERATE-TABLE
 pub async fn create_table(
     state: web::Data<AppState>,
-    route: String,
+    route: Arc<str>,
     table_schemas: Arc<Vec<TableSchema>>,
     req: actix_web::HttpRequest,
 ) -> impl Responder {
-    if !state.route_publics.contains(&route) {
+    if !state.route_publics.iter().any(|r| r == route.as_ref()) {
         let claims = match get_user_info_from_token(req, state.clone()) {
             Ok(c) => c,
             Err(_) => {
@@ -35,7 +35,7 @@ pub async fn create_table(
             }
         };
 
-        if !check_access(&claims, &route, "execute") {
+    if !check_access(&claims, route.as_ref(), "execute") {
             return HttpResponse::Unauthorized().json(WebResponse {
                 success: false,
                 message: crate::constants::ERR_UNAUTHORIZED.to_string(),
@@ -45,7 +45,7 @@ pub async fn create_table(
         }
     }
 
-    let table_schema = filter_table_schema(&table_schemas, route.clone()).await;
+    let table_schema = filter_table_schema(&table_schemas, route.as_ref()).await;
     if table_schema.table.is_empty() {
         let message_error = format!("Entity {} on folder config/{}.json not found", route, route);
         return HttpResponse::FailedDependency().json(WebResponse {
@@ -61,7 +61,7 @@ pub async fn create_table(
         log_output(
             "INFO",
             "GENERATE TABLE",
-            route.as_str(),
+            route.as_ref(),
             format!("MongoDB backend: skipping DDL for collection '{}'.", table_schema.table),
             true,
         );
@@ -99,7 +99,7 @@ pub async fn create_table(
         log_output(
             "QUERY",
             "GENERATE TABLE",
-            route.clone().as_str(),
+            route.as_ref(),
             sql_create_table.clone() + " ~ ERROR : " + &error_message,
             true,
         );
@@ -116,7 +116,7 @@ pub async fn create_table(
             log_output(
                 "QUERY",
                 "GENERATE INDEX",
-                route.clone().as_str(),
+                route.as_ref(),
                 sql_idx.clone() + " ~ ERROR : " + &err_message,
                 true,
             );

@@ -15,11 +15,11 @@ use std::sync::Arc;
 // NCO-VALIDATE
 pub async fn check_table_design(
     state: Data<AppState>,
-    route: String,
+    route: Arc<str>,
     mut table_schemas: Arc<Vec<TableSchema>>,
     req: actix_web::HttpRequest,
 ) -> impl Responder {
-    if !state.route_publics.contains(&route) {
+    if !state.route_publics.iter().any(|r| r == route.as_ref()) {
         let claims = match get_user_info_from_token(req, state.clone()) {
             Ok(c) => c,
             Err(_) => {
@@ -32,7 +32,7 @@ pub async fn check_table_design(
             }
         };
 
-        if !check_access(&claims, &route, "execute") {
+    if !check_access(&claims, route.as_ref(), "execute") {
             return HttpResponse::Unauthorized().json(WebResponse {
                 success: false,
                 message: crate::constants::ERR_UNAUTHORIZED.to_string(),
@@ -43,7 +43,7 @@ pub async fn check_table_design(
     }
 
     // get table schema from table_schemas where table = route
-    let table_schema = filter_table_schema(&table_schemas, route.clone()).await;
+    let table_schema = filter_table_schema(&table_schemas, route.as_ref()).await;
     if table_schema.table.is_empty() {
         let message_error = format!("Entity {} on folder config/{}.json not found", route, route);
         return HttpResponse::FailedDependency().json(WebResponse {
