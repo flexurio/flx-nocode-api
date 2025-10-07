@@ -108,7 +108,7 @@ pub async fn update(
     let id_raw: String = path.into_inner();
 
     // get body from request and compare with table_schemas.put.columns
-    let table_schema = filter_table_schema(table_schemas, route.as_ref()).await;
+    let table_schema = filter_table_schema(table_schemas, route.as_ref());
     if table_schema.table.is_empty() {
     let message_error = format!("Entity {} on folder config/{}.json not found", route, route);
         return HttpResponse::FailedDependency().json(WebResponse {

@@ -7,7 +7,7 @@ use sonic_rs::{json, Value, JsonValueMutTrait};
 use std::collections::HashSet;
 
 use crate::{log::log_output, model::TableSchema, ISDEBUG};
-use std::collections::HashMap;
+use ahash::AHashMap;
 use std::sync::OnceLock;
 use crate::model::ReferenceForeignKey;
 
@@ -50,10 +50,10 @@ fn is_safe_mime_type(mime: &str) -> bool {
 // create function to get data from table_schemas where table is equal to route
 // One-time built global schema map (table_name => augmented TableSchema)
 // Augmentation adds mandatory query params so handlers avoid per-request cloning.
-static SCHEMA_MAP: OnceLock<HashMap<String, TableSchema>> = OnceLock::new();
-static FK_MAP: OnceLock<HashMap<String, Vec<ReferenceForeignKey>>> = OnceLock::new();
+static SCHEMA_MAP: OnceLock<AHashMap<String, TableSchema>> = OnceLock::new();
+static FK_MAP: OnceLock<AHashMap<String, Vec<ReferenceForeignKey>>> = OnceLock::new();
 
-pub async fn filter_table_schema(table_schemas: &[TableSchema], route: &str) -> TableSchema {
+pub fn filter_table_schema(table_schemas: &[TableSchema], route: &str) -> TableSchema {
     // Fast path: map already built
     if let Some(map) = SCHEMA_MAP.get() {
         return map.get(route).cloned().unwrap_or_default();
@@ -61,7 +61,7 @@ pub async fn filter_table_schema(table_schemas: &[TableSchema], route: &str) -> 
 
     // Build the map exactly once (first caller wins). Any race loses but that's fine; we just reuse the initialized map.
     SCHEMA_MAP.get_or_init(|| {
-        let mut map: HashMap<String, TableSchema> = HashMap::with_capacity(table_schemas.len());
+        let mut map: AHashMap<String, TableSchema> = AHashMap::with_capacity(table_schemas.len());
         for schema in table_schemas.iter() {
             // Derive logical route name (strip prefix before last '.')
             let table_name = if schema.table.contains('.') {
@@ -104,7 +104,7 @@ pub fn get_reference_foreign_keys<'a>(
 ) -> &'a [ReferenceForeignKey] {
     // Build FK map once (group by fk.table which is the referenced table)
     FK_MAP.get_or_init(|| {
-        let mut map: HashMap<String, Vec<ReferenceForeignKey>> = HashMap::new();
+        let mut map: AHashMap<String, Vec<ReferenceForeignKey>> = AHashMap::new();
         for fk in fks.iter() {
             map.entry(fk.table.clone()).or_default().push(fk.clone());
         }

@@ -43,7 +43,7 @@ pub async fn check_table_design(
     }
 
     // get table schema from table_schemas where table = route
-    let table_schema = filter_table_schema(&table_schemas, route.as_ref()).await;
+    let table_schema = filter_table_schema(&table_schemas, route.as_ref());
     if table_schema.table.is_empty() {
         let message_error = format!("Entity {} on folder config/{}.json not found", route, route);
         return HttpResponse::FailedDependency().json(WebResponse {
