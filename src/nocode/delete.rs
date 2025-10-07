@@ -17,7 +17,7 @@ use crate::{
 };
 use chrono::Local;
 use std::sync::Arc;
-use crate::storage::sql_store::{SqlStore, InsertValue};
+use crate::storage::sql_store::{InsertValue};
 use crate::storage::ast::{Filter as QF, Val as QV};
 
 // NCO-DELETE
@@ -143,9 +143,8 @@ pub async fn delete(
         }
 
         // Filter by id typed
-        let id_filter_val = if let Ok(n) = id_raw.parse::<i64>() { QV::I64(n) } else { QV::Str(id_raw.clone()) };
-        let ds = SqlStore::new(state.db.clone(), state.db_type.clone());
-        match ds.preview_update_with(&table_schema.table, Some(&QF::Eq("id".into(), id_filter_val)), &fields) {
+    let id_filter_val = if let Ok(n) = id_raw.parse::<i64>() { QV::I64(n) } else { QV::Str(id_raw.clone()) };
+    match state.sql_store.preview_update_with(&table_schema.table, Some(&QF::Eq("id".into(), id_filter_val)), &fields) {
             Ok((sql, params)) => {
                 if *crate::ISDEBUG {
                     log_output("QUERY", "DELETE(AST-soft)", route.as_ref(), sql.clone(), true);
@@ -165,9 +164,8 @@ pub async fn delete(
         }
     } else if type_delete == "hard" {
         // compile DELETE via AST
-        let id_filter_val = if let Ok(n) = id_raw.parse::<i64>() { QV::I64(n) } else { QV::Str(id_raw.clone()) };
-        let ds = SqlStore::new(state.db.clone(), state.db_type.clone());
-        match ds.preview_delete(&table_schema.table, Some(&QF::Eq("id".into(), id_filter_val))) {
+    let id_filter_val = if let Ok(n) = id_raw.parse::<i64>() { QV::I64(n) } else { QV::Str(id_raw.clone()) };
+    match state.sql_store.preview_delete(&table_schema.table, Some(&QF::Eq("id".into(), id_filter_val))) {
             Ok((sql, params)) => {
                 if *crate::ISDEBUG {
                     log_output("QUERY", "DELETE(AST-hard)", route.as_ref(), sql.clone(), true);

@@ -73,8 +73,8 @@ pub async fn create_table(
         });
     }
 
-    let ds = SqlStore::new(state.db.clone(), state.db_type.clone());
-    let (sql_create_table, sql_create_index) = generate_table(&ds, &table_schema);
+    // Reuse global sql_store from AppState instead of creating a new SqlStore each request
+    let (sql_create_table, sql_create_index) = generate_table(&state.sql_store, &table_schema);
     let mut err_message = String::new();
 
     // Run DDL statements inside a TxStore transaction for consistency

@@ -22,6 +22,8 @@ pub struct AppState {
     pub converter_token: ClaimsConverter,
     /// Backend-agnostic data store adapter (initially SQL-backed). Use this for new code paths.
     pub store: Arc<dyn crate::storage::traits::DataStore>,
+    /// Reusable SQL AST builder/executor (dialect aware) to avoid per-request SqlStore::new
+    pub sql_store: crate::storage::sql_store::SqlStore,
 }
 
 /// Simple cross-DB parameter type for binding values safely.

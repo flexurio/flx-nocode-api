@@ -15,7 +15,6 @@ use crate::{
     model::{TableSchema, WebResponse},
     AppState,
 };
-use crate::storage::sql_store::SqlStore;
 use chrono::Local;
 use std::sync::Arc;
 
@@ -147,9 +146,8 @@ pub async fn process_sp(
     }
 
     // Use SqlStore to compile dialect-aware procedure call
-    let ds = SqlStore::new(state.db.clone(), state.db_type.clone());
     let param_count = param_sp.len();
-    let (s_sql, compiled_params) = match ds.preview_call_procedure(&table_schema.patch.pre_process_sp, param_count, bind_params.clone()) {
+    let (s_sql, compiled_params) = match state.sql_store.preview_call_procedure(&table_schema.patch.pre_process_sp, param_count, bind_params.clone()) {
         Ok((sql, params)) => {
             if *crate::ISDEBUG {
                 log_output("QUERY", "PATCH(CALL)", route.as_ref(), sql.clone(), true);

@@ -535,14 +535,13 @@ pub async fn insert(
     }
 
     // For MongoDB, directly insert JSON doc without SQL; for SQL, compile INSERT
-    let ds = SqlStore::new(state.db.clone(), state.db_type.clone());
     let (exec_sql, exec_params) = if state.db_type == "mongodb" {
         (String::new(), vec![])
     } else {
         // Try to include RETURNING id when supported
         let returning_cols: Vec<&str> = vec!["id"]; // core id fetch
-        let attempt = ds.preview_insert_with_returning(&table_schema.table, &insert_fields, &returning_cols);
-        match attempt.or_else(|_| ds.preview_insert_with(&table_schema.table, &insert_fields)) {
+        let attempt = state.sql_store.preview_insert_with_returning(&table_schema.table, &insert_fields, &returning_cols);
+        match attempt.or_else(|_| state.sql_store.preview_insert_with(&table_schema.table, &insert_fields)) {
             Ok((sql_dbg, params_dbg)) => {
                 if *crate::ISDEBUG {
                     log_output("QUERY", "POST(AST)", route.as_ref(), sql_dbg.clone(), true);

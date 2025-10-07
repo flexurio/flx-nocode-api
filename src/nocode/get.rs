@@ -600,8 +600,7 @@ pub async fn select(
 
             // Execute via generic DataStore; keep SQL preview for debug using a temporary SqlStore
             if *crate::ISDEBUG {
-                let ds_prev = SqlStore::new(state.db.clone(), state.db_type.clone());
-                let (sql_dbg, params_dbg) = ds_prev.preview_sql(&q);
+                let (sql_dbg, params_dbg) = state.sql_store.preview_sql(&q);
                 log_output("QUERY", "GET(AST)", route.as_ref(), sql_dbg, true);
                 log_output("PARAMS", "GET(AST)", route.as_ref(), format!("{:?}", params_dbg), true);
             }

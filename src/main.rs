@@ -579,35 +579,36 @@ async fn main() -> std::io::Result<()> {
         .filter(|s| !s.is_empty())
         .collect();
 
+    // Reusable SqlStore (even if Mongo used, keep a dummy for code paths assuming availability)
+    let sql_store_instance = crate::storage::sql_store::SqlStore::new(db_repo.clone(), db_type.clone());
+
     // Build generic DataStore adapter: SQL by default, MongoDB when selected
-    let store_adapter: Arc<dyn crate::storage::traits::DataStore> = {
-        match db_type.as_str() {
-            #[cfg(feature = "mongodb")]
-            "mongodb" => {
-                let uri = match env::var("MONGODB_URI") {
-                    Ok(v) => v,
-                    Err(_) => {
-                        eprintln!("Please set MONGODB_URI in .env for DB_TYPE=mongodb");
-                        std::process::exit(1);
-                    }
-                };
-                let dbname = match env::var("MONGODB_DB") {
-                    Ok(v) => v,
-                    Err(_) => {
-                        eprintln!("Please set MONGODB_DB in .env for DB_TYPE=mongodb");
-                        std::process::exit(1);
-                    }
-                };
-                let mongo = MongoStore::connect(&uri, &dbname).await.map_err(|e| {
-                    eprintln!("Failed to connect to MongoDB: {}", e);
-                    std::io::Error::new(std::io::ErrorKind::ConnectionRefused, e)
-                })?;
-                Arc::new(mongo)
-            }
-            _ => {
-                let sql = crate::storage::sql_store::SqlStore::new(db_repo.clone(), db_type.clone());
-                Arc::new(sql)
-            }
+    let store_adapter: Arc<dyn crate::storage::traits::DataStore> = match db_type.as_str() {
+        #[cfg(feature = "mongodb")]
+        "mongodb" => {
+            let uri = match env::var("MONGODB_URI") {
+                Ok(v) => v,
+                Err(_) => {
+                    eprintln!("Please set MONGODB_URI in .env for DB_TYPE=mongodb");
+                    std::process::exit(1);
+                }
+            };
+            let dbname = match env::var("MONGODB_DB") {
+                Ok(v) => v,
+                Err(_) => {
+                    eprintln!("Please set MONGODB_DB in .env for DB_TYPE=mongodb");
+                    std::process::exit(1);
+                }
+            };
+            let mongo = MongoStore::connect(&uri, &dbname).await.map_err(|e| {
+                eprintln!("Failed to connect to MongoDB: {}", e);
+                std::io::Error::new(std::io::ErrorKind::ConnectionRefused, e)
+            })?;
+            Arc::new(mongo)
+        }
+        _ => {
+            // Reuse the same instance (clone underlying Arc in SqlStore)
+            Arc::new(crate::storage::sql_store::SqlStore::new(db_repo.clone(), db_type.clone()))
         }
     };
 
@@ -621,6 +622,7 @@ async fn main() -> std::io::Result<()> {
         route_publics: CONFIG.route_publics.clone().to_vec(),
         converter_token: CONFIG.converter_token.clone(),
         store: store_adapter,
+        sql_store: sql_store_instance,
     });
 
     generate_users(app_state.clone()).await;

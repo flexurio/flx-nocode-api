@@ -21,7 +21,7 @@ use crate::{
 };
 use chrono::Local;
 use std::sync::Arc;
-use crate::storage::sql_store::{SqlStore, InsertValue};
+use crate::storage::sql_store::{InsertValue};
 use crate::storage::ast::{Filter as QF, Val as QV};
 
 // NCO-PUT
@@ -266,13 +266,12 @@ pub async fn update(
     let (s_sql, params_compiled) = if state.db_type == "mongodb" {
         (String::new(), vec![])
     } else {
-        let ds = SqlStore::new(state.db.clone(), state.db_type.clone());
         // Prefer numeric id for filter when path id is numeric to ensure proper matching
         let filter = Some(QF::Eq(
             "id".into(),
             if let Ok(n) = id_raw.parse::<i64>() { QV::I64(n) } else { QV::Str(id_raw.clone()) }
         ));
-        match ds.preview_update_with(&table_schema.table, filter.as_ref(), &update_fields) {
+        match state.sql_store.preview_update_with(&table_schema.table, filter.as_ref(), &update_fields) {
             Ok(pair) => pair,
             Err(e) => {
                 return HttpResponse::InternalServerError().json(WebResponse {

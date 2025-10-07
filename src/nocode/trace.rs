@@ -13,7 +13,6 @@ use crate::{
     model::{TableSchema, WebResponse},
     AppState,
 };
-use crate::storage::sql_store::SqlStore;
 use crate::storage::ast::{Query as Q, Filter as F, Val as V, Expr as E};
 use std::sync::Arc;
 
@@ -97,7 +96,7 @@ pub async fn process(
         });
     }
     // Build AST for SELECT part and bind parameters safely
-    let ds = SqlStore::new(state.db.clone(), state.db_type.clone());
+    let ds = &state.sql_store;
     let mut q = Q::from(table_schema.table.clone());
 
     let mut is_deleted_at = true;
@@ -234,7 +233,6 @@ pub async fn process(
     log_output("PARAMS", "TRACE(AST-SELECT)", route.as_ref(), format!("{:?}", select_params), true);
     }
 
-    let ds = SqlStore::new(state.db.clone(), state.db_type.clone());
     let (s_sql, compiled_params) = match ds.preview_insert_select_upsert(
         &table_schema.trace.insert_into,
         &insert_cols,
