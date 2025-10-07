@@ -3,7 +3,7 @@ use actix_files::Files;
 use actix_multipart::Multipart;
 use actix_web::dev::{Service, ServiceRequest};
 use actix_web::web::Path;
-use actix_web::{web, App, HttpResponse, HttpServer};
+use actix_web::{web, App, HttpServer, Responder};
 use actix_web::middleware::Compress;
 use actix_web::middleware::Condition;
 use auth::validate_token;
@@ -13,6 +13,7 @@ use helpers::cetak_label;
 use log::log_output;
 use once_cell::sync::Lazy;
 use sonic_rs::Value;
+use crate::json_compat::{SonicValue, sonic_status};
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fs;
@@ -525,9 +526,7 @@ async fn main() -> std::io::Result<()> {
                     eprintln!("Failed to connect to MSSQL: {}", e);
                     std::io::Error::new(std::io::ErrorKind::ConnectionRefused, e)
                 })?;
-                
-                eprintln!("⚠️  WARNING: MSSQL running with single client. Enable 'bb8' feature for better performance!");
-                
+                                
                 Arc::new(MssqlRepo { client: std::sync::Arc::new(tokio::sync::Mutex::new(client)) })
             }
             }
@@ -808,7 +807,7 @@ async fn main() -> std::io::Result<()> {
                 // health check endpoint (public)
                 cfg.service(web::resource("/healthz").route(web::get().to({
                     let state = app_state.clone();
-                    move || {
+                    move |req: actix_web::HttpRequest| {
                         let state = state.clone();
                         async move {
                             let probe_sql = "SELECT 1";
@@ -818,11 +817,7 @@ async fn main() -> std::io::Result<()> {
                                 "db": if db_ok { "up" } else { "down" },
                                 "db_type": state.db_type,
                             });
-                            if db_ok {
-                                HttpResponse::Ok().json(body)
-                            } else {
-                                HttpResponse::ServiceUnavailable().json(body)
-                            }
+                            if db_ok { SonicValue(body).respond_to(&req) } else { sonic_status(body, actix_web::http::StatusCode::SERVICE_UNAVAILABLE) }
                         }
                     }
                 })));

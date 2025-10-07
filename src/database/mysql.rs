@@ -1,4 +1,5 @@
 use base64::Engine;
+use crate::ISDEBUG; // for conditional lightweight debug logging
 use sonic_rs::Value;
 use crate::json_compat::{value_from_f64, value_from_string};
 use sqlx::{
@@ -27,19 +28,21 @@ pub fn mysqlrows_to_json(rows: Vec<MySqlRow>) -> Vec<Value> {
 
         for column in row.columns() {
             let name = column.name();
-            let type_info_debug = format!("{:?}", column.type_info()).to_uppercase();
-            let is_unsigned = type_info_debug.contains("UNSIGNED");
+            // Avoid expensive format! + to_uppercase(); use once, then reuse lowercase variant.
+            // Debug impl cukup stabil untuk pattern keywords; kita ambil &str lalu buat lowercase.
+            let raw_dbg = format!("{:?}", column.type_info());
+            // Lowercase untuk pencarian substring case-insensitive.
+            let type_lc = raw_dbg.to_ascii_lowercase();
+            let is_unsigned = type_lc.contains("unsigned");
+            let has_binary_flag = type_lc.contains("binary");
 
-            // Check if column has BINARY flag
-            let has_binary_flag = type_info_debug.contains("BINARY");
-
-            let value = if type_info_debug.contains("LONG") {
+            let value = if type_lc.contains("long") {
                 if is_unsigned {
                     match row.try_get::<Option<u64>, _>(name) {
                         Ok(Some(v)) => Value::from(v),
                         Ok(None) => sonic_rs::Value::default(),
                         Err(e) => {
-                            eprintln!("Failed to get {} as Option<u64>: {:?}", name, e);
+                            if *ISDEBUG { eprintln!("[mysql conv] get {} as u64: {:?}", name, e); }
                             sonic_rs::Value::default()
                         }
                     }
@@ -48,13 +51,12 @@ pub fn mysqlrows_to_json(rows: Vec<MySqlRow>) -> Vec<Value> {
                         Ok(Some(v)) => Value::from(v),
                         Ok(None) => sonic_rs::Value::default(),
                         Err(e) => {
-                            eprintln!("Failed to get {} as Option<i64>: {:?}", name, e);
+                            if *ISDEBUG { eprintln!("[mysql conv] get {} as i64: {:?}", name, e); }
                             sonic_rs::Value::default()
                         }
                     }
                 }
-            } else if (type_info_debug.contains("VARSTRING") || type_info_debug.contains("VARCHAR"))
-                && has_binary_flag
+            } else if (type_lc.contains("varstring") || type_lc.contains("varchar")) && has_binary_flag
             {
                 // Handle VARCHAR with BINARY flag (VARBINARY-like behavior)
                 match row.try_get::<Option<Vec<u8>>, _>(name) {
@@ -68,74 +70,50 @@ pub fn mysqlrows_to_json(rows: Vec<MySqlRow>) -> Vec<Value> {
                         }
                     }
                     Ok(None) => sonic_rs::Value::default(),
-                    Err(e) => {
-                        eprintln!("VARSTRING with BINARY flag - Failed to get {} as Option<Vec<u8>>: {:?}, {} \n", name, e, type_info_debug);
-                        sonic_rs::Value::default()
-                    }
+                    Err(_e) => sonic_rs::Value::default()
                 }
-            } else if type_info_debug.contains("VARSTRING")
-                || type_info_debug.contains("VARCHAR")
-                || type_info_debug.contains("DECIMAL")
-                || type_info_debug.contains("NUMERIC")
-                || type_info_debug.contains("ENUM")
-                || type_info_debug.contains("SET")
+            } else if type_lc.contains("varstring")
+                || type_lc.contains("varchar")
+                || type_lc.contains("decimal")
+                || type_lc.contains("numeric")
+                || type_lc.contains("enum")
+                || type_lc.contains("set")
             {
                 match row.try_get::<Option<String>, _>(name) {
                     Ok(Some(v)) => value_from_string(v),
                     Ok(None) => sonic_rs::Value::default(),
-                    Err(e) => {
-                        eprintln!(
-                            "VARSTRING Failed to get {} as Option<String>: {:?}, {} \n",
-                            name, e, type_info_debug
-                        );
-                        sonic_rs::Value::default()
-                    }
+                    Err(_e) => sonic_rs::Value::default(),
                 }
-            } else if type_info_debug.contains("DATETIME") {
+            } else if type_lc.contains("datetime") {
                 // Handle DATETIME regardless of BINARY flag - put this BEFORE general BINARY check
                 match row.try_get::<Option<chrono::NaiveDateTime>, _>(name) {
                     Ok(Some(dt)) => Value::from(dt.to_string().as_str()),
                     Ok(None) => sonic_rs::Value::default(),
-                    Err(e) => {
-                        eprintln!("DATETIME Failed to get {} as Option<chrono::NaiveDateTime>: {:?}, {} \n", name, e, type_info_debug);
-                        sonic_rs::Value::default()
-                    }
+                    Err(_e) => sonic_rs::Value::default(),
                 }
-            } else if type_info_debug.contains("TIMESTAMP") {
+            } else if type_lc.contains("timestamp") {
                 match row.try_get::<Option<chrono::DateTime<chrono::Local>>, _>(name) {
                     Ok(Some(dt)) => value_from_string(dt.to_rfc3339()),
                     Ok(None) => sonic_rs::Value::default(),
                     Err(_) => match row.try_get::<Option<chrono::NaiveDateTime>, _>(name) {
                         Ok(Some(dt)) => Value::from(dt.to_string().as_str()),
                         Ok(None) => sonic_rs::Value::default(),
-                        Err(e) => {
-                            eprintln!(
-                                "TIMESTAMP Failed to get {} as chrono types: {:?}, {} \n",
-                                name, e, type_info_debug
-                            );
-                            sonic_rs::Value::default()
-                        }
+                        Err(_e) => sonic_rs::Value::default(),
                     },
                 }
-            } else if type_info_debug.contains("TIME") {
+            } else if type_lc.contains(" time") || type_lc == "time" { // crude guard to avoid matching 'timestamp'
                 match row.try_get::<Option<chrono::NaiveTime>, _>(name) {
                     Ok(Some(t)) => Value::from(t.to_string().as_str()),
                     Ok(None) => sonic_rs::Value::default(),
-                    Err(e) => {
-                        eprintln!(
-                            "TIME Failed to get {} as Option<chrono::NaiveTime>: {:?}, {} \n",
-                            name, e, type_info_debug
-                        );
-                        sonic_rs::Value::default()
-                    }
+                    Err(_e) => sonic_rs::Value::default(),
                 }
-            } else if type_info_debug.contains("VARBINARY")
-                || (type_info_debug.contains("BINARY")
-                    && !type_info_debug.contains("VARSTRING")
-                    && !type_info_debug.contains("VARCHAR")
-                    && !type_info_debug.contains("DATETIME")
-                    && !type_info_debug.contains("TIMESTAMP")
-                    && !type_info_debug.contains("TIME"))
+            } else if type_lc.contains("varbinary")
+                || (type_lc.contains("binary")
+                    && !type_lc.contains("varstring")
+                    && !type_lc.contains("varchar")
+                    && !type_lc.contains("datetime")
+                    && !type_lc.contains("timestamp")
+                    && !type_lc.contains(" time"))
             {
                 // Only handle pure BINARY/VARBINARY types, exclude date/time types and VARCHAR types
                 match row.try_get::<Option<Vec<u8>>, _>(name) {
@@ -143,53 +121,38 @@ pub fn mysqlrows_to_json(rows: Vec<MySqlRow>) -> Vec<Value> {
                         value_from_string(base64::engine::general_purpose::STANDARD.encode(v))
                     }
                     Ok(None) => sonic_rs::Value::default(),
-                    Err(e) => {
-                        eprintln!("VARBINARY / BINARY Failed to get {} as Option<Vec<u8>> (VARBINARY): {:?}, {} \n", name, e, type_info_debug);
-                        sonic_rs::Value::default()
-                    }
+                    Err(_e) => sonic_rs::Value::default(),
                 }
-            } else if type_info_debug.contains("BLOB") {
+            } else if type_lc.contains("blob") {
                 match row.try_get::<Option<Vec<u8>>, _>(name) {
                     Ok(Some(v)) => {
                         value_from_string(base64::engine::general_purpose::STANDARD.encode(v))
                     }
                     Ok(None) => sonic_rs::Value::default(),
-                    Err(e) => {
-                        eprintln!("Failed to get {} as Option<Vec<u8>>: {:?}", name, e);
-                        sonic_rs::Value::default()
-                    }
+                    Err(_e) => sonic_rs::Value::default(),
                 }
-            } else if type_info_debug.contains("FLOAT") || type_info_debug.contains("DOUBLE") {
+            } else if type_lc.contains("float") || type_lc.contains("double") {
                 match row.try_get::<Option<f64>, _>(name) {
                     Ok(Some(v)) => value_from_f64(v),
                     Ok(None) => sonic_rs::Value::default(),
-                    Err(e) => {
-                        eprintln!("Failed to get {} as Option<f64>: {:?}", name, e);
-                        sonic_rs::Value::default()
-                    }
+                    Err(_e) => sonic_rs::Value::default(),
                 }
-            } else if type_info_debug.contains("TINY") || type_info_debug.contains("BIT") {
+            } else if type_lc.contains("tiny") || type_lc.contains("bit") {
                 match row.try_get::<Option<i32>, _>(name) {
                     Ok(Some(v)) => Value::from(v),
                     Ok(None) => sonic_rs::Value::default(),
-                    Err(e) => {
-                        eprintln!("Failed to get {} as Option<i32>: {:?}", name, e);
-                        sonic_rs::Value::default()
-                    }
+                    Err(_e) => sonic_rs::Value::default(),
                 }
-            } else if type_info_debug.contains("JSON") {
+            } else if type_lc.contains("json") {
                 row.try_get::<String, _>(name)
                     .ok()
                     .and_then(|s| sonic_rs::from_str::<Value>(&s).ok())
                     .unwrap_or(sonic_rs::Value::default())
             } else {
-                // fallback default string conversion
-                eprintln!("Unknown column type for {}: {}", name, type_info_debug);
+                // Fallback simple string / binary attempt tanpa spam log
                 row.try_get::<String, _>(name)
                     .map(value_from_string)
-                    .unwrap_or_else(|e| {
-                        eprintln!("Failed to get {} as String (fallback): {:?}", name, e);
-                        // Try as binary data if string fails
+                    .unwrap_or_else(|_| {
                         row.try_get::<Option<Vec<u8>>, _>(name)
                             .map(|opt_bytes| match opt_bytes {
                                 Some(bytes) => value_from_string(

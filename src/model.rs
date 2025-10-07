@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use actix_web::{body::BoxBody, http::header, HttpResponse, Responder};
 
 use crate::auth::ClaimsConverter;
 
@@ -204,6 +205,34 @@ pub struct WebResponse {
     pub message: String,
     pub total_data: i32,
     pub data: sonic_rs::Value,
+}
+
+// Custom responder to avoid serde_json overhead and leverage sonic_rs directly
+impl Responder for WebResponse {
+    type Body = BoxBody;
+
+    fn respond_to(self, _req: &actix_web::HttpRequest) -> HttpResponse<Self::Body> {
+        // Build a temporary sonic_rs::Value object manually to ensure stable order
+        let mut obj = sonic_rs::Object::with_capacity(4);
+        obj.insert("success", sonic_rs::Value::from(self.success));
+        obj.insert("message", sonic_rs::Value::from(self.message.as_str()));
+        obj.insert("total_data", sonic_rs::Value::from(self.total_data));
+        obj.insert("data", self.data);
+        let root = sonic_rs::Value::from(obj);
+        // Serialize using sonic_rs (already in dependency graph)
+        match sonic_rs::to_vec(&root) {
+            Ok(buf) => HttpResponse::Ok()
+                .insert_header((header::CONTENT_TYPE, "application/json"))
+                .body(buf),
+            Err(e) => {
+                // Fallback minimal JSON error payload
+                let fallback = format!("{{\"success\":false,\"message\":\"serialize error: {}\"}}", e).into_bytes();
+                HttpResponse::InternalServerError()
+                    .insert_header((header::CONTENT_TYPE, "application/json"))
+                    .body(fallback)
+            }
+        }
+    }
 }
 
 // create struct for logging

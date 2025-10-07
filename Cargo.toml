@@ -27,7 +27,7 @@ actix-multipart = "0.7"
 dotenv = "0.15.0"
 serde = { version = "1.0.228", features = ["derive"] }
 sonic-rs = "0.3"
-sqlx = { version = "0.8.6", default-features = false, features = ["runtime-async-std-native-tls"] }
+sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio-rustls"] }
 tiberius = { version = "0.12", default-features = false, features = ["chrono", "rustls"] }
 tokio-util = { version = "0.7", features = ["compat"] }
 url = "2.5"
