@@ -6,7 +6,7 @@ use sonic_rs::{Value, JsonValueTrait, json, Object};
 use std::collections::HashMap;
 
 use crate::{
-    AppState, auth::{check_access, get_user_info_from_token}, database::redis::redis_del_key, helpers::{filter_table_schema, get_client_ip, split_column_operator}, log::log_output, model::{ParamJoin, TableSchema, WebResponse}, rate_limit::RL_WINDOW_GET
+    AppState, auth::{check_access, get_user_info_from_token}, database::redis::redis_del_key, helpers::{filter_table_schema, get_client_ip, split_column_operator}, log::log_output, model::{TableSchema, WebResponse}, rate_limit::{RL_WINDOW_GET, build_key, RateOp}
 };
 use crate::storage::ast::{Filter as QF, Query as QQ, Val as QV, Expr as QE, Join as QJ, JoinKind as QJK};
 use std::sync::Arc;
@@ -35,10 +35,7 @@ pub async fn select(
             .unwrap_or(20)
     });
     let get_limit_i64 = *RATE_LIMIT_GET;
-    if get_limit_i64 > 0
-        && !RL_WINDOW_GET
-            .check_and_increment(&format!("get:{}:{}", route, ip_key), get_limit_i64 as u32)
-    {
+    if get_limit_i64 > 0 && !RL_WINDOW_GET.check_and_increment(&build_key(RateOp::Get, route.as_ref(), &ip_key), get_limit_i64 as u32) {
         return HttpResponse::TooManyRequests().json(WebResponse {
             success: false,
             message: "Too many requests".to_string(),
@@ -75,11 +72,7 @@ pub async fn select(
         }
 
         // Per-user GET rate limit per second
-        if get_limit_i64 > 0
-            && !claims.id.is_empty()
-            && !RL_WINDOW_GET
-                .check_and_increment(&format!("get:{}:user:{}", route, claims.id), get_limit_i64 as u32)
-        {
+        if get_limit_i64 > 0 && !claims.id.is_empty() && !RL_WINDOW_GET.check_and_increment(&build_key(RateOp::Get, route.as_ref(), &format!("user:{}", claims.id)), get_limit_i64 as u32) {
             return HttpResponse::TooManyRequests().json(WebResponse {
                 success: false,
                 message: "Too many requests".to_string(),
@@ -203,14 +196,39 @@ pub async fn select(
             let mut order_type_ast = "ASC".to_string();
             // Pre-allocate with estimated capacity to reduce reallocations (optimization)
             let mut filters: Vec<QF> = Vec::with_capacity(table_schema.get.parameters.len());
-            // collect paramjoin values if provided
-            let mut paramjoins_ast: Vec<ParamJoin> = Vec::with_capacity(4);
+            // collect paramjoin values if provided (store sanitized once)
+            // Vec of (placeholder_name, sanitized_value)
+            let mut paramjoins_ast: Vec<(String, String)> = Vec::with_capacity(4);
             for p in &table_schema.get.parameters {
                 if p.contains("paramjoin") {
                     if let Some(v) = params_map.get(p).and_then(|vv| vv.as_str()) {
-                        paramjoins_ast.push(ParamJoin { name: p.replace(".eq", ""), value: v.to_string() });
+                        let name = p.replace(".eq", "");
+                        let safe_val: String = v.chars().filter(|c| c.is_alphanumeric() || *c == '_' || *c == '.').collect();
+                        paramjoins_ast.push((name, safe_val));
                     }
                 }
+            }
+            // Longer names first to avoid premature partial matches (e.g., paramjoin_id vs paramjoin_id2)
+            paramjoins_ast.sort_by(|a,b| b.0.len().cmp(&a.0.len()));
+
+            // Single-pass substitution to avoid multiple String::replace allocations
+            fn substitute_paramjoins(logical: &str, paramjoins: &[(String, String)]) -> String {
+                if paramjoins.is_empty() { return logical.to_string(); }
+                let bytes = logical.as_bytes();
+                let mut out = String::with_capacity(logical.len());
+                let mut i = 0;
+                'outer: while i < bytes.len() {
+                    for (name, val) in paramjoins {
+                        if bytes[i..].starts_with(name.as_bytes()) {
+                            out.push_str(val);
+                            i += name.len();
+                            continue 'outer;
+                        }
+                    }
+                    out.push(bytes[i] as char);
+                    i += 1;
+                }
+                out
             }
 
             // helper to parse value into QV
@@ -537,18 +555,10 @@ pub async fn select(
                 }
             }
 
-            // JOINs (with safe paramjoin replacements)
+            // JOINs (with optimized paramjoin replacements)
             if !table_schema.get.join_tables.is_empty() {
                 for j in &table_schema.get.join_tables {
-                    let mut logical = j.logical.clone();
-                    for pj in &paramjoins_ast {
-                        let safe_val: String = pj
-                            .value
-                            .chars()
-                            .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '.')
-                            .collect();
-                        logical = logical.replace(&pj.name, &safe_val);
-                    }
+                    let logical = substitute_paramjoins(&j.logical, &paramjoins_ast);
                     // Try to parse a simple column equality: `<lhs> = <rhs>`
                     let parse_col_eq = |s: &str| -> Option<(String, String)> {
                         // split on '=' once

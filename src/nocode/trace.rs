@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use crate::{
     auth::{check_access, get_user_info_from_token},
     helpers::{filter_table_schema, split_column_operator},
-    rate_limit::RL_WINDOW_MUTATE,
+    rate_limit::{RL_WINDOW_MUTATE, build_key, RateOp},
     log::log_output,
     model::{TableSchema, WebResponse},
     AppState,
@@ -32,7 +32,7 @@ pub async fn process(
         .unwrap_or(10);
     if limit_i64 > 0 {
         let limit = (limit_i64.min(u32::MAX as i64)) as u32;
-        if !RL_WINDOW_MUTATE.check_and_increment(&format!("trace:{}:{}", route, ip_key), limit) {
+        if !RL_WINDOW_MUTATE.check_and_increment(&build_key(RateOp::Trace, route.as_ref(), &ip_key), limit) {
             return HttpResponse::TooManyRequests().json(WebResponse {
                 success: false,
                 message: "Too many requests".into(),
@@ -69,11 +69,7 @@ pub async fn process(
     // Per-user limit
     if !state.route_publics.iter().any(|r| r == route.as_ref()) {
         if let Some(ref uid) = actor_id {
-            if limit_i64 > 0
-                && !uid.is_empty()
-                && !RL_WINDOW_MUTATE
-                    .check_and_increment(&format!("trace:{}:user:{}", route, uid), limit_i64 as u32)
-            {
+            if limit_i64 > 0 && !uid.is_empty() && !RL_WINDOW_MUTATE.check_and_increment(&build_key(RateOp::Trace, route.as_ref(), &format!("user:{}", uid)), limit_i64 as u32) {
                 return HttpResponse::TooManyRequests().json(WebResponse {
                     success: false,
                     message: "Too many requests".into(),

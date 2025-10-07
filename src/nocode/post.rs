@@ -9,7 +9,7 @@ use std::collections::HashSet;
 use crate::audit::{write_audit, AuditEntry};
 use crate::helpers::get_client_ip;
 // use crate::log; // unused
-use crate::rate_limit::RL_WINDOW_MUTATE;
+use crate::rate_limit::{RL_WINDOW_MUTATE, build_key, RateOp};
 use crate::{
     auth::{check_access, get_user_info_from_token, Claims},
     database::state::{DbParam},
@@ -137,10 +137,7 @@ pub async fn insert(
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(10);
-    if limit_i64 > 0
-        && !RL_WINDOW_MUTATE
-            .check_and_increment(&format!("post:{}:{}", route, ip_key), limit_i64 as u32)
-    {
+    if limit_i64 > 0 && !RL_WINDOW_MUTATE.check_and_increment(&build_key(RateOp::Post, route.as_ref(), &ip_key), limit_i64 as u32) {
         return HttpResponse::TooManyRequests().json(WebResponse {
             success: false,
             message: "Too many requests".into(),
@@ -151,11 +148,7 @@ pub async fn insert(
     // Per-user limit (for non-public routes only)
     if !state.route_publics.iter().any(|r| r == route.as_ref()) {
         let user_key = claims.id.clone();
-        if limit_i64 > 0
-            && !user_key.is_empty()
-            && !RL_WINDOW_MUTATE
-                .check_and_increment(&format!("post:{}:user:{}", route, user_key), limit_i64 as u32)
-        {
+        if limit_i64 > 0 && !user_key.is_empty() && !RL_WINDOW_MUTATE.check_and_increment(&build_key(RateOp::Post, route.as_ref(), &format!("user:{}", user_key)), limit_i64 as u32) {
             return HttpResponse::TooManyRequests().json(WebResponse {
                 success: false,
                 message: "Too many requests".into(),

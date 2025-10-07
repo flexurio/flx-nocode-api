@@ -10,10 +10,6 @@ pub struct Config {
     pub converter_token: ClaimsConverter,
 }
 
-pub struct ParamJoin {
-    pub name: String,
-    pub value: String,
-}
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ForeignKey {

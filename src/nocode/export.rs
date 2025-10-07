@@ -8,7 +8,7 @@ use crate::audit::{write_audit, AuditEntry};
 use crate::auth::{check_access, get_user_info_from_token, Claims};
 use crate::helpers::{filter_table_schema, multipart_to_json, split_column_operator};
 use crate::log::log_output;
-use crate::model::{ParamJoin, ReferenceForeignKey, TableSchema, WebResponse};
+use crate::model::{ReferenceForeignKey, TableSchema, WebResponse};
 use crate::storage::ast::{Filter as QF, Query as QQ, Val as QV, Expr as QE};
 use crate::storage::sql_store::SqlStore;
 use crate::AppState;
@@ -101,17 +101,38 @@ pub async fn export(
     let mut order_col_ast = table_schema.get.order_by.clone().join(", ");
     let mut order_type_ast = "ASC".to_string();
 
-    // Collect paramjoins and flag deleted_at override
-    let mut paramjoins_ast: Vec<ParamJoin> = Vec::new();
+    // Collect paramjoins (sanitized) and flag deleted_at override
+    let mut paramjoins_ast: Vec<(String, String)> = Vec::new();
     for p in &table_schema.get.parameters {
         if p.contains("paramjoin") {
             if let Some(v) = params_map.get(p).and_then(|vv| vv.as_str()) {
-                paramjoins_ast.push(ParamJoin { name: p.replace(".eq", ""), value: v.to_string() });
+                let name = p.replace(".eq", "");
+                let safe_val: String = v.chars().filter(|c| c.is_alphanumeric() || *c == '_' || *c == '.').collect();
+                paramjoins_ast.push((name, safe_val));
             }
         }
-        if p.contains("deleted_at") && params_map.get(p).is_some() {
-            is_deleted_at = false;
+        if p.contains("deleted_at") && params_map.get(p).is_some() { is_deleted_at = false; }
+    }
+    // Sort by name length desc to avoid partial overlaps
+    paramjoins_ast.sort_by(|a,b| b.0.len().cmp(&a.0.len()));
+
+    fn substitute_paramjoins(logical: &str, paramjoins: &[(String, String)]) -> String {
+        if paramjoins.is_empty() { return logical.to_string(); }
+        let bytes = logical.as_bytes();
+        let mut out = String::with_capacity(logical.len());
+        let mut i = 0;
+        'outer: while i < bytes.len() {
+            for (name, val) in paramjoins {
+                if bytes[i..].starts_with(name.as_bytes()) {
+                    out.push_str(val);
+                    i += name.len();
+                    continue 'outer;
+                }
+            }
+            out.push(bytes[i] as char);
+            i += 1;
         }
+        out
     }
 
     // Helper to parse primitive to QV
@@ -392,18 +413,10 @@ pub async fn export(
         }
     }
 
-    // JOINs (apply paramjoin substitutions)
+    // JOINs (apply optimized paramjoin substitutions)
     if !table_schema.get.join_tables.is_empty() {
         for j in &table_schema.get.join_tables {
-            let mut logical = j.logical.clone();
-            for pj in &paramjoins_ast {
-                let safe_val: String = pj
-                    .value
-                    .chars()
-                    .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '.')
-                    .collect();
-                logical = logical.replace(&pj.name, &safe_val);
-            }
+            let logical = substitute_paramjoins(&j.logical, &paramjoins_ast);
             if j.type_join.eq_ignore_ascii_case("left") {
                 q = q.join_left_expr(j.table.clone(), QE::Raw(logical));
             } else {

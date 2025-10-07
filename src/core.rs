@@ -11,7 +11,7 @@ use reqwest::Client;
 use sonic_rs::{json, Value, JsonValueTrait, JsonContainerTrait};
 use zip::ZipArchive;
 
-use crate::rate_limit::{RL_WINDOW_LOGIN, RL_WINDOW_LOGIN_FAIL};
+use crate::rate_limit::{RL_WINDOW_LOGIN, RL_WINDOW_LOGIN_FAIL, build_key, RateOp};
 use crate::{
     auth::create_token,
     crypt::{decrypt, encrypt},
@@ -34,7 +34,7 @@ pub async fn login(state: web::Data<AppState>, req: actix_web::HttpRequest) -> i
         .unwrap_or(10);
     if limit_i64 > 0 {
         let limit = (limit_i64.min(u32::MAX as i64)) as u32;
-        if !RL_WINDOW_LOGIN.check_and_increment(&format!("login:{}", ip_key), limit) {
+        if !RL_WINDOW_LOGIN.check_and_increment(&build_key(RateOp::Login, "", &ip_key), limit) {
             return HttpResponse::TooManyRequests().json(WebResponse {
                 success: false,
                 message: "Too many login attempts".into(),
@@ -157,13 +157,11 @@ pub async fn login(state: web::Data<AppState>, req: actix_web::HttpRequest) -> i
         let user_key = email.to_lowercase();
         if fail_user_limit_i64 > 0 {
             let limit = (fail_user_limit_i64.min(u32::MAX as i64)) as u32;
-            over_user = !RL_WINDOW_LOGIN_FAIL
-                .check_and_increment(&format!("loginfail:user:{}", user_key), limit);
+            over_user = !RL_WINDOW_LOGIN_FAIL.check_and_increment(&build_key(RateOp::LoginFailUser, "", &user_key), limit);
         }
         if fail_ip_limit_i64 > 0 {
             let limit = (fail_ip_limit_i64.min(u32::MAX as i64)) as u32;
-            over_ip = !RL_WINDOW_LOGIN_FAIL
-                .check_and_increment(&format!("loginfail:ip:{}", ip_key), limit);
+            over_ip = !RL_WINDOW_LOGIN_FAIL.check_and_increment(&build_key(RateOp::LoginFailIp, "", &ip_key), limit);
         }
 
         if over_user || over_ip {

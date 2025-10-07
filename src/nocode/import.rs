@@ -8,7 +8,7 @@ use std::io::Cursor;
 use std::sync::Arc;
 use crate::audit::{write_audit, AuditEntry};
 use crate::helpers::get_client_ip;
-use crate::rate_limit::RL_WINDOW_MUTATE;
+use crate::rate_limit::{RL_WINDOW_MUTATE, build_key, RateOp};
 use crate::{
     auth::{check_access, get_user_info_from_token, Claims},
     crypt::{encrypt, is_encrypted_string},
@@ -32,7 +32,7 @@ pub async fn import(
     let table_schemas=&schemas.0; let mut claims=Claims::default(); if !state.route_publics.iter().any(|r| r == route.as_ref()){ match get_user_info_from_token(req.clone(), state.clone()){ Ok(c)=>claims=c, Err(_)=>return HttpResponse::Unauthorized().json(WebResponse{success:false,message:crate::constants::ERR_INVALID_TOKEN.into(),total_data:0,data:Value::default()}) } if !check_access(&claims,route.as_ref(),"write"){ return HttpResponse::Unauthorized().json(WebResponse{success:false,message:crate::constants::ERR_UNAUTHORIZED.into(),total_data:0,data:Value::default()}); } }
     if let Some(limit) = std::env::var("RATE_LIMIT_MUTATE_PER_SEC").ok().and_then(|v| v.parse::<u32>().ok()) {
         if limit > 0 {
-            let key = format!("import:{}:{}", route, get_client_ip(&req));
+            let key = build_key(RateOp::Import, route.as_ref(), &get_client_ip(&req));
             if !RL_WINDOW_MUTATE.check_and_increment(&key, limit) {
                 return HttpResponse::TooManyRequests().json(WebResponse { success:false,message:"Too many requests".into(),total_data:0,data:Value::default()});
             }

@@ -6,7 +6,7 @@ use sonic_rs::{Value, json};
 use std::collections::HashMap;
 
 use crate::audit::{write_audit, AuditEntry};
-use crate::rate_limit::RL_WINDOW_MUTATE;
+use crate::rate_limit::{RL_WINDOW_MUTATE, build_key, RateOp};
 use crate::{
     auth::{check_access, get_user_info_from_token},
     database::state::DbParam,
@@ -59,7 +59,7 @@ pub async fn process_sp(
         .unwrap_or(10);
     if limit_i64 > 0 {
         let limit = (limit_i64.min(u32::MAX as i64)) as u32;
-        if !RL_WINDOW_MUTATE.check_and_increment(&format!("patch:{}:{}", route, ip_key), limit) {
+        if !RL_WINDOW_MUTATE.check_and_increment(&build_key(RateOp::Patch, route.as_ref(), &ip_key), limit) {
             return HttpResponse::TooManyRequests().json(WebResponse {
                 success: false,
                 message: "Too many requests".into(),
@@ -71,11 +71,7 @@ pub async fn process_sp(
     // Per-user limit (for non-public routes only)
     if !state.route_publics.iter().any(|r| r == route.as_ref()) {
         if let Some(ref uid) = actor_id {
-            if limit_i64 > 0
-                && !uid.is_empty()
-                && !RL_WINDOW_MUTATE
-                    .check_and_increment(&format!("patch:{}:user:{}", route, uid), limit_i64 as u32)
-            {
+            if limit_i64 > 0 && !uid.is_empty() && !RL_WINDOW_MUTATE.check_and_increment(&build_key(RateOp::Patch, route.as_ref(), &format!("user:{}", uid)), limit_i64 as u32) {
                 return HttpResponse::TooManyRequests().json(WebResponse {
                     success: false,
                     message: "Too many requests".into(),
