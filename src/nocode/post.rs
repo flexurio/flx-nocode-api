@@ -848,7 +848,7 @@ pub async fn insert(
             }
 
             body = body.as_object_mut().map(|map| {
-                map.insert("id_new", returned_id.clone().unwrap_or(Value::default()));
+                map.insert("id_new", returned_id.clone().unwrap_or_default());
                 Value::from(map.clone())
             }).unwrap();
             
@@ -882,7 +882,7 @@ pub async fn insert(
                 ip: Some(get_client_ip(&req)).as_deref(),
             });
             let mut resp_obj = sonic_rs::Object::new();
-            resp_obj.insert("id", returned_id.unwrap_or(Value::default()));
+            resp_obj.insert("id", returned_id.unwrap_or_default());
             HttpResponse::Ok().json(WebResponse {
                 success: true,
                 message: "Data inserted".to_string(),

@@ -1,6 +1,6 @@
 use anyhow::Result;
 use base64::Engine;
-use sonic_rs::{Value, JsonValueTrait, JsonContainerTrait};
+use sonic_rs::{Value, JsonValueTrait};
 use crate::json_compat::{value_from_f64, value_from_string};
 use tiberius::{AuthMethod, Client, EncryptionLevel, Query, Row};
 use tokio_util::compat::TokioAsyncWriteCompatExt;

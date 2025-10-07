@@ -1,5 +1,5 @@
 use base64::Engine;
-use sonic_rs::{Value, JsonValueTrait, JsonContainerTrait};
+use sonic_rs::{Value, JsonValueTrait};
 use crate::json_compat::{value_from_f64, value_from_string};
 use sqlx::{
     postgres::{PgRow, Postgres},
@@ -99,27 +99,27 @@ pub fn pgrows_to_json(rows: Vec<PgRow>) -> Vec<Value> {
                 row.try_get::<Option<chrono::NaiveDateTime>, _>(name)
                     .map(|opt| {
                         opt.map(|dt| Value::from(dt.to_string().as_str()))
-                            .unwrap_or(sonic_rs::Value::default())
+                            .unwrap_or_default()
                     })
                     .unwrap_or(sonic_rs::Value::default())
             } else if type_info_debug.contains("DATE") {
                 row.try_get::<Option<chrono::NaiveDate>, _>(name)
                     .map(|opt| {
                         opt.map(|d| Value::from(d.to_string().as_str()))
-                            .unwrap_or(sonic_rs::Value::default())
+                            .unwrap_or_default()
                     })
                     .unwrap_or(sonic_rs::Value::default())
             } else if type_info_debug.contains("TIME") {
                 row.try_get::<Option<chrono::NaiveTime>, _>(name)
                     .map(|opt| {
                         opt.map(|t| Value::from(t.to_string().as_str()))
-                            .unwrap_or(sonic_rs::Value::default())
+                            .unwrap_or_default()
                     })
                     .unwrap_or(sonic_rs::Value::default())
             } else {
                 // fallback
                 row.try_get::<Option<String>, _>(name)
-                    .map(|opt| opt.map(|s| value_from_string(s)).unwrap_or(sonic_rs::Value::default()))
+                    .map(|opt| opt.map(value_from_string).unwrap_or_default())
                     .unwrap_or(sonic_rs::Value::default())
             };
 

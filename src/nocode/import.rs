@@ -104,11 +104,10 @@ pub async fn import(
                 }
             }
 
-            if col.encrypt && !v.is_empty() {
-                if !is_encrypted_string(&v) {
+            if col.encrypt && !v.is_empty()
+                && !is_encrypted_string(&v) {
                     v = encrypt(state.encrypt_key.clone(), v);
                 }
-            }
 
             let json_val = if v.is_empty() && col.nullable {
                 Value::default()

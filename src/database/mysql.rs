@@ -1,5 +1,5 @@
 use base64::Engine;
-use sonic_rs::{Value, JsonValueTrait, JsonContainerTrait};
+use sonic_rs::{Value, JsonValueTrait};
 use crate::json_compat::{value_from_f64, value_from_string};
 use sqlx::{
     mysql::{MySql, MySqlRow},
@@ -187,7 +187,7 @@ pub fn mysqlrows_to_json(rows: Vec<MySqlRow>) -> Vec<Value> {
                 // fallback default string conversion
                 eprintln!("Unknown column type for {}: {}", name, type_info_debug);
                 row.try_get::<String, _>(name)
-                    .map(|s| value_from_string(s))
+                    .map(value_from_string)
                     .unwrap_or_else(|e| {
                         eprintln!("Failed to get {} as String (fallback): {:?}", name, e);
                         // Try as binary data if string fails

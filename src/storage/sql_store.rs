@@ -994,7 +994,7 @@ fn build_insert_with_dialect(db_type: &str, collection: &str, doc: &Value) -> an
     let mut idx = 0usize;
     let mut placeholders: Vec<String> = Vec::with_capacity(obj.len());
     for (k, v) in obj.iter() {
-        cols.push(k.clone().to_owned());
+        cols.push(k.to_owned());
         idx += 1;
         params.push(json_to_param(v));
         placeholders.push(next_placeholder_for(db_type, idx));

@@ -5,7 +5,7 @@ use chrono::{Duration, Utc};
 use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-use sonic_rs::{Value, JsonValueTrait, JsonContainerTrait};
+use sonic_rs::{Value, JsonValueTrait};
 
 use crate::{helpers::get_client_ip, AppState};
 
