@@ -101,13 +101,13 @@ pub async fn process(
 
     let mut is_deleted_at = true;
     // Build params object from query map
-    let mut params_obj_map: Object = Object::with_capacity(parameters.len());
-    for (k, v) in parameters.iter() { params_obj_map.insert(k.as_str(), Value::from(v.as_str())); }
-    let params_obj_value = Value::from(params_obj_map.clone());
+    let mut obj_builder: Object = Object::with_capacity(parameters.len());
+    for (k, v) in parameters.iter() { obj_builder.insert(k.as_str(), Value::from(v.as_str())); }
+    let params_obj_value = Value::from(obj_builder);
     let param_count = table_schema.trace.parameters.len();
-    let mut filters: Vec<F> = Vec::with_capacity(param_count + 1); // Pre-allocate
+    let mut filters: Vec<F> = Vec::with_capacity(param_count + 1);
     if let Some(obj) = params_obj_value.as_object() {
-        for param in table_schema.trace.parameters.iter() {
+        for param in &table_schema.trace.parameters {
             for (key, value) in obj.iter() {
                 if key.contains("deleted_at") { is_deleted_at = false; }
                 if param == key {

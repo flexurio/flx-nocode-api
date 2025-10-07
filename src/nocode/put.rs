@@ -1,3 +1,4 @@
+use crate::crypt::{encrypt_ref, is_encrypted_string};
 use actix_multipart::Multipart;
 use actix_web::{
     web::{Data, Path},
@@ -11,7 +12,6 @@ use crate::helpers::get_client_ip;
 use crate::rate_limit::RL_WINDOW_MUTATE;
 use crate::{
     auth::{check_access, get_user_info_from_token, Claims},
-    crypt::{encrypt, is_encrypted_string},
     database::state::{DbParam},
     helpers::{filter_table_schema, multipart_to_json},
     log::log_output,
@@ -192,9 +192,8 @@ pub async fn update(
 
                     // check col.encrypt if true then encrypt value (and capture password override for flx_users)
                     if col.encrypt {
-                        let is_encrypted = is_encrypted_string(value_x.clone().as_str());
-                        if !is_encrypted {
-                            value_x = encrypt(state.encrypt_key.clone(), value_x.clone());
+                        if !is_encrypted_string(&value_x) {
+                            value_x = encrypt_ref(&state.encrypt_key, &value_x);
                         }
                         if route.as_ref() == "flx_users" && column == "password" {
                             password_override = Some(value_x.clone());

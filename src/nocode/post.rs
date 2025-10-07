@@ -1,3 +1,4 @@
+use crate::crypt::{encrypt_ref, is_encrypted_string};
 use actix_multipart::Multipart;
 use actix_web::{web::Data, HttpResponse, Responder};
 use sonic_rs::{Value, JsonValueTrait, JsonContainerTrait, JsonValueMutTrait};
@@ -11,7 +12,6 @@ use crate::helpers::get_client_ip;
 use crate::rate_limit::RL_WINDOW_MUTATE;
 use crate::{
     auth::{check_access, get_user_info_from_token, Claims},
-    crypt::{encrypt, is_encrypted_string},
     database::state::{DbParam},
     helpers::{extract_expressions, filter_table_schema, find_column_match, multipart_to_json},
     log::log_output,
@@ -341,12 +341,10 @@ pub async fn insert(
                 }
             }
 
-            if col.encrypt {
-                let is_encrypted = is_encrypted_string(value.as_str());
-                if !is_encrypted {
-                    value = encrypt(state.encrypt_key.clone(), value);
+            if col.encrypt && !is_encrypted_string(value.as_str()) {
+                    // Avoid cloning key each time
+                    value = encrypt_ref(&state.encrypt_key, &value);
                 }
-            }
 
             // push param by type and mirror into doc_map for AST
             if col.type_data.contains("int") || col.type_data.contains("float") {
@@ -360,16 +358,19 @@ pub async fn insert(
                     doc_map.insert(&col.name, vnum);
                     insert_fields.push((col.name.clone(), InsertValue::Param(DbParam::F64(f))));
                 } else {
-                    bind_params.push(DbParam::Str(value.clone()));
+                    // Reuse constructed DbParam for both vectors to reduce duplicate string clones
+                    let param = DbParam::Str(value);
+                    bind_params.push(param.clone());
                     let fallback = body.get(&col.name).cloned().unwrap_or_else(|| Value::from(""));
                     doc_map.insert(&col.name, fallback);
-                    insert_fields.push((col.name.clone(), InsertValue::Param(DbParam::Str(value))));
+                    insert_fields.push((col.name.clone(), InsertValue::Param(param)));
                 }
             } else {
-                bind_params.push(DbParam::Str(value.clone()));
+                let param = DbParam::Str(value);
+                bind_params.push(param.clone());
                 let fallback = body.get(&col.name).cloned().unwrap_or_else(|| Value::from(""));
                 doc_map.insert(&col.name, fallback);
-                insert_fields.push((col.name.clone(), InsertValue::Param(DbParam::Str(value))));
+                insert_fields.push((col.name.clone(), InsertValue::Param(param)));
             }
         }
     }
@@ -509,9 +510,10 @@ pub async fn insert(
             doc_map.insert("created_by_id", Value::from(n));
             insert_fields.push(("created_by_id".to_string(), InsertValue::Param(DbParam::I64(n))));
         } else {
-            bind_params.push(DbParam::Str(claims.id.clone()));
+            let param = DbParam::Str(claims.id.clone());
+            bind_params.push(param.clone());
             doc_map.insert("created_by_id", Value::from(claims.id.as_str()));
-            insert_fields.push(("created_by_id".to_string(), InsertValue::Param(DbParam::Str(claims.id.clone()))));
+            insert_fields.push(("created_by_id".to_string(), InsertValue::Param(param)));
         }
     } else if created_by_type.contains("float")
         || created_by_type.contains("double")
@@ -524,14 +526,16 @@ pub async fn insert(
             doc_map.insert("created_by_id", vnum);
             insert_fields.push(("created_by_id".to_string(), InsertValue::Param(DbParam::F64(n))));
         } else {
-            bind_params.push(DbParam::Str(claims.id.clone()));
+            let param = DbParam::Str(claims.id.clone());
+            bind_params.push(param.clone());
             doc_map.insert("created_by_id", Value::from(claims.id.as_str()));
-            insert_fields.push(("created_by_id".to_string(), InsertValue::Param(DbParam::Str(claims.id.clone()))));
+            insert_fields.push(("created_by_id".to_string(), InsertValue::Param(param)));
         }
     } else {
-        bind_params.push(DbParam::Str(claims.id.clone()));
+        let param = DbParam::Str(claims.id.clone());
+        bind_params.push(param.clone());
         doc_map.insert("created_by_id", Value::from(claims.id.as_str()));
-        insert_fields.push(("created_by_id".to_string(), InsertValue::Param(DbParam::Str(claims.id.clone()))));
+        insert_fields.push(("created_by_id".to_string(), InsertValue::Param(param)));
     }
 
     // For MongoDB, directly insert JSON doc without SQL; for SQL, compile INSERT

@@ -36,6 +36,32 @@ pub fn encrypt(key: String, plaintext: String) -> String {
     base64::engine::general_purpose::STANDARD.encode(encrypted_data)
 }
 
+/// Borrowing variant to avoid cloning large keys in hot paths.
+/// Prefer this over `encrypt` when you already have borrowed data.
+pub fn encrypt_ref(key: &str, plaintext: &str) -> String {
+    let mut hasher = Sha256::default();
+    hasher.update(key.as_bytes());
+    let key_hash = hasher.finalize();
+    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key_hash));
+
+    let mut iv = [0u8; 12];
+    rand::rng().fill(&mut iv);
+    let nonce = Nonce::from_slice(&iv);
+
+    let ciphertext = match cipher.encrypt(nonce, plaintext.as_bytes()) {
+        Ok(encrypted) => encrypted,
+        Err(e) => {
+            eprintln!("Encryption failed: {}", e);
+            return String::new();
+        }
+    };
+
+    let mut encrypted_data = Vec::with_capacity(iv.len() + ciphertext.len());
+    encrypted_data.extend_from_slice(&iv);
+    encrypted_data.extend_from_slice(&ciphertext);
+    base64::engine::general_purpose::STANDARD.encode(encrypted_data)
+}
+
 /// Fungsi untuk mendekripsi data dengan AES-256-GCM
 pub fn decrypt(key: String, encrypted_string: String) -> String {
     // Hash kunci sembarang panjang jadi 32 byte dengan SHA-256
