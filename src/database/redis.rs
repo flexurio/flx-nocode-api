@@ -96,6 +96,16 @@ pub async fn redis_set_json<T: serde::Serialize>(key: &str, value: &T, ttl_secs:
     redis_set(key, &s, ttl_secs).await
 }
 
+/// Function to delete a key from Redis
+pub async fn redis_del_key(key: &str) -> Result<()> {
+    let mut conn = get_manager().await?.clone();
+    let _: () = conn
+        .del(key)
+        .await
+        .map_err(|e| anyhow!("Redis DEL failed: {}", e))?;
+    Ok(())
+}
+
 /// Convenience: get JSON value by key
 pub async fn redis_get_json<T: serde::de::DeserializeOwned>(key: &str) -> Result<Option<T>> {
     match redis_get(key).await? {

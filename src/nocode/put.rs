@@ -267,7 +267,11 @@ pub async fn update(
         (String::new(), vec![])
     } else {
         let ds = SqlStore::new(state.db.clone(), state.db_type.clone());
-        let filter = Some(QF::Eq("id".into(), QV::Str(id_raw.clone())));
+        // Prefer numeric id for filter when path id is numeric to ensure proper matching
+        let filter = Some(QF::Eq(
+            "id".into(),
+            if let Ok(n) = id_raw.parse::<i64>() { QV::I64(n) } else { QV::Str(id_raw.clone()) }
+        ));
         match ds.preview_update_with(&table_schema.table, filter.as_ref(), &update_fields) {
             Ok(pair) => pair,
             Err(e) => {
@@ -415,7 +419,10 @@ pub async fn update(
 
         // Build WHERE id = ? by calling update with Filter
         use crate::storage::ast::{Filter as QF, Val as QV};
-        let filter = Some(QF::Eq("id".into(), QV::Str(id_raw.clone())));
+        let filter = Some(QF::Eq(
+            "id".into(),
+            if let Ok(n) = id_raw.parse::<i64>() { QV::I64(n) } else { QV::Str(id_raw.clone()) }
+        ));
         if state.db_type == "mongodb" {
             if *crate::ISDEBUG {
                 log_output("QUERY", "PUT", route.as_str(), "Mongo password update flx_users".to_string(), true);

@@ -6,12 +6,7 @@ use sonic_rs::{Value, JsonValueTrait, JsonNumberTrait, json, Object};
 use std::collections::HashMap;
 
 use crate::{
-    auth::{check_access, get_user_info_from_token},
-    helpers::{filter_table_schema, split_column_operator, get_client_ip},
-    log::log_output,
-    model::{ParamJoin, TableSchema, WebResponse},
-    rate_limit::RL_WINDOW_GET,
-    AppState,
+    AppState, auth::{check_access, get_user_info_from_token}, database::redis::redis_del_key, helpers::{filter_table_schema, get_client_ip, split_column_operator}, log::log_output, model::{ParamJoin, TableSchema, WebResponse}, rate_limit::RL_WINDOW_GET
 };
 use crate::storage::ast::{Filter as QF, Query as QQ, Val as QV, Expr as QE, Join as QJ, JoinKind as QJK};
 use crate::storage::sql_store::SqlStore;
@@ -148,27 +143,22 @@ pub async fn select(
         let _ = params_map.remove(&redis_key);
     }
     
-    // OPTIMIZATION: Auto-enable caching when TTL configured (not just opt-in via ?redis=true)
-    let use_cache = isredis || table_schema.redis.ttl > 0;
-    
     // Build cache key if caching enabled
     let mut cache_key: Option<String> = None;
-    if use_cache {
-        let prefix = build_key_prefix(&cache_tenant, &route);
-        // include stable request parameters in the key (sorted by name)
-        let mut keys: Vec<_> = params_map
-            .iter()
-            .map(|(k, v)| format!("{}={}", k, v))
-            .collect();
-        keys.sort();
-        let key_suffix = keys.join("&");
-        let full_key = if key_suffix.is_empty() { prefix } else { format!("{}:{}", prefix, key_suffix) };
-        cache_key = Some(full_key);
-    }
+    let prefix = build_key_prefix(&cache_tenant, &route);
+    // include stable request parameters in the key (sorted by name)
+    let mut keys: Vec<_> = params_map
+        .iter()
+        .map(|(k, v)| format!("{}={}", k, v))
+        .collect();
+    keys.sort();
+    let key_suffix = keys.join("&");
+    let full_key = if key_suffix.is_empty() { prefix } else { format!("{}:{}", prefix, key_suffix) };
+    cache_key = Some(full_key);
 
     // OPTIMIZATION: Automatic cache read-through (cache-aside pattern)
     // Try cache first if enabled (either by TTL config or explicit ?redis=true)
-    if use_cache {
+    if isredis {
         if let Some(ref k) = cache_key {
             if let Ok(Some(cached)) = redis_get_json::<WebResponse>(k).await {
                 log_output(
@@ -188,6 +178,11 @@ pub async fn select(
                     true,
                 );
             }
+        }
+    } else {
+        // remove cache k on redis 
+        if let Some(ref k) = cache_key {
+            let _ = redis_del_key(k).await;
         }
     }
 
@@ -630,7 +625,7 @@ pub async fn select(
             };
             
             // OPTIMIZATION: Automatic cache write-through when caching enabled
-            if use_cache {
+            if isredis {
                 if let Some(ref k) = cache_key {
                     if table_schema.redis.ttl > 0 {
                         let ttl = table_schema.redis.ttl as usize;
