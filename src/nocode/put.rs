@@ -384,9 +384,10 @@ pub async fn update(
     if route == "flx_users" && password_override.is_some() && table_schema.put.columns.len() == 1 {
         let now = chrono::Local::now().naive_local().format("%Y-%m-%d %H:%M:%S").to_string();
         let mut doc_obj = sonic_rs::Object::new();
-    let pass_tmp = password_override.unwrap();
-    doc_obj.insert("password", json!(pass_tmp));
-    doc_obj.insert("updated_at", json!(now));
+        if let Some(pass_tmp) = password_override {
+            doc_obj.insert("password", json!(pass_tmp));
+        }
+        doc_obj.insert("updated_at", json!(now));
         // updated_by_id from claims
         // detect numeric type for updated_by_id
         let created_by_type = table_schema
@@ -415,7 +416,7 @@ pub async fn update(
             doc_obj.insert("updated_by_id", json!(claims.id));
         }
 
-    let doc = Value::from(doc_obj);
+        let doc = Value::from(doc_obj);
 
         // Build WHERE id = ? by calling update with Filter
         use crate::storage::ast::{Filter as QF, Val as QV};

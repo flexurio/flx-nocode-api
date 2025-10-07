@@ -1,5 +1,5 @@
 use base64::Engine;
-use sonic_rs::{Value, JsonValueTrait};
+use sonic_rs::Value;
 use crate::json_compat::{value_from_f64, value_from_string};
 use sqlx::{
     postgres::{PgRow, Postgres},
@@ -8,7 +8,6 @@ use sqlx::{
 
 use super::state::{rehydrate_placeholders, DbParam, DbRepository, DbTransaction};
 
-type Map<K, V> = std::collections::HashMap<K, V>;
 
 pub struct PostgresRepo {
     pub pool: Pool<Postgres>,

@@ -12,7 +12,7 @@ use dotenv::dotenv;
 use helpers::cetak_label;
 use log::log_output;
 use once_cell::sync::Lazy;
-use sonic_rs::{Value, JsonValueTrait};
+use sonic_rs::Value;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fs;

@@ -1,6 +1,6 @@
 use actix_multipart::Multipart;
 use actix_web::{http::header, web, HttpResponse, Responder};
-use sonic_rs::{Value, JsonValueTrait, JsonContainerTrait, JsonNumberTrait};
+use sonic_rs::{Value, JsonValueTrait, JsonContainerTrait};
 use std::collections::HashSet;
 use std::sync::Arc;
 

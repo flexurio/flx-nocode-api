@@ -2,7 +2,7 @@ use actix_web::{
     web::{self},
     HttpResponse, Responder,
 };
-use sonic_rs::{Value, JsonValueTrait, JsonNumberTrait, json, Object};
+use sonic_rs::{Value, JsonValueTrait, json, Object};
 use std::collections::HashMap;
 
 use crate::{
@@ -144,7 +144,6 @@ pub async fn select(
     }
     
     // Build cache key if caching enabled
-    let mut cache_key: Option<String> = None;
     let prefix = build_key_prefix(&cache_tenant, &route);
     // include stable request parameters in the key (sorted by name)
     let mut keys: Vec<_> = params_map
@@ -154,11 +153,12 @@ pub async fn select(
     keys.sort();
     let key_suffix = keys.join("&");
     let full_key = if key_suffix.is_empty() { prefix } else { format!("{}:{}", prefix, key_suffix) };
-    cache_key = Some(full_key);
+    let cache_key = Some(full_key);
 
     // OPTIMIZATION: Automatic cache read-through (cache-aside pattern)
     // Try cache first if enabled (either by TTL config or explicit ?redis=true)
     if isredis {
+        // read-through cache only if cache_key constructed
         if let Some(ref k) = cache_key {
             if let Ok(Some(cached)) = redis_get_json::<WebResponse>(k).await {
                 log_output(

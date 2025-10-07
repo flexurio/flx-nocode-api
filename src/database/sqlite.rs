@@ -9,7 +9,6 @@ use sqlx::{
 
 use super::state::{DbParam, DbRepository, DbTransaction};
 
-type Map<K, V> = std::collections::HashMap<K, V>;
 
 pub struct SqliteRepo {
     pub pool: SqlitePool,

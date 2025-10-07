@@ -3,7 +3,7 @@ use base64::Engine;
 use colored::Colorize;
 use futures::StreamExt;
 use regex::Regex;
-use sonic_rs::{json, Value, JsonValueMutTrait, JsonValueTrait};
+use sonic_rs::{json, Value, JsonValueMutTrait};
 use std::collections::HashSet;
 
 use crate::{log::log_output, model::TableSchema, ISDEBUG};
