@@ -48,7 +48,7 @@ regex = "1.11.3"
 actix-cors = "0.7.1"
 async-trait = "0.1"
 rust_decimal = "1.38.0"
-reqwest = { version = "0.12.23", features = ["blocking", "json"] }
+reqwest = { version = "0.12.23", default-features = false, features = ["json", "rustls-tls"] }
 zip = "4.6.1"
 sanitize-filename = "0.5"
 infer = "0.15"
