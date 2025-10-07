@@ -7,7 +7,7 @@ edition = "2021"
 [profile.release]
 opt-level = 3          # Maximum optimization
 lto = "thin"          # Faster than full LTO with good optimization
-codegen-units = 16    # Balance between speed and size
+codegen-units = 1     # Better optimization at cost of longer compile time
 panic = "abort"       # Smaller binary size
 strip = true          # Remove debug symbols
 
@@ -62,6 +62,7 @@ mongodb = { version = "3.3", optional = true }
 parking_lot = "0.12"
 ahash = "0.8"
 smallvec = "1.11"
+mimalloc = { version = "0.1" }
 
 [features]
 default = ["mysql", "postgres", "sqlite", "mssql", "mongodb"]
@@ -71,3 +72,5 @@ postgres = ["sqlx/postgres", "sqlx/chrono"]
 sqlite = ["sqlx/sqlite", "sqlx/chrono"]
 mssql = ["tiberius/chrono", "bb8"]
 mongodb = ["dep:mongodb"]
+# perf feature no longer needed (mimalloc always on); kept commented for future reference
+# perf = ["mimalloc"]

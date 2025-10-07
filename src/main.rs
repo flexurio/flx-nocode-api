@@ -14,6 +14,11 @@ use log::log_output;
 use once_cell::sync::Lazy;
 use sonic_rs::Value;
 use crate::json_compat::{SonicValue, sonic_status};
+
+// Always use mimalloc global allocator for better allocation performance
+use mimalloc::MiMalloc;
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fs;
