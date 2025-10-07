@@ -5,7 +5,7 @@ use chrono::{Duration, Utc};
 use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-use serde_json::Value;
+use sonic_rs::{Value, JsonValueTrait, JsonContainerTrait};
 
 use crate::{helpers::get_client_ip, AppState};
 
@@ -181,7 +181,7 @@ fn extract_token_claims_no_validation(token: &str, state: web::Data<AppState>) -
     let payload_b64 = parts[1];
 
     let decoded = URL_SAFE_NO_PAD.decode(payload_b64).unwrap();
-    let json: Value = serde_json::from_slice(&decoded).unwrap();
+    let json: Value = sonic_rs::from_slice(&decoded).unwrap();
 
     // read converter_token from state
     let converter = &state.converter_token;

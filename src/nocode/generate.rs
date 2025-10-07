@@ -2,7 +2,7 @@ use actix_web::{
     web::{self},
     HttpResponse, Responder,
 };
-use serde_json::Value;
+use sonic_rs::Value;
 
 use crate::{
     AppState,
@@ -30,7 +30,7 @@ pub async fn create_table(
                     success: false,
                     message: crate::constants::ERR_INVALID_TOKEN.to_string(),
                     total_data: 0,
-                    data: Value::Null,
+                    data: Value::default(),
                 });
             }
         };
@@ -40,7 +40,7 @@ pub async fn create_table(
                 success: false,
                 message: crate::constants::ERR_UNAUTHORIZED.to_string(),
                 total_data: 0,
-                data: Value::Null,
+                data: Value::default(),
             });
         }
     }
@@ -52,7 +52,7 @@ pub async fn create_table(
             success: false,
             message: message_error,
             total_data: 0,
-            data: Value::Null,
+            data: Value::default(),
         });
     }
 
@@ -69,7 +69,7 @@ pub async fn create_table(
             success: true,
             message: "Table created (MongoDB - no DDL)".to_string(),
             total_data: 1,
-            data: Value::Null,
+            data: Value::default(),
         });
     }
 
@@ -85,7 +85,7 @@ pub async fn create_table(
                 success: false,
                 message: format!("Error starting transaction: {}", err),
                 total_data: 0,
-                data: Value::Null,
+                data: Value::default(),
             });
         }
     };
@@ -134,14 +134,14 @@ pub async fn create_table(
             success: false,
             message: err_message,
             total_data: 0,
-            data: Value::Null,
+            data: Value::default(),
         })
     } else {
         HttpResponse::Ok().json(WebResponse {
             success: true,
             message: "Table created".to_string(),
             total_data: 1,
-            data: Value::Null,
+            data: Value::default(),
         })
     }
 }

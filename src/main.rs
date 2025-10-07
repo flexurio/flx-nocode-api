@@ -12,7 +12,8 @@ use dotenv::dotenv;
 use helpers::cetak_label;
 use log::log_output;
 use once_cell::sync::Lazy;
-use serde_json::Value;
+use sonic_rs::{Value, JsonValueTrait, JsonContainerTrait};
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fs;
 use std::process::exit;
@@ -51,6 +52,7 @@ use crate::model::{ReferenceForeignKey, ReferenceForeignKeyAction};
 mod audit;
 mod constants;
 mod helpers;
+mod json_compat; // JSON compatibility layer for sonic_rs
 mod log;
 mod rate_limit;
 mod storage; // new optional storage abstraction (not used yet)
@@ -88,7 +90,7 @@ static CONFIG: Lazy<crate::model::Config> = Lazy::new(|| {
         );
     }
 
-    match serde_json::from_str(&content) {
+    match sonic_rs::from_str(&content) {
         Ok(config) => config,
         Err(e) => {
             eprintln!(
@@ -148,7 +150,7 @@ static SCHEMAS: Lazy<Arc<(Vec<TableSchema>, Vec<ReferenceForeignKey>)>> = Lazy::
             }
         };
 
-        let schema: TableSchema = match serde_json::from_str(&content) {
+        let schema: TableSchema = match sonic_rs::from_str(&content) {
             Ok(schema) => schema,
             Err(e) => {
                 eprintln!(
@@ -811,7 +813,7 @@ async fn main() -> std::io::Result<()> {
                         async move {
                             let probe_sql = "SELECT 1";
                             let db_ok = state.db.query(probe_sql).await.is_ok();
-                            let body = serde_json::json!({
+                            let body = sonic_rs::json!({
                                 "status": "ok",
                                 "db": if db_ok { "up" } else { "down" },
                                 "db_type": state.db_type,
@@ -913,7 +915,7 @@ async fn main() -> std::io::Result<()> {
                             // register nocode_get
                             .route(web::get().to(
                                 move |state: web::Data<AppState>,
-                                      parameters: web::Query<Value>,
+                                      parameters: web::Query<HashMap<String,String>>,
                                       req: actix_web::HttpRequest| {
                                     select(
                                         state,
@@ -941,7 +943,7 @@ async fn main() -> std::io::Result<()> {
                             // register nocode_trace
                             .route(web::trace().to(
                                 move |state: web::Data<AppState>,
-                                      parameters: web::Query<Value>,
+                                      parameters: web::Query<HashMap<String,String>>,
                                       req: actix_web::HttpRequest| {
                                     process(
                                         state,
@@ -955,7 +957,7 @@ async fn main() -> std::io::Result<()> {
                             // register nocode_patch
                             .route(web::patch().to(
                                 move |state: web::Data<AppState>,
-                                      parameters: web::Query<Value>,
+                                      parameters: web::Query<HashMap<String,String>>,
                                       req: actix_web::HttpRequest| {
                                     process_sp(
                                         state,

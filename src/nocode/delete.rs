@@ -2,7 +2,7 @@ use actix_web::{
     web::{Data, Path},
     HttpResponse, Responder,
 };
-use serde_json::Value;
+use sonic_rs::{Value, json};
 
 use crate::audit::{write_audit, AuditEntry};
 use crate::helpers::get_client_ip;
@@ -40,7 +40,7 @@ pub async fn delete(
                     success: false,
                     message: crate::constants::ERR_INVALID_TOKEN.to_string(),
                     total_data: 0,
-                    data: Value::Null,
+                    data: Value::default(),
                 });
             }
         };
@@ -50,7 +50,7 @@ pub async fn delete(
                 success: false,
                 message: crate::constants::ERR_UNAUTHORIZED.to_string(),
                 total_data: 0,
-                data: Value::Null,
+                data: Value::default(),
             });
         }
     }
@@ -70,7 +70,7 @@ pub async fn delete(
             success: false,
             message: "Too many requests".into(),
             total_data: 0,
-            data: Value::Null,
+            data: Value::default(),
         });
     }
     // Per-user limit (for non-public routes only)
@@ -85,7 +85,7 @@ pub async fn delete(
                 success: false,
                 message: "Too many requests".into(),
                 total_data: 0,
-                data: Value::Null,
+                data: Value::default(),
             });
         }
     }
@@ -97,7 +97,7 @@ pub async fn delete(
             success: false,
             message: message_error,
             total_data: 0,
-            data: Value::Null,
+            data: Value::default(),
         });
     }
 
@@ -159,7 +159,7 @@ pub async fn delete(
                     success: false,
                     message: format!("Error compiling AST soft delete: {}", e),
                     total_data: 0,
-                    data: Value::Null,
+                    data: Value::default(),
                 });
             }
         }
@@ -181,7 +181,7 @@ pub async fn delete(
                     success: false,
                     message: format!("Error compiling AST hard delete: {}", e),
                     total_data: 0,
-                    data: Value::Null,
+                    data: Value::default(),
                 });
             }
         }
@@ -195,8 +195,9 @@ pub async fn delete(
         let filter = Some(QF::Eq("id".into(), id_filter_val));
         let result = if type_delete == "soft" {
             // patch deleted_at and deleted_by_id
-            let mut patch = serde_json::Map::new();
-            patch.insert("deleted_at".into(), serde_json::json!(Local::now().to_rfc3339()));
+            let now_ts = Local::now().to_rfc3339();
+            let mut patch = sonic_rs::Object::new();
+            patch.insert("deleted_at", json!(now_ts));
             // type for deleted_by_id
             let deleted_by_type = table_schema
                 .columns
@@ -206,9 +207,9 @@ pub async fn delete(
                 .unwrap_or("int".to_string());
             if deleted_by_type.contains("int") {
                 if let Ok(n) = claims.id.parse::<i64>() {
-                    patch.insert("deleted_by_id".into(), serde_json::json!(n));
+                    patch.insert("deleted_by_id", json!(n));
                 } else {
-                    patch.insert("deleted_by_id".into(), serde_json::json!(claims.id.clone()));
+                    patch.insert("deleted_by_id", json!(claims.id.clone()));
                 }
             } else if deleted_by_type.contains("float")
                 || deleted_by_type.contains("double")
@@ -216,14 +217,14 @@ pub async fn delete(
                 || deleted_by_type.contains("money")
             {
                 if let Ok(n) = claims.id.parse::<f64>() {
-                    patch.insert("deleted_by_id".into(), serde_json::json!(n));
+                    patch.insert("deleted_by_id", json!(n));
                 } else {
-                    patch.insert("deleted_by_id".into(), serde_json::json!(claims.id.clone()));
+                    patch.insert("deleted_by_id", json!(claims.id.clone()));
                 }
             } else {
-                patch.insert("deleted_by_id".into(), serde_json::json!(claims.id.clone()));
+                patch.insert("deleted_by_id", json!(claims.id.clone()));
             }
-            state.store.update(&table_schema.table, filter, Value::Object(patch)).await.map(|_| ())
+            state.store.update(&table_schema.table, filter, Value::from(patch)).await.map(|_| ())
         } else {
             state.store.delete(&table_schema.table, filter).await.map(|_| ())
         };
@@ -242,7 +243,7 @@ pub async fn delete(
                     success: true,
                     message: if type_delete == "soft" { "Data soft-deleted".to_string() } else { "Data deleted".to_string() },
                     total_data: 1,
-                    data: Value::Null,
+                    data: Value::default(),
                 })
             }
             Err(err) => {
@@ -250,7 +251,7 @@ pub async fn delete(
                     success: false,
                     message: format!("Error NCO-DELETE (mongo): {}", err),
                     total_data: 0,
-                    data: Value::Null,
+                    data: Value::default(),
                 })
             }
         };
@@ -264,7 +265,7 @@ pub async fn delete(
                 success: false,
                 message: format!("Error starting transaction: {}", err),
                 total_data: 0,
-                data: Value::Null,
+                data: Value::default(),
             });
         }
     };
@@ -301,14 +302,14 @@ pub async fn delete(
                             success: true,
                             message: "Data deleted successfully".to_string(),
                             total_data: 1,
-                            data: Value::Null,
+                            data: Value::default(),
                         })
                     }
                     Err(err) => HttpResponse::InternalServerError().json(WebResponse {
                         success: false,
                         message: format!("Error committing transaction: {}", err),
                         total_data: 0,
-                        data: Value::Null,
+                        data: Value::default(),
                     }),
                 }
             } else {
@@ -321,7 +322,7 @@ pub async fn delete(
                         err_message
                     ),
                     total_data: 0,
-                    data: Value::Null,
+                    data: Value::default(),
                 })
             }
         }
@@ -332,7 +333,7 @@ pub async fn delete(
                 success: false,
                 message: format!("Error NCO-DELETE: {}", err),
                 total_data: 0,
-                data: Value::Null,
+                data: Value::default(),
             })
         }
     }

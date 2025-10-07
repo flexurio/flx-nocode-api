@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use serde_json::Value as JsonValue;
+use sonic_rs::Value;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Val {
@@ -143,8 +143,8 @@ pub enum LogicalPlan {
     Limit { input: Box<LogicalPlan>, offset: Option<u32>, limit: Option<u32> },
 
     // Write ops (optional for NoSQL/SQL adapters)
-    Insert { collection: String, documents: Vec<JsonValue> },
-    Update { collection: String, filter: Option<Filter>, patch: JsonValue },
+    Insert { collection: String, documents: Vec<Value> },
+    Update { collection: String, filter: Option<Filter>, patch: Value },
     Delete { collection: String, filter: Option<Filter> },
 }
 

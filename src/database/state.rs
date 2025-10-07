@@ -1,6 +1,7 @@
 use once_cell::sync::Lazy;
 use regex::Regex;
-use serde_json::Value;
+use sonic_rs::{Value, JsonValueTrait, JsonContainerTrait};
+use sonic_rs::serde::JsonNumberTrait;
 use std::sync::Arc;
 
 use crate::{auth::ClaimsConverter, log::log_output};
@@ -69,7 +70,7 @@ pub trait DbTransaction: Send + Sync {
 pub async fn execute_sql_formula_with_txstore(
     tx: &mut Box<dyn crate::storage::traits::TxStore>,
     sql: String,
-    body: &serde_json::Value,
+    body: &Value,
     route: &str,
 ) -> Result<(), anyhow::Error> {
     match build_sql_and_params_from_formula(&sql, body) {
@@ -125,15 +126,16 @@ pub fn concat_column_values(values: Vec<Value>, column_name: &str, separator: &s
     let mut result = Vec::new();
 
     for value in values {
-        if let Value::Object(obj) = value {
-            if let Some(v) = obj.get(column_name) {
-                let s = match v {
-                    Value::String(s) => s.clone(),
-                    Value::Number(n) => n.to_string(),
-                    Value::Bool(b) => b.to_string(),
-                    Value::Null => "".to_string(),
-                    _ => "".to_string(),
-                };
+        if let Some(obj) = value.as_object() {
+            let key = column_name.to_string();
+            if let Some(v) = obj.get(&key) {
+                let s = if v.is_null() { String::new() }
+                else if let Some(b) = v.as_bool() { b.to_string() }
+                else if let Some(n) = v.as_number() {
+                    if n.is_i64() { n.as_i64().unwrap().to_string() }
+                    else if n.is_f64() { n.as_f64().unwrap().to_string() }
+                    else { v.to_string() }
+                } else if let Some(sv) = v.as_str() { sv.to_string() } else { v.to_string() };
                 result.push(s);
             }
         }
@@ -260,7 +262,7 @@ static RE_IDENT: Lazy<Regex> = Lazy::new(|| Regex::new(r"^[A-Za-z_][A-Za-z0-9_]*
 /// - {table[<id>].col} or {table[{request.id}].col} -> expanded to subselect
 pub fn build_sql_and_params_from_formula(
     sql_formula: &str,
-    body: &serde_json::Value,
+    body: &Value,
 ) -> Result<(String, Vec<DbParam>)> {
     // Strip optional prefix
     let mut sql = sql_formula
@@ -274,20 +276,11 @@ pub fn build_sql_and_params_from_formula(
     let mut params: Vec<DbParam> = Vec::new();
 
     // Helper: get nested value by dotted path, e.g. "user.id" or "items.0.price"
-    fn get_by_path<'a>(root: &'a serde_json::Value, path: &str) -> Option<&'a serde_json::Value> {
+    fn get_by_path<'a>(root: &'a Value, path: &str) -> Option<&'a Value> {
         let mut cur = root;
         for part in path.split('.') {
-            if let Ok(idx) = part.parse::<usize>() {
-                match cur {
-                    serde_json::Value::Array(arr) => cur = arr.get(idx)?,
-                    _ => return None,
-                }
-            } else {
-                match cur {
-                    serde_json::Value::Object(map) => cur = map.get(part)?,
-                    _ => return None,
-                }
-            }
+            if let Ok(idx) = part.parse::<usize>() { cur = cur.as_array()?.get(idx)?; }
+            else { let key = part.to_string(); cur = cur.as_object()?.get(&key)?; }
         }
         Some(cur)
     }
@@ -318,30 +311,20 @@ pub fn build_sql_and_params_from_formula(
         let key: &str = inner.strip_prefix("request.").unwrap_or(inner);
         // Prefer numeric id, fallback to NULL
         let id_param = match get_by_path(body, key) {
-            Some(serde_json::Value::Number(n)) => {
-                if let Some(i) = n.as_i64() {
-                    DbParam::I64(i)
-                } else if let Some(f) = n.as_f64() {
-                    DbParam::F64(f)
-                } else {
-                    DbParam::Null
-                }
+            Some(v) if v.as_number().is_some() => {
+                let n = v.as_number().unwrap();
+                if n.is_i64() { DbParam::I64(n.as_i64().unwrap()) }
+                else if n.is_f64() { DbParam::F64(n.as_f64().unwrap()) }
+                else { DbParam::Null }
             }
-            Some(serde_json::Value::String(s)) => {
-                if let Ok(i) = s.parse::<i64>() {
-                    DbParam::I64(i)
-                } else if let Ok(f) = s.parse::<f64>() {
-                    DbParam::F64(f)
-                } else {
-                    DbParam::Null
-                }
+            Some(v) if v.as_str().is_some() => {
+                let s = v.as_str().unwrap();
+                if let Ok(i) = s.parse::<i64>() { DbParam::I64(i) }
+                else if let Ok(f) = s.parse::<f64>() { DbParam::F64(f) }
+                else { DbParam::Null }
             }
-            Some(serde_json::Value::Bool(b)) => {
-                if *b {
-                    DbParam::I64(1)
-                } else {
-                    DbParam::I64(0)
-                }
+            Some(v) if v.as_bool().is_some() => {
+                if v.as_bool().unwrap() { DbParam::I64(1) } else { DbParam::I64(0) }
             }
             _ => DbParam::Null,
         };
@@ -424,26 +407,20 @@ pub fn build_sql_and_params_from_formula(
 
             // Infer type directly from JSON value (with dotted path)
             match get_by_path(body, key) {
-                Some(serde_json::Value::Null) | None => params.push(DbParam::Null),
-                Some(serde_json::Value::Bool(b)) => params.push(DbParam::Bool(*b)),
-                Some(serde_json::Value::Number(n)) => {
-                    if let Some(i) = n.as_i64() {
-                        params.push(DbParam::I64(i));
-                    } else if let Some(f) = n.as_f64() {
-                        params.push(DbParam::F64(f));
-                    } else {
-                        params.push(DbParam::Str(n.to_string()));
-                    }
+                None => params.push(DbParam::Null),
+                Some(v) if v.is_null() => params.push(DbParam::Null),
+                Some(v) if v.as_bool().is_some() => params.push(DbParam::Bool(v.as_bool().unwrap())),
+                Some(v) if v.as_number().is_some() => {
+                    let n = v.as_number().unwrap();
+                    if n.is_i64() { params.push(DbParam::I64(n.as_i64().unwrap())); }
+                    else if n.is_f64() { params.push(DbParam::F64(n.as_f64().unwrap())); }
+                    else { params.push(DbParam::Str(v.to_string())); }
                 }
-                Some(serde_json::Value::String(s)) => {
-                    // try numeric first to reduce type mismatch on numeric columns
-                    if let Ok(i) = s.parse::<i64>() {
-                        params.push(DbParam::I64(i));
-                    } else if let Ok(f) = s.parse::<f64>() {
-                        params.push(DbParam::F64(f));
-                    } else {
-                        params.push(DbParam::Str(s.clone()));
-                    }
+                Some(v) if v.as_str().is_some() => {
+                    let s = v.as_str().unwrap();
+                    if let Ok(i) = s.parse::<i64>() { params.push(DbParam::I64(i)); }
+                    else if let Ok(f) = s.parse::<f64>() { params.push(DbParam::F64(f)); }
+                    else { params.push(DbParam::Str(s.to_string())); }
                 }
                 Some(_) => params.push(DbParam::Str(String::new())),
             }
@@ -466,7 +443,7 @@ pub fn build_sql_and_params_from_formula(
 
 /// Legacy replacement used in older code paths. Prefer `build_sql_and_params_from_formula`.
 #[allow(dead_code)]
-pub fn formula_replace(mut string_formula: String, body: &serde_json::Value) -> String {
+pub fn formula_replace(mut string_formula: String, body: &Value) -> String {
     // 1) Resolve nested subselects first
     while let Some(cap) = RE_NESTED.captures(&string_formula) {
         let table = cap.get(1).unwrap().as_str();
@@ -476,19 +453,14 @@ pub fn formula_replace(mut string_formula: String, body: &serde_json::Value) -> 
         let key = inner.strip_prefix("request.").unwrap_or(inner);
         let raw = {
             // local helper mirrors get_by_path for this legacy path
-            fn get<'a>(root: &'a serde_json::Value, path: &str) -> Option<&'a serde_json::Value> {
+            fn get<'a>(root: &'a Value, path: &str) -> Option<&'a Value> {
                 let mut cur = root;
                 for part in path.split('.') {
                     if let Ok(idx) = part.parse::<usize>() {
-                        match cur {
-                            serde_json::Value::Array(arr) => cur = arr.get(idx)?,
-                            _ => return None,
-                        }
+                        cur = cur.as_array()?.get(idx)?;
                     } else {
-                        match cur {
-                            serde_json::Value::Object(map) => cur = map.get(part)?,
-                            _ => return None,
-                        }
+                        let key = part.to_string();
+                        cur = cur.as_object()?.get(&key)?;
                     }
                 }
                 Some(cur)

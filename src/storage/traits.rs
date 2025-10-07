@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use serde_json::Value;
+use sonic_rs::{Value, JsonValueTrait, JsonContainerTrait};
 
 use crate::storage::ast::{Filter, Query, LogicalPlan};
 

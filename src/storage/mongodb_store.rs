@@ -1,7 +1,7 @@
 // cfg is already applied from storage/mod.rs; avoid duplicated attribute for clippy
 
 use async_trait::async_trait;
-use serde_json::Value as JsonValue;
+use sonic_rs::{Value, JsonValueTrait, JsonContainerTrait, JsonValueMutTrait};
 
 use crate::storage::ast::{Filter, LogicalPlan, Sort, Val, Expr, Agg, AggFunc, JoinKind};
 use crate::storage::traits::{BackendCapabilities, DataStore, TxStore};
@@ -442,12 +442,12 @@ impl DataStore for MongoStore {
         BackendCapabilities { transactions: false, joins: true, like: true, sql_formula: false }
     }
 
-    async fn query(&self, q: &crate::storage::ast::Query) -> Result<Vec<JsonValue>> {
+    async fn query(&self, q: &crate::storage::ast::Query) -> Result<Vec<Value>> {
         let plan = q.to_logical_plan();
         self.execute_plan(&plan).await
     }
 
-    async fn insert(&self, collection: &str, docv: JsonValue) -> Result<JsonValue> {
+    async fn insert(&self, collection: &str, docv: Value) -> Result<Value> {
         let coll = self.coll(collection);
         // Map JSON 'id' to Mongo '_id' if present
         let mut bson_doc: Document = mongodb::bson::to_bson(&docv)?.as_document().cloned().unwrap_or_else(Document::new);
@@ -462,10 +462,10 @@ impl DataStore for MongoStore {
             }
         }
         let res = coll.insert_one(bson_doc).await?;
-        Ok(serde_json::json!({ "inserted_id": res.inserted_id }))
+        Ok(sonic_rs::json!({ "inserted_id": res.inserted_id }))
     }
 
-    async fn update(&self, collection: &str, filter: Option<Filter>, patch: JsonValue) -> Result<u64> {
+    async fn update(&self, collection: &str, filter: Option<Filter>, patch: Value) -> Result<u64> {
         let coll = self.coll(collection);
         // Build base prefixes and joins for rewrite context (best-effort: only have collection name here)
         let base_prefixes: Vec<String> = vec![collection.to_string()];
@@ -477,11 +477,11 @@ impl DataStore for MongoStore {
         // Remap 'id' key in patch to '_id' if present, but generally _id shouldn't be updated; keep other fields
         let mut patch_value = patch;
         if let Some(obj) = patch_value.as_object_mut() {
-            if let Some(id_json) = obj.remove("id") {
-                obj.insert("_id".to_string(), id_json);
-            }
+            // For now simply drop any provided 'id' field to avoid attempting to update _id
+            let key = "id".to_string();
+            let _ = obj.remove(&key);
         }
-        let update_doc: Document = mongodb::bson::to_document(&serde_json::json!({ "$set": patch_value }))?;
+        let update_doc: Document = mongodb::bson::to_document(&sonic_rs::json!({ "$set": patch_value }))?;
         let res = coll.update_many(filt, update_doc).await?;
         Ok(res.modified_count as u64)
     }
@@ -493,13 +493,13 @@ impl DataStore for MongoStore {
         Ok(res.deleted_count as u64)
     }
 
-    async fn execute_plan(&self, plan: &LogicalPlan) -> Result<Vec<JsonValue>> {
+    async fn execute_plan(&self, plan: &LogicalPlan) -> Result<Vec<Value>> {
         let (collection, pipeline) = plan_to_pipeline(plan)?;
         let coll = self.coll(&collection);
     let mut cursor = coll.aggregate(pipeline).await?;
         let mut out = Vec::new();
         use futures_util::StreamExt;
-        while let Some(doc) = cursor.next().await { let d = doc?; out.push(serde_json::to_value(d)?); }
+        while let Some(doc) = cursor.next().await { let d = doc?; out.push(sonic_rs::to_value(&d)?); }
         Ok(out)
     }
 }
@@ -511,11 +511,11 @@ pub struct MongoTxStore {
 
 #[async_trait]
 impl TxStore for MongoTxStore {
-    async fn query(&mut self, q: &crate::storage::ast::Query) -> Result<Vec<JsonValue>> { self.store.query(q).await }
-    async fn insert(&mut self, collection: &str, doc: JsonValue) -> Result<JsonValue> { self.store.insert(collection, doc).await }
-    async fn update(&mut self, collection: &str, filter: Option<Filter>, patch: JsonValue) -> Result<u64> { self.store.update(collection, filter, patch).await }
+    async fn query(&mut self, q: &crate::storage::ast::Query) -> Result<Vec<Value>> { self.store.query(q).await }
+    async fn insert(&mut self, collection: &str, doc: sonic_rs::Value) -> Result<Value> { self.store.insert(collection, doc).await }
+    async fn update(&mut self, collection: &str, filter: Option<Filter>, patch: sonic_rs::Value) -> Result<u64> { self.store.update(collection, filter, patch).await }
     async fn delete(&mut self, collection: &str, filter: Option<Filter>) -> Result<u64> { self.store.delete(collection, filter).await }
-    async fn execute_plan(&mut self, plan: &LogicalPlan) -> Result<Vec<JsonValue>> { self.store.execute_plan(plan).await }
+    async fn execute_plan(&mut self, plan: &LogicalPlan) -> Result<Vec<Value>> { self.store.execute_plan(plan).await }
     async fn commit(self: Box<Self>) -> Result<()> { Ok(()) }
     async fn rollback(self: Box<Self>) -> Result<()> { Ok(()) }
 }

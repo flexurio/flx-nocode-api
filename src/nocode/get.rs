@@ -2,7 +2,8 @@ use actix_web::{
     web::{self},
     HttpResponse, Responder,
 };
-use serde_json::Value;
+use sonic_rs::{Value, JsonValueTrait, JsonContainerTrait, JsonNumberTrait, json, Object};
+use std::collections::HashMap;
 
 use crate::{
     auth::{check_access, get_user_info_from_token},
@@ -21,7 +22,7 @@ use crate::database::redis::{redis_get_json, redis_set_json, build_key_prefix};
 // NCO-GET
 pub async fn select(
     state: web::Data<AppState>,
-    parameters: web::Query<Value>,
+    parameters: web::Query<HashMap<String, String>>,
     route: String,
     table_schemas: Arc<Vec<TableSchema>>,
     req: actix_web::HttpRequest,
@@ -48,7 +49,7 @@ pub async fn select(
             success: false,
             message: "Too many requests".to_string(),
             total_data: 0,
-            data: Value::Null,
+            data: Value::default(),
         });
     }
     if !state.route_publics.contains(&route) {
@@ -60,7 +61,7 @@ pub async fn select(
                     success: false,
                     message: crate::constants::ERR_INVALID_TOKEN.to_string(),
                     total_data: 0,
-                    data: Value::Null,
+                    data: Value::default(),
                 });
             }
         };
@@ -75,7 +76,7 @@ pub async fn select(
                 success: false,
                 message: crate::constants::ERR_UNAUTHORIZED.to_string(),
                 total_data: 0,
-                data: Value::Null,
+                data: Value::default(),
             });
         }
 
@@ -89,7 +90,7 @@ pub async fn select(
                 success: false,
                 message: "Too many requests".to_string(),
                 total_data: 0,
-                data: Value::Null,
+                data: Value::default(),
             });
         }
     }
@@ -101,8 +102,8 @@ pub async fn select(
         "CONFIGURATION",
         "FILTERED PARAMETERS",
         "filter_table_schema",
-        serde_json::to_string(&table_schema.get.parameters)
-            .unwrap_or_else(|_| "Failed to serialize TableSchema".to_string()),
+        // sonic_rs Value implements Display -> to_string
+    json!(table_schema.get.parameters.clone()).to_string(),
         true,
     );
 
@@ -115,7 +116,7 @@ pub async fn select(
             success: false,
             message: message_error,
             total_data: 0,
-            data: Value::Null,
+            data: Value::default(),
         });
     }
 
@@ -132,30 +133,19 @@ pub async fn select(
         true,
     );
 
-    // get parameters value only allowed from table_schemas.get.parameters
-    // Pre-convert to object once for efficiency
-    let params_obj = parameters.clone().into_inner();
-    let params_map_awal = match params_obj.as_object() {
-        Some(map) => map,
-        None => {
-            return HttpResponse::BadRequest().json(WebResponse {
-                success: false,
-                message: "Invalid parameters format".to_string(),
-                total_data: 0,
-                data: Value::Null,
-            });
-        }
-    };
+    // Build sonic_rs Object from query HashMap for unified downstream logic
+    let mut params_map_awal: Object = Object::with_capacity(parameters.len());
+    for (k, v) in parameters.iter() {
+        params_map_awal.insert(k.as_str(), Value::from(v.as_str()));
+    }
     let mut params_map = params_map_awal.clone();
     let mut isredis = false;
 
     // check if in parameters contain redis 
-    if params_map_awal.contains_key("redis"){
-        if params_map_awal.get("redis").unwrap() == &Value::Bool(true) || params_map_awal.get("redis").unwrap() == &Value::String("true".to_string()) {
-            isredis = true;
-        }
-        params_map.remove("redis");
-
+    let redis_key = String::from("redis");
+    if let Some(v) = params_map_awal.get(&redis_key) {
+        if v.as_bool() == Some(true) || v.as_str() == Some("true") { isredis = true; }
+        let _ = params_map.remove(&redis_key);
     }
     
     // OPTIMIZATION: Auto-enable caching when TTL configured (not just opt-in via ?redis=true)
@@ -311,16 +301,14 @@ pub async fn select(
                                         // nin: support JSON array or comma-separated
                                         let val_trim = value_str.trim();
                                         if val_trim.starts_with('[') && val_trim.ends_with(']') {
-                                            if let Ok(arr) = serde_json::from_str::<Vec<serde_json::Value>>(val_trim) {
-                                                let vs = arr.into_iter().map(|x| match x {
-                                                    serde_json::Value::Number(n) => {
-                                                        if let Some(i) = n.as_i64() { QV::I64(i) }
-                                                        else if let Some(f) = n.as_f64() { QV::F64(f) } else { QV::Str(n.to_string()) }
-                                                    }
-                                                    serde_json::Value::Bool(b) => QV::Bool(b),
-                                                    serde_json::Value::String(s) => QV::Str(s),
-                                                    serde_json::Value::Null => QV::Null,
-                                                    other => QV::Str(other.to_string()),
+                                            if let Ok(arr) = sonic_rs::from_str::<Vec<Value>>(val_trim) {
+                                                let vs = arr.into_iter().map(|x| {
+                                                    if let Some(i) = x.as_i64() { QV::I64(i) }
+                                                    else if let Some(f) = x.as_f64() { QV::F64(f) }
+                                                    else if let Some(b) = x.as_bool() { QV::Bool(b) }
+                                                    else if let Some(s) = x.as_str() { QV::Str(s.to_string()) }
+                                                    else if x.is_null() { QV::Null }
+                                                    else { QV::Str(x.to_string()) }
                                                 }).collect::<Vec<QV>>();
                                                 QF::NotIn(column, vs)
                                             } else { QF::NotIn(column, vec![to_val(&val)]) }
@@ -333,21 +321,17 @@ pub async fn select(
                                         // between: support JSON [a,b] or 'a,b'
                                         let val_trim = value_str.trim();
                                         if val_trim.starts_with('[') && val_trim.ends_with(']') {
-                                            if let Ok(arr) = serde_json::from_str::<Vec<serde_json::Value>>(val_trim) {
+                                            if let Ok(arr) = sonic_rs::from_str::<Vec<Value>>(val_trim) {
                                                 if arr.len() == 2 {
-                                                    let a = &arr[0];
-                                                    let b = &arr[1];
-                                                    let to_qv = |v: &serde_json::Value| match v {
-                                                        serde_json::Value::Number(n) => {
-                                                            if let Some(i) = n.as_i64() { QV::I64(i) }
-                                                            else if let Some(f) = n.as_f64() { QV::F64(f) } else { QV::Str(n.to_string()) }
-                                                        }
-                                                        serde_json::Value::Bool(b) => QV::Bool(*b),
-                                                        serde_json::Value::String(s) => QV::Str(s.clone()),
-                                                        serde_json::Value::Null => QV::Null,
-                                                        other => QV::Str(other.to_string()),
+                                                    let to_qv = |v: &Value| {
+                                                        if let Some(i) = v.as_i64() { QV::I64(i) }
+                                                        else if let Some(f) = v.as_f64() { QV::F64(f) }
+                                                        else if let Some(b) = v.as_bool() { QV::Bool(b) }
+                                                        else if let Some(s) = v.as_str() { QV::Str(s.to_string()) }
+                                                        else if v.is_null() { QV::Null }
+                                                        else { QV::Str(v.to_string()) }
                                                     };
-                                                    QF::Between(column, to_qv(a), to_qv(b))
+                                                    QF::Between(column, to_qv(&arr[0]), to_qv(&arr[1]))
                                                 } else { QF::Eq(column, to_val(&val)) }
                                             } else { QF::Eq(column, to_val(&val)) }
                                         } else if value_str.contains(',') {
@@ -384,24 +368,17 @@ pub async fn select(
                                     "=" => {
                                         let val_trim = value_str.trim();
                                         if val_trim.starts_with('[') && val_trim.ends_with(']') {
-                                            if let Ok(arr) = serde_json::from_str::<Vec<serde_json::Value>>(val_trim) {
-                                                let vs = arr
-                                                    .into_iter()
-                                                    .map(|x| match x {
-                                                        serde_json::Value::Number(n) => {
-                                                            if let Some(i) = n.as_i64() { QV::I64(i) }
-                                                            else if let Some(f) = n.as_f64() { QV::F64(f) } else { QV::Str(n.to_string()) }
-                                                        }
-                                                        serde_json::Value::Bool(b) => QV::Bool(b),
-                                                        serde_json::Value::String(s) => QV::Str(s),
-                                                        serde_json::Value::Null => QV::Null,
-                                                        other => QV::Str(other.to_string()),
-                                                    })
-                                                    .collect::<Vec<QV>>();
+                                            if let Ok(arr) = sonic_rs::from_str::<Vec<Value>>(val_trim) {
+                                                let vs = arr.into_iter().map(|x| {
+                                                    if let Some(i) = x.as_i64() { QV::I64(i) }
+                                                    else if let Some(f) = x.as_f64() { QV::F64(f) }
+                                                    else if let Some(b) = x.as_bool() { QV::Bool(b) }
+                                                    else if let Some(s) = x.as_str() { QV::Str(s.to_string()) }
+                                                    else if x.is_null() { QV::Null }
+                                                    else { QV::Str(x.to_string()) }
+                                                }).collect::<Vec<QV>>();
                                                 QF::In(column, vs)
-                                            } else {
-                                                QF::Eq(column, to_val(&val))
-                                            }
+                                            } else { QF::Eq(column, to_val(&val)) }
                                         } else if value_str.contains(',') {
                                             let vs = value_str
                                                 .split(',')
@@ -420,16 +397,14 @@ pub async fn select(
                                     "nin" => {
                                         let val_trim = value_str.trim();
                                         if val_trim.starts_with('[') && val_trim.ends_with(']') {
-                                            if let Ok(arr) = serde_json::from_str::<Vec<serde_json::Value>>(val_trim) {
-                                                let vs = arr.into_iter().map(|x| match x {
-                                                    serde_json::Value::Number(n) => {
-                                                        if let Some(i) = n.as_i64() { QV::I64(i) }
-                                                        else if let Some(f) = n.as_f64() { QV::F64(f) } else { QV::Str(n.to_string()) }
-                                                    }
-                                                    serde_json::Value::Bool(b) => QV::Bool(b),
-                                                    serde_json::Value::String(s) => QV::Str(s),
-                                                    serde_json::Value::Null => QV::Null,
-                                                    other => QV::Str(other.to_string()),
+                                            if let Ok(arr) = sonic_rs::from_str::<Vec<Value>>(val_trim) {
+                                                let vs = arr.into_iter().map(|x| {
+                                                    if let Some(i) = x.as_i64() { QV::I64(i) }
+                                                    else if let Some(f) = x.as_f64() { QV::F64(f) }
+                                                    else if let Some(b) = x.as_bool() { QV::Bool(b) }
+                                                    else if let Some(s) = x.as_str() { QV::Str(s.to_string()) }
+                                                    else if x.is_null() { QV::Null }
+                                                    else { QV::Str(x.to_string()) }
                                                 }).collect::<Vec<QV>>();
                                                 QF::NotIn(column, vs)
                                             } else { QF::NotIn(column, vec![to_val(&val)]) }
@@ -441,21 +416,17 @@ pub async fn select(
                                     "between" => {
                                         let val_trim = value_str.trim();
                                         if val_trim.starts_with('[') && val_trim.ends_with(']') {
-                                            if let Ok(arr) = serde_json::from_str::<Vec<serde_json::Value>>(val_trim) {
+                                            if let Ok(arr) = sonic_rs::from_str::<Vec<Value>>(val_trim) {
                                                 if arr.len() == 2 {
-                                                    let a = &arr[0];
-                                                    let b = &arr[1];
-                                                    let to_qv = |v: &serde_json::Value| match v {
-                                                        serde_json::Value::Number(n) => {
-                                                            if let Some(i) = n.as_i64() { QV::I64(i) }
-                                                            else if let Some(f) = n.as_f64() { QV::F64(f) } else { QV::Str(n.to_string()) }
-                                                        }
-                                                        serde_json::Value::Bool(b) => QV::Bool(*b),
-                                                        serde_json::Value::String(s) => QV::Str(s.clone()),
-                                                        serde_json::Value::Null => QV::Null,
-                                                        other => QV::Str(other.to_string()),
+                                                    let to_qv = |v: &Value| {
+                                                        if let Some(i) = v.as_i64() { QV::I64(i) }
+                                                        else if let Some(f) = v.as_f64() { QV::F64(f) }
+                                                        else if let Some(b) = v.as_bool() { QV::Bool(b) }
+                                                        else if let Some(s) = v.as_str() { QV::Str(s.to_string()) }
+                                                        else if v.is_null() { QV::Null }
+                                                        else { QV::Str(v.to_string()) }
                                                     };
-                                                    QF::Between(column, to_qv(a), to_qv(b))
+                                                    QF::Between(column, to_qv(&arr[0]), to_qv(&arr[1]))
                                                 } else { QF::Eq(column, to_val(&val)) }
                                             } else { QF::Eq(column, to_val(&val)) }
                                         } else if value_str.contains(',') {
@@ -646,7 +617,7 @@ pub async fn select(
                         success: false,
                         message: format!("Error NCO-GET(AST): {}", e),
                         total_data: 0,
-                        data: Value::Null,
+                        data: Value::default(),
                     });
                 }
             };
@@ -655,7 +626,7 @@ pub async fn select(
                 success: true,
                 message: "Data found".to_string(),
                 total_data,
-                data: Value::Array(rows),
+                data: json!(rows),
             };
             
             // OPTIMIZATION: Automatic cache write-through when caching enabled

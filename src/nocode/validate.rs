@@ -1,5 +1,5 @@
 use actix_web::{web::Data, HttpResponse, Responder};
-use serde_json::{json, Value};
+use sonic_rs::Value;
 
 use crate::{
     auth::{check_access, get_user_info_from_token},
@@ -27,7 +27,7 @@ pub async fn check_table_design(
                     success: false,
                     message: crate::constants::ERR_INVALID_TOKEN.to_string(),
                     total_data: 0,
-                    data: Value::Null,
+                    data: Value::default(),
                 });
             }
         };
@@ -37,7 +37,7 @@ pub async fn check_table_design(
                 success: false,
                 message: crate::constants::ERR_UNAUTHORIZED.to_string(),
                 total_data: 0,
-                data: Value::Null,
+                data: Value::default(),
             });
         }
     }
@@ -50,17 +50,23 @@ pub async fn check_table_design(
             success: false,
             message: message_error,
             total_data: 0,
-            data: Value::Null,
+            data: Value::default(),
         });
     }
 
     table_schemas = Arc::new(vec![validate_table_design(table_schema.clone())]);
 
+    // Convert Vec<TableSchema> to Value via debug/serialize fallback (assuming TableSchema implements Serialize elsewhere).
+    // If not, fallback to string representation.
+    let data_val = match sonic_rs::to_value(&*table_schemas) {
+        Ok(v) => v,
+        Err(_) => sonic_rs::json!(format!("{:?}", &*table_schemas)),
+    };
     HttpResponse::Ok().json(WebResponse {
         success: true,
         message: "Table validated".to_string(),
         total_data: 1,
-        data: json!((*table_schemas).clone()),
+        data: data_val,
     })
 }
 

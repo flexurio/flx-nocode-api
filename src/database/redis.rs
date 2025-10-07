@@ -92,14 +92,14 @@ pub async fn redis_get(key: &str) -> Result<Option<String>> {
 
 /// Convenience: set JSON value by key (stored as string)
 pub async fn redis_set_json<T: serde::Serialize>(key: &str, value: &T, ttl_secs: Option<usize>) -> Result<()> {
-    let s = serde_json::to_string(value)?;
+    let s = sonic_rs::to_string(value)?;
     redis_set(key, &s, ttl_secs).await
 }
 
 /// Convenience: get JSON value by key
 pub async fn redis_get_json<T: serde::de::DeserializeOwned>(key: &str) -> Result<Option<T>> {
     match redis_get(key).await? {
-        Some(s) => Ok(Some(serde_json::from_str::<T>(&s)?)),
+        Some(s) => Ok(Some(sonic_rs::from_str::<T>(&s)?)),
         None => Ok(None),
     }
 }

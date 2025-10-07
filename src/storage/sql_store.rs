@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use serde_json::Value;
+use sonic_rs::{Value, JsonValueTrait, JsonContainerTrait, JsonNumberTrait};
 
 use crate::database::state::{DbParam, DbRepository};
 use crate::storage::ast::{Filter, Query, Val, JoinKind, Expr, Agg, AggFunc};
@@ -687,21 +687,14 @@ fn to_param(v: &Val) -> DbParam {
 }
 
 fn json_to_param(v: &Value) -> DbParam {
-    match v {
-        Value::Null => DbParam::Null,
-        Value::Bool(b) => DbParam::Bool(*b),
-        Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                DbParam::I64(i)
-            } else if let Some(f) = n.as_f64() {
-                DbParam::F64(f)
-            } else {
-                DbParam::Str(n.to_string())
-            }
-        }
-        Value::String(s) => DbParam::Str(s.clone()),
-        _ => DbParam::Str(v.to_string()),
-    }
+    if v.is_null() { return DbParam::Null; }
+    if let Some(b) = v.as_bool() { return DbParam::Bool(b); }
+    if let Some(i) = v.as_i64() { return DbParam::I64(i); }
+    if let Some(u) = v.as_u64() { return DbParam::I64(u as i64); }
+    if let Some(f) = v.as_f64() { return DbParam::F64(f); }
+    if let Some(s) = v.as_str() { return DbParam::Str(s.to_string()); }
+    // Fallback: object/array -> stringify
+    DbParam::Str(v.to_string())
 }
 
 #[async_trait]
@@ -723,7 +716,7 @@ impl DataStore for SqlStore {
     async fn insert(&self, collection: &str, doc: Value) -> anyhow::Result<Value> {
         let (sql, params) = self.build_insert(collection, &doc)?;
         let _ = self.inner.query_with_params(&sql, params).await?;
-        Ok(Value::Null) // optionally return inserted id
+        Ok(sonic_rs::Value::default()) // optionally return inserted id
     }
 
     async fn update(
@@ -759,18 +752,18 @@ struct SqlTxStore {
 
 #[async_trait::async_trait]
 impl TxStore for SqlTxStore {
-    async fn query(&mut self, q: &Query) -> anyhow::Result<Vec<serde_json::Value>> {
+    async fn query(&mut self, q: &Query) -> anyhow::Result<Vec<Value>> {
         let (sql, params) = compile_query_with_dialect(&self.db_type, q);
     self.tx.query_with_params(&sql, params).await
     }
 
-    async fn insert(&mut self, collection: &str, doc: serde_json::Value) -> anyhow::Result<serde_json::Value> {
+    async fn insert(&mut self, collection: &str, doc: Value) -> anyhow::Result<Value> {
         let (sql, params) = build_insert_with_dialect(&self.db_type, collection, &doc)?;
         let _ = self.tx.query_with_params(&sql, params).await?;
-        Ok(serde_json::Value::Null)
+        Ok(sonic_rs::Value::default())
     }
 
-    async fn update(&mut self, collection: &str, filter: Option<Filter>, patch: serde_json::Value) -> anyhow::Result<u64> {
+    async fn update(&mut self, collection: &str, filter: Option<Filter>, patch: Value) -> anyhow::Result<u64> {
         let (sql, params) = build_update_with_dialect(&self.db_type, collection, filter.as_ref(), &patch)?;
         let _ = self.tx.query_with_params(&sql, params).await?;
         Ok(1)
@@ -782,7 +775,7 @@ impl TxStore for SqlTxStore {
         Ok(1)
     }
 
-    async fn raw_sql(&mut self, sql: &str, params: Vec<DbParam>) -> anyhow::Result<Vec<serde_json::Value>> {
+    async fn raw_sql(&mut self, sql: &str, params: Vec<DbParam>) -> anyhow::Result<Vec<Value>> {
     self.tx.query_with_params(sql, params).await
     }
 
@@ -996,10 +989,16 @@ fn compile_query_with_dialect(db_type: &str, q: &Query) -> (String, Vec<DbParam>
 
 fn build_insert_with_dialect(db_type: &str, collection: &str, doc: &Value) -> anyhow::Result<(String, Vec<DbParam>)> {
     let obj = doc.as_object().ok_or_else(|| anyhow::anyhow!("insert expects object"))?;
-    let cols: Vec<_> = obj.keys().cloned().collect();
-    let mut params = Vec::<DbParam>::new();
+    let mut cols: Vec<String> = Vec::with_capacity(obj.len());
+    let mut params: Vec<DbParam> = Vec::with_capacity(obj.len());
     let mut idx = 0usize;
-    let placeholders: Vec<_> = obj.values().map(|v| { idx += 1; params.push(json_to_param(v)); next_placeholder_for(db_type, idx) }).collect();
+    let mut placeholders: Vec<String> = Vec::with_capacity(obj.len());
+    for (k, v) in obj.iter() {
+        cols.push(k.clone().to_owned());
+        idx += 1;
+        params.push(json_to_param(v));
+        placeholders.push(next_placeholder_for(db_type, idx));
+    }
     let sql = format!("INSERT INTO {} ({}) VALUES ({})", collection, cols.join(","), placeholders.join(","));
     Ok((sql, params))
 }
@@ -1033,7 +1032,7 @@ fn build_delete_with_dialect(db_type: &str, collection: &str, filter: Option<&Fi
 mod tests {
     use super::*;
     use async_trait::async_trait;
-    use serde_json::json;
+    use sonic_rs::json;
     use std::sync::Arc;
 
     struct MockRepo;

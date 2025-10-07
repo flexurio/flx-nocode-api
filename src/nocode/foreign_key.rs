@@ -1,5 +1,5 @@
 use actix_web::web::Data;
-use serde_json::Value;
+use sonic_rs::Value;
 
 use crate::{
     database::state::{AppState, DbParam, DbTransaction},

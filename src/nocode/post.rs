@@ -1,6 +1,6 @@
 use actix_multipart::Multipart;
 use actix_web::{web::Data, HttpResponse, Responder};
-use serde_json::Value;
+use sonic_rs::{Value, JsonValueTrait, JsonContainerTrait, JsonValueMutTrait};
 use regex::Regex;
 use std::collections::HashSet;
 // use std::result; // unused
@@ -21,6 +21,7 @@ use crate::{
 use chrono::Local;
 use std::sync::Arc;
 use crate::storage::sql_store::{SqlStore, InsertValue};
+// (compat helpers unused currently)
 use crate::storage::ast::{Query as Q, Filter as F, Val as V};
 
 /// Batch validate foreign keys in a single query for better performance (optimization)
@@ -100,7 +101,7 @@ pub async fn insert(
                     success: false,
                     message: crate::constants::ERR_INVALID_TOKEN.to_string(),
                     total_data: 0,
-                    data: Value::Null,
+                    data: Value::default(),
                 });
             }
         };
@@ -111,7 +112,7 @@ pub async fn insert(
                 success: false,
                 message: crate::constants::ERR_UNAUTHORIZED.to_string(),
                 total_data: 0,
-                data: Value::Null,
+                data: Value::default(),
             });
         }
     }
@@ -125,7 +126,7 @@ pub async fn insert(
                 success: false,
                 message: format!("Failed to parse multipart data: {}", e),
                 total_data: 0,
-                data: Value::Null,
+                data: Value::default(),
             });
         }
     };
@@ -144,7 +145,7 @@ pub async fn insert(
             success: false,
             message: "Too many requests".into(),
             total_data: 0,
-            data: Value::Null,
+            data: Value::default(),
         });
     }
     // Per-user limit (for non-public routes only)
@@ -159,7 +160,7 @@ pub async fn insert(
                 success: false,
                 message: "Too many requests".into(),
                 total_data: 0,
-                data: Value::Null,
+                data: Value::default(),
             });
         }
     }
@@ -172,7 +173,7 @@ pub async fn insert(
             success: false,
             message: message_error,
             total_data: 0,
-            data: Value::Null,
+            data: Value::default(),
         });
     }
 
@@ -190,7 +191,7 @@ pub async fn insert(
                         success: false,
                         message: format!("Missing required field: {}", post_col),
                         total_data: 0,
-                        data: Value::Null,
+                        data: Value::default(),
                     });
                 }
             }
@@ -280,7 +281,7 @@ pub async fn insert(
     let mut bind_params: Vec<DbParam> = Vec::with_capacity(filtered_columns.len() + 3);
 
     // **3️⃣ Buat daftar nilai untuk INSERT** (fragment SQL per kolom)
-    let mut doc_map = serde_json::Map::with_capacity(filtered_columns.len() + 3);
+    let mut doc_map = sonic_rs::Object::new();
     // Collect explicit (column, value) pairs for dialect-aware insert builder
     let mut insert_fields: Vec<(String, InsertValue)> = Vec::with_capacity(filtered_columns.len() + 3);
     
@@ -347,27 +348,27 @@ pub async fn insert(
                 }
             }
 
-            // Do not force default "0"; required fields checked earlier. Keep empty if optional.
-
             // push param by type and mirror into doc_map for AST
             if col.type_data.contains("int") || col.type_data.contains("float") {
                 if let Ok(n) = value.parse::<i64>() {
                     bind_params.push(DbParam::I64(n));
-                    doc_map.insert(col.name.clone(), serde_json::json!(n));
+                    doc_map.insert(&col.name, Value::from(n));
                     insert_fields.push((col.name.clone(), InsertValue::Param(DbParam::I64(n))));
                 } else if let Ok(f) = value.parse::<f64>() {
                     bind_params.push(DbParam::F64(f));
-                    doc_map.insert(col.name.clone(), serde_json::json!(f));
+                    let vnum = Value::new_f64(f).unwrap_or_else(|| Value::from(0));
+                    doc_map.insert(&col.name, vnum);
                     insert_fields.push((col.name.clone(), InsertValue::Param(DbParam::F64(f))));
                 } else {
                     bind_params.push(DbParam::Str(value.clone()));
-                    // try number first; else string
-                    doc_map.insert(col.name.clone(), serde_json::json!(body.get(&col.name).cloned().unwrap_or(Value::String(String::new()))));
+                    let fallback = body.get(&col.name).cloned().unwrap_or_else(|| Value::from(""));
+                    doc_map.insert(&col.name, fallback);
                     insert_fields.push((col.name.clone(), InsertValue::Param(DbParam::Str(value))));
                 }
             } else {
                 bind_params.push(DbParam::Str(value.clone()));
-                doc_map.insert(col.name.clone(), body.get(&col.name).cloned().unwrap_or(Value::String(String::new())));
+                let fallback = body.get(&col.name).cloned().unwrap_or_else(|| Value::from(""));
+                doc_map.insert(&col.name, fallback);
                 insert_fields.push((col.name.clone(), InsertValue::Param(DbParam::Str(value))));
             }
         }
@@ -380,12 +381,10 @@ pub async fn insert(
                 success: false,
                 message: err_msg,
                 total_data: 0,
-                data: Value::Null,
+                data: Value::default(),
             });
         }
     }
-
-    // Note: we no longer build insert_values manually; using insert_fields per column
 
     // Begin transaction early for SQL backends so ID generation runs in the same TX
     let mut tx_opt: Option<Box<dyn crate::storage::traits::TxStore>> = None;
@@ -397,7 +396,7 @@ pub async fn insert(
                     success: false,
                     message: format!("Error starting transaction: {}", err),
                     total_data: 0,
-                    data: Value::Null,
+                    data: Value::default(),
                 });
             }
         }
@@ -479,8 +478,7 @@ pub async fn insert(
         let id = parts.join("/");
         // after building from tokens, bind id into params and AST fields
         bind_params.push(DbParam::Str(id.clone()));
-        // mirror to doc_map actual id value for AST path
-        doc_map.insert("id".to_string(), serde_json::json!(id.clone()));
+        doc_map.insert("id", Value::from(id.as_str()));
         insert_fields.push(("id".to_string(), InsertValue::Param(DbParam::Str(id))));
     }
 
@@ -490,7 +488,7 @@ pub async fn insert(
     // always use raw expression for created_at to keep server-side clock consistent
     insert_fields.push(("created_at".to_string(), InsertValue::Raw(state.query_converter.datetime_now.clone())));
     // keep doc for audit/debug
-    doc_map.insert("created_at".to_string(), serde_json::json!(now.clone()));
+    doc_map.insert("created_at", Value::from(now.as_str()));
 
     // **Tambahkan created_by_id**
     insert_columns.push("created_by_id");
@@ -508,11 +506,11 @@ pub async fn insert(
     if created_by_type.contains("int") {
         if let Ok(n) = claims.id.parse::<i64>() {
             bind_params.push(DbParam::I64(n));
-            doc_map.insert("created_by_id".to_string(), serde_json::json!(n));
+            doc_map.insert("created_by_id", Value::from(n));
             insert_fields.push(("created_by_id".to_string(), InsertValue::Param(DbParam::I64(n))));
         } else {
             bind_params.push(DbParam::Str(claims.id.clone()));
-            doc_map.insert("created_by_id".to_string(), serde_json::json!(claims.id.clone()));
+            doc_map.insert("created_by_id", Value::from(claims.id.as_str()));
             insert_fields.push(("created_by_id".to_string(), InsertValue::Param(DbParam::Str(claims.id.clone()))));
         }
     } else if created_by_type.contains("float")
@@ -522,16 +520,17 @@ pub async fn insert(
     {
         if let Ok(n) = claims.id.parse::<f64>() {
             bind_params.push(DbParam::F64(n));
-            doc_map.insert("created_by_id".to_string(), serde_json::json!(n));
+            let vnum = Value::new_f64(n).unwrap_or_else(|| Value::from(0));
+            doc_map.insert("created_by_id", vnum);
             insert_fields.push(("created_by_id".to_string(), InsertValue::Param(DbParam::F64(n))));
         } else {
             bind_params.push(DbParam::Str(claims.id.clone()));
-            doc_map.insert("created_by_id".to_string(), serde_json::json!(claims.id.clone()));
+            doc_map.insert("created_by_id", Value::from(claims.id.as_str()));
             insert_fields.push(("created_by_id".to_string(), InsertValue::Param(DbParam::Str(claims.id.clone()))));
         }
     } else {
         bind_params.push(DbParam::Str(claims.id.clone()));
-        doc_map.insert("created_by_id".to_string(), serde_json::json!(claims.id.clone()));
+        doc_map.insert("created_by_id", Value::from(claims.id.as_str()));
         insert_fields.push(("created_by_id".to_string(), InsertValue::Param(DbParam::Str(claims.id.clone()))));
     }
 
@@ -556,7 +555,7 @@ pub async fn insert(
                     success: false,
                     message: format!("Error compiling AST INSERT: {}", e),
                     total_data: 0,
-                    data: Value::Null,
+                    data: Value::default(),
                 });
             }
         }
@@ -573,14 +572,17 @@ pub async fn insert(
                 match tx_opt.as_mut().unwrap().raw_sql(&built_sql, params).await {
                     Ok(row) => {
                         if !row.is_empty() {
-                            let is_valid = row[0].get(0).and_then(|v| v.as_bool()).unwrap_or(true);
+                            let is_valid = row[0]
+                                .as_object()
+                                .and_then(|o| o.iter().find_map(|(_, v)| v.as_bool()))
+                                .unwrap_or(true);
                             if !is_valid {
                                 let _ = tx_opt.take().unwrap().rollback().await;
                                 return HttpResponse::BadRequest().json(WebResponse {
                                     success: false,
                                     message: "Validation data from table is not valid. Please contact your administrator".to_string(),
                                     total_data: 0,
-                                    data: Value::Null,
+                                    data: Value::default(),
                                 });
                             }
                         } else {
@@ -589,7 +591,7 @@ pub async fn insert(
                                 success: false,
                                 message: "Validation data from table is empty. Please contact your administrator".to_string(),
                                 total_data: 0,
-                                data: Value::Null,
+                                data: Value::default(),
                             });
                         }
                     }
@@ -599,7 +601,7 @@ pub async fn insert(
                             success: false,
                             message: format!("Error in validation_data: {}", err),
                             total_data: 0,
-                            data: Value::Null,
+                            data: Value::default(),
                         });
                     }
                 }
@@ -610,7 +612,7 @@ pub async fn insert(
                     success: false,
                     message: format!("Error building validation formula: {}", e),
                     total_data: 0,
-                    data: Value::Null,
+                    data: Value::default(),
                 });
             }
         }
@@ -630,20 +632,20 @@ pub async fn insert(
                 success: false,
                 message: format!("Error in pre-process: {}", err),
                 total_data: 0,
-                data: Value::Null,
+                data: Value::default(),
             });
         }
     }
 
     if state.db_type == "mongodb" {
         // Insert using document map
-        let doc = Value::Object(doc_map.clone());
+        let doc = Value::from(doc_map.clone());
         match state.store.insert(&table_schema.table, doc).await {
             Ok(result) => {
                 // log_output result
                 log_output("INFO", "MONGO INSERT RESULT", route.as_str(), format!("{:?}", result), true);
                 // Try to capture returned id when supported
-                let returned_id = result.get("inserted_id").cloned().unwrap_or(Value::Null).get("$oid").cloned().unwrap_or(Value::Null);
+                let returned_id = result.get("inserted_id").cloned().unwrap_or(Value::default()).get("$oid").cloned().unwrap_or(Value::default());
                 // Audit trail
                 write_audit(&AuditEntry {
                     at: Local::now().to_rfc3339(),
@@ -655,8 +657,8 @@ pub async fn insert(
                 });
 
                 body = body.as_object_mut().map(|map| {
-                    map.insert("id_new".to_string(), returned_id.clone());
-                    Value::Object(map.clone())
+                    map.insert("id_new", returned_id.clone());
+                    Value::from(map.clone())
                 }).unwrap();
 
                 if table_schema.post.post_process.contains("SQL:") {
@@ -796,11 +798,13 @@ pub async fn insert(
                     }
                 }
 
+                let mut resp_obj = sonic_rs::Object::new();
+                resp_obj.insert("id", returned_id);
                 return HttpResponse::Ok().json(WebResponse {
                     success: true,
                     message: "Data inserted".to_string(),
                     total_data: 1,
-                    data: serde_json::json!({ "id": returned_id }),
+                    data: Value::from(resp_obj),
                 });
             }
             Err(err) => {
@@ -808,7 +812,7 @@ pub async fn insert(
                     success: false,
                     message: format!("Error NCO-POST (mongo): {}", err),
                     total_data: 0,
-                    data: Value::Null,
+                    data: Value::default(),
                 });
             }
         }
@@ -820,34 +824,32 @@ pub async fn insert(
             // Try to capture returned id when supported
             let mut returned_id: Option<Value> = None;
             if let Some(first) = result.first() {
-                if let Some(obj) = first.as_object() {
-                    if let Some(idv) = obj.get("id") { returned_id = Some(idv.clone()); }
-                }
+                if let Some(idv) = first.get("id") { returned_id = Some(idv.clone()); }
             }
             // MySQL fallback: fetch LAST_INSERT_ID() when INSERT has no RETURNING and id wasn't provided
             if returned_id.is_none() && state.db_type == "mysql" {
                 if let Ok(rows) = tx.raw_sql("SELECT LAST_INSERT_ID() AS id", vec![]).await {
                     if let Some(first) = rows.first() {
-                        if let Some(obj) = first.as_object() {
-                            if let Some(idv) = obj.get("id") { returned_id = Some(idv.clone()); }
-                        }
+                        if let Some(idv) = first.get("id") { returned_id = Some(idv.clone()); }
                     }
                 }
             }
-            // If LAST_INSERT_ID() yields 0 (common when custom id is supplied), treat as None to allow fallback to doc_map id
-            if let Some(Value::Number(n)) = &returned_id {
-                if n.as_i64() == Some(0) || n.as_u64() == Some(0) {
-                    returned_id = None;
-                }
+            // If numeric zero treat as None to allow fallback
+            if let Some(val) = &returned_id {
+                let is_zero = val.as_i64() == Some(0)
+                    || val.as_u64() == Some(0)
+                    || val.as_f64() == Some(0.0);
+                if is_zero { returned_id = None; }
             }
 
             if returned_id.is_none() {
-                returned_id = doc_map.get("id").cloned();
+                let tmp_val = Value::from(doc_map.clone());
+                if let Some(v) = tmp_val.get("id") { returned_id = Some(v.clone()); }
             }
 
             body = body.as_object_mut().map(|map| {
-                map.insert("id_new".to_string(), returned_id.clone().unwrap_or(Value::Null));
-                Value::Object(map.clone())
+                map.insert("id_new", returned_id.clone().unwrap_or(Value::default()));
+                Value::from(map.clone())
             }).unwrap();
             
 
@@ -865,7 +867,7 @@ pub async fn insert(
                         success: false,
                         message: format!("Error executing post-process SQL: {}", err),
                         total_data: 0,
-                        data: Value::Null,
+                        data: Value::default(),
                     });
                 }
             }
@@ -879,11 +881,13 @@ pub async fn insert(
                 id: None,
                 ip: Some(get_client_ip(&req)).as_deref(),
             });
+            let mut resp_obj = sonic_rs::Object::new();
+            resp_obj.insert("id", returned_id.unwrap_or(Value::default()));
             HttpResponse::Ok().json(WebResponse {
                 success: true,
                 message: "Data inserted".to_string(),
                 total_data: 1,
-                data: serde_json::json!({ "id": returned_id.unwrap_or(Value::Null) }),
+                data: Value::from(resp_obj),
             })
         }
         Err(err) => {
@@ -896,7 +900,7 @@ pub async fn insert(
                 success: false,
                 message: format!("Error NCO-POST: {}", err_message),
                 total_data: 0,
-                data: Value::Null,
+                data: Value::default(),
             })
         }
     }

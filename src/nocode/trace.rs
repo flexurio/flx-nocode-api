@@ -2,7 +2,8 @@ use actix_web::{
     web::{self},
     HttpResponse, Responder,
 };
-use serde_json::Value;
+use sonic_rs::{Value, JsonContainerTrait, JsonValueTrait, Object};
+use std::collections::HashMap;
 
 use crate::{
     auth::{check_access, get_user_info_from_token},
@@ -19,7 +20,7 @@ use std::sync::Arc;
 // NCO-TRACE
 pub async fn process(
     state: web::Data<AppState>,
-    parameters: web::Query<Value>,
+    parameters: web::Query<HashMap<String, String>>,
     route: String,
     table_schemas: Arc<Vec<TableSchema>>,
     req: actix_web::HttpRequest,
@@ -37,7 +38,7 @@ pub async fn process(
                 success: false,
                 message: "Too many requests".into(),
                 total_data: 0,
-                data: Value::Null,
+                data: Value::default(),
             });
         }
     }
@@ -51,7 +52,7 @@ pub async fn process(
                     success: false,
                     message: crate::constants::ERR_INVALID_TOKEN.to_string(),
                     total_data: 0,
-                    data: Value::Null,
+                    data: Value::default(),
                 });
             }
         };
@@ -61,7 +62,7 @@ pub async fn process(
                 success: false,
                 message: crate::constants::ERR_UNAUTHORIZED.to_string(),
                 total_data: 0,
-                data: Value::Null,
+                data: Value::default(),
             });
         }
         actor_id = Some(claims.id);
@@ -78,7 +79,7 @@ pub async fn process(
                     success: false,
                     message: "Too many requests".into(),
                     total_data: 0,
-                    data: Value::Null,
+                    data: Value::default(),
                 });
             }
         }
@@ -92,7 +93,7 @@ pub async fn process(
             success: false,
             message: message_error,
             total_data: 0,
-            data: Value::Null,
+            data: Value::default(),
         });
     }
     // Build AST for SELECT part and bind parameters safely
@@ -100,48 +101,50 @@ pub async fn process(
     let mut q = Q::from(table_schema.table.clone());
 
     let mut is_deleted_at = true;
-    let params_obj = parameters.clone().into_inner();
+    // Build params object from query map
+    let mut params_obj_map: Object = Object::with_capacity(parameters.len());
+    for (k, v) in parameters.iter() { params_obj_map.insert(k.as_str(), Value::from(v.as_str())); }
+    let params_obj_value = Value::from(params_obj_map.clone());
     let param_count = table_schema.trace.parameters.len();
     let mut filters: Vec<F> = Vec::with_capacity(param_count + 1); // Pre-allocate
-    for param in table_schema.trace.parameters.iter() {
-        for (key, value) in params_obj.as_object().unwrap_or(&serde_json::Map::new()).iter() {
-            if key.contains("deleted_at") { is_deleted_at = false; }
-            if param == key {
-                let val_str = value.as_str().unwrap_or("");
-                // split_column_operator masih mengembalikan potongan string, tapi kita perlu binding.
-                // Gunakan operator dan kolom, lalu tentukan Filter AST yang sepadan.
-                let (column, operator, v_raw) = split_column_operator(param, &table_schema.table, val_str);
-                // Handle OR pipe: a|b|c kita jadikan Or([...])
-                if param.contains('|') {
-                    let ps: Vec<&str> = param.split('|').collect();
-                    let mut or_terms: Vec<F> = Vec::with_capacity(ps.len()); // Pre-allocate
-                    for p in ps {
-                        let (c2, op2, v2) = split_column_operator(p, &table_schema.table, val_str);
-                        let filt = match op2.as_str() {
-                            "=" => build_eq_filter(c2, v2),
-                            ">" => F::Gt(c2, V::Str(v2)),
-                            ">=" => F::Gte(c2, V::Str(v2)),
-                            "<" => F::Lt(c2, V::Str(v2)),
-                            "<=" => F::Lte(c2, V::Str(v2)),
-                            "<>" | "!=" => F::Ne(c2, V::Str(v2)),
-                            "LIKE" => F::Like(c2, v2),
-                            _ => build_eq_filter(c2, v2),
+    if let Some(obj) = params_obj_value.as_object() {
+        for param in table_schema.trace.parameters.iter() {
+            for (key, value) in obj.iter() {
+                if key.contains("deleted_at") { is_deleted_at = false; }
+                if param == key {
+                    let val_str = value.as_str().unwrap_or("");
+                    let (column, operator, v_raw) = split_column_operator(param, &table_schema.table, val_str);
+                    if param.contains('|') {
+                        let ps: Vec<&str> = param.split('|').collect();
+                        let mut or_terms: Vec<F> = Vec::with_capacity(ps.len());
+                        for p in ps {
+                            let (c2, op2, v2) = split_column_operator(p, &table_schema.table, val_str);
+                            let filt = match op2.as_str() {
+                                "=" => build_eq_filter(c2, v2),
+                                ">" => F::Gt(c2, V::Str(v2)),
+                                ">=" => F::Gte(c2, V::Str(v2)),
+                                "<" => F::Lt(c2, V::Str(v2)),
+                                "<=" => F::Lte(c2, V::Str(v2)),
+                                "<>" | "!=" => F::Ne(c2, V::Str(v2)),
+                                "LIKE" => F::Like(c2, v2),
+                                _ => build_eq_filter(c2, v2),
+                            };
+                            or_terms.push(filt);
+                        }
+                        if !or_terms.is_empty() { filters.push(F::Or(or_terms)); }
+                    } else {
+                        let filt = match operator.as_str() {
+                            "=" => build_eq_filter(column, v_raw),
+                            ">" => F::Gt(column, V::Str(v_raw)),
+                            ">=" => F::Gte(column, V::Str(v_raw)),
+                            "<" => F::Lt(column, V::Str(v_raw)),
+                            "<=" => F::Lte(column, V::Str(v_raw)),
+                            "<>" | "!=" => F::Ne(column, V::Str(v_raw)),
+                            "LIKE" => F::Like(column, v_raw),
+                            _ => build_eq_filter(column, v_raw),
                         };
-                        or_terms.push(filt);
+                        filters.push(filt);
                     }
-                    if !or_terms.is_empty() { filters.push(F::Or(or_terms)); }
-                } else {
-                    let filt = match operator.as_str() {
-                        "=" => build_eq_filter(column, v_raw),
-                        ">" => F::Gt(column, V::Str(v_raw)),
-                        ">=" => F::Gte(column, V::Str(v_raw)),
-                        "<" => F::Lt(column, V::Str(v_raw)),
-                        "<=" => F::Lte(column, V::Str(v_raw)),
-                        "<>" | "!=" => F::Ne(column, V::Str(v_raw)),
-                        "LIKE" => F::Like(column, v_raw),
-                        _ => build_eq_filter(column, v_raw),
-                    };
-                    filters.push(filt);
                 }
             }
         }
@@ -215,7 +218,7 @@ pub async fn process(
                 dbt
             ),
             total_data: 0,
-            data: Value::Null,
+            data: Value::default(),
         });
     }
     // conflict_clause previously included updated_at/deleted_at; keep those as extra assignments
@@ -246,7 +249,7 @@ pub async fn process(
                 success: false,
                 message: format!("Unsupported TRACE operation for backend: {}", e),
                 total_data: 0,
-                data: Value::Null,
+                data: Value::default(),
             });
         }
     };
@@ -262,7 +265,7 @@ pub async fn process(
             success: false,
             message: "TRACE insert-select upsert is not supported for MongoDB yet".to_string(),
             total_data: 0,
-            data: Value::Null,
+            data: Value::default(),
         });
     }
 
@@ -274,7 +277,7 @@ pub async fn process(
                 success: false,
                 message: format!("Error starting transaction: {}", err),
                 total_data: 0,
-                data: Value::Null,
+                data: Value::default(),
             });
         }
     };
@@ -287,7 +290,7 @@ pub async fn process(
                 success: true,
                 message: "Data inserted".to_string(),
                 total_data: 1,
-                data: Value::Null,
+                data: Value::default(),
             })
         }
 
@@ -297,7 +300,7 @@ pub async fn process(
                 success: false,
                 message: format!("Error NCO-TRACE: {}", err),
                 total_data: 0,
-                data: Value::Null,
+                data: Value::default(),
             })
         }
     }

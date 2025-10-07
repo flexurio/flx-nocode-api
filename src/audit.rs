@@ -30,7 +30,7 @@ pub fn write_audit(entry: &AuditEntry<'_>) {
         .append(true)
         .open(&file_path)
     {
-        if let Ok(json) = serde_json::to_string(entry) {
+        if let Ok(json) = sonic_rs::to_string(entry) {
             let _ = writeln!(f, "{}", json);
         }
     }

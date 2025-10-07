@@ -1,5 +1,6 @@
 use base64::Engine;
-use serde_json::{Map, Value};
+use sonic_rs::{Value, JsonValueTrait, JsonContainerTrait};
+use crate::json_compat::{value_from_f64, value_from_string};
 use sqlx::SqlitePool;
 use sqlx::{
     sqlite::{Sqlite, SqliteRow},
@@ -7,6 +8,8 @@ use sqlx::{
 };
 
 use super::state::{DbParam, DbRepository, DbTransaction};
+
+type Map<K, V> = std::collections::HashMap<K, V>;
 
 pub struct SqliteRepo {
     pub pool: SqlitePool,
@@ -22,7 +25,7 @@ pub fn sqliterows_to_json(rows: Vec<SqliteRow>) -> Vec<Value> {
 
     for row in rows {
         let columns_count = row.columns().len();
-        let mut obj = Map::with_capacity(columns_count);
+        let mut obj = sonic_rs::Object::with_capacity(columns_count);
 
         for column in row.columns() {
             let name = column.name();
@@ -30,53 +33,49 @@ pub fn sqliterows_to_json(rows: Vec<SqliteRow>) -> Vec<Value> {
 
             let value = if type_info_debug.contains("INT") {
                 match row.try_get::<Option<i64>, _>(name) {
-                    Ok(Some(v)) => Value::Number(v.into()),
-                    Ok(None) => Value::Null,
-                    Err(_) => Value::Null,
+                    Ok(Some(v)) => Value::from(v),
+                    Ok(None) => sonic_rs::Value::default(),
+                    Err(_) => sonic_rs::Value::default(),
                 }
             } else if type_info_debug.contains("REAL")
                 || type_info_debug.contains("FLOAT")
                 || type_info_debug.contains("DOUBLE")
             {
                 match row.try_get::<Option<f64>, _>(name) {
-                    Ok(Some(v)) => serde_json::Number::from_f64(v)
-                        .map(Value::Number)
-                        .unwrap_or(Value::Null),
-                    Ok(None) => Value::Null,
-                    Err(_) => Value::Null,
+                    Ok(Some(v)) => value_from_f64(v),
+                    Ok(None) => sonic_rs::Value::default(),
+                    Err(_) => sonic_rs::Value::default(),
                 }
             } else if type_info_debug.contains("TEXT") || type_info_debug.contains("CHAR") {
                 match row.try_get::<Option<String>, _>(name) {
-                    Ok(Some(v)) => Value::String(v),
-                    Ok(None) => Value::Null,
-                    Err(_) => Value::Null,
+                    Ok(Some(v)) => value_from_string(v),
+                    Ok(None) => sonic_rs::Value::default(),
+                    Err(_) => sonic_rs::Value::default(),
                 }
             } else if type_info_debug.contains("BLOB") {
                 match row.try_get::<Option<Vec<u8>>, _>(name) {
-                    Ok(Some(v)) => {
-                        Value::String(base64::engine::general_purpose::STANDARD.encode(v))
-                    }
-                    Ok(None) => Value::Null,
-                    Err(_) => Value::Null,
+                    Ok(Some(v)) => value_from_string(base64::engine::general_purpose::STANDARD.encode(v)),
+                    Ok(None) => sonic_rs::Value::default(),
+                    Err(_) => sonic_rs::Value::default(),
                 }
             } else if type_info_debug.contains("DATE") || type_info_debug.contains("TIME") {
                 match row.try_get::<Option<String>, _>(name) {
-                    Ok(Some(v)) => Value::String(v),
-                    _ => Value::Null,
+                    Ok(Some(v)) => value_from_string(v),
+                    _ => sonic_rs::Value::default(),
                 }
             } else {
                 // fallback
                 match row.try_get::<Option<String>, _>(name) {
-                    Ok(Some(v)) => Value::String(v),
-                    Ok(None) => Value::Null,
-                    Err(_) => Value::Null,
+                    Ok(Some(v)) => value_from_string(v),
+                    Ok(None) => sonic_rs::Value::default(),
+                    Err(_) => sonic_rs::Value::default(),
                 }
             };
 
-            obj.insert(name.to_string(), value);
+            obj.insert(name, value);
         }
 
-        json_array.push(Value::Object(obj));
+        json_array.push(Value::from(obj));
     }
 
     json_array.shrink_to_fit();

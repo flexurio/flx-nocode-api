@@ -8,7 +8,7 @@ use actix_web::{
 use base64::{self, Engine};
 use rand::Rng;
 use reqwest::Client;
-use serde_json::{json, Value};
+use sonic_rs::{json, Value, JsonValueTrait, JsonContainerTrait};
 use zip::ZipArchive;
 
 use crate::rate_limit::{RL_WINDOW_LOGIN, RL_WINDOW_LOGIN_FAIL};
@@ -39,7 +39,7 @@ pub async fn login(state: web::Data<AppState>, req: actix_web::HttpRequest) -> i
                 success: false,
                 message: "Too many login attempts".into(),
                 total_data: 0,
-                data: Value::Null,
+                data: sonic_rs::Value::default(),
             });
         }
     }
@@ -49,7 +49,7 @@ pub async fn login(state: web::Data<AppState>, req: actix_web::HttpRequest) -> i
             success: false,
             message: "Missing Authorization".into(),
             total_data: 0,
-            data: Value::Null,
+            data: sonic_rs::Value::default(),
         });
     };
     let Ok(hstr) = hdr.to_str() else {
@@ -57,7 +57,7 @@ pub async fn login(state: web::Data<AppState>, req: actix_web::HttpRequest) -> i
             success: false,
             message: "Invalid Authorization".into(),
             total_data: 0,
-            data: Value::Null,
+            data: sonic_rs::Value::default(),
         });
     };
     let Some(b64) = hstr.strip_prefix("Basic ") else {
@@ -65,7 +65,7 @@ pub async fn login(state: web::Data<AppState>, req: actix_web::HttpRequest) -> i
             success: false,
             message: "Expect Basic".into(),
             total_data: 0,
-            data: Value::Null,
+            data: sonic_rs::Value::default(),
         });
     };
     let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(b64) else {
@@ -73,7 +73,7 @@ pub async fn login(state: web::Data<AppState>, req: actix_web::HttpRequest) -> i
             success: false,
             message: "Invalid base64".into(),
             total_data: 0,
-            data: Value::Null,
+            data: sonic_rs::Value::default(),
         });
     };
     let Ok(pair) = String::from_utf8(bytes) else {
@@ -81,7 +81,7 @@ pub async fn login(state: web::Data<AppState>, req: actix_web::HttpRequest) -> i
             success: false,
             message: "Invalid credentials".into(),
             total_data: 0,
-            data: Value::Null,
+            data: sonic_rs::Value::default(),
         });
     };
     let mut parts = pair.splitn(2, ":");
@@ -117,31 +117,21 @@ pub async fn login(state: web::Data<AppState>, req: actix_web::HttpRequest) -> i
     }
     let rows = state.store.query(&q_user).await.unwrap_or_default();
     let (password_db, id_user_str, name) = if let Some(row0) = rows.first() {
-        let password = row0
-            .get("password")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string()
-            .replace(" ", "");
+        let k_password = "password".to_string();
+        let k_id = "id".to_string();
+        let k_oid = "$oid".to_string();
+        let k_name = "name".to_string();
+        let password = row0.get(&k_password).and_then(|v| v.as_str()).unwrap_or("").trim().replace(' ', "");
         // Accept id either as number or string; normalize to String for JWT
-        let id = row0
-            .get("id")
-            .and_then(|v| {
-                if let Some(n) = v.as_i64() { Some(n.to_string()) }
-                else if let Some(s) = v.as_str() { Some(s.to_string()) }
-                else if let Some(obj) = v.as_object() { obj.get("$oid").and_then(|x| x.as_str()).map(|s| s.to_string()) }
-                else { None }
-            })
-            .unwrap_or_default();
-        let name = row0
-            .get("name")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
+        let id = row0.get(&k_id).and_then(|v| {
+            if let Some(i) = v.as_i64() { Some(i.to_string()) }
+            else if let Some(s) = v.as_str() { Some(s.to_string()) }
+            else if let Some(obj) = v.as_object() { obj.get(&k_oid).and_then(|x| x.as_str()).map(|s| s.to_string()) }
+            else { None }
+        }).unwrap_or_default();
+        let name = row0.get(&k_name).and_then(|v| v.as_str()).unwrap_or("").to_string();
         (password, id, name)
-    } else {
-        ("".to_string(), String::new(), "".to_string())
-    };
+    } else { (String::new(), String::new(), String::new()) };
 
     let decrypt_password = decrypt(state.encrypt_key.clone(), password_db);
 
@@ -181,7 +171,7 @@ pub async fn login(state: web::Data<AppState>, req: actix_web::HttpRequest) -> i
                 success: false,
                 message: "Too many login attempts".into(),
                 total_data: 0,
-                data: Value::Null,
+                data: sonic_rs::Value::default(),
             });
         }
 
@@ -189,7 +179,7 @@ pub async fn login(state: web::Data<AppState>, req: actix_web::HttpRequest) -> i
             success: false,
             message: "Login Failed".to_string(),
             total_data: 0,
-            data: Value::Null,
+            data: sonic_rs::Value::default(),
         });
     }
 
@@ -204,31 +194,22 @@ pub async fn login(state: web::Data<AppState>, req: actix_web::HttpRequest) -> i
     
     // Optimized: reduce string allocations by pre-allocating and avoiding multiple clones
     let roles_data = {
-        let mut result = String::with_capacity(roles_rows.len() * 20); // Pre-allocate
+        let mut result = String::with_capacity(roles_rows.len() * 20);
         let mut first = true;
-        
+        let k_endpoint = "endpoint".to_string();
+        let k_role = "role".to_string();
         for v in roles_rows {
             if let Some(obj) = v.as_object() {
-                if let (Some(ep), Some(rl)) = (
-                    obj.get("endpoint").and_then(|v| v.as_str()),
-                    obj.get("role")
-                ) {
-                    if !first { 
-                        result.push(','); 
-                    }
+                if let (Some(ep), Some(role_val)) = (obj.get(&k_endpoint).and_then(|x| x.as_str()), obj.get(&k_role)) {
+                    if !first { result.push(','); }
                     first = false;
-                    
                     result.push_str(ep);
                     result.push('/');
-                    
-                    match rl {
-                        serde_json::Value::Number(n) if n.is_i64() => {
-                            use std::fmt::Write;
-                            let _ = write!(result, "{}", n.as_i64().unwrap());
-                        }
-                        serde_json::Value::String(s) => result.push_str(s),
-                        _ => continue,
-                    }
+                    if let Some(i) = role_val.as_i64() {
+                        use std::fmt::Write; let _ = write!(result, "{}", i);
+                    } else if let Some(s) = role_val.as_str() {
+                        result.push_str(s);
+                    } else if let Some(u) = role_val.as_u64() { use std::fmt::Write; let _ = write!(result, "{}", u); }
                 }
             }
         }
@@ -253,7 +234,7 @@ pub async fn register(state: Data<AppState>, multipart: Multipart) -> impl Respo
                 success: false,
                 message: format!("Invalid multipart: {}", e),
                 total_data: 0,
-                data: Value::Null,
+                data: sonic_rs::Value::default(),
             });
         }
     };
@@ -263,7 +244,7 @@ pub async fn register(state: Data<AppState>, multipart: Multipart) -> impl Respo
             success: false,
             message: "Email and Password is required".to_string(),
             total_data: 0,
-            data: Value::Null,
+            data: sonic_rs::Value::default(),
         });
     }
 
@@ -285,8 +266,8 @@ pub async fn register(state: Data<AppState>, multipart: Multipart) -> impl Respo
 
     // enabled type depends on DB: Postgres expects boolean, others accept 1/0
     let enabled_val = match state.db_type.as_str() {
-        "postgres" | "mongodb" => Value::Bool(true),
-        _ => Value::Number(1.into()),
+        "postgres" | "mongodb" => Value::from(true),
+        _ => Value::from(1),
     };
 
     let doc = json!({
@@ -315,13 +296,13 @@ pub async fn register(state: Data<AppState>, multipart: Multipart) -> impl Respo
             success: true,
             message: "Register Success".to_string(),
             total_data: 1,
-            data: Value::Null,
+            data: sonic_rs::Value::default(),
         }),
         Err(err) => HttpResponse::InternalServerError().json(WebResponse {
             success: false,
             message: format!("Error NCO-POST: {}", err),
             total_data: 0,
-            data: Value::Null,
+            data: sonic_rs::Value::default(),
         }),
     }
 }
@@ -340,11 +321,11 @@ pub async fn generate_users(state: Data<AppState>) -> impl Responder {
         let rows = state.store.query(&q_admin).await.unwrap_or_default();
 
         let mut id_user_str: String = rows.first()
-            .and_then(|row| row.get("id"))
+            .and_then(|row| row.get(&"id".to_string()))
             .and_then(|v| {
                 if let Some(n) = v.as_i64() { Some(n.to_string()) }
                 else if let Some(s) = v.as_str() { Some(s.to_string()) }
-                else if let Some(obj) = v.as_object() { obj.get("$oid").and_then(|x| x.as_str()).map(|s| s.to_string()) }
+                else if let Some(obj) = v.as_object() { obj.get(&"$oid".to_string()).and_then(|x| x.as_str()).map(|s| s.to_string()) }
                 else { None }
             })
             .unwrap_or_default();
@@ -360,7 +341,7 @@ pub async fn generate_users(state: Data<AppState>) -> impl Responder {
 
             let now_iso = chrono::Local::now().to_rfc3339();
             // Do not set explicit id; let Mongo generate _id, then capture it
-            let user_doc = serde_json::json!({
+            let user_doc = sonic_rs::json!({
                 "email": "admin",
                 "phone": "5758",
                 "password": encrypt_password,
@@ -395,13 +376,13 @@ pub async fn generate_users(state: Data<AppState>) -> impl Responder {
             }
 
             // Insert default roles
-            let role1 = serde_json::json!({
+            let role1 = sonic_rs::json!({
                 "id_users": id_user_str,
                 "endpoint": "flx_users",
                 "role": 127,
                 "created_at": now_iso
             });
-            let role2 = serde_json::json!({
+            let role2 = sonic_rs::json!({
                 "id_users": id_user_str,
                 "endpoint": "flx_roles",
                 "role": 127,
@@ -416,7 +397,7 @@ pub async fn generate_users(state: Data<AppState>) -> impl Responder {
             success: true,
             message: "Generate (Mongo) users & roles".to_string(),
             total_data: 1,
-            data: Value::Null,
+            data: sonic_rs::Value::default(),
         });
     }
 
@@ -588,9 +569,9 @@ pub async fn generate_users(state: Data<AppState>) -> impl Responder {
     let q_admin = QQ::from("flx_users").select(["id"]).r#where(QF::Eq("email".into(), QV::Str("admin".into()))).limit(1);
     let (sql_admin, params_admin) = ds.preview_sql(&q_admin);
     let built_admin = crate::database::state::rehydrate_placeholders(&sql_admin, &state.db_type);
-    let mut id_user: i64 = match &state.db.query_with_params(&built_admin, params_admin).await {
+            let mut id_user: i64 = match &state.db.query_with_params(&built_admin, params_admin).await {
         Ok(rows) => {
-            if rows.is_empty() { 0 } else { rows[0].get("id").and_then(|v| v.as_i64()).unwrap_or(0) }
+            if rows.is_empty() { 0 } else { rows[0].get(&"id".to_string()).and_then(|v| v.as_i64()).unwrap_or(0) }
         }
         Err(err) => {
             log_output(
@@ -670,7 +651,7 @@ pub async fn generate_users(state: Data<AppState>) -> impl Responder {
         success: true,
         message: "Generate Table users".to_string(),
         total_data: 1,
-        data: Value::Null,
+        data: sonic_rs::Value::default(),
     })
 }
 

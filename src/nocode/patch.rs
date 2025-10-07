@@ -2,7 +2,8 @@ use actix_web::{
     web::{self},
     HttpResponse, Responder,
 };
-use serde_json::Value;
+use sonic_rs::{Value, json};
+use std::collections::HashMap;
 
 use crate::audit::{write_audit, AuditEntry};
 use crate::rate_limit::RL_WINDOW_MUTATE;
@@ -21,7 +22,7 @@ use std::sync::Arc;
 // NCO-PATCH
 pub async fn process_sp(
     state: web::Data<AppState>,
-    parameters: web::Query<Value>,
+    parameters: web::Query<HashMap<String, String>>,
     route: String,
     table_schemas: Arc<Vec<TableSchema>>,
     req: actix_web::HttpRequest,
@@ -36,7 +37,7 @@ pub async fn process_sp(
                     success: false,
                     message: crate::constants::ERR_INVALID_TOKEN.to_string(),
                     total_data: 0,
-                    data: Value::Null,
+                    data: Value::default(),
                 });
             }
         };
@@ -46,7 +47,7 @@ pub async fn process_sp(
                 success: false,
                 message: crate::constants::ERR_UNAUTHORIZED.to_string(),
                 total_data: 0,
-                data: Value::Null,
+                data: Value::default(),
             });
         }
         actor_id = Some(claims.id);
@@ -64,7 +65,7 @@ pub async fn process_sp(
                 success: false,
                 message: "Too many requests".into(),
                 total_data: 0,
-                data: Value::Null,
+                data: Value::default(),
             });
         }
     }
@@ -80,7 +81,7 @@ pub async fn process_sp(
                     success: false,
                     message: "Too many requests".into(),
                     total_data: 0,
-                    data: Value::Null,
+                    data: Value::default(),
                 });
             }
         }
@@ -96,7 +97,7 @@ pub async fn process_sp(
             success: false,
             message: message_error,
             total_data: 0,
-            data: Value::Null,
+            data: Value::default(),
         });
     }
 
@@ -108,8 +109,8 @@ pub async fn process_sp(
 
     for name in table_schema.patch.parameters.iter() {
         match params_map.get(name) {
-            Some(v) => {
-                let s = v.to_string().trim_matches('"').to_string();
+            Some(s_raw) => {
+                let s = s_raw.to_string();
                 // Try to infer numeric types if the schema declares a column with the same name
                 // Otherwise, fall back to best-effort parse
                 if let Some(col) = table_schema.columns.iter().find(|c| c.name == *name) {
@@ -139,7 +140,7 @@ pub async fn process_sp(
                     success: false,
                     message: format!("Missing required parameter: {}", name),
                     total_data: 0,
-                    data: Value::Null,
+                    data: Value::default(),
                 });
             }
         }
@@ -161,7 +162,7 @@ pub async fn process_sp(
                 success: false,
                 message: format!("Unsupported or invalid procedure call: {}", e),
                 total_data: 0,
-                data: Value::Null,
+                data: Value::default(),
             });
         }
     };
@@ -172,7 +173,7 @@ pub async fn process_sp(
             success: false,
             message: "PATCH procedure execution is not supported for MongoDB".to_string(),
             total_data: 0,
-            data: Value::Null,
+            data: Value::default(),
         });
     }
 
@@ -184,7 +185,7 @@ pub async fn process_sp(
                 success: false,
                 message: format!("Error starting transaction: {}", err),
                 total_data: 0,
-                data: Value::Null,
+                data: Value::default(),
             });
         }
     };
@@ -213,7 +214,7 @@ pub async fn process_sp(
                     success: true,
                     message: "Processes executed".to_string(),
                     total_data: total,
-                    data: Value::Array(rows),
+                    data: json!(rows),
                 })
             } else if mode == "affected" {
                 // tiberius/sqlx doesn't always return affected count in this path; use rows len if any
@@ -222,14 +223,14 @@ pub async fn process_sp(
                     success: true,
                     message: "Processes executed".to_string(),
                     total_data: affected,
-                    data: Value::Null,
+                    data: Value::default(),
                 })
             } else {
                 HttpResponse::Ok().json(WebResponse {
                     success: true,
                     message: "Processes executed".to_string(),
                     total_data: 1,
-                    data: Value::Null,
+                    data: Value::default(),
                 })
             }
         }
@@ -240,7 +241,7 @@ pub async fn process_sp(
                 success: false,
                 message: format!("Error NCO-PATCH: {}", err),
                 total_data: 0,
-                data: Value::Null,
+                data: Value::default(),
             })
         }
     }

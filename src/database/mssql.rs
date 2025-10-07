@@ -1,10 +1,13 @@
 use anyhow::Result;
 use base64::Engine;
-use serde_json::{Map, Value};
+use sonic_rs::{Value, JsonValueTrait, JsonContainerTrait};
+use crate::json_compat::{value_from_f64, value_from_string};
 use tiberius::{AuthMethod, Client, EncryptionLevel, Query, Row};
 use tokio_util::compat::TokioAsyncWriteCompatExt;
 
 use super::state::{rehydrate_placeholders, DbParam, DbRepository, DbTransaction};
+
+type Map<K, V> = std::collections::HashMap<K, V>;
 
 #[cfg(feature = "bb8")]
 use bb8::{Pool, ManageConnection};
@@ -137,36 +140,34 @@ pub struct MssqlRepo {
     pub client: Arc<tokio::sync::Mutex<TiberiusClient>>,
 }
 
-// Minimal conversion from MSSQL Row to serde_json::Value
+// Minimal conversion from MSSQL Row to sonic_rs::Value
 fn mssql_row_to_json(row: &Row) -> Value {
-    let mut obj = Map::new();
+    let mut obj = sonic_rs::Object::new();
     for col in row.columns() {
         let name = col.name();
         // Try common types by downcasting; fallback to string
         // Order matters: MSSQL INT is 32-bit; BIGINT is 64-bit.
         let val = if let Ok(v) = row.try_get::<i32, _>(name) {
-            v.map(|n| Value::Number(n.into())).unwrap_or(Value::Null)
+            v.map(Value::from).unwrap_or(sonic_rs::Value::default())
         } else if let Ok(v) = row.try_get::<i64, _>(name) {
-            v.map(|n| Value::Number(n.into())).unwrap_or(Value::Null)
+            v.map(Value::from).unwrap_or(sonic_rs::Value::default())
         } else if let Ok(v) = row.try_get::<f64, _>(name) {
-            v.and_then(serde_json::Number::from_f64)
-                .map(Value::Number)
-                .unwrap_or(Value::Null)
+            v.map(value_from_f64).unwrap_or(sonic_rs::Value::default())
         } else if let Ok(v) = row.try_get::<bool, _>(name) {
-            v.map(Value::Bool).unwrap_or(Value::Null)
+            v.map(Value::from).unwrap_or(sonic_rs::Value::default())
         } else if let Ok(v) = row.try_get::<chrono::NaiveDateTime, _>(name) {
-            v.map(|dt| Value::String(dt.to_string())).unwrap_or(Value::Null)
+            v.map(|dt| Value::from(dt.to_string().as_str())).unwrap_or(sonic_rs::Value::default())
         } else if let Ok(v) = row.try_get::<&str, _>(name) {
-            v.map(|s| Value::String(s.to_string())).unwrap_or(Value::Null)
+            v.map(|s| Value::from(s.to_string().as_str())).unwrap_or(sonic_rs::Value::default())
         } else if let Ok(v) = row.try_get::<&[u8], _>(name) {
-            v.map(|b| Value::String(base64::engine::general_purpose::STANDARD.encode(b)))
-                .unwrap_or(Value::Null)
+            v.map(|b| value_from_string(base64::engine::general_purpose::STANDARD.encode(b)))
+                .unwrap_or(sonic_rs::Value::default())
         } else {
-            Value::Null
+            sonic_rs::Value::default()
         };
-        obj.insert(name.to_string(), val);
+        obj.insert(name, val);
     }
-    Value::Object(obj)
+    Value::from(obj)
 }
 
 // ================================

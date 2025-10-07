@@ -3,7 +3,8 @@ use actix_web::{
     web::{Data, Path},
     HttpResponse, Responder,
 };
-use serde_json::Value;
+use sonic_rs::{Value, json};
+use crate::json_compat::{JsonValueTrait, JsonContainerTrait, value_from_f64};
 
 use crate::{audit::{AuditEntry, write_audit}};
 use crate::helpers::get_client_ip;
@@ -45,7 +46,7 @@ pub async fn update(
                     success: false,
                     message: crate::constants::ERR_INVALID_TOKEN.to_string(),
                     total_data: 0,
-                    data: Value::Null,
+                    data: Value::default(),
                 });
             }
         };
@@ -55,7 +56,7 @@ pub async fn update(
                 success: false,
                 message: crate::constants::ERR_UNAUTHORIZED.to_string(),
                 total_data: 0,
-                data: Value::Null,
+                data: Value::default(),
             });
         }
     }
@@ -67,7 +68,7 @@ pub async fn update(
                 success: false,
                 message: format!("Failed to parse multipart data: {}", e),
                 total_data: 0,
-                data: Value::Null,
+                data: Value::default(),
             });
         }
     };
@@ -85,7 +86,7 @@ pub async fn update(
             success: false,
             message: "Too many requests".into(),
             total_data: 0,
-            data: Value::Null,
+            data: Value::default(),
         });
     }
     // Per-user limit (for non-public routes only)
@@ -100,7 +101,7 @@ pub async fn update(
                 success: false,
                 message: "Too many requests".into(),
                 total_data: 0,
-                data: Value::Null,
+                data: Value::default(),
             });
         }
     }
@@ -114,7 +115,7 @@ pub async fn update(
             success: false,
             message: message_error,
             total_data: 0,
-            data: Value::Null,
+            data: Value::default(),
         });
     }
 
@@ -122,12 +123,12 @@ pub async fn update(
     let mut update_fields: Vec<(String, InsertValue)> = Vec::new();
     let mut id_new = "".to_string();
     let mut password_override: Option<String> = None;
-    let mut patch_fields = serde_json::Map::new(); // kept for special-case flx_users password-only path
+    let mut patch_fields = sonic_rs::Object::new(); // kept for special-case flx_users password-only path
 
     // loop every column in table_schemas.put.columns
-    for column in table_schema.put.columns.iter() {
-        // loop every key and value in body
-        for (key, value) in body.as_object().unwrap_or(&serde_json::Map::new()).iter() {
+    if let Some(body_obj) = body.as_object() {
+        for column in table_schema.put.columns.iter() {
+            for (key, value) in body_obj.iter() {
             // check if key from body is equal to column
             if key == column {
                 // convert value to string
@@ -167,7 +168,7 @@ pub async fn update(
                                         value_x, fk.reference_table
                                     ),
                                     total_data: 0,
-                                    data: Value::Null,
+                                    data: Value::default(),
                                 });
                             }
                         }
@@ -184,7 +185,7 @@ pub async fn update(
                                     column, route
                                 ),
                                 total_data: 0,
-                                data: Value::Null,
+                                data: Value::default(),
                             });
                         }
                     };
@@ -204,20 +205,21 @@ pub async fn update(
                     if col.type_data.contains("int") || col.type_data.contains("float") || col.type_data.contains("double") || col.type_data.contains("decimal") || col.type_data.contains("money") {
                         if let Ok(n) = value_x.parse::<i64>() {
                             update_fields.push((column.clone(), InsertValue::Param(DbParam::I64(n))));
-                            patch_fields.insert(column.clone(), serde_json::json!(n));
+                            patch_fields.insert(column.as_str(), json!(n));
                         } else if let Ok(f) = value_x.parse::<f64>() {
                             update_fields.push((column.clone(), InsertValue::Param(DbParam::F64(f))));
-                            patch_fields.insert(column.clone(), serde_json::json!(f));
+                            patch_fields.insert(column.as_str(), value_from_f64(f));
                         } else {
                             update_fields.push((column.clone(), InsertValue::Param(DbParam::Str(value_x.clone()))));
-                            patch_fields.insert(column.clone(), serde_json::json!(value_x));
+                            patch_fields.insert(column.as_str(), Value::from(value_x.as_str()));
                         }
                     } else {
                         update_fields.push((column.clone(), InsertValue::Param(DbParam::Str(value_x.clone()))));
-                        patch_fields.insert(column.clone(), serde_json::json!(value_x));
+                        patch_fields.insert(column.as_str(), Value::from(value_x.as_str()));
                     }
                 }
             }
+        }
         }
     }
 
@@ -237,10 +239,10 @@ pub async fn update(
     if created_by_type.contains("int") {
         if let Ok(n) = claims.id.parse::<i64>() {
             update_fields.push(("updated_by_id".to_string(), InsertValue::Param(DbParam::I64(n))));
-            patch_fields.insert("updated_by_id".to_string(), serde_json::json!(n));
+                            patch_fields.insert("updated_by_id", json!(n));
         } else {
             update_fields.push(("updated_by_id".to_string(), InsertValue::Param(DbParam::Str(claims.id.clone()))));
-            patch_fields.insert("updated_by_id".to_string(), serde_json::json!(claims.id.clone()));
+            patch_fields.insert("updated_by_id", Value::from(claims.id.as_str()));
         }
     } else if created_by_type.contains("float") || 
         created_by_type.contains("double") || 
@@ -248,14 +250,14 @@ pub async fn update(
         created_by_type.contains("money") {
         if let Ok(n) = claims.id.parse::<f64>() {
             update_fields.push(("updated_by_id".to_string(), InsertValue::Param(DbParam::F64(n))));
-            patch_fields.insert("updated_by_id".to_string(), serde_json::json!(n));
+            patch_fields.insert("updated_by_id", value_from_f64(n));
         } else {
             update_fields.push(("updated_by_id".to_string(), InsertValue::Param(DbParam::Str(claims.id.clone()))));
-            patch_fields.insert("updated_by_id".to_string(), serde_json::json!(claims.id.clone()));
+            patch_fields.insert("updated_by_id", Value::from(claims.id.as_str()));
         }
     } else {
         update_fields.push(("updated_by_id".to_string(), InsertValue::Param(DbParam::Str(claims.id.clone()))));
-        patch_fields.insert("updated_by_id".to_string(), serde_json::json!(claims.id.clone()));
+    patch_fields.insert("updated_by_id", Value::from(claims.id.as_str()));
     }
     
     // legacy set_clause kept only for logging; actual SQL compiled via AST
@@ -273,7 +275,7 @@ pub async fn update(
                     success: false,
                     message: format!("Error compiling AST UPDATE: {}", e),
                     total_data: 0,
-                    data: Value::Null,
+                    data: Value::default(),
                 });
             }
         }
@@ -296,7 +298,7 @@ pub async fn update(
                     success: false,
                     message: format!("Error starting transaction: {}", err),
                     total_data: 0,
-                    data: Value::Null,
+                    data: Value::default(),
                 });
             }
         }
@@ -319,7 +321,7 @@ pub async fn update(
                                     success: false,
                                     message: "Validation data from table is not valid. Please contact your administrator".to_string(),
                                     total_data: 0,
-                                    data: Value::Null,
+                                    data: Value::default(),
                                 });
                             }
                         } else {
@@ -328,7 +330,7 @@ pub async fn update(
                                 success: false,
                                 message: "Validation data from table is empty. Please contact your administrator".to_string(),
                                 total_data: 0,
-                                data: Value::Null,
+                                data: Value::default(),
                             });
                         }
                     }
@@ -338,7 +340,7 @@ pub async fn update(
                             success: false,
                             message: format!("Error in validation_data: {}", err),
                             total_data: 0,
-                            data: Value::Null,
+                            data: Value::default(),
                         });
                     }
                 }
@@ -349,7 +351,7 @@ pub async fn update(
                     success: false,
                     message: format!("Error building validation formula: {}", e),
                     total_data: 0,
-                    data: Value::Null,
+                    data: Value::default(),
                 });
             }
         }
@@ -369,7 +371,7 @@ pub async fn update(
                 success: false,
                 message: format!("Error in pre-process: {}", err),
                 total_data: 0,
-                data: Value::Null,
+                data: Value::default(),
             });
         }
     }
@@ -377,10 +379,10 @@ pub async fn update(
     // If this is a password-only update for flx_users, prefer DataStore for clarity and consistency
     if route == "flx_users" && password_override.is_some() && table_schema.put.columns.len() == 1 {
         let now = chrono::Local::now().naive_local().format("%Y-%m-%d %H:%M:%S").to_string();
-        let mut doc = serde_json::json!({
-            "password": password_override.unwrap(),
-            "updated_at": now,
-        });
+        let mut doc_obj = sonic_rs::Object::new();
+    let pass_tmp = password_override.unwrap();
+    doc_obj.insert("password", json!(pass_tmp));
+    doc_obj.insert("updated_at", json!(now));
         // updated_by_id from claims
         // detect numeric type for updated_by_id
         let created_by_type = table_schema
@@ -391,9 +393,9 @@ pub async fn update(
             .unwrap_or("int".to_string());
         if created_by_type.contains("int") {
             if let Ok(n) = claims.id.parse::<i64>() {
-                doc["updated_by_id"] = serde_json::json!(n);
+                doc_obj.insert("updated_by_id", json!(n));
             } else {
-                doc["updated_by_id"] = serde_json::json!(claims.id.clone());
+                doc_obj.insert("updated_by_id", json!(claims.id));
             }
         } else if created_by_type.contains("float")
             || created_by_type.contains("double")
@@ -401,13 +403,15 @@ pub async fn update(
             || created_by_type.contains("money")
         {
             if let Ok(n) = claims.id.parse::<f64>() {
-                doc["updated_by_id"] = serde_json::json!(n);
+                doc_obj.insert("updated_by_id", json!(n));
             } else {
-                doc["updated_by_id"] = serde_json::json!(claims.id.clone());
+                doc_obj.insert("updated_by_id", json!(claims.id));
             }
         } else {
-            doc["updated_by_id"] = serde_json::json!(claims.id.clone());
+            doc_obj.insert("updated_by_id", json!(claims.id));
         }
+
+    let doc = Value::from(doc_obj);
 
         // Build WHERE id = ? by calling update with Filter
         use crate::storage::ast::{Filter as QF, Val as QV};
@@ -431,7 +435,7 @@ pub async fn update(
                         success: true,
                         message: "Data updated successfully".to_string(),
                         total_data: 1,
-                        data: Value::Null,
+                        data: Value::default(),
                     });
                 }
                 Err(err) => {
@@ -439,7 +443,7 @@ pub async fn update(
                         success: false,
                         message: format!("Error NCO-PUT (mongo): {}", err),
                         total_data: 0,
-                        data: Value::Null,
+                        data: Value::default(),
                     });
                 }
             }
@@ -455,7 +459,7 @@ pub async fn update(
                         success: true,
                         message: "Data updated successfully".to_string(),
                         total_data: 1,
-                        data: Value::Null,
+                        data: Value::default(),
                     });
                 }
                 Err(err) => {
@@ -464,7 +468,7 @@ pub async fn update(
                         success: false,
                         message: format!("Error NCO-PUT: {}", err),
                         total_data: 0,
-                        data: Value::Null,
+                        data: Value::default(),
                     });
                 }
             }
@@ -475,11 +479,11 @@ pub async fn update(
     if state.db_type == "mongodb" {
         // Ensure updated_at exists in patch_fields for Mongo (ISO timestamp)
         let now_iso = Local::now().to_rfc3339();
-        patch_fields.insert("updated_at".to_string(), serde_json::json!(now_iso));
+    patch_fields.insert("updated_at", json!(now_iso));
         // Build filter by id (attempt numeric, fallback to string)
         let filt_val = if let Ok(n) = id_raw.parse::<i64>() { QV::I64(n) } else { QV::Str(id_raw.clone()) };
         let filter = Some(QF::Eq("id".into(), filt_val));
-        match state.store.update(&table_schema.table, filter, Value::Object(patch_fields.clone())).await {
+    match state.store.update(&table_schema.table, filter, Value::from(patch_fields.clone())).await {
             Ok(_) => {
                 // Audit
                 write_audit(&AuditEntry {
@@ -494,7 +498,7 @@ pub async fn update(
                     success: true,
                     message: "Data updated successfully".to_string(),
                     total_data: 1,
-                    data: Value::Null,
+                    data: Value::default(),
                 });
             }
             Err(err) => {
@@ -502,7 +506,7 @@ pub async fn update(
                     success: false,
                     message: format!("Error NCO-PUT (mongo): {}", err),
                     total_data: 0,
-                    data: Value::Null,
+                    data: Value::default(),
                 });
             }
         }
@@ -527,7 +531,7 @@ pub async fn update(
                         success: false,
                         message: format!("Error executing post-process SQL: {}", err),
                         total_data: 0,
-                        data: Value::Null,
+                        data: Value::default(),
                     });
                 }
             }
@@ -556,7 +560,7 @@ pub async fn update(
                                 err_message
                             ),
                             total_data: 0,
-                            data: Value::Null,
+                            data: Value::default(),
                         });
                     }
                 }
@@ -577,14 +581,14 @@ pub async fn update(
                         success: true,
                         message: "Data updated successfully".to_string(),
                         total_data: 1,
-                        data: Value::Null,
+                        data: Value::default(),
                     })
                 }
                 Err(err) => HttpResponse::InternalServerError().json(WebResponse {
                     success: false,
                     message: format!("Error committing transaction: {}", err),
                     total_data: 0,
-                    data: Value::Null,
+                    data: Value::default(),
                 }),
             }
         }
@@ -594,7 +598,7 @@ pub async fn update(
                 success: false,
                 message: format!("Error NCO-PUT: {}", err),
                 total_data: 0,
-                data: Value::Null,
+                data: Value::default(),
             })
         }
     }

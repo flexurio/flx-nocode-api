@@ -203,7 +203,7 @@ pub struct WebResponse {
     pub success: bool,
     pub message: String,
     pub total_data: i32,
-    pub data: serde_json::Value,
+    pub data: sonic_rs::Value,
 }
 
 // create struct for logging

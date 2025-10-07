@@ -1,6 +1,6 @@
 use actix_multipart::Multipart;
 use actix_web::{http::header, web, HttpResponse, Responder};
-use serde_json::Value;
+use sonic_rs::{Value, JsonValueTrait, JsonContainerTrait, JsonNumberTrait};
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -37,7 +37,7 @@ pub async fn export(
                     success: false,
                     message: crate::constants::ERR_INVALID_TOKEN.to_string(),
                     total_data: 0,
-                    data: Value::Null,
+                    data: Value::default(),
                 });
             }
         };
@@ -46,7 +46,7 @@ pub async fn export(
                 success: false,
                 message: crate::constants::ERR_UNAUTHORIZED.to_string(),
                 total_data: 0,
-                data: Value::Null,
+                data: Value::default(),
             });
         }
     }
@@ -54,7 +54,7 @@ pub async fn export(
     // Parse multipart fields to JSON (re-use secure helper)
     let body_json: Value = match multipart_to_json(multipart).await {
         Ok(v) => v,
-        Err(_) => Value::Object(serde_json::Map::new()),
+        Err(_) => Value::from(sonic_rs::Object::new()),
     };
 
     // Type and filename
@@ -80,7 +80,7 @@ pub async fn export(
             success: false,
             message: message_error,
             total_data: 0,
-            data: Value::Null,
+            data: Value::default(),
         });
     }
 
@@ -174,16 +174,14 @@ pub async fn export(
                             "nin" => {
                                 let val_trim = value_str.trim();
                                 if val_trim.starts_with('[') && val_trim.ends_with(']') {
-                                    if let Ok(arr) = serde_json::from_str::<Vec<serde_json::Value>>(val_trim) {
-                                        let vs = arr.into_iter().map(|x| match x {
-                                            serde_json::Value::Number(n) => {
-                                                if let Some(i) = n.as_i64() { QV::I64(i) }
-                                                else if let Some(f) = n.as_f64() { QV::F64(f) } else { QV::Str(n.to_string()) }
-                                            }
-                                            serde_json::Value::Bool(b) => QV::Bool(b),
-                                            serde_json::Value::String(s) => QV::Str(s),
-                                            serde_json::Value::Null => QV::Null,
-                                            other => QV::Str(other.to_string()),
+                                    if let Ok(arr) = sonic_rs::from_str::<Vec<Value>>(val_trim) {
+                                        let vs = arr.into_iter().map(|x| {
+                                            if let Some(i) = x.as_i64() { QV::I64(i) }
+                                            else if let Some(f) = x.as_f64() { QV::F64(f) }
+                                            else if let Some(b) = x.as_bool() { QV::Bool(b) }
+                                            else if let Some(s) = x.as_str() { QV::Str(s.to_string()) }
+                                            else if x.is_null() { QV::Null }
+                                            else { QV::Str(x.to_string()) }
                                         }).collect::<Vec<QV>>();
                                         QF::NotIn(column, vs)
                                     } else { QF::NotIn(column, vec![to_val(&val)]) }
@@ -195,21 +193,17 @@ pub async fn export(
                             "between" => {
                                 let val_trim = value_str.trim();
                                 if val_trim.starts_with('[') && val_trim.ends_with(']') {
-                                    if let Ok(arr) = serde_json::from_str::<Vec<serde_json::Value>>(val_trim) {
+                                    if let Ok(arr) = sonic_rs::from_str::<Vec<Value>>(val_trim) {
                                         if arr.len() == 2 {
-                                            let a = &arr[0];
-                                            let b = &arr[1];
-                                            let to_qv = |v: &serde_json::Value| match v {
-                                                serde_json::Value::Number(n) => {
-                                                    if let Some(i) = n.as_i64() { QV::I64(i) }
-                                                    else if let Some(f) = n.as_f64() { QV::F64(f) } else { QV::Str(n.to_string()) }
-                                                }
-                                                serde_json::Value::Bool(b) => QV::Bool(*b),
-                                                serde_json::Value::String(s) => QV::Str(s.clone()),
-                                                serde_json::Value::Null => QV::Null,
-                                                other => QV::Str(other.to_string()),
+                                            let to_qv = |v: &Value| {
+                                                if let Some(i) = v.as_i64() { QV::I64(i) }
+                                                else if let Some(f) = v.as_f64() { QV::F64(f) }
+                                                else if let Some(b) = v.as_bool() { QV::Bool(b) }
+                                                else if let Some(s) = v.as_str() { QV::Str(s.to_string()) }
+                                                else if v.is_null() { QV::Null }
+                                                else { QV::Str(v.to_string()) }
                                             };
-                                            QF::Between(column, to_qv(a), to_qv(b))
+                                            QF::Between(column, to_qv(&arr[0]), to_qv(&arr[1]))
                                         } else { QF::Eq(column, to_val(&val)) }
                                     } else { QF::Eq(column, to_val(&val)) }
                                 } else if value_str.contains(',') {
@@ -245,24 +239,17 @@ pub async fn export(
                             "=" => {
                                 let val_trim = value_str.trim();
                                 if val_trim.starts_with('[') && val_trim.ends_with(']') {
-                                    if let Ok(arr) = serde_json::from_str::<Vec<serde_json::Value>>(val_trim) {
-                                        let vs = arr
-                                            .into_iter()
-                                            .map(|x| match x {
-                                                serde_json::Value::Number(n) => {
-                                                    if let Some(i) = n.as_i64() { QV::I64(i) }
-                                                    else if let Some(f) = n.as_f64() { QV::F64(f) } else { QV::Str(n.to_string()) }
-                                                }
-                                                serde_json::Value::Bool(b) => QV::Bool(b),
-                                                serde_json::Value::String(s) => QV::Str(s),
-                                                serde_json::Value::Null => QV::Null,
-                                                other => QV::Str(other.to_string()),
-                                            })
-                                            .collect::<Vec<QV>>();
+                                    if let Ok(arr) = sonic_rs::from_str::<Vec<Value>>(val_trim) {
+                                        let vs = arr.into_iter().map(|x| {
+                                            if let Some(i) = x.as_i64() { QV::I64(i) }
+                                            else if let Some(f) = x.as_f64() { QV::F64(f) }
+                                            else if let Some(b) = x.as_bool() { QV::Bool(b) }
+                                            else if let Some(s) = x.as_str() { QV::Str(s.to_string()) }
+                                            else if x.is_null() { QV::Null }
+                                            else { QV::Str(x.to_string()) }
+                                        }).collect::<Vec<QV>>();
                                         QF::In(column, vs)
-                                    } else {
-                                        QF::Eq(column, to_val(&val))
-                                    }
+                                    } else { QF::Eq(column, to_val(&val)) }
                                 } else if value_str.contains(',') {
                                     let vs = value_str
                                         .split(',')
@@ -281,16 +268,14 @@ pub async fn export(
                             "nin" => {
                                 let val_trim = value_str.trim();
                                 if val_trim.starts_with('[') && val_trim.ends_with(']') {
-                                    if let Ok(arr) = serde_json::from_str::<Vec<serde_json::Value>>(val_trim) {
-                                        let vs = arr.into_iter().map(|x| match x {
-                                            serde_json::Value::Number(n) => {
-                                                if let Some(i) = n.as_i64() { QV::I64(i) }
-                                                else if let Some(f) = n.as_f64() { QV::F64(f) } else { QV::Str(n.to_string()) }
-                                            }
-                                            serde_json::Value::Bool(b) => QV::Bool(b),
-                                            serde_json::Value::String(s) => QV::Str(s),
-                                            serde_json::Value::Null => QV::Null,
-                                            other => QV::Str(other.to_string()),
+                                    if let Ok(arr) = sonic_rs::from_str::<Vec<Value>>(val_trim) {
+                                        let vs = arr.into_iter().map(|x| {
+                                            if let Some(i) = x.as_i64() { QV::I64(i) }
+                                            else if let Some(f) = x.as_f64() { QV::F64(f) }
+                                            else if let Some(b) = x.as_bool() { QV::Bool(b) }
+                                            else if let Some(s) = x.as_str() { QV::Str(s.to_string()) }
+                                            else if x.is_null() { QV::Null }
+                                            else { QV::Str(x.to_string()) }
                                         }).collect::<Vec<QV>>();
                                         QF::NotIn(column, vs)
                                     } else { QF::NotIn(column, vec![to_val(&val)]) }
@@ -302,21 +287,17 @@ pub async fn export(
                             "between" => {
                                 let val_trim = value_str.trim();
                                 if val_trim.starts_with('[') && val_trim.ends_with(']') {
-                                    if let Ok(arr) = serde_json::from_str::<Vec<serde_json::Value>>(val_trim) {
+                                    if let Ok(arr) = sonic_rs::from_str::<Vec<Value>>(val_trim) {
                                         if arr.len() == 2 {
-                                            let a = &arr[0];
-                                            let b = &arr[1];
-                                            let to_qv = |v: &serde_json::Value| match v {
-                                                serde_json::Value::Number(n) => {
-                                                    if let Some(i) = n.as_i64() { QV::I64(i) }
-                                                    else if let Some(f) = n.as_f64() { QV::F64(f) } else { QV::Str(n.to_string()) }
-                                                }
-                                                serde_json::Value::Bool(b) => QV::Bool(*b),
-                                                serde_json::Value::String(s) => QV::Str(s.clone()),
-                                                serde_json::Value::Null => QV::Null,
-                                                other => QV::Str(other.to_string()),
+                                            let to_qv = |v: &Value| {
+                                                if let Some(i) = v.as_i64() { QV::I64(i) }
+                                                else if let Some(f) = v.as_f64() { QV::F64(f) }
+                                                else if let Some(b) = v.as_bool() { QV::Bool(b) }
+                                                else if let Some(s) = v.as_str() { QV::Str(s.to_string()) }
+                                                else if v.is_null() { QV::Null }
+                                                else { QV::Str(v.to_string()) }
                                             };
-                                            QF::Between(column, to_qv(a), to_qv(b))
+                                            QF::Between(column, to_qv(&arr[0]), to_qv(&arr[1]))
                                         } else { QF::Eq(column, to_val(&val)) }
                                     } else { QF::Eq(column, to_val(&val)) }
                                 } else if value_str.contains(',') {
@@ -463,7 +444,7 @@ pub async fn export(
                 success: false,
                 message: format!("Error EXPORT(AST) query: {}", e),
                 total_data: 0,
-                data: Value::Null,
+                data: Value::default(),
             })
         }
     };
@@ -473,24 +454,25 @@ pub async fn export(
     let mut data_rows: Vec<Vec<String>> = Vec::new();
     if let Some(first) = rows.first() {
         if let Some(obj) = first.as_object() {
-            headers = obj.keys().cloned().collect();
+            headers = obj.iter().map(|(k, _)| k.to_string()).collect();
         }
     }
     for row in rows.iter() {
         if let Some(obj) = row.as_object() {
             if headers.is_empty() {
-                headers = obj.keys().cloned().collect();
+                headers = obj.iter().map(|(k, _)| k.to_string()).collect();
             }
             let mut line: Vec<String> = Vec::with_capacity(headers.len());
             for h in headers.iter() {
-                let val = obj.get(h).unwrap_or(&Value::Null);
-                line.push(match val {
-                    Value::Null => String::new(),
-                    Value::String(s) => s.clone(),
-                    Value::Number(n) => n.to_string(),
-                    Value::Bool(b) => if *b { "1".into() } else { "0".into() },
-                    other => other.to_string().trim_matches('"').to_string(),
-                });
+                if let Some(val) = obj.get(h) {
+                    if val.is_null() { line.push(String::new()); continue; }
+                    else if let Some(s) = val.as_str() { line.push(s.to_string()); continue; }
+                    else if let Some(i) = val.as_i64() { line.push(i.to_string()); continue; }
+                    else if let Some(u) = val.as_u64() { line.push(u.to_string()); continue; }
+                    else if let Some(f) = val.as_f64() { line.push(f.to_string()); continue; }
+                    else if let Some(b) = val.as_bool() { line.push(if b { "1".into() } else { "0".into() }); continue; }
+                    else { line.push(val.to_string().trim_matches('"').to_string()); continue; }
+                } else { line.push(String::new()); }
             }
             data_rows.push(line);
         }

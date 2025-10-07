@@ -3,7 +3,7 @@ use base64::Engine;
 use colored::Colorize;
 use futures::StreamExt;
 use regex::Regex;
-use serde_json::{json, Value};
+use sonic_rs::{json, Value, JsonContainerTrait, JsonValueMutTrait, JsonValueTrait};
 use std::collections::HashSet;
 
 use crate::{log::log_output, model::TableSchema, ISDEBUG};
@@ -285,7 +285,7 @@ pub async fn multipart_to_json(mut multipart: Multipart) -> Result<Value, actix_
                 }
                 let base64_data = base64::engine::general_purpose::STANDARD.encode(&buffer);
                 let data_uri = format!("data:{};base64,{}", client_mime, base64_data);
-                json_data[field_name] = json!(data_uri);
+                if let Some(obj) = json_data.as_object_mut() { obj.insert(field_name.as_str(), json!(data_uri)); }
             } else {
                 // Stream to disk under LOC_STATIC/<LOC_IMAGE>
                 let static_root =
@@ -373,7 +373,7 @@ pub async fn multipart_to_json(mut multipart: Multipart) -> Result<Value, actix_
                     url.clone(),
                     true,
                 );
-                json_data[field_name] = json!(url);
+                if let Some(obj) = json_data.as_object_mut() { obj.insert(field_name.as_str(), json!(url)); }
             }
         } else {
             // Text field handling with size limit and count
@@ -392,10 +392,10 @@ pub async fn multipart_to_json(mut multipart: Multipart) -> Result<Value, actix_
                 }
                 text_data.push_str(&String::from_utf8_lossy(&data));
             }
-            json_data[field_name] = match serde_json::from_str(&text_data) {
-                Ok(parsed) => parsed,
-                Err(_) => json!(text_data),
-            };
+            if let Some(obj) = json_data.as_object_mut() {
+                let val = match sonic_rs::from_str(&text_data) { Ok(parsed) => parsed, Err(_) => json!(text_data) };
+                obj.insert(field_name.as_str(), val);
+            }
         }
     }
 
