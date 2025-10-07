@@ -7,6 +7,9 @@ use sonic_rs::{json, Value, JsonValueMutTrait};
 use std::collections::HashSet;
 
 use crate::{log::log_output, model::TableSchema, ISDEBUG};
+use std::collections::HashMap;
+use std::sync::OnceLock;
+use crate::model::ReferenceForeignKey;
 
 pub fn cetak_label(host: String, port: u16) {
     // print version from cargo.toml
@@ -45,47 +48,73 @@ fn is_safe_mime_type(mime: &str) -> bool {
 }
 
 // create function to get data from table_schemas where table is equal to route
+// One-time built global schema map (table_name => augmented TableSchema)
+// Augmentation adds mandatory query params so handlers avoid per-request cloning.
+static SCHEMA_MAP: OnceLock<HashMap<String, TableSchema>> = OnceLock::new();
+static FK_MAP: OnceLock<HashMap<String, Vec<ReferenceForeignKey>>> = OnceLock::new();
+
 pub async fn filter_table_schema(table_schemas: &[TableSchema], route: &str) -> TableSchema {
-    // Use iterator for better performance instead of loop
-    if let Some(schema) = table_schemas.iter().find(|schema| {
-        let table_name = if schema.table.contains('.') {
-            schema.table.split('.').next_back().unwrap_or(&schema.table)
-        } else {
-            &schema.table
-        };
-    table_name == route
-    }) {
-        let mut table_schema_clone = schema.clone();
-
-        // Build HashSet from existing params for O(1) lookup
-        let existing_params: HashSet<String> =
-            table_schema_clone.get.parameters.iter().cloned().collect();
-
-        // Pre-calculate mandatory parameters
-        let deleted_at_param = format!("{}.deleted_at", table_schema_clone.table);
-        
-        // Static array, no heap allocation
-        const PARAMS_MANDATORY: &[&str] = &["page", "sort", "ascending", "limit", "search", "redis"];
-        
-        // Reserve capacity upfront to avoid multiple reallocations
-        let potential_additions = PARAMS_MANDATORY.len() + 1;
-        table_schema_clone.get.parameters.reserve(potential_additions);
-        
-        if !existing_params.contains(&deleted_at_param) {
-            table_schema_clone.get.parameters.push(deleted_at_param);
-        }
-        
-        for &param in PARAMS_MANDATORY {
-            if !existing_params.contains(param) {
-                table_schema_clone.get.parameters.push(param.to_string());
-            }
-        }
-
-        table_schema_clone
-    } else {
-        TableSchema::default()
+    // Fast path: map already built
+    if let Some(map) = SCHEMA_MAP.get() {
+        return map.get(route).cloned().unwrap_or_default();
     }
+
+    // Build the map exactly once (first caller wins). Any race loses but that's fine; we just reuse the initialized map.
+    SCHEMA_MAP.get_or_init(|| {
+        let mut map: HashMap<String, TableSchema> = HashMap::with_capacity(table_schemas.len());
+        for schema in table_schemas.iter() {
+            // Derive logical route name (strip prefix before last '.')
+            let table_name = if schema.table.contains('.') {
+                schema.table.split('.').next_back().unwrap_or(&schema.table)
+            } else {
+                &schema.table
+            };
+
+            // Clone & augment parameters exactly like old implementation
+            let mut augmented = schema.clone();
+            let existing_params: HashSet<String> = augmented.get.parameters.iter().cloned().collect();
+            let deleted_at_param = format!("{}.deleted_at", augmented.table);
+            const PARAMS_MANDATORY: &[&str] = &["page", "sort", "ascending", "limit", "search", "redis"];
+            augmented.get.parameters.reserve(PARAMS_MANDATORY.len() + 1);
+            if !existing_params.contains(&deleted_at_param) {
+                augmented.get.parameters.push(deleted_at_param);
+            }
+            for &param in PARAMS_MANDATORY {
+                if !existing_params.contains(param) {
+                    augmented.get.parameters.push(param.to_string());
+                }
+            }
+            map.insert(table_name.to_string(), augmented);
+        }
+        map
+    });
+
+    // Now guaranteed initialized
+    SCHEMA_MAP
+        .get()
+        .and_then(|m| m.get(route).cloned())
+        .unwrap_or_default()
 }
+
+/// Build (if needed) and return vector of referencing foreign key actions for a target table.
+/// Key = referenced table name (logical route), Value = list of ReferenceForeignKey referencing it.
+pub fn get_reference_foreign_keys<'a>(
+    fks: &'a [ReferenceForeignKey],
+    route: &str,
+) -> &'a [ReferenceForeignKey] {
+    // Build FK map once (group by fk.table which is the referenced table)
+    FK_MAP.get_or_init(|| {
+        let mut map: HashMap<String, Vec<ReferenceForeignKey>> = HashMap::new();
+        for fk in fks.iter() {
+            map.entry(fk.table.clone()).or_default().push(fk.clone());
+        }
+        map
+    });
+    // SAFETY: map initialized above
+    let map = FK_MAP.get().unwrap();
+    map.get(route).map(|v| v.as_slice()).unwrap_or(&[])
+}
+
 
 // create function to split column and operator
 pub fn split_column_operator(key: &str, s_table: &str, value: &str) -> (String, String, String) {

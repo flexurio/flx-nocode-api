@@ -26,8 +26,9 @@ pub(crate) async fn process_foreign_keys_delete_update_txstore(
     let mut status_executed = true;
     let mut error_message = String::new();
     let ds = SqlStore::new(state.db.clone(), state.db_type.clone());
-
-    for fk in reference_foreign_keys.iter() {
+    // Use cached FK map for O(1) group retrieval (only FKs referencing this route/table)
+    let fks = crate::helpers::get_reference_foreign_keys(reference_foreign_keys, &route);
+    for fk in fks.iter() {
         if route == fk.table {
             if type_process == "DELETE" {
                 let data_table = fk.on_delete_action.clone();
