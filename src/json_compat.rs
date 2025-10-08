@@ -1,5 +1,5 @@
-// Compatibility layer untuk migrasi dari serde_json ke sonic_rs
-// Menyediakan wrappers dan helpers untuk ease migration
+// Compatibility layer untuk abstraksi pembuatan Value dengan sonic_rs
+// Menyediakan wrappers dan helpers yang dipakai di beberapa modul
 
 pub use sonic_rs::{Value, JsonValueTrait, JsonContainerTrait};
 

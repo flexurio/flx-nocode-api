@@ -65,7 +65,10 @@ smallvec = "1.11"
 mimalloc = { version = "0.1" }
 
 [features]
-default = ["mysql", "postgres", "sqlite", "mssql", "mongodb"]
+default = ["mysql", "postgres", "sqlite", "mssql", "mongodb", "async-log"]
+# Logging feature flags
+async-log = []          # enable asynchronous, non-blocking logging thread
+structured-log = []     # output JSON line log format instead of plain
 # default = ["mysql"]
 mysql = ["sqlx/mysql", "sqlx/chrono"]
 postgres = ["sqlx/postgres", "sqlx/chrono"]

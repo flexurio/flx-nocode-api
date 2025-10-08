@@ -569,7 +569,10 @@ pub async fn generate_users(state: Data<AppState>) -> impl Responder {
     let built_admin = crate::database::state::rehydrate_placeholders(&sql_admin, &state.db_type);
             let mut id_user: i64 = match &state.db.query_with_params(&built_admin, params_admin).await {
         Ok(rows) => {
-            if rows.is_empty() { 0 } else { rows[0].get(&"id".to_string()).and_then(|v| v.as_i64()).unwrap_or(0) }
+            rows.first()
+                .and_then(|row| row.get(&"id".to_string()))
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0)
         }
         Err(err) => {
             log_output(

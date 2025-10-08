@@ -272,6 +272,8 @@ pub(crate) static SCHEMA_REF_FOREIGN_KEYS: Lazy<Arc<Vec<ReferenceForeignKey>>> =
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
+    // Initialize logger (feature-flag aware)
+    log::init_logger();
     // Early CLI handling: print version and exit
     {
         let mut args = env::args();
@@ -1128,5 +1130,8 @@ async fn main() -> std::io::Result<()> {
         e
     })?
     .run()
-    .await
+    .await?;
+    // Graceful logger shutdown (flush)
+    log::shutdown_logger();
+    Ok(())
 }

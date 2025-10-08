@@ -128,10 +128,11 @@ pub async fn create_token(
             sql_query = sql_query.replace("{:?}", &id_user);
 
             addjwt = match state.db.query(&sql_query).await {
-                Ok(results) => results
-                    .first()
-                    .and_then(|value| value.as_str().map(|s| s.to_string()))
-                    .unwrap_or_default(),
+                Ok(results) => {
+                    results.first()
+                        .and_then(|value| value.as_str().map(|s| s.to_string()))
+                        .unwrap_or_default()
+                }
                 Err(e) => {
                     eprintln!("Error executing custom JWT query: {}", e);
                     String::new()

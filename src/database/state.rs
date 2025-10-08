@@ -38,21 +38,20 @@ pub enum DbParam {
 
 #[async_trait::async_trait]
 pub trait DbRepository: Send + Sync {
+    /// Execute a raw SQL query returning a vector of row objects (each row is a JSON object Value)
     async fn query(&self, sql: &str) -> Result<Vec<Value>, anyhow::Error>;
 
-    // Parameterized variants for safer queries. SQL must contain placeholders
-    // appropriate for the target DB (MySQL/SQLite: `?`, Postgres: `$1,$2,...`).
+    /// Parameterized query (preferred). Default implementation falls back to raw query when
+    /// not overridden by a backend (will ignore params). Backends should override.
     async fn query_with_params(
         &self,
         sql: &str,
         _params: Vec<DbParam>,
     ) -> Result<Vec<Value>, anyhow::Error> {
-        // Default fallback calls non-parameterized method (not recommended).
-        // Implementations for each DB override this to bind safely.
         self.query(sql).await
     }
 
-    // Transaction support
+    /// Begin a database transaction returning a dynamic DbTransaction object.
     async fn begin_transaction(&self) -> Result<Box<dyn DbTransaction>, anyhow::Error>;
 }
 

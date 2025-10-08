@@ -110,23 +110,26 @@ async fn validate_foreign_keys_batch(
     log_output("QUERY", "FK BATCH", "POST", union_sql.clone(), true);
     log_output("PARAMS", "FK BATCH", "POST", format!("{:?}", params), true);
     
-    let results = state.db.query_with_params(&union_sql, params).await
+    let rows = state.db.query_with_params(&union_sql, params).await
         .map_err(|e| format!("FK batch validation failed: {}", e))?;
-    
-    // Check all results
-    for row in results {
-        if let Some(valid) = row.get("_valid").and_then(|v| v.as_bool()) {
-            if !valid {
-                let col = row.get("_col").and_then(|v| v.as_str()).unwrap_or("unknown");
-                let tbl = row.get("_table").and_then(|v| v.as_str()).unwrap_or("unknown");
-                log_output(
-                    "ERROR",
-                    "FK VALIDATION",
-                    "POST",
-                    format!("Invalid foreign key: column={}, reference_table={}", col, tbl),
-                    false,
-                );
-                return Err(format!("Invalid foreign key value for column '{}' referencing table '{}'", col, tbl));
+    for row in rows.iter() {
+        if let Some(obj) = row.as_object() {
+            let k_valid = "_valid".to_string();
+            if let Some(valid) = obj.get(&k_valid).and_then(|v| v.as_bool()) {
+                if !valid {
+                    let k_col = "_col".to_string();
+                    let k_table = "_table".to_string();
+                    let col = obj.get(&k_col).and_then(|v| v.as_str()).unwrap_or("unknown");
+                    let tbl = obj.get(&k_table).and_then(|v| v.as_str()).unwrap_or("unknown");
+                    log_output(
+                        "ERROR",
+                        "FK VALIDATION",
+                        "POST",
+                        format!("Invalid foreign key: column={}, reference_table={}", col, tbl),
+                        false,
+                    );
+                    return Err(format!("Invalid foreign key value for column '{}' referencing table '{}'", col, tbl));
+                }
             }
         }
     }

@@ -200,7 +200,7 @@ impl DbRepository for MssqlRepo {
         }
         let stream = q.query(&mut *conn).await?;
         let rows: Vec<Row> = stream.into_first_result().await?;
-        Ok(rows.into_iter().map(|r| mssql_row_to_json(&r)).collect())
+    Ok(rows.into_iter().map(|r| mssql_row_to_json(&r)).collect())
     }
 
     async fn begin_transaction(&self) -> Result<Box<dyn DbTransaction>, anyhow::Error> {
@@ -301,8 +301,8 @@ impl DbTransaction for MssqlTransaction {
             }
         }
         let stream = q.query(&mut *conn).await?;
-        let rows: Vec<Row> = stream.into_first_result().await?;
-        Ok(rows.into_iter().map(|r| mssql_row_to_json(&r)).collect())
+    let rows: Vec<Row> = stream.into_first_result().await?;
+    Ok(rows.into_iter().map(|r| mssql_row_to_json(&r)).collect())
     }
 
     async fn commit(mut self: Box<Self>) -> Result<(), anyhow::Error> {
@@ -343,8 +343,8 @@ impl DbTransaction for MssqlTransaction {
             }
         }
         let stream = q.query(&mut *client).await?;
-        let rows: Vec<Row> = stream.into_first_result().await?;
-        Ok(rows.into_iter().map(|r| mssql_row_to_json(&r)).collect())
+    let rows: Vec<Row> = stream.into_first_result().await?;
+    Ok(rows.into_iter().map(|r| mssql_row_to_json(&r)).collect())
     }
 
     async fn commit(self: Box<Self>) -> Result<(), anyhow::Error> {

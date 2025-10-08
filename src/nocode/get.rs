@@ -2,7 +2,7 @@ use actix_web::{
     web::{self},
     HttpResponse, Responder,
 };
-use sonic_rs::{Value, JsonValueTrait, json, Object};
+use sonic_rs::{Value, JsonValueTrait, Object};
 use std::collections::HashMap;
 
 use crate::{
@@ -534,7 +534,7 @@ pub async fn select(
                 log_output("QUERY", "GET(AST)", route.as_ref(), sql_dbg, true);
                 log_output("PARAMS", "GET(AST)", route.as_ref(), format!("{:?}", params_dbg), true);
             }
-            let rows = match state.store.query(&q).await {
+            let rows_vec = match state.store.query(&q).await {
                 Ok(rs) => rs,
                 Err(e) => {
                     return HttpResponse::InternalServerError().json(WebResponse {
@@ -545,12 +545,18 @@ pub async fn select(
                     });
                 }
             };
-            let total_data = 9999;
+            let total_data = 9999; // TODO: implement real count if needed
+            // Build sonic Value array without cloning elements (consume vector)
+            let data_val = {
+                let mut arr = sonic_rs::Array::with_capacity(rows_vec.len());
+                for v in rows_vec { arr.push(v); }
+                Value::from(arr)
+            };
             let result = WebResponse {
                 success: true,
                 message: "Data found".to_string(),
                 total_data,
-                data: json!(rows),
+                data: data_val,
             };
             
             // OPTIMIZATION: Automatic cache write-through when caching enabled

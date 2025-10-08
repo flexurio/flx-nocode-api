@@ -203,7 +203,7 @@ pub struct WebResponse {
     pub data: sonic_rs::Value,
 }
 
-// Custom responder to avoid serde_json overhead and leverage sonic_rs directly
+// Custom responder leveraging sonic_rs directly
 impl Responder for WebResponse {
     type Body = BoxBody;
 

@@ -137,7 +137,7 @@ async fn execute(
     s_sql_fk: &str,
     bind_params_fk: Vec<DbParam>,
     type_process: &str,
-) -> Result<Vec<Value>, anyhow::Error> {
+) -> Result<Value, anyhow::Error> {
     log_output(
         "FOREIGN KEY",
         type_process,
@@ -152,14 +152,8 @@ async fn execute(
         format!("{:?}", bind_params_fk),
         true,
     );
-
-    match transaction
-        .query_with_params(s_sql_fk, bind_params_fk)
-        .await
-    {
-        Ok(rows) => Ok(rows),
-        Err(err) => Err(err),
-    }
+    let rows = transaction.query_with_params(s_sql_fk, bind_params_fk).await?;
+    Ok(rows.into_iter().next().unwrap_or_default())
 }
 
 // create function to check master if column foreign key
@@ -175,8 +169,8 @@ pub(crate) async fn check_data_foreign_key(
         .select(["1"]) // lighter projection
         .r#where(F::Eq(reference_column, val))
         .limit(1);
-    match state.store.query(&q).await {
-        Ok(rows) => !rows.is_empty(),
+        match state.store.query(&q).await {
+            Ok(rows) => !rows.is_empty(),
         Err(err) => {
             log_output("ERROR", "CHECK FOREIGN KEY", "QUERY", err.to_string(), false);
             false
