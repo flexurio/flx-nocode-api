@@ -34,7 +34,8 @@ struct InsertData {
 
 impl InsertData {
     fn new() -> Self {
-        Self { fields: Vec::new() }
+        // Typical insert touches a small number of columns; preallocate to avoid growth realloc
+        Self { fields: Vec::with_capacity(12) }
     }
 
     fn add_field(&mut self, key: String, value: AstVal) {
@@ -43,19 +44,18 @@ impl InsertData {
 
     /// Convert to InsertValue vector for SQL operations
     fn to_insert_values(&self) -> Vec<(String, InsertValue)> {
-        self.fields
-            .iter()
-            .map(|(k, v)| {
-                let param = match v {
-                    AstVal::I64(n) => DbParam::I64(*n),
-                    AstVal::F64(f) => DbParam::F64(*f),
-                    AstVal::Bool(b) => DbParam::Bool(*b),
-                    AstVal::Str(s) => DbParam::Str(s.clone()),
-                    AstVal::Null => DbParam::Null,
-                };
-                (k.clone(), InsertValue::Param(param))
-            })
-            .collect()
+        let mut out = Vec::with_capacity(self.fields.len());
+        for (k, v) in &self.fields {
+            let param = match v {
+                AstVal::I64(n) => DbParam::I64(*n),
+                AstVal::F64(f) => DbParam::F64(*f),
+                AstVal::Bool(b) => DbParam::Bool(*b),
+                AstVal::Str(s) => DbParam::Str(s.clone()),
+                AstVal::Null => DbParam::Null,
+            };
+            out.push((k.clone(), InsertValue::Param(param)));
+        }
+        out
     }
 
     /// Convert to sonic_rs::Value for MongoDB or logging
@@ -241,7 +241,7 @@ pub async fn insert(
     );
 
     // **2️⃣ Buat daftar kolom untuk INSERT, kolom hanya ambil dari nama kolom yang di sebutkan di table_schema.post.columns**
-    let mut insert_columns: Vec<&str> = Vec::with_capacity(filtered_columns.len() + 2);
+    let mut insert_columns: Vec<&str> = Vec::with_capacity(filtered_columns.len() + 4);
     insert_columns.extend(
         filtered_columns
             .iter()
@@ -301,10 +301,10 @@ pub async fn insert(
     let mut insert_data = InsertData::new();
     
     // Track formula-based columns separately (will be added as InsertValue::Raw later)
-    let mut formula_fields: Vec<(String, InsertValue)> = Vec::new();
+    let mut formula_fields: Vec<(String, InsertValue)> = Vec::with_capacity(4);
     
     // Collect FK checks for batch validation (optimization)
-    let mut fk_checks: Vec<(String, String, String, String)> = Vec::with_capacity(filtered_columns.len()); // Pre-allocate
+    let mut fk_checks: Vec<(String, String, String, String)> = Vec::with_capacity(filtered_columns.len());
     
     for col in filtered_columns.iter() {
         if col.auto_increment {
@@ -493,7 +493,7 @@ pub async fn insert(
     
     // **Tambahkan created_at** (server-side raw expression)
     insert_columns.push("created_at");
-    insert_fields.push(("created_at".to_string(), InsertValue::Raw(state.query_converter.datetime_now.clone())));
+    insert_fields.push(("created_at".into(), InsertValue::Raw(state.query_converter.datetime_now.clone())));
 
     // **Tambahkan created_by_id**
     insert_columns.push("created_by_id");
@@ -508,24 +508,23 @@ pub async fn insert(
 
     log_output("TYPE", "created_by_id", route.as_ref(), created_by_type.clone(), true);
 
+    // Cache parsed variants of claims.id to avoid multi-parse
+    let claims_id_i64 = claims.id.parse::<i64>().ok();
+    let claims_id_f64 = if claims_id_i64.is_none() { claims.id.parse::<f64>().ok() } else { None };
     if created_by_type.contains("int") {
-        if let Ok(n) = claims.id.parse::<i64>() {
-            insert_fields.push(("created_by_id".to_string(), InsertValue::Param(DbParam::I64(n))));
+        if let Some(n) = claims_id_i64 {
+            insert_fields.push(("created_by_id".into(), InsertValue::Param(DbParam::I64(n))));
         } else {
-            insert_fields.push(("created_by_id".to_string(), InsertValue::Param(DbParam::Str(claims.id.clone()))));
+            insert_fields.push(("created_by_id".into(), InsertValue::Param(DbParam::Str(claims.id.clone()))));
         }
-    } else if created_by_type.contains("float")
-        || created_by_type.contains("double")
-        || created_by_type.contains("decimal")
-        || created_by_type.contains("money")
-    {
-        if let Ok(n) = claims.id.parse::<f64>() {
-            insert_fields.push(("created_by_id".to_string(), InsertValue::Param(DbParam::F64(n))));
+    } else if created_by_type.contains("float") || created_by_type.contains("double") || created_by_type.contains("decimal") || created_by_type.contains("money") {
+        if let Some(n) = claims_id_f64 {
+            insert_fields.push(("created_by_id".into(), InsertValue::Param(DbParam::F64(n))));
         } else {
-            insert_fields.push(("created_by_id".to_string(), InsertValue::Param(DbParam::Str(claims.id.clone()))));
+            insert_fields.push(("created_by_id".into(), InsertValue::Param(DbParam::Str(claims.id.clone()))));
         }
     } else {
-        insert_fields.push(("created_by_id".to_string(), InsertValue::Param(DbParam::Str(claims.id.clone()))));
+        insert_fields.push(("created_by_id".into(), InsertValue::Param(DbParam::Str(claims.id.clone()))));
     }
 
     // For MongoDB, directly insert JSON doc without SQL; for SQL, compile INSERT
@@ -652,21 +651,13 @@ pub async fn insert(
         
         // Add created_by_id with proper type
         if created_by_type.contains("int") {
-            if let Ok(n) = claims.id.parse::<i64>() {
-                doc_obj.insert("created_by_id", sonic_rs::json!(n));
-            } else {
-                doc_obj.insert("created_by_id", sonic_rs::json!(claims.id));
-            }
-        } else if created_by_type.contains("float")
-            || created_by_type.contains("double")
-            || created_by_type.contains("decimal")
-            || created_by_type.contains("money")
-        {
-            if let Ok(n) = claims.id.parse::<f64>() {
-                doc_obj.insert("created_by_id", value_from_f64(n));
-            } else {
-                doc_obj.insert("created_by_id", sonic_rs::json!(claims.id));
-            }
+            if let Some(n) = claims_id_i64 { doc_obj.insert("created_by_id", sonic_rs::json!(n)); }
+            else if let Some(nf) = claims_id_f64 { doc_obj.insert("created_by_id", value_from_f64(nf)); }
+            else { doc_obj.insert("created_by_id", sonic_rs::json!(claims.id)); }
+        } else if created_by_type.contains("float") || created_by_type.contains("double") || created_by_type.contains("decimal") || created_by_type.contains("money") {
+            if let Some(nf) = claims_id_f64 { doc_obj.insert("created_by_id", value_from_f64(nf)); }
+            else if let Some(ni) = claims_id_i64 { doc_obj.insert("created_by_id", sonic_rs::json!(ni)); }
+            else { doc_obj.insert("created_by_id", sonic_rs::json!(claims.id)); }
         } else {
             doc_obj.insert("created_by_id", sonic_rs::json!(claims.id));
         }

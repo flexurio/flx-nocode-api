@@ -28,6 +28,9 @@ pub(crate) async fn process_foreign_keys_delete_update_txstore(
     let ds = SqlStore::new(state.db.clone(), state.db_type.clone());
     // Use cached FK map for O(1) group retrieval (only FKs referencing this route/table)
     let fks = crate::helpers::get_reference_foreign_keys(reference_foreign_keys, &route);
+    let id_user_i64 = id_user.parse::<i64>().ok();
+    let id_data_i64 = id_data.parse::<i64>().ok();
+    let id_new_i64 = id_new.parse::<i64>().ok();
     for fk in fks.iter() {
         if route == fk.table {
             if type_process == "DELETE" {
@@ -36,9 +39,9 @@ pub(crate) async fn process_foreign_keys_delete_update_txstore(
                     if data_table.type_delete == "soft" {
                         let now_fn = state.query_converter.datetime_now.clone();
                         let mut fields: Vec<(String, IV)> = vec![("deleted_at".into(), IV::Raw(now_fn))];
-                        if let Ok(n) = id_user.clone().parse::<i64>() { fields.push(("deleted_by_id".into(), IV::Param(DbParam::I64(n)))); }
+                        if let Some(n) = id_user_i64 { fields.push(("deleted_by_id".into(), IV::Param(DbParam::I64(n)))); }
                         else { fields.push(("deleted_by_id".into(), IV::Param(DbParam::Str(id_user.clone())))); }
-                        let filter = if let Ok(n) = id_data.clone().parse::<i64>() { F::Eq(data_table.column.clone(), V::I64(n)) } else { F::Eq(data_table.column.clone(), V::Str(id_data.clone())) };
+                        let filter = if let Some(n) = id_data_i64 { F::Eq(data_table.column.clone(), V::I64(n)) } else { F::Eq(data_table.column.clone(), V::Str(id_data.clone())) };
                         match ds.preview_update_with(&data_table.table, Some(&filter), &fields) {
                             Ok((sql_u, params_u)) => {
                                 let built = crate::database::state::rehydrate_placeholders(&sql_u, &state.db_type);
@@ -47,7 +50,7 @@ pub(crate) async fn process_foreign_keys_delete_update_txstore(
                             Err(err) => { status_executed = false; error_message = err.to_string(); break; }
                         }
                     } else if data_table.type_delete == "hard" {
-                        let filter = if let Ok(n) = id_data.clone().parse::<i64>() { F::Eq(data_table.column.clone(), V::I64(n)) } else { F::Eq(data_table.column.clone(), V::Str(id_data.clone())) };
+                        let filter = if let Some(n) = id_data_i64 { F::Eq(data_table.column.clone(), V::I64(n)) } else { F::Eq(data_table.column.clone(), V::Str(id_data.clone())) };
                         match ds.preview_delete(&data_table.table, Some(&filter)) {
                             Ok((sql_d, params_d)) => {
                                 let built = crate::database::state::rehydrate_placeholders(&sql_d, &state.db_type);
@@ -59,9 +62,9 @@ pub(crate) async fn process_foreign_keys_delete_update_txstore(
                 } else if data_table.action == "set null" {
                     let now_fn = state.query_converter.datetime_now.clone();
                     let mut fields: Vec<(String, IV)> = vec![(data_table.column.clone(), IV::Raw("NULL".into())), ("updated_at".into(), IV::Raw(now_fn))];
-                    if let Ok(n) = id_user.clone().parse::<i64>() { fields.push(("updated_by_id".into(), IV::Param(DbParam::I64(n)))); }
+                    if let Some(n) = id_user_i64 { fields.push(("updated_by_id".into(), IV::Param(DbParam::I64(n)))); }
                     else { fields.push(("updated_by_id".into(), IV::Param(DbParam::Str(id_user.clone())))); }
-                    let filter = if let Ok(n) = id_data.clone().parse::<i64>() { F::Eq(data_table.column.clone(), V::I64(n)) } else { F::Eq(data_table.column.clone(), V::Str(id_data.clone())) };
+                    let filter = if let Some(n) = id_data_i64 { F::Eq(data_table.column.clone(), V::I64(n)) } else { F::Eq(data_table.column.clone(), V::Str(id_data.clone())) };
                     match ds.preview_update_with(&data_table.table, Some(&filter), &fields) {
                         Ok((sql_u, params_u)) => {
                             let built = crate::database::state::rehydrate_placeholders(&sql_u, &state.db_type);
@@ -70,7 +73,7 @@ pub(crate) async fn process_foreign_keys_delete_update_txstore(
                         Err(err) => { status_executed = false; error_message = err.to_string(); break; }
                     }
                 } else if data_table.action == "restrict" {
-                    let filter = if let Ok(n) = id_data.clone().parse::<i64>() { F::Eq(data_table.column.clone(), V::I64(n)) } else { F::Eq(data_table.column.clone(), V::Str(id_data.clone())) };
+                    let filter = if let Some(n) = id_data_i64 { F::Eq(data_table.column.clone(), V::I64(n)) } else { F::Eq(data_table.column.clone(), V::Str(id_data.clone())) };
                     let q = Q::from(data_table.table.clone()).select(["1"]).r#where(filter).limit(1);
                     let (sql_q, params_q) = ds.preview_sql(&q);
                     let built = crate::database::state::rehydrate_placeholders(&sql_q, &state.db_type);
@@ -86,10 +89,10 @@ pub(crate) async fn process_foreign_keys_delete_update_txstore(
                 if data_table.action == "cascade" {
                     let now_fn = state.query_converter.datetime_now.clone();
                     let mut fields: Vec<(String, IV)> = Vec::new();
-                    if let Ok(n) = id_new.clone().parse::<i64>() { fields.push((data_table.column.clone(), IV::Param(DbParam::I64(n)))); } else { fields.push((data_table.column.clone(), IV::Param(DbParam::Str(id_new.clone())))); }
+                    if let Some(n) = id_new_i64 { fields.push((data_table.column.clone(), IV::Param(DbParam::I64(n)))); } else { fields.push((data_table.column.clone(), IV::Param(DbParam::Str(id_new.clone())))); }
                     fields.push(("updated_at".into(), IV::Raw(now_fn)));
-                    if let Ok(n) = id_user.clone().parse::<i64>() { fields.push(("updated_by_id".into(), IV::Param(DbParam::I64(n)))); } else { fields.push(("updated_by_id".into(), IV::Param(DbParam::Str(id_user.clone())))); }
-                    let filter = if let Ok(n) = id_data.clone().parse::<i64>() { F::Eq(data_table.column.clone(), V::I64(n)) } else { F::Eq(data_table.column.clone(), V::Str(id_data.clone())) };
+                    if let Some(n) = id_user_i64 { fields.push(("updated_by_id".into(), IV::Param(DbParam::I64(n)))); } else { fields.push(("updated_by_id".into(), IV::Param(DbParam::Str(id_user.clone())))); }
+                    let filter = if let Some(n) = id_data_i64 { F::Eq(data_table.column.clone(), V::I64(n)) } else { F::Eq(data_table.column.clone(), V::Str(id_data.clone())) };
                     match ds.preview_update_with(&data_table.table, Some(&filter), &fields) {
                         Ok((sql_u, params_u)) => {
                             let built = crate::database::state::rehydrate_placeholders(&sql_u, &state.db_type);
@@ -100,8 +103,8 @@ pub(crate) async fn process_foreign_keys_delete_update_txstore(
                 } else if data_table.action == "set null" {
                     let now_fn = state.query_converter.datetime_now.clone();
                     let mut fields: Vec<(String, IV)> = vec![(data_table.column.clone(), IV::Raw("NULL".into())), ("updated_at".into(), IV::Raw(now_fn))];
-                    if let Ok(n) = id_user.clone().parse::<i64>() { fields.push(("updated_by_id".into(), IV::Param(DbParam::I64(n)))); } else { fields.push(("updated_by_id".into(), IV::Param(DbParam::Str(id_user.clone())))); }
-                    let filter = if let Ok(n) = id_data.clone().parse::<i64>() { F::Eq(data_table.column.clone(), V::I64(n)) } else { F::Eq(data_table.column.clone(), V::Str(id_data.clone())) };
+                    if let Some(n) = id_user_i64 { fields.push(("updated_by_id".into(), IV::Param(DbParam::I64(n)))); } else { fields.push(("updated_by_id".into(), IV::Param(DbParam::Str(id_user.clone())))); }
+                    let filter = if let Some(n) = id_data_i64 { F::Eq(data_table.column.clone(), V::I64(n)) } else { F::Eq(data_table.column.clone(), V::Str(id_data.clone())) };
                     match ds.preview_update_with(&data_table.table, Some(&filter), &fields) {
                         Ok((sql_u, params_u)) => {
                             let built = crate::database::state::rehydrate_placeholders(&sql_u, &state.db_type);
@@ -110,7 +113,7 @@ pub(crate) async fn process_foreign_keys_delete_update_txstore(
                         Err(err) => { status_executed = false; error_message = err.to_string(); break; }
                     }
                 } else if data_table.action == "restrict" {
-                    let filter = if let Ok(n) = id_data.clone().parse::<i64>() { F::Eq(data_table.column.clone(), V::I64(n)) } else { F::Eq(data_table.column.clone(), V::Str(id_data.clone())) };
+                    let filter = if let Some(n) = id_data_i64 { F::Eq(data_table.column.clone(), V::I64(n)) } else { F::Eq(data_table.column.clone(), V::Str(id_data.clone())) };
                     let q = Q::from(data_table.table.clone()).select(["1"]).r#where(filter).limit(1);
                     let (sql_q, params_q) = ds.preview_sql(&q);
                     let built = crate::database::state::rehydrate_placeholders(&sql_q, &state.db_type);

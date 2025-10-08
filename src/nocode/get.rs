@@ -9,6 +9,7 @@ use crate::{
     AppState, auth::{check_access, get_user_info_from_token}, database::redis::redis_del_key, helpers::{filter_table_schema, get_client_ip, split_column_operator}, log::log_output, model::{TableSchema, WebResponse}
 };
 use crate::storage::ast::{Filter as QF, Query as QQ, Val as QV, Expr as QE, Join as QJ, JoinKind as QJK};
+use smallvec::SmallVec;
 use std::sync::Arc;
 use std::collections::HashSet;
 use crate::database::redis::{redis_get_json, redis_set_json, build_key_prefix};
@@ -59,14 +60,17 @@ pub async fn select(
     let table_schema = filter_table_schema(&table_schemas, route.as_ref());
     // legacy SQL variables removed; using AST end-to-end
 
-    log_output(
-        "CONFIGURATION",
-        "FILTERED PARAMETERS",
-        "filter_table_schema",
-        // sonic_rs Value implements Display -> to_string
-    json!(table_schema.get.parameters.clone()).to_string(),
-        true,
-    );
+    // Lighter parameter logging: avoid JSON serialization + clone; join directly
+    if *crate::ISDEBUG {
+        let joined_params = table_schema.get.parameters.join(", ");
+        log_output(
+            "CONFIGURATION",
+            "FILTERED PARAMETERS",
+            "filter_table_schema",
+            joined_params,
+            true,
+        );
+    }
 
     if table_schema.table.is_empty() {
         let message_error = format!(
@@ -94,19 +98,15 @@ pub async fn select(
         true,
     );
 
-    // Build sonic_rs Object from query HashMap for unified downstream logic
-    let mut params_map_awal: Object = Object::with_capacity(parameters.len());
+    // Build sonic_rs Object from query HashMap for unified downstream logic (single map, no clone)
+    let mut params_map: Object = Object::with_capacity(parameters.len());
     for (k, v) in parameters.iter() {
-        params_map_awal.insert(k.as_str(), Value::from(v.as_str()));
+        params_map.insert(k.as_str(), Value::from(v.as_str()));
     }
-    let mut params_map = params_map_awal.clone();
     let mut isredis = false;
-
-    // check if in parameters contain redis 
-    let redis_key = String::from("redis");
-    if let Some(v) = params_map_awal.get(&redis_key) {
+    if let Some(v) = params_map.get(&"redis".to_string()) { // unified redis flag extraction
         if v.as_bool() == Some(true) || v.as_str() == Some("true") { isredis = true; }
-        let _ = params_map.remove(&redis_key);
+        let _ = params_map.remove(&"redis".to_string());
     }
     
     // Build cache key if caching enabled
@@ -169,7 +169,8 @@ pub async fn select(
             let mut order_col_ast = table_schema.get.order_by.clone().join(", ");
             let mut order_type_ast = "ASC".to_string();
             // Pre-allocate with estimated capacity to reduce reallocations (optimization)
-            let mut filters: Vec<QF> = Vec::with_capacity(table_schema.get.parameters.len());
+            // SmallVec reduces heap allocations for typical small filter counts
+            let mut filters: SmallVec<[QF; 16]> = SmallVec::new();
             // collect paramjoin values if provided (store sanitized once)
             // Vec of (placeholder_name, sanitized_value)
             let mut paramjoins_ast: Vec<(String, String)> = Vec::with_capacity(4);
@@ -205,13 +206,36 @@ pub async fn select(
                 out
             }
 
-            // helper to parse value into QV
+            // helper to parse value into QV (fast path order: bool -> int -> float -> string)
             fn to_val(s: &str) -> QV {
-                if s.eq_ignore_ascii_case("true") { return QV::Bool(true); }
-                if s.eq_ignore_ascii_case("false") { return QV::Bool(false); }
-                if let Ok(i) = s.parse::<i64>() { return QV::I64(i); }
-                if let Ok(f) = s.parse::<f64>() { return QV::F64(f); }
-                QV::Str(s.to_string())
+                if s.eq_ignore_ascii_case("true") { QV::Bool(true) }
+                else if s.eq_ignore_ascii_case("false") { QV::Bool(false) }
+                else if let Ok(i) = s.parse::<i64>() { QV::I64(i) }
+                else if let Ok(f) = s.parse::<f64>() { QV::F64(f) }
+                else { QV::Str(s.to_string()) }
+            }
+            fn value_to_qv(v: &Value) -> QV {
+                if let Some(i) = v.as_i64() { QV::I64(i) }
+                else if let Some(f) = v.as_f64() { QV::F64(f) }
+                else if let Some(b) = v.as_bool() { QV::Bool(b) }
+                else if let Some(s) = v.as_str() { QV::Str(s.to_string()) }
+                else if v.is_null() { QV::Null }
+                else { QV::Str(v.to_string()) }
+            }
+            fn parse_json_array_to_qvs(raw: &str) -> Option<Vec<QV>> {
+                if raw.trim().starts_with('[') && raw.trim().ends_with(']') {
+                    if let Ok(arr) = sonic_rs::from_str::<Vec<Value>>(raw) {
+                        return Some(arr.iter().map(value_to_qv).collect());
+                    }
+                }
+                None
+            }
+            fn csv_to_qvs(raw: &str) -> Option<Vec<QV>> {
+                if raw.contains(',') {
+                    let vs = raw.split(',').map(|s| to_val(s.trim())).collect::<Vec<_>>();
+                    return Some(vs);
+                }
+                None
             }
 
             // process allowed parameters
@@ -248,12 +272,8 @@ pub async fn select(
                         "search" => {
                             let v = value_str;
                             if !v.is_empty() {
-                                // Pre-calculate capacity for OR filters
-                                let pk_count = table_schema.primary_key.columns.len();
-                                let idx_count: usize = table_schema.indexes.iter()
-                                    .map(|idx| idx.columns.len())
-                                    .sum();
-                                let mut ors: Vec<QF> = Vec::with_capacity(pk_count + idx_count);
+                                // Collect OR filters across primary key + indexed columns
+                                let mut ors: SmallVec<[QF; 16]> = SmallVec::new();
                                 
                                 // primary key columns
                                 for column in table_schema.primary_key.columns.iter() {
@@ -267,13 +287,12 @@ pub async fn select(
                                         ors.push(QF::ILike(col, format!("%{}%", v)));
                                     }
                                 }
-                                if !ors.is_empty() { filters.push(QF::Or(ors)); }
+                                if !ors.is_empty() { filters.push(QF::Or(ors.into_vec())); }
                             }
                         }
                         p if p.contains('|') => {
                             // OR across multiple columns
-                            let parts_count = p.matches('|').count() + 1;
-                            let mut ors: Vec<QF> = Vec::with_capacity(parts_count); // Pre-allocate
+                            let mut ors: SmallVec<[QF; 8]> = SmallVec::new();
                             for part in p.split('|') {
                                 let (column, operator, val) = split_column_operator(part, &table_schema.table, &value_str);
                                 let f = match operator.as_str() {
@@ -285,46 +304,20 @@ pub async fn select(
                                     "like" => QF::ILike(column, val),
                                     "nin" => {
                                         // nin: support JSON array or comma-separated
-                                        let val_trim = value_str.trim();
-                                        if val_trim.starts_with('[') && val_trim.ends_with(']') {
-                                            if let Ok(arr) = sonic_rs::from_str::<Vec<Value>>(val_trim) {
-                                                let vs = arr.into_iter().map(|x| {
-                                                    if let Some(i) = x.as_i64() { QV::I64(i) }
-                                                    else if let Some(f) = x.as_f64() { QV::F64(f) }
-                                                    else if let Some(b) = x.as_bool() { QV::Bool(b) }
-                                                    else if let Some(s) = x.as_str() { QV::Str(s.to_string()) }
-                                                    else if x.is_null() { QV::Null }
-                                                    else { QV::Str(x.to_string()) }
-                                                }).collect::<Vec<QV>>();
-                                                QF::NotIn(column, vs)
-                                            } else { QF::NotIn(column, vec![to_val(&val)]) }
-                                        } else if value_str.contains(',') {
-                                            let vs = value_str.split(',').map(|s| to_val(s.trim())).collect::<Vec<QV>>();
+                                        if let Some(vs) = parse_json_array_to_qvs(&value_str) {
+                                            QF::NotIn(column, vs)
+                                        } else if let Some(vs) = csv_to_qvs(&value_str) {
                                             QF::NotIn(column, vs)
                                         } else { QF::NotIn(column, vec![to_val(&val)]) }
                                     }
                                     "between" => {
-                                        // between: support JSON [a,b] or 'a,b'
-                                        let val_trim = value_str.trim();
-                                        if val_trim.starts_with('[') && val_trim.ends_with(']') {
-                                            if let Ok(arr) = sonic_rs::from_str::<Vec<Value>>(val_trim) {
-                                                if arr.len() == 2 {
-                                                    let to_qv = |v: &Value| {
-                                                        if let Some(i) = v.as_i64() { QV::I64(i) }
-                                                        else if let Some(f) = v.as_f64() { QV::F64(f) }
-                                                        else if let Some(b) = v.as_bool() { QV::Bool(b) }
-                                                        else if let Some(s) = v.as_str() { QV::Str(s.to_string()) }
-                                                        else if v.is_null() { QV::Null }
-                                                        else { QV::Str(v.to_string()) }
-                                                    };
-                                                    QF::Between(column, to_qv(&arr[0]), to_qv(&arr[1]))
-                                                } else { QF::Eq(column, to_val(&val)) }
-                                            } else { QF::Eq(column, to_val(&val)) }
+                                        if let Some(vs) = parse_json_array_to_qvs(&value_str) {
+                                            if vs.len() == 2 { QF::Between(column, vs[0].clone(), vs[1].clone()) } else { QF::Eq(column, to_val(&val)) }
                                         } else if value_str.contains(',') {
-                                            let mut parts = value_str.split(',').map(|s| s.trim().to_string());
-                                            let a = parts.next().unwrap_or_default();
-                                            let b = parts.next().unwrap_or_default();
-                                            QF::Between(column, to_val(&a), to_val(&b))
+                                            let mut parts = value_str.split(',').map(|s| s.trim());
+                                            let a = parts.next().unwrap_or("");
+                                            let b = parts.next().unwrap_or("");
+                                            QF::Between(column, to_val(a), to_val(b))
                                         } else { QF::Eq(column, to_val(&val)) }
                                     }
                                     "is" => {
@@ -336,7 +329,7 @@ pub async fn select(
                                 };
                                 ors.push(f);
                             }
-                            if !ors.is_empty() { filters.push(QF::Or(ors)); }
+                            if !ors.is_empty() { filters.push(QF::Or(ors.into_vec())); }
                         }
                         _ => {
                             let (column, operator, val) = split_column_operator(param, &table_schema.table, &value_str);
@@ -352,28 +345,9 @@ pub async fn select(
                                 // Support IN via comma-separated list or JSON array string when operator is equality
                                 let f = match operator.as_str() {
                                     "=" => {
-                                        let val_trim = value_str.trim();
-                                        if val_trim.starts_with('[') && val_trim.ends_with(']') {
-                                            if let Ok(arr) = sonic_rs::from_str::<Vec<Value>>(val_trim) {
-                                                let vs = arr.into_iter().map(|x| {
-                                                    if let Some(i) = x.as_i64() { QV::I64(i) }
-                                                    else if let Some(f) = x.as_f64() { QV::F64(f) }
-                                                    else if let Some(b) = x.as_bool() { QV::Bool(b) }
-                                                    else if let Some(s) = x.as_str() { QV::Str(s.to_string()) }
-                                                    else if x.is_null() { QV::Null }
-                                                    else { QV::Str(x.to_string()) }
-                                                }).collect::<Vec<QV>>();
-                                                QF::In(column, vs)
-                                            } else { QF::Eq(column, to_val(&val)) }
-                                        } else if value_str.contains(',') {
-                                            let vs = value_str
-                                                .split(',')
-                                                .map(|s| to_val(s.trim()))
-                                                .collect::<Vec<QV>>();
-                                            QF::In(column, vs)
-                                        } else {
-                                            QF::Eq(column, to_val(&val))
-                                        }
+                                        if let Some(vs) = parse_json_array_to_qvs(&value_str) { QF::In(column, vs) }
+                                        else if let Some(vs) = csv_to_qvs(&value_str) { QF::In(column, vs) }
+                                        else { QF::Eq(column, to_val(&val)) }
                                     }
                                     "<" => QF::Lt(column, to_val(&val)),
                                     "<=" => QF::Lte(column, to_val(&val)),
@@ -381,45 +355,18 @@ pub async fn select(
                                     ">=" => QF::Gte(column, to_val(&val)),
                                     "like" => QF::ILike(column, val),
                                     "nin" => {
-                                        let val_trim = value_str.trim();
-                                        if val_trim.starts_with('[') && val_trim.ends_with(']') {
-                                            if let Ok(arr) = sonic_rs::from_str::<Vec<Value>>(val_trim) {
-                                                let vs = arr.into_iter().map(|x| {
-                                                    if let Some(i) = x.as_i64() { QV::I64(i) }
-                                                    else if let Some(f) = x.as_f64() { QV::F64(f) }
-                                                    else if let Some(b) = x.as_bool() { QV::Bool(b) }
-                                                    else if let Some(s) = x.as_str() { QV::Str(s.to_string()) }
-                                                    else if x.is_null() { QV::Null }
-                                                    else { QV::Str(x.to_string()) }
-                                                }).collect::<Vec<QV>>();
-                                                QF::NotIn(column, vs)
-                                            } else { QF::NotIn(column, vec![to_val(&val)]) }
-                                        } else if value_str.contains(',') {
-                                            let vs = value_str.split(',').map(|s| to_val(s.trim())).collect::<Vec<QV>>();
-                                            QF::NotIn(column, vs)
-                                        } else { QF::NotIn(column, vec![to_val(&val)]) }
+                                        if let Some(vs) = parse_json_array_to_qvs(&value_str) { QF::NotIn(column, vs) }
+                                        else if let Some(vs) = csv_to_qvs(&value_str) { QF::NotIn(column, vs) }
+                                        else { QF::NotIn(column, vec![to_val(&val)]) }
                                     }
                                     "between" => {
-                                        let val_trim = value_str.trim();
-                                        if val_trim.starts_with('[') && val_trim.ends_with(']') {
-                                            if let Ok(arr) = sonic_rs::from_str::<Vec<Value>>(val_trim) {
-                                                if arr.len() == 2 {
-                                                    let to_qv = |v: &Value| {
-                                                        if let Some(i) = v.as_i64() { QV::I64(i) }
-                                                        else if let Some(f) = v.as_f64() { QV::F64(f) }
-                                                        else if let Some(b) = v.as_bool() { QV::Bool(b) }
-                                                        else if let Some(s) = v.as_str() { QV::Str(s.to_string()) }
-                                                        else if v.is_null() { QV::Null }
-                                                        else { QV::Str(v.to_string()) }
-                                                    };
-                                                    QF::Between(column, to_qv(&arr[0]), to_qv(&arr[1]))
-                                                } else { QF::Eq(column, to_val(&val)) }
-                                            } else { QF::Eq(column, to_val(&val)) }
+                                        if let Some(vs) = parse_json_array_to_qvs(&value_str) {
+                                            if vs.len() == 2 { QF::Between(column, vs[0].clone(), vs[1].clone()) } else { QF::Eq(column, to_val(&val)) }
                                         } else if value_str.contains(',') {
-                                            let mut parts = value_str.split(',').map(|s| s.trim().to_string());
-                                            let a = parts.next().unwrap_or_default();
-                                            let b = parts.next().unwrap_or_default();
-                                            QF::Between(column, to_val(&a), to_val(&b))
+                                            let mut parts = value_str.split(',').map(|s| s.trim());
+                                            let a = parts.next().unwrap_or("");
+                                            let b = parts.next().unwrap_or("");
+                                            QF::Between(column, to_val(a), to_val(b))
                                         } else { QF::Eq(column, to_val(&val)) }
                                     }
                                     _ => QF::Eq(column, to_val(&val)),
@@ -442,7 +389,7 @@ pub async fn select(
 
             // where
             if !filters.is_empty() {
-                q = q.r#where(QF::And(filters));
+                q = q.r#where(QF::And(filters.into_vec()));
             }
 
             // order by: support formats

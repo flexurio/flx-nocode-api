@@ -34,7 +34,8 @@ struct UpdateData {
 
 impl UpdateData {
     fn new() -> Self {
-        Self { fields: Vec::new() }
+        // Preallocate a small capacity; typical update affects a handful of columns
+        Self { fields: Vec::with_capacity(8) }
     }
 
     fn add_field(&mut self, key: String, value: AstVal) {
@@ -43,19 +44,18 @@ impl UpdateData {
 
     /// Convert to InsertValue vector for SQL operations
     fn to_insert_values(&self) -> Vec<(String, InsertValue)> {
-        self.fields
-            .iter()
-            .map(|(k, v)| {
-                let param = match v {
-                    AstVal::I64(n) => DbParam::I64(*n),
-                    AstVal::F64(f) => DbParam::F64(*f),
-                    AstVal::Bool(b) => DbParam::Bool(*b),
-                    AstVal::Str(s) => DbParam::Str(s.clone()),
-                    AstVal::Null => DbParam::Null,
-                };
-                (k.clone(), InsertValue::Param(param))
-            })
-            .collect()
+        let mut out = Vec::with_capacity(self.fields.len());
+        for (k, v) in &self.fields {
+            let param = match v {
+                AstVal::I64(n) => DbParam::I64(*n),
+                AstVal::F64(f) => DbParam::F64(*f),
+                AstVal::Bool(b) => DbParam::Bool(*b),
+                AstVal::Str(s) => DbParam::Str(s.clone()),
+                AstVal::Null => DbParam::Null,
+            };
+            out.push((k.clone(), InsertValue::Param(param)));
+        }
+        out
     }
 }
 
@@ -124,7 +124,7 @@ pub async fn update(
 
     // Collect update fields using lightweight AST-based structure
     let mut update_data = UpdateData::new();
-    let mut id_new = "".to_string();
+    let mut id_new = String::new();
     let mut password_override: Option<String> = None;
 
     // loop every column in table_schemas.put.columns
@@ -134,14 +134,14 @@ pub async fn update(
             // check if key from body is equal to column
             if key == column {
                 // convert value to string
-                let mut value_x = format!("{}", value).replace("\"", "").replace("null", "");
+                let mut value_x = format!("{}", value).replace('"', "").replace("null", "");
 
                 // check if value from body is not empty
                 if !value_x.is_empty() {
                     // check jika ada kolom id maka id nya diganti. Sehingga perlu dipakai buat update foreign key
                     if key == "id" {
                         // convert value to string
-                        id_new = value_x.clone();
+                        id_new = value_x.clone(); // id_new still needed later; keep clone
                     }
 
                     // check if col.name is equal with foreign key column
@@ -209,10 +209,10 @@ pub async fn update(
                         } else if let Ok(f) = value_x.parse::<f64>() {
                             update_data.add_field(column.clone(), AstVal::F64(f));
                         } else {
-                            update_data.add_field(column.clone(), AstVal::Str(value_x.clone()));
+                            update_data.add_field(column.clone(), AstVal::Str(value_x));
                         }
                     } else {
-                        update_data.add_field(column.clone(), AstVal::Str(value_x.clone()));
+                        update_data.add_field(column.clone(), AstVal::Str(value_x));
                     }
                 }
             }
@@ -224,7 +224,7 @@ pub async fn update(
     let mut update_fields = update_data.to_insert_values();
     
     // add updated_at/by into update_fields (server-side now expression)
-    update_fields.push(("updated_at".to_string(), InsertValue::Raw(state.query_converter.datetime_now.clone())));
+    update_fields.push(("updated_at".into(), InsertValue::Raw(state.query_converter.datetime_now.clone())));
 
     // get type data updated_by_id from table_schema
     let created_by_type = table_schema
@@ -235,24 +235,26 @@ pub async fn update(
         .unwrap_or("int".to_string());
 
     log_output("TYPE", "updated_by_id", route.as_ref(), created_by_type.clone(), true);
-
+    // Parse claims.id only once (attempt integer first, then float)
+    let claims_id_i64 = claims.id.parse::<i64>().ok();
+    let claims_id_f64 = if claims_id_i64.is_none() { claims.id.parse::<f64>().ok() } else { None };
     if created_by_type.contains("int") {
-        if let Ok(n) = claims.id.parse::<i64>() {
-            update_fields.push(("updated_by_id".to_string(), InsertValue::Param(DbParam::I64(n))));
+        if let Some(n) = claims_id_i64 {
+            update_fields.push(("updated_by_id".into(), InsertValue::Param(DbParam::I64(n))));
         } else {
-            update_fields.push(("updated_by_id".to_string(), InsertValue::Param(DbParam::Str(claims.id.clone()))));
+            update_fields.push(("updated_by_id".into(), InsertValue::Param(DbParam::Str(claims.id.clone()))));
         }
-    } else if created_by_type.contains("float") || 
-        created_by_type.contains("double") || 
-        created_by_type.contains("decimal") || 
-        created_by_type.contains("money") {
-        if let Ok(n) = claims.id.parse::<f64>() {
-            update_fields.push(("updated_by_id".to_string(), InsertValue::Param(DbParam::F64(n))));
+    } else if created_by_type.contains("float")
+        || created_by_type.contains("double")
+        || created_by_type.contains("decimal")
+        || created_by_type.contains("money") {
+        if let Some(n) = claims_id_f64 {
+            update_fields.push(("updated_by_id".into(), InsertValue::Param(DbParam::F64(n))));
         } else {
-            update_fields.push(("updated_by_id".to_string(), InsertValue::Param(DbParam::Str(claims.id.clone()))));
+            update_fields.push(("updated_by_id".into(), InsertValue::Param(DbParam::Str(claims.id.clone()))));
         }
     } else {
-        update_fields.push(("updated_by_id".to_string(), InsertValue::Param(DbParam::Str(claims.id.clone()))));
+        update_fields.push(("updated_by_id".into(), InsertValue::Param(DbParam::Str(claims.id.clone()))));
     }
     
     // legacy set_clause kept only for logging; actual SQL compiled via AST
@@ -390,19 +392,23 @@ pub async fn update(
             .find(|c| c.name == "updated_by_id")
             .map(|c| c.type_data.clone())
             .unwrap_or("int".to_string());
+        // Reuse earlier parsed variants if possible
         if created_by_type.contains("int") {
-            if let Ok(n) = claims.id.parse::<i64>() {
+            if let Some(n) = claims_id_i64 {
                 doc_obj.insert("updated_by_id", json!(n));
+            } else if let Some(nf) = claims_id_f64 { // fallback in case of float-compatible numeric
+                doc_obj.insert("updated_by_id", value_from_f64(nf));
             } else {
                 doc_obj.insert("updated_by_id", json!(claims.id));
             }
         } else if created_by_type.contains("float")
             || created_by_type.contains("double")
             || created_by_type.contains("decimal")
-            || created_by_type.contains("money")
-        {
-            if let Ok(n) = claims.id.parse::<f64>() {
-                doc_obj.insert("updated_by_id", json!(n));
+            || created_by_type.contains("money") {
+            if let Some(nf) = claims_id_f64 {
+                doc_obj.insert("updated_by_id", value_from_f64(nf));
+            } else if let Some(ni) = claims_id_i64 {
+                doc_obj.insert("updated_by_id", json!(ni));
             } else {
                 doc_obj.insert("updated_by_id", json!(claims.id));
             }
@@ -496,7 +502,7 @@ pub async fn update(
         }
         
         // Add timestamps and updated_by
-        patch_obj.insert("updated_at", json!(now_iso));
+    patch_obj.insert("updated_at", json!(now_iso));
         
         // Add updated_by_id with proper type
         if created_by_type.contains("int") {
@@ -522,7 +528,7 @@ pub async fn update(
         let patch_json = Value::from(patch_obj);
         
         // Build filter by id (attempt numeric, fallback to string)
-        let filt_val = if let Ok(n) = id_raw.parse::<i64>() { QV::I64(n) } else { QV::Str(id_raw.clone()) };
+    let filt_val = if let Ok(n) = id_raw.parse::<i64>() { QV::I64(n) } else { QV::Str(id_raw.clone()) };
         let filter = Some(QF::Eq("id".into(), filt_val));
         
         match state.store.update(&table_schema.table, filter, patch_json).await {
