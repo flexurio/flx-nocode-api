@@ -48,6 +48,8 @@ use model::TableSchema;
 
 use crate::auth::ClaimsConverter;
 use crate::model::{ReferenceForeignKey, ReferenceForeignKeyAction};
+use crate::nocode::generate::{execute_generate_table, generate_table};
+use crate::storage::sql_store::SqlStore;
 mod audit;
 mod helpers;
 mod log;
@@ -617,11 +619,45 @@ async fn main() -> std::io::Result<()> {
         store: store_adapter,
     });
 
-    generate_users(app_state.clone()).await;
+    let (is_success, is_createdb, message) = generate_users(app_state.clone()).await;
+    if !is_success {
+        log_output(
+            "ERROR",
+            "INIT ADMIN",
+            "generate_users",
+            format!("Failed to ensure admin user: {}", message),
+            true,
+        );
+        exit(1);
+    }
 
     // Initialize Routes only once, using Lazy
     let _ = &*CONFIG;
     let _ = &*SCHEMAS;
+
+    // loop every config.routes and check if table is exist in database
+    for route in CONFIG.routes.iter() {
+        println!("Checking table design for route: {}", route);
+        let state = web::Data::new(app_state.clone());
+        let schema = match SCHEMAS.0.iter().find(|s| s.table == *route) {
+            Some(s) => s.clone(),
+            None => {
+                eprintln!("No schema found for route '{}'", route);
+                exit(1);
+            }
+        };
+        let ds = SqlStore::new(state.db.clone(), state.db_type.clone());
+        let (sql_create_table, sql_create_index) = generate_table(&ds, &schema);
+        let (is_valid, msg) = execute_generate_table(route.to_string(), &app_state, sql_create_table, sql_create_index).await;
+        if !is_valid {
+            log_output("ERROR", "TABLE DESIGN CHECK", "FAILED", msg, true);
+            exit(1);
+        } else {
+            log_output("INFO", "TABLE DESIGN CHECK", "SUCCESS", route.to_string(), false);
+        }
+
+    }
+
     let _ = &*ISDEBUG;
 
     if CONFIG.routes.is_empty() {

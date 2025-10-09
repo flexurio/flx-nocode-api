@@ -146,6 +146,53 @@ pub async fn create_table(
     }
 }
 
+
+
+pub async fn execute_generate_table(stable: String, state: &AppState, sql_create_table:String, sql_create_index: Vec<String>) -> (bool, String) {
+    // Run DDL statements inside a TxStore transaction for consistency
+    let mut tx = match state.store.begin_tx().await {
+        Ok(t) => t,
+        Err(err) => {
+            return (false, format!("Error starting transaction: {}", err));
+        }
+    };
+
+    let mut err_message = String::new();
+
+    // execute create table
+    if let Err(err) = tx.raw_sql(&sql_create_table, vec![]).await {
+        err_message = format!(
+            "Failed to create table {} with error : {}",
+            stable, err
+        );
+    }
+
+    // execute each create index
+    for sql_idx in sql_create_index.iter() {
+        if let Err(err) = tx.raw_sql(sql_idx, vec![]).await {
+            err_message = format!(
+                "{} \nFailed to create index {} with error : {}",
+                err_message, stable, err
+            );
+            log_output(
+                "QUERY",
+                "GENERATE INDEX",
+                stable.clone().as_str(),
+                sql_idx.clone() + " ~ ERROR : " + &err_message,
+                true,
+            );
+        }
+    }
+
+    if err_message.is_empty() {
+        let _ = tx.commit().await;
+        (true, "success".to_string())
+    } else {
+        let _ = tx.rollback().await;
+        (false, err_message)
+    }
+}
+
 pub fn generate_table(ds: &SqlStore, data: &TableSchema) -> (String, Vec<String>) {
     // Map TableSchema -> DDL AST
     let db_type = ds.dialect();
