@@ -121,7 +121,6 @@ pub async fn execute_sql_formula_with_txstore(
     }
 }
 
-#[allow(dead_code)]
 pub fn concat_column_values(values: Vec<Value>, column_name: &str, separator: &str) -> String {
     let mut result = Vec::new();
 
@@ -143,7 +142,6 @@ pub fn concat_column_values(values: Vec<Value>, column_name: &str, separator: &s
     result.join(separator)
 }
 
-#[allow(dead_code)]
 pub fn sanitize_sql_input(input: String) -> String {
     // More comprehensive SQL injection prevention
     let dangerous_patterns = [
@@ -466,7 +464,6 @@ pub fn build_sql_and_params_from_formula(
 }
 
 /// Legacy replacement used in older code paths. Prefer `build_sql_and_params_from_formula`.
-#[allow(dead_code)]
 pub fn formula_replace(mut string_formula: String, body: &serde_json::Value) -> String {
     // 1) Resolve nested subselects first
     while let Some(cap) = RE_NESTED.captures(&string_formula) {

@@ -659,11 +659,8 @@ async fn main() -> std::io::Result<()> {
         }
         if app_state.db_type != "mongodb" {
             // convert id_user_string to i64
-            let id_user: i64 = match id_user_str.parse() {
-                Ok(v) => v,
-                Err(_) => 1,
-            };
-            generate_role_admin(&app_state, ds, id_user, CONFIG.routes.clone());
+            let id_user: i64 = id_user_str.parse().unwrap_or(1);
+            let _ = generate_role_admin(&app_state, ds, id_user, CONFIG.routes.clone());
         }
     }
 

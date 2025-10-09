@@ -627,9 +627,6 @@ pub async fn select(
                 data: Value::Array(rows),
             };
             
-            // OPTIMIZATION: Automatic cache write-through when caching enabled
-            println!("use_cache: {}, is_cachedb: {}", use_cache, state.is_cachedb);
-
             if use_cache && state.is_cachedb {
                 // check if .env REDIS_HOST is set
                 if let Some(ref k) = cache_key {

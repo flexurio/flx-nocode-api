@@ -221,7 +221,8 @@ pub fn generate_table(ds: &SqlStore, data: &TableSchema) -> (String, Vec<String>
             ty = "datetime".to_string();
         }
 
-        let mut primary_key_inline = false;
+    // Not mutated later; no need for mut
+    let primary_key_inline = false;
         let mut auto_increment = false;
         match db_type {
             "postgres" if pk_single && is_pk_col && c.auto_increment => {
