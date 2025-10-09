@@ -1531,7 +1531,7 @@ dependencies = [
 
 [[package]]
 name = "flx-nocode-api"
-version = "0.1.26"
+version = "0.1.40"
 dependencies = [
  "actix",
  "actix-cors",
