@@ -53,6 +53,7 @@ mod helpers;
 mod log;
 mod rate_limit;
 mod storage; // new optional storage abstraction (not used yet)
+mod middleware;
 #[cfg(feature = "mongodb")]
 use crate::storage::mongodb_store::MongoStore;
 
