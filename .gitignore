@@ -12,3 +12,4 @@ build_apple.sh
 .idea
 __pycache__/locustfile.cpython-313.pyc
 __pycache__/locustfile.cpython-313.pyc
+__pycache__
