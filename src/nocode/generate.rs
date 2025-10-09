@@ -234,9 +234,13 @@ pub fn generate_table(ds: &SqlStore, data: &TableSchema) -> (String, Vec<String>
                 }
             }
             "sqlite" if pk_single && is_pk_col && c.auto_increment => {
+                // For SQLite autoincrement single-column PK we embed
+                // the full "INTEGER PRIMARY KEY AUTOINCREMENT" in the type.
+                // Do NOT also mark primary_key_inline = true because the
+                // compiler would append an extra "PRIMARY KEY" producing
+                // invalid DDL: "INTEGER PRIMARY KEY AUTOINCREMENT PRIMARY KEY".
                 ty = "INTEGER PRIMARY KEY AUTOINCREMENT".into();
-                primary_key_inline = true;
-                any_inline_pk = true;
+                any_inline_pk = true; // signal to skip table-level PK constraint
             }
             "mysql" if pk_single && is_pk_col && c.auto_increment => {
                 auto_increment = true; // compiler will append AUTO_INCREMENT

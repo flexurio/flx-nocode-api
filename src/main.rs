@@ -47,6 +47,7 @@ mod model;
 use model::TableSchema;
 
 use crate::auth::ClaimsConverter;
+use crate::core::generate_role_admin;
 use crate::model::{ReferenceForeignKey, ReferenceForeignKeyAction};
 use crate::nocode::generate::{execute_generate_table, generate_table};
 use crate::storage::sql_store::SqlStore;
@@ -607,6 +608,13 @@ async fn main() -> std::io::Result<()> {
         }
     };
 
+    let mut is_cachedb = false;
+
+    // check if REDIS_HOST is configured in .env
+    if env::var("REDIS_HOST") != Ok("".to_string()) {
+        is_cachedb = true;
+    }
+
     let app_state = web::Data::new(AppState {
         db: db_repo,
         db_type,
@@ -617,45 +625,46 @@ async fn main() -> std::io::Result<()> {
         route_publics: CONFIG.route_publics.clone().to_vec(),
         converter_token: CONFIG.converter_token.clone(),
         store: store_adapter,
+        is_cachedb,
     });
 
-    let (is_success, is_createdb, message) = generate_users(app_state.clone()).await;
-    if !is_success {
-        log_output(
-            "ERROR",
-            "INIT ADMIN",
-            "generate_users",
-            format!("Failed to ensure admin user: {}", message),
-            true,
-        );
-        exit(1);
-    }
+    let (is_createdb, id_user_str) = generate_users(app_state.clone()).await;
 
     // Initialize Routes only once, using Lazy
     let _ = &*CONFIG;
     let _ = &*SCHEMAS;
 
     // loop every config.routes and check if table is exist in database
-    for route in CONFIG.routes.iter() {
-        println!("Checking table design for route: {}", route);
+    if is_createdb {
         let state = web::Data::new(app_state.clone());
-        let schema = match SCHEMAS.0.iter().find(|s| s.table == *route) {
-            Some(s) => s.clone(),
-            None => {
-                eprintln!("No schema found for route '{}'", route);
-                exit(1);
-            }
-        };
         let ds = SqlStore::new(state.db.clone(), state.db_type.clone());
-        let (sql_create_table, sql_create_index) = generate_table(&ds, &schema);
-        let (is_valid, msg) = execute_generate_table(route.to_string(), &app_state, sql_create_table, sql_create_index).await;
-        if !is_valid {
-            log_output("ERROR", "TABLE DESIGN CHECK", "FAILED", msg, true);
-            exit(1);
-        } else {
-            log_output("INFO", "TABLE DESIGN CHECK", "SUCCESS", route.to_string(), false);
-        }
+        for route in CONFIG.routes.iter() {
+            println!("Checking table design for route: {}", route);
+            let schema = match SCHEMAS.0.iter().find(|s| s.table == *route) {
+                Some(s) => s.clone(),
+                None => {
+                    eprintln!("No schema found for route '{}'", route);
+                    exit(1);
+                }
+            };
+            let (sql_create_table, sql_create_index) = generate_table(&ds, &schema);
+            let (is_valid, msg) = execute_generate_table(route.to_string(), &app_state, sql_create_table, sql_create_index).await;
+            if !is_valid {
+                log_output("ERROR", "TABLE DESIGN CHECK", "FAILED", msg, true);
+                exit(1);
+            } else {
+                log_output("INFO", "TABLE DESIGN CHECK", "SUCCESS", route.to_string(), false);
+            }
 
+        }
+        if app_state.db_type != "mongodb" {
+            // convert id_user_string to i64
+            let id_user: i64 = match id_user_str.parse() {
+                Ok(v) => v,
+                Err(_) => 1,
+            };
+            generate_role_admin(&app_state, ds, id_user, CONFIG.routes.clone());
+        }
     }
 
     let _ = &*ISDEBUG;

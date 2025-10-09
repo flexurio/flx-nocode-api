@@ -327,8 +327,7 @@ pub async fn register(state: Data<AppState>, multipart: Multipart) -> impl Respo
 }
 
 // NCO-POST
-pub async fn generate_users(state: Data<AppState>) -> (bool, bool, &'static str) {
-    let mut success = false;
+pub async fn generate_users(state: Data<AppState>) -> (bool, String) {
     let mut iscreatedb = false;
 
     // MongoDB: no DDL. Seed collections and default data using DataStore.
@@ -373,10 +372,8 @@ pub async fn generate_users(state: Data<AppState>) -> (bool, bool, &'static str)
                 "updated_at": now_iso,
                 "enabled": true
             });
-            if *crate::ISDEBUG { log_output("INSERT", "POST", "generate/mongodb/insert-flx_users-admin", user_doc.to_string(), true); }
             match state.store.insert("flx_users", user_doc).await {
                 Ok(resp) => {
-                    success = true;
                     // Expect { inserted_id: ... }
                     if let Some(v) = resp.get("inserted_id") {
                         if let Some(s) = v.as_str() { id_user_str = s.to_string(); }
@@ -388,16 +385,15 @@ pub async fn generate_users(state: Data<AppState>) -> (bool, bool, &'static str)
                     }
                 }
                 Err(err) => {
-                    success = false;
                     // Do not terminate app; log and continue (duplicate key or other)
                     log_output(
                         "ERROR",
                         "POST",
-                        "generate/mongodb/insert-flx_users-admin",
+                        "insert-flx_users-admin",
                         format!("Failed to insert admin user (continuing): {}", err),
                         true,
                     );
-                    return (success, iscreatedb, "Failed to insert admin user");
+                    return (iscreatedb, id_user_str);
                 }
             }
 
@@ -418,7 +414,7 @@ pub async fn generate_users(state: Data<AppState>) -> (bool, bool, &'static str)
             let _ = state.store.insert("flx_roles", role1).await;
             let _ = state.store.insert("flx_roles", role2).await;
         }
-        (success, iscreatedb, "")
+        (iscreatedb, id_user_str)
     } else {
 
         // Create tables via DDL AST (vendor-aware)
@@ -654,25 +650,36 @@ pub async fn generate_users(state: Data<AppState>) -> (bool, bool, &'static str)
                     true,
                 );
             }
-            success = true;
 
             // Insert default roles (two rows) with AST bulk insert
-            use crate::storage::sql_store::InsertValue as IV;
-            let cols = vec!["id_users".into(), "endpoint".into(), "role".into(), "created_at".into()];
-            let rows = vec![
-                vec![IV::Param(crate::database::state::DbParam::I64(id_user)), IV::Param(crate::database::state::DbParam::Str("flx_users".into())), IV::Param(crate::database::state::DbParam::I64(127)), IV::Raw(now_fn.clone())],
-                vec![IV::Param(crate::database::state::DbParam::I64(id_user)), IV::Param(crate::database::state::DbParam::Str("flx_roles".into())), IV::Param(crate::database::state::DbParam::I64(127)), IV::Raw(now_fn.clone())],
-            ];
-            if let Ok((sql_roles_ins, params_roles_ins)) = ds.preview_insert_bulk("flx_roles", &cols, &rows) {
-                let built_roles = crate::database::state::rehydrate_placeholders(&sql_roles_ins, &state.db_type);
-                let _ = state.db.query_with_params(&built_roles, params_roles_ins).await;
-            }
+            generate_role_admin(&state, ds, id_user, vec!["flx_users".into(), "flx_roles".into()]).ok();
         }
 
-        (success, iscreatedb, "")
+        (iscreatedb, "1".into())
     }
 }
 
+
+// create function generate flx_roles
+pub fn generate_role_admin(state: &AppState,ds: SqlStore, id_user: i64, routes: Vec<String>) -> Result<(), Box<dyn Error + Send + Sync>> {
+    let now_fn = state.query_converter.datetime_now.clone();
+    if state.db_type != "mongodb" {
+            // Insert default roles (two rows) with AST bulk insert
+            use crate::storage::sql_store::InsertValue as IV;
+            let cols = vec!["id_users".into(), "endpoint".into(), "role".into(), "created_at".into()];
+            // loop every route
+            for route in routes.iter() {
+                let rows = vec![
+                    vec![IV::Param(crate::database::state::DbParam::I64(id_user)), IV::Param(crate::database::state::DbParam::Str(route.into())), IV::Param(crate::database::state::DbParam::I64(127)), IV::Raw(now_fn.clone())],
+                ];
+                if let Ok((sql_roles_ins, params_roles_ins)) = ds.preview_insert_bulk("flx_roles", &cols, &rows) {
+                    let built_roles = crate::database::state::rehydrate_placeholders(&sql_roles_ins, &state.db_type);
+                    let _ = state.db.query_with_params(&built_roles, params_roles_ins);
+                }
+            }        
+    }
+    Ok(())
+}
 
 
 #[derive(serde::Deserialize)]

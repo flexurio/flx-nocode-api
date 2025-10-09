@@ -115,59 +115,61 @@ pub async fn select(
     };
     let mut params_map = params_map_awal.clone();
     let mut isredis = false;
-
-    // check if in parameters contain redis 
-    if params_map_awal.contains_key("redis"){
-        if params_map_awal.get("redis").unwrap() == &Value::Bool(true) || params_map_awal.get("redis").unwrap() == &Value::String("true".to_string()) {
-            isredis = true;
-        }
-        params_map.remove("redis");
-
-    }
-    
-    // OPTIMIZATION: Auto-enable caching when TTL configured (not just opt-in via ?redis=true)
-    let use_cache = isredis || table_schema.redis.ttl > 0;
-    
+    let mut use_cache = false;
     // Build cache key if caching enabled
     let mut cache_key: Option<String> = None;
-    if use_cache {
-        let prefix = build_key_prefix(&cache_tenant, &route);
-        // include stable request parameters in the key (sorted by name)
-        let mut keys: Vec<_> = params_map
-            .iter()
-            .map(|(k, v)| format!("{}={}", k, v))
-            .collect();
-        keys.sort();
-        let key_suffix = keys.join("&");
-        let full_key = if key_suffix.is_empty() { prefix } else { format!("{}:{}", prefix, key_suffix) };
-        cache_key = Some(full_key);
-    }
+    if state.is_cachedb {
 
-    // OPTIMIZATION: Automatic cache read-through (cache-aside pattern)
-    // Try cache first if enabled (either by TTL config or explicit ?redis=true)
-    if use_cache {
-        if let Some(ref k) = cache_key {
-            if let Ok(Some(cached)) = redis_get_json::<WebResponse>(k).await {
-                log_output(
-                    "REDIS",
-                    "CACHE HIT",
-                    &route,
-                    format!("Key: {}, Records: {}", k, cached.total_data),
-                    true,
-                );
-                return HttpResponse::Ok().json(cached);
-            } else {
-                log_output(
-                    "REDIS",
-                    "CACHE MISS",
-                    &route,
-                    format!("Key: {}, will query DB", k),
-                    true,
-                );
+        // check if in parameters contain redis 
+        if params_map_awal.contains_key("redis"){
+            if params_map_awal.get("redis").unwrap() == &Value::Bool(true) || params_map_awal.get("redis").unwrap() == &Value::String("true".to_string()) {
+                isredis = true;
+            }
+            params_map.remove("redis");
+
+        }
+        
+        // OPTIMIZATION: Auto-enable caching when TTL configured (not just opt-in via ?redis=true)
+        use_cache = (isredis || table_schema.redis.ttl > 0) && state.is_cachedb;
+        
+        if use_cache {
+            let prefix = build_key_prefix(&cache_tenant, &route);
+            // include stable request parameters in the key (sorted by name)
+            let mut keys: Vec<_> = params_map
+                .iter()
+                .map(|(k, v)| format!("{}={}", k, v))
+                .collect();
+            keys.sort();
+            let key_suffix = keys.join("&");
+            let full_key = if key_suffix.is_empty() { prefix } else { format!("{}:{}", prefix, key_suffix) };
+            cache_key = Some(full_key);
+        }
+
+        // OPTIMIZATION: Automatic cache read-through (cache-aside pattern)
+        // Try cache first if enabled (either by TTL config or explicit ?redis=true)
+        if use_cache {
+            if let Some(ref k) = cache_key {
+                if let Ok(Some(cached)) = redis_get_json::<WebResponse>(k).await {
+                    log_output(
+                        "REDIS",
+                        "CACHE HIT",
+                        &route,
+                        format!("Key: {}, Records: {}", k, cached.total_data),
+                        true,
+                    );
+                    return HttpResponse::Ok().json(cached);
+                } else {
+                    log_output(
+                        "REDIS",
+                        "CACHE MISS",
+                        &route,
+                        format!("Key: {}, will query DB", k),
+                        true,
+                    );
+                }
             }
         }
     }
-
     // AST path (now supports MSSQL, JOINs, GROUP BY, HAVING, and paramjoin)
     {
             // Build AST query
@@ -626,7 +628,10 @@ pub async fn select(
             };
             
             // OPTIMIZATION: Automatic cache write-through when caching enabled
-            if use_cache {
+            println!("use_cache: {}, is_cachedb: {}", use_cache, state.is_cachedb);
+
+            if use_cache && state.is_cachedb {
+                // check if .env REDIS_HOST is set
                 if let Some(ref k) = cache_key {
                     if table_schema.redis.ttl > 0 {
                         let ttl = table_schema.redis.ttl as usize;
