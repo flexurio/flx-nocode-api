@@ -81,9 +81,9 @@ pub static RL_WINDOW_LOGIN_FAIL: Lazy<RateLimiter> = Lazy::new(|| RateLimiter::n
 // ----------------------------------------------------------------------------
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
-pub enum RateOp { Get, Post, Put, Patch, Delete, Trace, Import, Login, LoginFailUser, LoginFailIp }
+pub enum RateOp { Get, Post, Put, Patch, Delete, Trace, Import }
 
-impl RateOp { #[inline] fn as_str(self) -> &'static str { match self { RateOp::Get=>"get", RateOp::Post=>"post", RateOp::Put=>"put", RateOp::Patch=>"patch", RateOp::Delete=>"delete", RateOp::Trace=>"trace", RateOp::Import=>"import", RateOp::Login=>"login", RateOp::LoginFailUser=>"loginfail:user", RateOp::LoginFailIp=>"loginfail:ip" } } }
+impl RateOp { #[inline] fn as_str(self) -> &'static str { match self { RateOp::Get=>"get", RateOp::Post=>"post", RateOp::Put=>"put", RateOp::Patch=>"patch", RateOp::Delete=>"delete", RateOp::Trace=>"trace", RateOp::Import=>"import"} } }
 
 static PREFIX_CACHE: Lazy<Mutex<AHashMap<String, Arc<String>>>> = Lazy::new(|| Mutex::new(AHashMap::with_capacity(256)));
 
@@ -101,7 +101,7 @@ pub fn prefix(op: RateOp, route: &str) -> Arc<String> {
     let mut base = String::new();
     base.push_str(op.as_str());
     base.push(':');
-    if !route.is_empty() && !matches!(op, RateOp::Login | RateOp::LoginFailUser | RateOp::LoginFailIp) {
+    if !route.is_empty() {
         base.push_str(route);
         base.push(':');
     }
