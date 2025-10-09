@@ -55,7 +55,7 @@ infer = "0.15"
 csv = "1.3"
 calamine = { version = "0.30", default-features = false }
 rust_xlsxwriter = "0.79"
-redis = { version = "0.25", features = ["aio", "tokio-comp", "connection-manager"] }
+redis = { version = "0.32", features = ["aio", "tokio-comp", "connection-manager"] }
 urlencoding = "2.1"
 mongodb = { version = "3.3", optional = true }
 # Performance optimizations
