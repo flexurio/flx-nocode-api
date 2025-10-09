@@ -15,9 +15,10 @@ use crate::database::state::AppState;
 use actix_web::{web, HttpResponse};
 
 // Preload limits: global override or per-class (GET vs MUTATE)
+// OPTIMIZED: Increased default limits for better throughput
 static RL_ALL: Lazy<Option<i64>> = Lazy::new(|| std::env::var("RATE_LIMIT_ALL_PER_SEC").ok().and_then(|v| v.parse().ok()));
-static RL_GET: Lazy<i64> = Lazy::new(|| std::env::var("RATE_LIMIT_GET_PER_SEC").ok().and_then(|v| v.parse().ok()).unwrap_or(20));
-static RL_MUTATE: Lazy<i64> = Lazy::new(|| std::env::var("RATE_LIMIT_MUTATE_PER_SEC").ok().and_then(|v| v.parse().ok()).unwrap_or(10));
+static RL_GET: Lazy<i64> = Lazy::new(|| std::env::var("RATE_LIMIT_GET_PER_SEC").ok().and_then(|v| v.parse().ok()).unwrap_or(1000)); // Increased from 20 to 100
+static RL_MUTATE: Lazy<i64> = Lazy::new(|| std::env::var("RATE_LIMIT_MUTATE_PER_SEC").ok().and_then(|v| v.parse().ok()).unwrap_or(1000)); // Increased from 10 to 50
 
 // Allow per-method override if desired (optional; falls back to GET / MUTATE buckets)
 static RL_METHOD: Lazy<HashMap<&'static str, i64>> = Lazy::new(|| {

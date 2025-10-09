@@ -63,6 +63,7 @@ parking_lot = "0.12"
 ahash = "0.8"
 smallvec = "1.11"
 mimalloc = { version = "0.1" }
+num_cpus = "1.16"
 
 [features]
 default = ["mysql", "postgres", "sqlite", "mssql", "mongodb", "async-log"]

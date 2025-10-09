@@ -328,11 +328,15 @@ async fn main() -> std::io::Result<()> {
     }
 
     let db_type = env::var("DB_TYPE").unwrap_or_else(|_| "mysql".to_string());
-    // Pool configuration via env - optimized defaults for better resource management
+    // Pool configuration via env - optimized defaults for high RPS performance
     let max_pool: u32 = env::var("MAX_POOL")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(10); // Reduced from 100 to 10 for better memory usage
+        .unwrap_or_else(|| {
+            // Auto-scale based on CPU cores for better concurrency
+            let cores = num_cpus::get() as u32;
+            std::cmp::max(20, cores * 4) // Minimum 20, or 4x CPU cores
+        });
     let acquire_secs: u64 = env::var("CONNECT_TIMEOUT")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -475,6 +479,14 @@ async fn main() -> std::io::Result<()> {
                     eprintln!("Failed to connect to SQLite: {}", e);
                     std::io::Error::new(std::io::ErrorKind::ConnectionRefused, e)
                 })?;
+
+            // OPTIMIZATION: Apply SQLite performance PRAGMAs for high RPS
+            let _ = sqlx::query("PRAGMA journal_mode = WAL").execute(&pool).await;
+            let _ = sqlx::query("PRAGMA synchronous = NORMAL").execute(&pool).await;
+            let _ = sqlx::query("PRAGMA cache_size = -64000").execute(&pool).await; // 64MB cache
+            let _ = sqlx::query("PRAGMA temp_store = MEMORY").execute(&pool).await;
+            let _ = sqlx::query("PRAGMA mmap_size = 268435456").execute(&pool).await; // 256MB mmap
+            let _ = sqlx::query("PRAGMA busy_timeout = 5000").execute(&pool).await; // 5s timeout
 
             Arc::new(SqliteRepo { pool })
             }
@@ -1114,7 +1126,11 @@ async fn main() -> std::io::Result<()> {
         env::var("ACTIX_WORKERS")
             .ok()
             .and_then(|s| s.parse().ok())
-            .unwrap_or(1),
+            .unwrap_or_else(|| {
+                // Auto-detect CPU cores and use 75% for optimal performance
+                let cores = num_cpus::get();
+                std::cmp::max(4, (cores * 3) / 4)
+            }),
     )
     .max_connections(
         env::var("HTTP_MAX_CONNECTIONS")
