@@ -10,6 +10,25 @@ use rand::Rng;
 use reqwest::Client;
 use sonic_rs::{json, Value, JsonValueTrait, JsonContainerTrait};
 use zip::ZipArchive;
+use std::sync::OnceLock;
+use std::time::Duration;
+
+// Global HTTP client with connection pooling
+static HTTP_CLIENT: OnceLock<Client> = OnceLock::new();
+
+fn get_http_client() -> &'static Client {
+    HTTP_CLIENT.get_or_init(|| {
+        Client::builder()
+            .pool_max_idle_per_host(10)
+            .pool_idle_timeout(Duration::from_secs(90))
+            .timeout(Duration::from_secs(30))
+            .tcp_keepalive(Duration::from_secs(60))
+            .http2_keep_alive_interval(Duration::from_secs(30))
+            .http2_keep_alive_timeout(Duration::from_secs(20))
+            .build()
+            .expect("Failed to create HTTP client")
+    })
+}
 
 use crate::rate_limit::{RL_WINDOW_LOGIN, RL_WINDOW_LOGIN_FAIL};
 use crate::{
@@ -663,7 +682,7 @@ struct Release {
 async fn get_latest_release() -> Result<String, Box<dyn Error + Send + Sync>> {
     let url = "https://api.github.com/repos/flexurio/flx-nocode-api/releases/latest";
 
-    let client = Client::new();
+    let client = get_http_client();
     let resp = client
         .get(url)
         .header("User-Agent", "flexurio-client") // GitHub butuh user-agent
@@ -678,7 +697,7 @@ async fn get_latest_release() -> Result<String, Box<dyn Error + Send + Sync>> {
 
 /// Download file zip dari URL dan simpan ke file lokal
 async fn download_file(url: String, output: &str) -> Result<(), Box<dyn Error + Send + Sync>> {
-    let client = Client::new();
+    let client = get_http_client();
     let mut resp = client.get(url).send().await?.error_for_status()?;
     let mut out = File::create(output)?;
     while let Some(chunk) = resp.chunk().await? {

@@ -25,6 +25,7 @@ pub fn sqliterows_to_json(rows: Vec<SqliteRow>) -> Vec<Value> {
     for row in rows {
         let columns_count = row.columns().len();
         let mut obj = sonic_rs::Object::with_capacity(columns_count);
+        obj.reserve(columns_count);
 
         for column in row.columns() {
             let name = column.name();

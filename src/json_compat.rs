@@ -8,7 +8,14 @@ pub use sonic_rs::{Value, JsonValueTrait, JsonContainerTrait};
 // Retained minimal helpers actually referenced in codebase
 pub fn value_from_string(s: String) -> Value { Value::from(s.as_str()) }
 
-pub fn value_from_f64(f: f64) -> Value { Value::new_f64(f).unwrap_or_else(|| Value::from(0)) }
+#[inline]
+pub fn value_from_f64(f: f64) -> Value { 
+    if f.is_finite() {
+        Value::new_f64(f).unwrap_or_else(|| Value::from(0))
+    } else {
+        Value::from(0)
+    }
+}
 
 // Provide from_string_ref for ergonomic conversions
 #[allow(dead_code)]

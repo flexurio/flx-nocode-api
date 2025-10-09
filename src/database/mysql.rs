@@ -24,6 +24,7 @@ pub fn mysqlrows_to_json(rows: Vec<MySqlRow>) -> Vec<Value> {
     for row in rows {
         let columns_count = row.columns().len();
         let mut obj = sonic_rs::Object::with_capacity(columns_count); // Pre-allocate columns
+        obj.reserve(columns_count); // Ensure capacity is reserved
 
         for column in row.columns() {
             let name = column.name();
@@ -94,7 +95,7 @@ pub fn mysqlrows_to_json(rows: Vec<MySqlRow>) -> Vec<Value> {
             } else if type_info_debug.contains("DATETIME") {
                 // Handle DATETIME regardless of BINARY flag - put this BEFORE general BINARY check
                 match row.try_get::<Option<chrono::NaiveDateTime>, _>(name) {
-                    Ok(Some(dt)) => Value::from(dt.to_string().as_str()),
+                    Ok(Some(dt)) => value_from_string(dt.to_string()),
                     Ok(None) => sonic_rs::Value::default(),
                     Err(e) => {
                         eprintln!("DATETIME Failed to get {} as Option<chrono::NaiveDateTime>: {:?}, {} \n", name, e, type_info_debug);
@@ -106,7 +107,7 @@ pub fn mysqlrows_to_json(rows: Vec<MySqlRow>) -> Vec<Value> {
                     Ok(Some(dt)) => value_from_string(dt.to_rfc3339()),
                     Ok(None) => sonic_rs::Value::default(),
                     Err(_) => match row.try_get::<Option<chrono::NaiveDateTime>, _>(name) {
-                        Ok(Some(dt)) => Value::from(dt.to_string().as_str()),
+                        Ok(Some(dt)) => value_from_string(dt.to_string()),
                         Ok(None) => sonic_rs::Value::default(),
                         Err(e) => {
                             eprintln!(
@@ -119,7 +120,7 @@ pub fn mysqlrows_to_json(rows: Vec<MySqlRow>) -> Vec<Value> {
                 }
             } else if type_info_debug.contains("TIME") {
                 match row.try_get::<Option<chrono::NaiveTime>, _>(name) {
-                    Ok(Some(t)) => Value::from(t.to_string().as_str()),
+                    Ok(Some(t)) => value_from_string(t.to_string()),
                     Ok(None) => sonic_rs::Value::default(),
                     Err(e) => {
                         eprintln!(
@@ -207,8 +208,7 @@ pub fn mysqlrows_to_json(rows: Vec<MySqlRow>) -> Vec<Value> {
         json_array.push(Value::from(obj));
     }
 
-    // Shrink to fit to reclaim unused memory
-    json_array.shrink_to_fit();
+    json_array.shrink_to_fit(); // Reclaim unused memory from array
     json_array
 }
 

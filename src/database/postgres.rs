@@ -24,6 +24,7 @@ pub fn pgrows_to_json(rows: Vec<PgRow>) -> Vec<Value> {
     for row in rows {
         let columns_count = row.columns().len();
         let mut obj = sonic_rs::Object::with_capacity(columns_count);
+        obj.reserve(columns_count);
 
         for column in row.columns() {
             let name = column.name();
@@ -97,21 +98,21 @@ pub fn pgrows_to_json(rows: Vec<PgRow>) -> Vec<Value> {
             {
                 row.try_get::<Option<chrono::NaiveDateTime>, _>(name)
                     .map(|opt| {
-                        opt.map(|dt| Value::from(dt.to_string().as_str()))
+                        opt.map(|dt| value_from_string(dt.to_string()))
                             .unwrap_or_default()
                     })
                     .unwrap_or(sonic_rs::Value::default())
             } else if type_info_debug.contains("DATE") {
                 row.try_get::<Option<chrono::NaiveDate>, _>(name)
                     .map(|opt| {
-                        opt.map(|d| Value::from(d.to_string().as_str()))
+                        opt.map(|d| value_from_string(d.to_string()))
                             .unwrap_or_default()
                     })
                     .unwrap_or(sonic_rs::Value::default())
             } else if type_info_debug.contains("TIME") {
                 row.try_get::<Option<chrono::NaiveTime>, _>(name)
                     .map(|opt| {
-                        opt.map(|t| Value::from(t.to_string().as_str()))
+                        opt.map(|t| value_from_string(t.to_string()))
                             .unwrap_or_default()
                     })
                     .unwrap_or(sonic_rs::Value::default())
