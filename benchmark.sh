@@ -49,11 +49,16 @@ generate_random_name() {
 run_get_requests() {
     local duration=$1
     local concurrent=$2
+    local worker_id=$3
     local count=0
     local success=0
     local failed=0
     local start_time=$(date +%s)
     local end_time=$((start_time + duration))
+    local temp_file="/tmp/benchmark_get_tmp_${worker_id}_$$"
+    
+    # Clean up any existing temp file
+    rm -f "$temp_file"
     
     while [ $(date +%s) -lt $end_time ]; do
         # Launch concurrent requests
@@ -62,11 +67,15 @@ run_get_requests() {
                 response=$(curl -s -o /dev/null -w "%{http_code}" -X GET "$GET_ENDPOINT" \
                     --header "Authorization: Bearer $BEARER_TOKEN" 2>/dev/null)
                 
-                if [ "$response" = "200" ]; then
-                    echo "SUCCESS" >> /tmp/benchmark_get_tmp_$$
-                else
-                    echo "FAILED" >> /tmp/benchmark_get_tmp_$$
-                fi
+                # Use file locking for atomic writes
+                (
+                    flock -x 200
+                    if [ "$response" = "200" ]; then
+                        echo "SUCCESS" >> "$temp_file"
+                    else
+                        echo "FAILED:$response" >> "$temp_file"
+                    fi
+                ) 200>"$temp_file.lock"
             ) &
         done
         
@@ -77,26 +86,35 @@ run_get_requests() {
         sleep 0.05
     done
     
-    # Count results
-    if [ -f /tmp/benchmark_get_tmp_$$ ]; then
-        count=$(wc -l < /tmp/benchmark_get_tmp_$$)
-        success=$(grep -c "SUCCESS" /tmp/benchmark_get_tmp_$$ 2>/dev/null || echo 0)
-        failed=$(grep -c "FAILED" /tmp/benchmark_get_tmp_$$ 2>/dev/null || echo 0)
-        rm -f /tmp/benchmark_get_tmp_$$
+    # Wait for all file writes to complete
+    sleep 0.5
+    
+    # Count results with proper sync
+    if [ -f "$temp_file" ]; then
+        sync  # Force flush to disk
+        count=$(wc -l < "$temp_file" 2>/dev/null || echo 0)
+        success=$(grep -c "^SUCCESS$" "$temp_file" 2>/dev/null || echo 0)
+        failed=$(grep -c "^FAILED:" "$temp_file" 2>/dev/null || echo 0)
+        rm -f "$temp_file" "$temp_file.lock"
     fi
     
-    echo "GET,$count,$success,$failed" > /tmp/benchmark_get_$$
+    echo "GET,$count,$success,$failed" > "/tmp/benchmark_get_${worker_id}_$$"
 }
 
 # Function to run POST requests with concurrent users
 run_post_requests() {
     local duration=$1
     local concurrent=$2
+    local worker_id=$3
     local count=0
     local success=0
     local failed=0
     local start_time=$(date +%s)
     local end_time=$((start_time + duration))
+    local temp_file="/tmp/benchmark_post_tmp_${worker_id}_$$"
+    
+    # Clean up any existing temp file
+    rm -f "$temp_file"
     
     while [ $(date +%s) -lt $end_time ]; do
         # Launch concurrent requests
@@ -110,11 +128,15 @@ run_post_requests() {
                     --form "name=$random_name" \
                     --form "bank_type_id=BMG/2025/10/001" 2>/dev/null)
                 
-                if [ "$response" = "200" ] || [ "$response" = "201" ]; then
-                    echo "SUCCESS" >> /tmp/benchmark_post_tmp_$$
-                else
-                    echo "FAILED" >> /tmp/benchmark_post_tmp_$$
-                fi
+                # Use file locking for atomic writes
+                (
+                    flock -x 200
+                    if [ "$response" = "200" ] || [ "$response" = "201" ]; then
+                        echo "SUCCESS" >> "$temp_file"
+                    else
+                        echo "FAILED:$response" >> "$temp_file"
+                    fi
+                ) 200>"$temp_file.lock"
             ) &
         done
         
@@ -125,15 +147,19 @@ run_post_requests() {
         sleep 0.1
     done
     
-    # Count results
-    if [ -f /tmp/benchmark_post_tmp_$$ ]; then
-        count=$(wc -l < /tmp/benchmark_post_tmp_$$)
-        success=$(grep -c "SUCCESS" /tmp/benchmark_post_tmp_$$ 2>/dev/null || echo 0)
-        failed=$(grep -c "FAILED" /tmp/benchmark_post_tmp_$$ 2>/dev/null || echo 0)
-        rm -f /tmp/benchmark_post_tmp_$$
+    # Wait for all file writes to complete
+    sleep 0.5
+    
+    # Count results with proper sync
+    if [ -f "$temp_file" ]; then
+        sync  # Force flush to disk
+        count=$(wc -l < "$temp_file" 2>/dev/null || echo 0)
+        success=$(grep -c "^SUCCESS$" "$temp_file" 2>/dev/null || echo 0)
+        failed=$(grep -c "^FAILED:" "$temp_file" 2>/dev/null || echo 0)
+        rm -f "$temp_file" "$temp_file.lock"
     fi
     
-    echo "POST,$count,$success,$failed" > /tmp/benchmark_post_$$
+    echo "POST,$count,$success,$failed" > "/tmp/benchmark_post_${worker_id}_$$"
 }
 
 # Get memory before test
@@ -150,12 +176,12 @@ echo ""
 # Start both GET and POST workers in parallel
 echo "🔄 Starting $GET_WORKERS GET workers with $CONCURRENT_USERS concurrent users each..."
 for ((i=1; i<=GET_WORKERS; i++)); do
-    run_get_requests $DURATION $CONCURRENT_USERS &
+    run_get_requests $DURATION $CONCURRENT_USERS $i &
 done
 
 echo "📝 Starting $POST_WORKERS POST workers with $CONCURRENT_USERS concurrent users each..."
 for ((i=1; i<=POST_WORKERS; i++)); do
-    run_post_requests $DURATION $CONCURRENT_USERS &
+    run_post_requests $DURATION $CONCURRENT_USERS $i &
 done
 
 echo ""
@@ -207,14 +233,49 @@ fi
 TOTAL_REQUESTS=$((GET_TOTAL + POST_TOTAL))
 TOTAL_SUCCESS=$((GET_SUCCESS + POST_SUCCESS))
 TOTAL_FAILED=$((GET_FAILED + POST_FAILED))
-GET_RPS=$(echo "scale=2; $GET_TOTAL/$DURATION" | bc)
-POST_RPS=$(echo "scale=2; $POST_TOTAL/$DURATION" | bc)
-TOTAL_RPS=$(echo "scale=2; $TOTAL_REQUESTS/$DURATION" | bc)
-SUCCESS_RATE=$(echo "scale=2; $TOTAL_SUCCESS*100/$TOTAL_REQUESTS" | bc)
+
+# Safe division with default values
+if [ "$GET_TOTAL" -gt 0 ]; then
+    GET_RPS=$(echo "scale=2; $GET_TOTAL/$DURATION" | bc)
+else
+    GET_RPS="0"
+fi
+
+if [ "$POST_TOTAL" -gt 0 ]; then
+    POST_RPS=$(echo "scale=2; $POST_TOTAL/$DURATION" | bc)
+else
+    POST_RPS="0"
+fi
+
+if [ "$TOTAL_REQUESTS" -gt 0 ]; then
+    TOTAL_RPS=$(echo "scale=2; $TOTAL_REQUESTS/$DURATION" | bc)
+    SUCCESS_RATE=$(echo "scale=2; $TOTAL_SUCCESS*100/$TOTAL_REQUESTS" | bc)
+else
+    TOTAL_RPS="0"
+    SUCCESS_RATE="0"
+fi
 
 # Get memory after test
 MEMORY_AFTER=$(ps aux | grep "flx-nocode" | grep -v grep | awk '{print $6}')
+
+# Safe memory calculation with defaults
+if [ -z "$MEMORY_AFTER" ]; then
+    MEMORY_AFTER=0
+fi
+if [ -z "$MEMORY_BEFORE" ]; then
+    MEMORY_BEFORE=0
+fi
 MEMORY_GROWTH=$((MEMORY_AFTER - MEMORY_BEFORE))
+
+# Debug info
+echo "🔍 Debug Info:"
+echo "   GET: Total=$GET_TOTAL, Success=$GET_SUCCESS, Failed=$GET_FAILED"
+echo "   POST: Total=$POST_TOTAL, Success=$POST_SUCCESS, Failed=$POST_FAILED"
+echo "   Verification: Success+Failed=$(($TOTAL_SUCCESS+$TOTAL_FAILED)), Total=$TOTAL_REQUESTS"
+if [ $(($TOTAL_SUCCESS + $TOTAL_FAILED)) -ne $TOTAL_REQUESTS ]; then
+    echo "   ⚠️  WARNING: Count mismatch! $(($TOTAL_REQUESTS - $TOTAL_SUCCESS - $TOTAL_FAILED)) requests unaccounted"
+fi
+echo ""
 
 # Display results
 echo "✅ Benchmark Complete!"
@@ -248,28 +309,40 @@ echo ""
 
 # Performance assessment
 echo "🎯 Performance Assessment:"
-if [ $(echo "$TOTAL_RPS > 400" | bc) -eq 1 ]; then
+
+# Safe RPS comparison
+RPS_CHECK=$(echo "$TOTAL_RPS > 400" | bc 2>/dev/null)
+if [ "$RPS_CHECK" = "1" ]; then
     echo "   ✅ RPS: EXCELLENT ($TOTAL_RPS > 400)"
-elif [ $(echo "$TOTAL_RPS > 200" | bc) -eq 1 ]; then
-    echo "   ⚠️  RPS: GOOD ($TOTAL_RPS)"
 else
-    echo "   ❌ RPS: NEEDS IMPROVEMENT ($TOTAL_RPS < 200)"
+    RPS_CHECK=$(echo "$TOTAL_RPS > 200" | bc 2>/dev/null)
+    if [ "$RPS_CHECK" = "1" ]; then
+        echo "   ⚠️  RPS: GOOD ($TOTAL_RPS)"
+    else
+        echo "   ❌ RPS: NEEDS IMPROVEMENT ($TOTAL_RPS < 200)"
+    fi
 fi
 
-if [ $(echo "$MEMORY_GROWTH < 100000" | bc) -eq 1 ]; then
+# Safe memory comparison
+if [ "$MEMORY_GROWTH" -lt 100000 ]; then
     echo "   ✅ Memory: STABLE (growth < 100MB)"
-elif [ $(echo "$MEMORY_GROWTH < 500000" | bc) -eq 1 ]; then
+elif [ "$MEMORY_GROWTH" -lt 500000 ]; then
     echo "   ⚠️  Memory: MODERATE (growth < 500MB)"
 else
     echo "   ❌ Memory: GROWING (growth > 500MB)"
 fi
 
-if [ $(echo "$SUCCESS_RATE > 99" | bc) -eq 1 ]; then
+# Safe success rate comparison
+RATE_CHECK=$(echo "$SUCCESS_RATE > 99" | bc 2>/dev/null)
+if [ "$RATE_CHECK" = "1" ]; then
     echo "   ✅ Success Rate: EXCELLENT ($SUCCESS_RATE%)"
-elif [ $(echo "$SUCCESS_RATE > 95" | bc) -eq 1 ]; then
-    echo "   ⚠️  Success Rate: GOOD ($SUCCESS_RATE%)"
 else
-    echo "   ❌ Success Rate: POOR ($SUCCESS_RATE%)"
+    RATE_CHECK=$(echo "$SUCCESS_RATE > 95" | bc 2>/dev/null)
+    if [ "$RATE_CHECK" = "1" ]; then
+        echo "   ⚠️  Success Rate: GOOD ($SUCCESS_RATE%)"
+    else
+        echo "   ❌ Success Rate: POOR ($SUCCESS_RATE%)"
+    fi
 fi
 
 echo ""
@@ -279,36 +352,22 @@ echo "   - Memory Growth: <100MB"
 echo "   - Success Rate: >99%"
 echo ""
 
-# Show sample commands
-echo "🔧 Manual Test Commands:"
-echo ""
-echo "GET Request:"
-echo "   curl -X GET '$GET_ENDPOINT' \\"
-echo "     --header 'Authorization: Bearer $BEARER_TOKEN'"
-echo ""
-echo "POST Request:"
-echo "   curl -X POST '$POST_ENDPOINT' \\"
-echo "     --header 'Content-Type: multipart/form-data' \\"
-echo "     --header 'Authorization: Bearer $BEARER_TOKEN' \\"
-echo "     --form 'name=TEST_BANK_123' \\"
-echo "     --form 'bank_type_id=BMG/2025/10/001'"
-echo ""
 
-# Usage help
-echo "💡 Usage:"
-echo "   ./benchmark-mixed.sh [duration] [get_rate] [get_workers] [post_workers] [concurrent_users]"
-echo ""
-echo "   Parameters:"
-echo "   - duration:        Test duration in seconds (default: 30)"
-echo "   - get_rate:        Percentage of GET traffic (default: 80)"
-echo "   - get_workers:     Number of GET worker threads (default: 4)"
-echo "   - post_workers:    Number of POST worker threads (default: 2)"
-echo "   - concurrent_users: Concurrent requests per worker (default: 100)"
-echo ""
-echo "   Examples:"
-echo "   ./benchmark-mixed.sh                        # Default: 30s, 80% GET, 4+2 workers, 100 concurrent"
-echo "   ./benchmark-mixed.sh 60 80                  # 60s test, 80% GET/20% POST"
-echo "   ./benchmark-mixed.sh 120 90 8 2             # 120s, 90% GET, 8 GET + 2 POST workers"
-echo "   ./benchmark-mixed.sh 30 50 4 4              # 30s, 50/50 mix, equal workers"
-echo "   ./benchmark-mixed.sh 60 70 10 5 50          # 60s, 70% GET, 15 workers, 50 concurrent each"
-echo "   ./benchmark-mixed.sh 300 80 8 4 200         # 5min stress test, 1200 total connections"
+# # Usage help
+# echo "💡 Usage:"
+# echo "   ./benchmark-mixed.sh [duration] [get_rate] [get_workers] [post_workers] [concurrent_users]"
+# echo ""
+# echo "   Parameters:"
+# echo "   - duration:        Test duration in seconds (default: 30)"
+# echo "   - get_rate:        Percentage of GET traffic (default: 80)"
+# echo "   - get_workers:     Number of GET worker threads (default: 4)"
+# echo "   - post_workers:    Number of POST worker threads (default: 2)"
+# echo "   - concurrent_users: Concurrent requests per worker (default: 100)"
+# echo ""
+# echo "   Examples:"
+# echo "   ./benchmark-mixed.sh                        # Default: 30s, 80% GET, 4+2 workers, 100 concurrent"
+# echo "   ./benchmark-mixed.sh 60 80                  # 60s test, 80% GET/20% POST"
+# echo "   ./benchmark-mixed.sh 120 90 8 2             # 120s, 90% GET, 8 GET + 2 POST workers"
+# echo "   ./benchmark-mixed.sh 30 50 4 4              # 30s, 50/50 mix, equal workers"
+# echo "   ./benchmark-mixed.sh 60 70 10 5 50          # 60s, 70% GET, 15 workers, 50 concurrent each"
+# echo "   ./benchmark-mixed.sh 300 80 8 4 200         # 5min stress test, 1200 total connections"
