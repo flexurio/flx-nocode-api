@@ -7,7 +7,7 @@ use serde_json::Value;
 use crate::{
     auth::{check_access, get_user_info_from_token},
     helpers::{filter_table_schema, split_column_operator},
-    rate_limit::RL_WINDOW_MUTATE,
+    // rate limiting handled by middleware
     log::log_output,
     model::{TableSchema, WebResponse},
     AppState,
@@ -24,25 +24,8 @@ pub async fn process(
     table_schemas: Arc<Vec<TableSchema>>,
     req: actix_web::HttpRequest,
 ) -> impl Responder {
-    // Rate-limit per IP and per user (for non-public)
-    let ip_key = crate::helpers::get_client_ip(&req);
-    let limit_i64: i64 = std::env::var("RATE_LIMIT_MUTATE_PER_SEC")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(10);
-    if limit_i64 > 0 {
-        let limit = (limit_i64.min(u32::MAX as i64)) as u32;
-        if !RL_WINDOW_MUTATE.check_and_increment(&format!("trace:{}:{}", route, ip_key), limit) {
-            return HttpResponse::TooManyRequests().json(WebResponse {
-                success: false,
-                message: "Too many requests".into(),
-                total_data: 0,
-                data: Value::Null,
-            });
-        }
-    }
+    // Rate limiting removed (now global)
 
-    let mut actor_id: Option<String> = None;
     if !state.route_publics.contains(&route) {
         let claims = match get_user_info_from_token(req, state.clone()) {
             Ok(c) => c,
@@ -64,25 +47,9 @@ pub async fn process(
                 data: Value::Null,
             });
         }
-        actor_id = Some(claims.id);
+    // claims.id retained for potential auditing in future (actor_id removed)
     }
-    // Per-user limit
-    if !state.route_publics.contains(&route) {
-        if let Some(ref uid) = actor_id {
-            if limit_i64 > 0
-                && !uid.is_empty()
-                && !RL_WINDOW_MUTATE
-                    .check_and_increment(&format!("trace:{}:user:{}", route, uid), limit_i64 as u32)
-            {
-                return HttpResponse::TooManyRequests().json(WebResponse {
-                    success: false,
-                    message: "Too many requests".into(),
-                    total_data: 0,
-                    data: Value::Null,
-                });
-            }
-        }
-    }
+    // Per-user rate limiting removed (handled globally)
 
     // Resolve schema first
     let table_schema: TableSchema = filter_table_schema(&table_schemas, route.clone()).await;

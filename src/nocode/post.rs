@@ -6,9 +6,8 @@ use std::collections::HashSet;
 // use std::result; // unused
 
 use crate::audit::{write_audit, AuditEntry};
-use crate::helpers::get_client_ip;
-// use crate::log; // unused
-use crate::rate_limit::RL_WINDOW_MUTATE;
+use crate::helpers::get_client_ip; // still used for other logic, not rate limiting now centralized
+// Rate limiter removed from handler; GlobalRateLimit middleware enforces limits
 use crate::{
     auth::{check_access, get_user_info_from_token, Claims},
     crypt::{encrypt, is_encrypted_string},
@@ -130,39 +129,7 @@ pub async fn insert(
         }
     };
 
-    // Rate-limit per IP for mutations
-    let ip_key = get_client_ip(&req);
-    let limit_i64: i64 = std::env::var("RATE_LIMIT_MUTATE_PER_SEC")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(10);
-    if limit_i64 > 0
-        && !RL_WINDOW_MUTATE
-            .check_and_increment(&format!("post:{}:{}", route, ip_key), limit_i64 as u32)
-    {
-        return HttpResponse::TooManyRequests().json(WebResponse {
-            success: false,
-            message: "Too many requests".into(),
-            total_data: 0,
-            data: Value::Null,
-        });
-    }
-    // Per-user limit (for non-public routes only)
-    if !state.route_publics.contains(&route) {
-        let user_key = claims.id.clone();
-        if limit_i64 > 0
-            && !user_key.is_empty()
-            && !RL_WINDOW_MUTATE
-                .check_and_increment(&format!("post:{}:user:{}", route, user_key), limit_i64 as u32)
-        {
-            return HttpResponse::TooManyRequests().json(WebResponse {
-                success: false,
-                message: "Too many requests".into(),
-                total_data: 0,
-                data: Value::Null,
-            });
-        }
-    }
+    // Rate limiting removed; handled globally.
 
     // Generate SQL query INSERT to table in variable route, from data structure table in table_schemas
     let table_schema: TableSchema = filter_table_schema(&table_schemas, route.clone()).await;

@@ -5,7 +5,7 @@ use actix_web::{
 use serde_json::Value;
 
 use crate::audit::{write_audit, AuditEntry};
-use crate::rate_limit::RL_WINDOW_MUTATE;
+// Rate limiting migrated to middleware
 use crate::{
     auth::{check_access, get_user_info_from_token},
     database::state::DbParam,
@@ -51,40 +51,7 @@ pub async fn process_sp(
         }
         actor_id = Some(claims.id);
     }
-    // Rate-limit (allow disable with 0 or -1)
-    let ip_key = crate::helpers::get_client_ip(&req);
-    let limit_i64: i64 = std::env::var("RATE_LIMIT_MUTATE_PER_SEC")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(10);
-    if limit_i64 > 0 {
-        let limit = (limit_i64.min(u32::MAX as i64)) as u32;
-        if !RL_WINDOW_MUTATE.check_and_increment(&format!("patch:{}:{}", route, ip_key), limit) {
-            return HttpResponse::TooManyRequests().json(WebResponse {
-                success: false,
-                message: "Too many requests".into(),
-                total_data: 0,
-                data: Value::Null,
-            });
-        }
-    }
-    // Per-user limit (for non-public routes only)
-    if !state.route_publics.contains(&route) {
-        if let Some(ref uid) = actor_id {
-            if limit_i64 > 0
-                && !uid.is_empty()
-                && !RL_WINDOW_MUTATE
-                    .check_and_increment(&format!("patch:{}:user:{}", route, uid), limit_i64 as u32)
-            {
-                return HttpResponse::TooManyRequests().json(WebResponse {
-                    success: false,
-                    message: "Too many requests".into(),
-                    total_data: 0,
-                    data: Value::Null,
-                });
-            }
-        }
-    }
+    // Rate limiting removed; enforced globally
 
     // get parameters value only allowed from table_schema.trace.parameters
     // loop every table_schema.trace.parameters

@@ -6,8 +6,7 @@ use std::io::Cursor;
 use std::sync::Arc;
 
 use crate::audit::{write_audit, AuditEntry};
-use crate::helpers::get_client_ip;
-use crate::rate_limit::RL_WINDOW_MUTATE;
+use crate::helpers::get_client_ip; // retained; rate limiting moved to middleware
 use crate::{
     auth::{check_access, get_user_info_from_token, Claims},
     crypt::{encrypt, is_encrypted_string},
@@ -57,23 +56,7 @@ pub async fn import(
         }
     }
 
-    // Rate-limit (allow disable with 0 or -1)
-    let ip_key = get_client_ip(&req);
-    let limit_i64: i64 = std::env::var("RATE_LIMIT_MUTATE_PER_SEC")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(10);
-    if limit_i64 > 0 {
-        let limit = (limit_i64.min(u32::MAX as i64)) as u32;
-        if !RL_WINDOW_MUTATE.check_and_increment(&format!("import:{}:{}", route, ip_key), limit) {
-            return HttpResponse::TooManyRequests().json(WebResponse {
-                success: false,
-                message: "Too many requests".into(),
-                total_data: 0,
-                data: Value::Null,
-            });
-        }
-    }
+    // Rate limiting removed; handled globally
 
     let table_schema: TableSchema = filter_table_schema(table_schemas, route.clone()).await;
     if table_schema.table.is_empty() {

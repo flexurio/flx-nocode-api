@@ -9,7 +9,7 @@ use crate::{
     helpers::{filter_table_schema, split_column_operator, get_client_ip},
     log::log_output,
     model::{ParamJoin, TableSchema, WebResponse},
-    rate_limit::RL_WINDOW_GET,
+    // rate limiting now centralized in GlobalRateLimit middleware
     AppState,
 };
 use crate::storage::ast::{Filter as QF, Query as QQ, Val as QV, Expr as QE, Join as QJ, JoinKind as QJK};
@@ -28,29 +28,8 @@ pub async fn select(
 ) -> impl Responder {
     // Default cache tenant scope (use &str to avoid allocation)
     let mut cache_tenant = String::from("public");
-    // Per-IP GET rate limit per second
-    let ip_key = get_client_ip(&req);
-    
-    // Cache rate limit config (read once)
-    use once_cell::sync::Lazy;
-    static RATE_LIMIT_GET: Lazy<i64> = Lazy::new(|| {
-        std::env::var("RATE_LIMIT_GET_PER_SEC")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(20)
-    });
-    let get_limit_i64 = *RATE_LIMIT_GET;
-    if get_limit_i64 > 0
-        && !RL_WINDOW_GET
-            .check_and_increment(&format!("get:{}:{}", route, ip_key), get_limit_i64 as u32)
-    {
-        return HttpResponse::TooManyRequests().json(WebResponse {
-            success: false,
-            message: "Too many requests".to_string(),
-            total_data: 0,
-            data: Value::Null,
-        });
-    }
+    // Removed per-handler rate limiting; handled centrally by GlobalRateLimit middleware
+    let _ip_key = get_client_ip(&req);
     if !state.route_publics.contains(&route) {
         
         let claims = match get_user_info_from_token(req, state.clone()) {
@@ -79,19 +58,7 @@ pub async fn select(
             });
         }
 
-        // Per-user GET rate limit per second
-        if get_limit_i64 > 0
-            && !claims.id.is_empty()
-            && !RL_WINDOW_GET
-                .check_and_increment(&format!("get:{}:user:{}", route, claims.id), get_limit_i64 as u32)
-        {
-            return HttpResponse::TooManyRequests().json(WebResponse {
-                success: false,
-                message: "Too many requests".to_string(),
-                total_data: 0,
-                data: Value::Null,
-            });
-        }
+        // Per-user rate limiting also centralized; removed here
     }
 
     let table_schema: TableSchema = filter_table_schema(&table_schemas, route.clone()).await;
