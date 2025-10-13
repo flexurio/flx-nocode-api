@@ -1,3 +1,7 @@
+SECRET_KEY=kljasdf0823hlk0123j_879123$kasdjy_12387jkhgasLIUjhbqwILUjklj
+ENCRYPT_KEY=sdf90kj234y<YUG7YJg278jhkjhui*gjOYU5jhjkkjkl0uj2738123jhbm
+
+
 PORT=8080
 ACTIX_WORKERS=4  # Match CPU cores for optimal performance (was 1)
 
