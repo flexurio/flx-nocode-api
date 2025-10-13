@@ -301,6 +301,8 @@ async fn main() -> std::io::Result<()> {
         if let Err(e) = core::create_dir_and_get_config(&config_location).await {
             eprintln!("Failed to initialize config directory: {}", e);
         }
+    } else {
+        let _ = core::create_core_config_if_not_exists(&config_location).await;
     }
 
     // Ensure static directory

@@ -794,6 +794,52 @@ pub(crate) async fn create_dir_and_get_config(conf: &str) -> Result<(), std::io:
     Ok(())
 }
 
+// function to add flx_roles and flx_users if not exist. Download from github latest release file core_config.zip.
+// Extract and move to config directory
+pub(crate) async fn create_core_config_if_not_exists(conf: &str) -> Result<(), Box<dyn Error + Send + Sync>> {
+    // If db directory already exists, skip
+    if Path::new(conf).exists() {
+        // check if flx_roles.json and flx_users.json exist
+        if Path::new(&format!("{}/flx_roles.json", conf)).exists() && Path::new(&format!("{}/flx_users.json", conf)).exists() {
+            return Ok(());
+        }
+    } else {
+        std::fs::create_dir_all(conf)?;
+    }
+
+    // get latest version from github release
+    let latest_version = get_latest_release().await.unwrap_or_else(|_| "v1.0.0".to_string());
+    let url = format!(
+        "https://github.com/flexurio/flx-nocode-api/releases/download/{}/core_config.zip",
+        latest_version
+    );  
+    let zip_path = "core_config.zip";
+    let extract_to = "."; // current working directory
+    println!("Downloading core_config...");
+    download_file(url, zip_path).await?;
+
+    println!("Extracting core_config...");
+    extract_zip(zip_path, extract_to)?;
+
+    // copy core_config/flx_roles.json to conf/flx_roles.json and flx_users.json to conf/flx_users.json
+    std::fs::copy(
+        format!("{}/core_config/flx_roles.json", extract_to),
+        format!("{}/entity/flx_roles.json", conf),
+    )?;
+    std::fs::copy(
+        format!("{}/core_config/flx_users.json", extract_to),
+        format!("{}/entity/flx_users.json", conf),
+    )?;
+
+    // remove old core_config directory
+    let _ = std::fs::remove_dir_all(format!("{}/core_config", extract_to));
+    
+    // Clean up zip file
+    let _ = std::fs::remove_file(zip_path);
+    Ok(())
+}
+
+
 // function download .env from latest release github
 pub(crate) async fn download_env_file() -> Result<(), Box<dyn Error + Send + Sync>> {
     let latest_version = get_latest_release().await?;
