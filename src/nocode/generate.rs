@@ -15,6 +15,63 @@ use crate::{
 };
 use std::sync::Arc;
 
+// Helper function to add standard audit trail columns
+fn add_audit_columns(cols: &mut Vec<ColumnDef>, db_type: &str) {
+    // Check if audit columns already exist to avoid duplicates
+    let existing_cols: Vec<String> = cols.iter().map(|c| c.name.clone()).collect();
+    
+    let audit_columns = [
+        ("created_at", "datetime"),
+        ("updated_at", "datetime"), 
+        ("deleted_at", "datetime"),
+        ("created_by_id", "bigint unsigned"),
+        ("updated_by_id", "bigint unsigned"),
+        ("deleted_by_id", "bigint unsigned"),
+    ];
+
+    for (col_name, col_type) in audit_columns.iter() {
+        if !existing_cols.contains(&col_name.to_string()) {
+            let mut type_data = col_type.to_string();
+            
+            // Adjust type based on database dialect
+            match db_type {
+                "postgres" => {
+                    if type_data == "datetime" {
+                        type_data = "timestamp".to_string();
+                    } else if type_data == "bigint unsigned" {
+                        type_data = "bigint".to_string();
+                    }
+                }
+                "sqlite" => {
+                    if type_data == "datetime" {
+                        type_data = "text".to_string(); // SQLite stores datetime as text
+                    } else if type_data == "bigint unsigned" {
+                        type_data = "integer".to_string();
+                    }
+                }
+                "mssql" => {
+                    if type_data == "datetime" {
+                        type_data = "datetime2".to_string();
+                    } else if type_data == "bigint unsigned" {
+                        type_data = "bigint".to_string();
+                    }
+                }
+                // "mysql" keeps the original types
+                _ => {}
+            }
+
+            cols.push(ColumnDef {
+                name: col_name.to_string(),
+                col_type: ColumnType::Raw(type_data),
+                nullable: true, // Audit columns are typically nullable
+                default: None,
+                auto_increment: false,
+                primary_key_inline: false,
+            });
+        }
+    }
+}
+
 // NCO-GENERATE-TABLE
 pub async fn create_table(
     state: web::Data<AppState>,
@@ -75,6 +132,15 @@ pub async fn create_table(
 
     let ds = SqlStore::new(state.db.clone(), state.db_type.clone());
     let (sql_create_table, sql_create_index) = generate_table(&ds, &table_schema);
+    
+    log_output(
+        "INFO",
+        "GENERATE TABLE",
+        route.as_str(),
+        format!("Starting table generation for: {}", table_schema.table),
+        true,
+    );
+    
     let mut err_message = String::new();
 
     // Run DDL statements inside a TxStore transaction for consistency
@@ -91,6 +157,14 @@ pub async fn create_table(
     };
 
     // execute create table
+    log_output(
+        "QUERY",
+        "GENERATE TABLE",
+        route.clone().as_str(),
+        format!("Executing CREATE TABLE: {}", sql_create_table),
+        true,
+    );
+    
     if let Err(err) = tx.raw_sql(&sql_create_table, vec![]).await {
         let error_message = format!(
             "Failed to create table {} with error : {}",
@@ -108,6 +182,14 @@ pub async fn create_table(
 
     // execute each create index
     for sql_idx in sql_create_index.iter() {
+        log_output(
+            "QUERY",
+            "GENERATE INDEX", 
+            route.clone().as_str(),
+            format!("Executing CREATE INDEX: {}", sql_idx),
+            true,
+        );
+        
         if let Err(err) = tx.raw_sql(sql_idx, vec![]).await {
             err_message = format!(
                 "{} \nFailed to create index {} with error : {}",
@@ -125,6 +207,13 @@ pub async fn create_table(
 
     if err_message.is_empty() {
         let _ = tx.commit().await;
+        log_output(
+            "INFO",
+            "GENERATE TABLE",
+            route.as_str(),
+            format!("Successfully created table: {}", table_schema.table),
+            true,
+        );
     } else {
         let _ = tx.rollback().await;
     }
@@ -160,6 +249,14 @@ pub async fn execute_generate_table(stable: String, state: &AppState, sql_create
     let mut err_message = String::new();
 
     // execute create table
+    log_output(
+        "INFO",
+        "GENERATE TABLE",
+        stable.as_str(),
+        format!("Starting table generation for: {}", stable),
+        true,
+    );
+    
     if let Err(err) = tx.raw_sql(&sql_create_table, vec![]).await {
         err_message = format!(
             "Failed to create table {} with error : {}",
@@ -169,6 +266,14 @@ pub async fn execute_generate_table(stable: String, state: &AppState, sql_create
 
     // execute each create index
     for sql_idx in sql_create_index.iter() {
+        log_output(
+            "QUERY",
+            "GENERATE INDEX",
+            stable.clone().as_str(),
+            format!("Executing CREATE INDEX: {}", sql_idx),
+            true,
+        );
+        
         if let Err(err) = tx.raw_sql(sql_idx, vec![]).await {
             err_message = format!(
                 "{} \nFailed to create index {} with error : {}",
@@ -186,6 +291,13 @@ pub async fn execute_generate_table(stable: String, state: &AppState, sql_create
 
     if err_message.is_empty() {
         let _ = tx.commit().await;
+        log_output(
+            "INFO",
+            "GENERATE TABLE",
+            stable.as_str(),
+            format!("Successfully created table: {}", stable),
+            true,
+        );
         (true, "success".to_string())
     } else {
         let _ = tx.rollback().await;
@@ -257,6 +369,21 @@ pub fn generate_table(ds: &SqlStore, data: &TableSchema) -> (String, Vec<String>
             auto_increment,
             primary_key_inline,
         });
+    }
+
+    // Add standard audit trail columns
+    let initial_col_count = cols.len();
+    add_audit_columns(&mut cols, db_type);
+    let added_col_count = cols.len() - initial_col_count;
+    
+    if added_col_count > 0 {
+        log_output(
+            "INFO",
+            "GENERATE TABLE",
+            &data.table,
+            format!("Added {} audit trail columns to table {}", added_col_count, data.table),
+            true,
+        );
     }
 
     // Constraints: PK (unless inline used), Unique/Indexes, Foreign Keys
