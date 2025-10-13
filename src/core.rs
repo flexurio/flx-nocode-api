@@ -652,7 +652,9 @@ pub async fn generate_users(state: Data<AppState>) -> (bool, String) {
             }
 
             // Insert default roles (two rows) with AST bulk insert
-            generate_role_admin(&state, ds, id_user, vec!["flx_users".into(), "flx_roles".into()]).ok();
+            if let Err(err) = generate_role_admin(&state, ds, id_user, vec!["flx_users".into(), "flx_roles".into()]).await {
+                log_output("ERROR", "generate_users", "generate_role_admin", format!("Failed to generate roles: {}", err), true);
+            }
         }
 
         (iscreatedb, "1".into())
@@ -661,22 +663,33 @@ pub async fn generate_users(state: Data<AppState>) -> (bool, String) {
 
 
 // create function generate flx_roles
-pub fn generate_role_admin(state: &AppState,ds: SqlStore, id_user: i64, routes: Vec<String>) -> Result<(), Box<dyn Error + Send + Sync>> {
+pub async fn generate_role_admin(state: &AppState, ds: SqlStore, id_user: i64, routes: Vec<String>) -> Result<(), Box<dyn Error + Send + Sync>> {
     let now_fn = state.query_converter.datetime_now.clone();
     if state.db_type != "mongodb" {
-            // Insert default roles (two rows) with AST bulk insert
-            use crate::storage::sql_store::InsertValue as IV;
-            let cols = vec!["id_users".into(), "endpoint".into(), "role".into(), "created_at".into()];
-            // loop every route
-            for route in routes.iter() {
-                let rows = vec![
-                    vec![IV::Param(crate::database::state::DbParam::I64(id_user)), IV::Param(crate::database::state::DbParam::Str(route.into())), IV::Param(crate::database::state::DbParam::I64(127)), IV::Raw(now_fn.clone())],
-                ];
-                if let Ok((sql_roles_ins, params_roles_ins)) = ds.preview_insert_bulk("flx_roles", &cols, &rows) {
-                    let built_roles = crate::database::state::rehydrate_placeholders(&sql_roles_ins, &state.db_type);
-                    let _ = state.db.query_with_params(&built_roles, params_roles_ins);
+        // Insert default roles (two rows) with AST bulk insert
+        use crate::storage::sql_store::InsertValue as IV;
+        let cols = vec!["id_users".into(), "endpoint".into(), "role".into(), "created_at".into()];
+        // loop every route
+        for route in routes.iter() {
+            let rows = vec![
+                vec![IV::Param(crate::database::state::DbParam::I64(id_user)), IV::Param(crate::database::state::DbParam::Str(route.into())), IV::Param(crate::database::state::DbParam::I64(127)), IV::Raw(now_fn.clone())],
+            ];
+            if let Ok((sql_roles_ins, params_roles_ins)) = ds.preview_insert_bulk("flx_roles", &cols, &rows) {
+                let built_roles = crate::database::state::rehydrate_placeholders(&sql_roles_ins, &state.db_type);
+                // Properly await the async query and handle errors
+                match state.db.query_with_params(&built_roles, params_roles_ins).await {
+                    Ok(_) => {
+                        log_output("INSERT", "generate_role_admin", "flx_roles", format!("Role inserted for user {} endpoint {}", id_user, route), true);
+                    }
+                    Err(err) => {
+                        log_output("ERROR", "generate_role_admin", "flx_roles", format!("Failed to insert role for user {} endpoint {}: {}", id_user, route, err), true);
+                        return Err(err.into());
+                    }
                 }
-            }        
+            } else {
+                log_output("ERROR", "generate_role_admin", "flx_roles", format!("Failed to generate SQL for user {} endpoint {}", id_user, route), true);
+            }
+        }        
     }
     Ok(())
 }
