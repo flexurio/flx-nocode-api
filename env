@@ -5,10 +5,20 @@ ENCRYPT_KEY=sdf90kj234y<YUG7YJg278jhkjhui*gjOYU5jhjkkjkl0uj2738123jhbm
 PORT=8080
 ACTIX_WORKERS=4  # Match CPU cores for optimal performance (was 1)
 
+# HTTP server tuning
+# How long to keep idle connections open (keep-alive). Increase to reduce TCP churn under load balancers.
+HTTP_KEEPALIVE_SECS=60
+# Accept queue backlog size (pending TCP handshakes). Increase if you see SYN backlog drops.
+HTTP_BACKLOG=2048
+# Max new connections per second per worker. Prevents thundering herd connection resets.
+HTTP_MAX_CONN_RATE=512
+
 REDIS_HOST=
 REDIS_PORT=
 REDIS_PASSWORD=
 REDIS_DB=
+WRITE_QUEUE_ENABLED=false
+WRITE_CONCURRENCY=20
 
 # DB_TYPE=mysql
 # MAX_POOL=10  # Optimal for most workloads (reduced from 100)

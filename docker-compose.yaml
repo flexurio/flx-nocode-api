@@ -5,6 +5,18 @@ services:
     restart: always
     ports:
       - "0.0.0.0:2121:8080"
+    environment:
+      - ACTIX_WORKERS=4
+      - HTTP_KEEPALIVE_SECS=60
+      - HTTP_BACKLOG=4096
+      - HTTP_MAX_CONN_RATE=1024
+      - HTTP_MAX_CONNECTIONS=50000
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    sysctls:
+      net.core.somaxconn: 4096
     volumes:
       - "/home/DOCKER/FLEXURIO/flx-nocode-api/static:/app/static"
       - "/home/DOCKER/FLEXURIO/flx-nocode-api/config:/app/config"

@@ -460,6 +460,12 @@ async fn main() -> std::io::Result<()> {
                     std::io::Error::new(std::io::ErrorKind::ConnectionRefused, e)
                 })?;
 
+            // Improve SQLite concurrency for read-heavy workloads
+            // Switch to WAL, relax fsync, and add a busy timeout to reduce write-lock errors
+            let _ = sqlx::query("PRAGMA journal_mode=WAL;").execute(&pool).await;
+            let _ = sqlx::query("PRAGMA synchronous=NORMAL;").execute(&pool).await;
+            let _ = sqlx::query("PRAGMA busy_timeout=5000;").execute(&pool).await;
+
             Arc::new(SqliteRepo { pool })
             }
         }
@@ -705,6 +711,11 @@ async fn main() -> std::io::Result<()> {
         .unwrap_or(8080);
 
     cetak_label(host.to_string(), port);
+
+    // HTTP server tunables (with sensible defaults)
+    let keepalive_secs: u64 = env::var("HTTP_KEEPALIVE_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(60);
+    let http_backlog: u32 = env::var("HTTP_BACKLOG").ok().and_then(|s| s.parse().ok()).unwrap_or(2048);
+    let max_conn_rate: usize = env::var("HTTP_MAX_CONN_RATE").ok().and_then(|s| s.parse().ok()).unwrap_or(512);
 
     HttpServer::new(move || {
         // Build CORS policy from env
@@ -1208,6 +1219,9 @@ async fn main() -> std::io::Result<()> {
             .and_then(|s| s.parse().ok())
             .unwrap_or(25000)
     )
+    .max_connection_rate(max_conn_rate)
+    .keep_alive(Duration::from_secs(keepalive_secs))
+    .backlog(http_backlog)
     .client_request_timeout(std::time::Duration::from_secs(30)) // 30 second timeout
     .client_disconnect_timeout(std::time::Duration::from_secs(5)) // 5 second disconnect timeout
     .bind((host, port))
