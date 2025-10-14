@@ -1,7 +1,7 @@
 from locust import HttpUser, task, between, constant
 import random
 
-BEARER_TOKEN = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpZCI6IjEiLCJubSI6IkFkbWluIEZsZXh1cmlvIiwiZXhwIjoxNzU5ODkxNDE2LCJhdCI6MTc1OTgwNTAxNiwicmwiOiJiYW5rX3R5cGVzLzEyNyxiYW5rcy8xMjcsY3VzdG9tZXJzLzEyNyxmbHhfcm9sZXMvMTI3LGZseF91c2Vycy8xMjcscHJvZHVjdHMvMTI3LHNhbGVzLzEyNyxzYWxlc19pdGVtcy8xMjciLCJjcyI6IiJ9.j7_9HTZkcVlkoNXyrghKyt0A4IoEbADvVNeD_mzHtDI"
+BEARER_TOKEN = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpZCI6IjEiLCJubSI6IkFkbWluIEZsZXh1cmlvIiwiZXhwIjoxNzYwNTMwNDcyLCJhdCI6MTc2MDQ0NDA3MiwicmwiOiJiYW5rX3R5cGVzLzEyNyxiYW5rcy8xMjcsY3VzdG9tZXJzLzEyNyxmbHhfcm9sZXMvMTI3LGZseF91c2Vycy8xMjcscHJvZHVjdHMvMTI3LHNhbGVzLzEyNyxzYWxlc19pdGVtcy8xMjciLCJjcyI6IiJ9.jN5kJS9FkbOUv3iF2t9NyZkMDMl9AA2dNCWALbJU_6c"
 
 class APIUser(HttpUser):
     # Semua user pasti nunggu 10 detik antar request
@@ -13,11 +13,11 @@ class APIUser(HttpUser):
             "Accept": "application/json",
         }
 
-    @task(7)
+    @task(5)
     def get_banks(self):
-        self.client.get("/banks", headers=self.headers)
+        self.client.get("/banks?limit=1", headers=self.headers)
 
-    @task(3)
+    @task(5)
     def create_book(self):
         book_id = random.randint(1000, 9999)
         files = {
@@ -25,11 +25,11 @@ class APIUser(HttpUser):
             "bank_type_id": (None, "BMG/2025/10/001"),
         }
         with self.client.post(
-            "/banks",
+            "/banks?isqueue=true",
             headers=self.headers,
             files=files,
             catch_response=True
         ) as response:
-            if response.status_code not in (200, 201):
+            if response.status_code not in (200, 201, 202):
                 print("POST ERROR" + response.text)
                 response.failure(f"POST /banks gagal: {response.status_code} {response.text}")

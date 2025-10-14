@@ -610,6 +610,20 @@ async fn main() -> std::io::Result<()> {
     let mut write_queue_fast_ack = true; // default true: handlers return immediately
     // check if REDIS_HOST is configured in .env
     if let Ok(val) = env::var("REDIS_HOST") { if !val.is_empty() { is_cachedb = true; } }
+    // Proactively verify Redis connectivity once at startup for read-cache usage.
+    // If unreachable, disable caching to avoid expensive per-request connection attempts
+    // when clients pass `?redis=true`.
+    if is_cachedb {
+        match tokio::time::timeout(Duration::from_millis(1000), crate::database::redis::get_manager()).await {
+            Ok(Ok(_)) => {
+                // Redis is reachable; keep caching enabled
+            }
+            _ => {
+                is_cachedb = false;
+                eprintln!("Redis not reachable at startup. Disabling read-cache. Remove ?redis=true or fix REDIS_HOST to re-enable.");
+            }
+        }
+    }
     // enable write queue if configured (default false)
     if let Ok(val) = env::var("WRITE_QUEUE_ENABLED") { write_queue_enabled = matches!(val.to_lowercase().as_str(), "1"|"true"|"yes"); }
     if let Ok(val) = env::var("WRITE_QUEUE_FAST_ACK") { write_queue_fast_ack = matches!(val.to_lowercase().as_str(), "1"|"true"|"yes"); }
@@ -714,8 +728,8 @@ async fn main() -> std::io::Result<()> {
 
     // HTTP server tunables (with sensible defaults)
     let keepalive_secs: u64 = env::var("HTTP_KEEPALIVE_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(60);
-    let http_backlog: u32 = env::var("HTTP_BACKLOG").ok().and_then(|s| s.parse().ok()).unwrap_or(2048);
-    let max_conn_rate: usize = env::var("HTTP_MAX_CONN_RATE").ok().and_then(|s| s.parse().ok()).unwrap_or(512);
+    let http_backlog: u32 = env::var("HTTP_BACKLOG").ok().and_then(|s| s.parse().ok()).unwrap_or(4096);
+    let max_conn_rate: usize = env::var("HTTP_MAX_CONN_RATE").ok().and_then(|s| s.parse().ok()).unwrap_or(4096);
 
     HttpServer::new(move || {
         // Build CORS policy from env

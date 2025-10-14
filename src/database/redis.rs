@@ -1,9 +1,11 @@
 use anyhow::{anyhow, Result};
 use once_cell::sync::OnceCell;
-use redis::{aio::ConnectionManager, AsyncCommands, Client, IntoConnectionInfo};
+use redis::{aio::MultiplexedConnection, AsyncCommands, Client, IntoConnectionInfo};
 use std::env;
+use std::sync::Arc;
 
-static REDIS_MANAGER: OnceCell<ConnectionManager> = OnceCell::new();
+// Use connection pool instead of single ConnectionManager for better concurrency
+static REDIS_CLIENT: OnceCell<Arc<Client>> = OnceCell::new();
 
 /// Sanitize a key component to allow only safe characters
 fn sanitize_key_component(s: &str) -> String {
@@ -36,9 +38,9 @@ fn build_redis_connection_url() -> Result<String> {
     Ok(format!("redis://{}{}:{}/{}", auth_part, host, port, db))
 }
 
-pub(crate) async fn get_manager() -> Result<&'static ConnectionManager> {
-    if let Some(mgr) = REDIS_MANAGER.get() {
-        return Ok(mgr);
+pub(crate) async fn get_manager() -> Result<Arc<Client>> {
+    if let Some(client) = REDIS_CLIENT.get() {
+        return Ok(client.clone());
     }
 
     // Ensure .env is loaded (no-op if already loaded)
@@ -50,20 +52,36 @@ pub(crate) async fn get_manager() -> Result<&'static ConnectionManager> {
         .into_connection_info()
         .map_err(|e| anyhow!("Invalid Redis URL: {}", e))?;
     let client = Client::open(info).map_err(|e| anyhow!("Create Redis client failed: {}", e))?;
-    let conn = client
-        .get_connection_manager()
+    
+    // Test connection
+    let mut test_conn = client
+        .get_multiplexed_async_connection()
         .await
         .map_err(|e| anyhow!("Connect Redis failed: {}", e))?;
+    let _: String = redis::cmd("PING")
+        .query_async(&mut test_conn)
+        .await
+        .map_err(|e| anyhow!("Redis PING failed: {}", e))?;
 
-    REDIS_MANAGER
-        .set(conn)
-        .map_err(|_| anyhow!("Redis manager already initialized"))?;
-    Ok(REDIS_MANAGER.get().unwrap())
+    let arc_client = Arc::new(client);
+    REDIS_CLIENT
+        .set(arc_client.clone())
+        .map_err(|_| anyhow!("Redis client already initialized"))?;
+    Ok(arc_client)
+}
+
+// Helper to get a fresh connection from pool (cheap to clone)
+async fn get_connection() -> Result<MultiplexedConnection> {
+    let client = get_manager().await?;
+    client
+        .get_multiplexed_async_connection()
+        .await
+        .map_err(|e| anyhow!("Failed to get Redis connection: {}", e))
 }
 
 /// Set a string value by key with optional TTL seconds (None -> persist)
 pub async fn redis_set(key: &str, value: &str, ttl_secs: Option<usize>) -> Result<()> {
-    let mut conn = get_manager().await?.clone();
+    let mut conn = get_connection().await?;
     if let Some(ttl) = ttl_secs {
         let mut pipe = redis::pipe();
         pipe.set(key, value).ignore().expire(key, ttl as i64);
@@ -82,7 +100,7 @@ pub async fn redis_set(key: &str, value: &str, ttl_secs: Option<usize>) -> Resul
 
 /// Get a string value by key. Returns Ok(None) if missing.
 pub async fn redis_get(key: &str) -> Result<Option<String>> {
-    let mut conn = get_manager().await?.clone();
+    let mut conn = get_connection().await?;
     let val: Option<String> = conn
         .get(key)
         .await
@@ -108,7 +126,7 @@ pub async fn redis_get_json<T: serde::de::DeserializeOwned>(key: &str) -> Result
 /// Returns the number of keys deleted.
 pub async fn redis_delete_by_prefix(prefix: &str) -> Result<usize> {
     let pattern = format!("{}*", prefix);
-    let mut conn = get_manager().await?.clone();
+    let mut conn = get_connection().await?;
     let keys: Vec<String> = redis::cmd("KEYS")
         .arg(&pattern)
         .query_async(&mut conn)

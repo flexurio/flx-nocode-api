@@ -38,7 +38,8 @@ impl WriteJob {
 /// Push a job to the Redis list (LPUSH) and return queue length.
 pub async fn enqueue_job(job: &WriteJob) -> Result<i64> {
     let payload = serde_json::to_string(job)?;
-    let mut conn = crate::database::redis::get_manager().await?.clone();
+    let client = crate::database::redis::get_manager().await?;
+    let mut conn = client.get_multiplexed_async_connection().await?;
     let len: i64 = conn.lpush(WriteJob::queue_key(), payload).await?;
     log_output(
         "QUEUE",
@@ -52,7 +53,8 @@ pub async fn enqueue_job(job: &WriteJob) -> Result<i64> {
 
 /// Blocking pop with timeout (BRPOP with 1s) to allow graceful shutdown checks.
 pub async fn dequeue_job() -> Result<Option<WriteJob>> {
-    let mut conn = crate::database::redis::get_manager().await?.clone();
+    let client = crate::database::redis::get_manager().await?;
+    let mut conn = client.get_multiplexed_async_connection().await?;
     // BRPOP returns (key, value)
     let res: Option<(String, String)> = redis::cmd("BRPOP")
         .arg(WriteJob::queue_key())
@@ -91,9 +93,19 @@ pub async fn start_consumer(state: Data<AppState>, schemas: Arc<(Vec<TableSchema
                 "ready".to_string(),
                 true,
             );
+            
+            // Error tracking for circuit breaker
+            let mut consecutive_errors = 0u32;
+            let max_consecutive_errors = 10; // Circuit breaker threshold
+            let mut backoff_ms = 250u64; // Initial backoff
+            
             loop {
                 match dequeue_job().await {
                     Ok(Some(job)) => {
+                        // Reset error counter on success
+                        consecutive_errors = 0;
+                        backoff_ms = 250;
+                        
                         log_output(
                             "QUEUE",
                             "EXEC-START",
@@ -114,12 +126,40 @@ pub async fn start_consumer(state: Data<AppState>, schemas: Arc<(Vec<TableSchema
                         }
                     }
                     Ok(None) => {
-                        // idle tick
+                        // idle tick - queue empty
+                        consecutive_errors = 0; // Reset on successful poll
                     }
                     Err(e) => {
-                        log_output("QUEUE", "DEQUEUE-ERR", format!("worker-{}", idx).as_str(), format!("{}", e), false);
-                        // small backoff
-                        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                        consecutive_errors += 1;
+                        
+                        // Log only first error and every 10th error to avoid spam
+                        if consecutive_errors == 1 || consecutive_errors % 10 == 0 {
+                            log_output(
+                                "QUEUE", 
+                                "DEQUEUE-ERR", 
+                                format!("worker-{}", idx).as_str(), 
+                                format!("{} (count: {})", e, consecutive_errors), 
+                                false
+                            );
+                        }
+                        
+                        // Circuit breaker: if too many errors, sleep longer
+                        if consecutive_errors >= max_consecutive_errors {
+                            log_output(
+                                "QUEUE",
+                                "CIRCUIT-BREAKER",
+                                format!("worker-{}", idx).as_str(),
+                                format!("Too many errors ({}), entering long sleep (30s)", consecutive_errors),
+                                false,
+                            );
+                            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                            consecutive_errors = 0; // Reset after long sleep
+                            backoff_ms = 250; // Reset backoff
+                        } else {
+                            // Exponential backoff with max 5 seconds
+                            tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
+                            backoff_ms = (backoff_ms * 2).min(5000);
+                        }
                     }
                 }
             }

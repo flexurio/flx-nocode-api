@@ -64,14 +64,6 @@ pub async fn select(
     let table_schema: TableSchema = filter_table_schema(&table_schemas, route.clone()).await;
     // legacy SQL variables removed; using AST end-to-end
 
-    log_output(
-        "CONFIGURATION",
-        "FILTERED PARAMETERS",
-        "filter_table_schema",
-        serde_json::to_string(&table_schema.get.parameters)
-            .unwrap_or_else(|_| "Failed to serialize TableSchema".to_string()),
-        true,
-    );
 
     if table_schema.table.is_empty() {
         let message_error = format!(
@@ -91,13 +83,6 @@ pub async fn select(
 
     let mut is_deleted_at = true;
 
-    log_output(
-        "CONFIGURATION",
-        "PARAMETERS ON ROUTES",
-        "TableSchema",
-        table_schema.get.parameters.join(", "),
-        true,
-    );
 
     // get parameters value only allowed from table_schemas.get.parameters
     // Pre-convert to object once for efficiency
@@ -127,7 +112,6 @@ pub async fn select(
 
         }
     } 
-    println!("isredis: {}", isredis);
     if isredis {
         // OPTIMIZATION: Auto-enable caching when TTL configured (not just opt-in via ?redis=true)
         use_cache = (isredis || table_schema.redis.ttl > 0) && state.is_cachedb;
@@ -145,15 +129,36 @@ pub async fn select(
             cache_key = Some(full_key);
 
             if let Some(ref k) = cache_key {
-                if let Ok(Some(cached)) = redis_get_json::<WebResponse>(k.as_str()).await {
-                    log_output(
-                        "REDIS",
-                        "CACHE HIT",
-                        route.as_str(),
-                        format!("Key: {}, Records: {}", k, cached.total_data),
-                        true,
-                    );
-                    return HttpResponse::Ok().json(cached);
+                match redis_get_json::<WebResponse>(k.as_str()).await {
+                    Ok(Some(cached)) => {
+                        log_output(
+                            "REDIS",
+                            "CACHE HIT",
+                            route.as_str(),
+                            format!("Key: {}, Records: {}", k, cached.total_data),
+                            true,
+                        );
+                        return HttpResponse::Ok().json(cached);
+                    }
+                    Ok(None) => {
+                        log_output(
+                            "REDIS",
+                            "CACHE MISS",
+                            route.as_str(),
+                            format!("Key: {}", k),
+                            true,
+                        );
+                    }
+                    Err(e) => {
+                        log_output(
+                            "ERROR",
+                            "CACHE READ",
+                            route.as_str(),
+                            format!("Redis error: {} - falling back to DB", e),
+                            false,
+                        );
+                        // Continue to DB query on Redis error
+                    }
                 }
             }
         }
@@ -590,13 +595,6 @@ pub async fn select(
             let offset_ast = (i_page_ast - 1) * i_limit_ast;
             q = q.limit(i_limit_ast as u32).offset(offset_ast.max(0) as u32);
 
-            // Execute via generic DataStore; keep SQL preview for debug using a temporary SqlStore
-            if *crate::ISDEBUG {
-                let ds_prev = SqlStore::new(state.db.clone(), state.db_type.clone());
-                let (sql_dbg, params_dbg) = ds_prev.preview_sql(&q);
-                log_output("QUERY", "GET(AST)", route.as_str(), sql_dbg, true);
-                log_output("PARAMS", "GET(AST)", route.as_str(), format!("{:?}", params_dbg), true);
-            }
             let rows = match state.store.query(&q).await {
                 Ok(rs) => rs,
                 Err(e) => {

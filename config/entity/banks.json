@@ -136,7 +136,7 @@
 
         },
         "post":{
-                "validate_data":"SQL:SELECT CASE WHEN id = {request.bank_type_id} THEN TRUE ELSE FALSE END as is_valid FROM bank_types WHERE id = {request.bank_type_id}",
+                "validate_data":"",
                 "pre_process":"",
                 "post_process":"",
                 "columns":["name", "bank_type_id", "foto"]

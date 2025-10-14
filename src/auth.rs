@@ -124,13 +124,19 @@ pub async fn create_token(
         if !sql_query.is_empty() {
             sql_query = sql_query.replace("{:?}", &id_user);
 
-            addjwt = match state.db.query(&sql_query).await {
-                Ok(results) => results
+            // Optimize: Add timeout to prevent hanging on slow queries
+            let query_future = state.db.query(&sql_query);
+            addjwt = match tokio::time::timeout(std::time::Duration::from_millis(500), query_future).await {
+                Ok(Ok(results)) => results
                     .first()
                     .and_then(|value| value.as_str().map(|s| s.to_string()))
                     .unwrap_or_default(),
-                Err(e) => {
+                Ok(Err(e)) => {
                     eprintln!("Error executing custom JWT query: {}", e);
+                    String::new()
+                }
+                Err(_) => {
+                    eprintln!("Custom JWT query timeout after 500ms");
                     String::new()
                 }
             };
