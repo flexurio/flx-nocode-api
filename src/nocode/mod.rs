@@ -9,3 +9,4 @@ pub mod post;
 pub mod put;
 pub mod trace;
 pub mod validate;
+pub mod consumer;

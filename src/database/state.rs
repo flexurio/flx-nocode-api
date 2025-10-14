@@ -22,6 +22,8 @@ pub struct AppState {
     /// Backend-agnostic data store adapter (initially SQL-backed). Use this for new code paths.
     pub store: Arc<dyn crate::storage::traits::DataStore>,
     pub is_cachedb: bool, // whether store supports caching (e.g. Redis)
+    pub write_queue_enabled: bool, // enable Redis write queue for POST/PUT/DELETE
+    pub write_queue_fast_ack: bool, // return 202 immediately without awaiting enqueue
 }
 
 /// Simple cross-DB parameter type for binding values safely.

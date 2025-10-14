@@ -41,6 +41,7 @@ use nocode::{
     delete::delete, export::export, generate::create_table, get::select, import::import,
     patch::process_sp, post::insert, put::update, trace::process, validate::check_table_design,
 };
+use nocode::consumer::{start_consumer};
 mod core;
 use core::{generate_users, login, register};
 mod model;
@@ -109,18 +110,6 @@ static CONFIG: Lazy<crate::model::Config> = Lazy::new(|| {
 pub(crate) static ISDEBUG: Lazy<bool> = Lazy::new(|| match env::var("DEBUG") {
     Ok(val) => matches!(val.to_lowercase().as_str(), "1" | "true" | "yes"),
     Err(_) => false,
-});
-
-// create static ISLOGGING from env LOGGING
-static ISLOGGING: Lazy<bool> = Lazy::new(|| match env::var("LOGGING") {
-    Ok(val) => matches!(val.to_lowercase().as_str(), "1" | "true" | "yes"),
-    Err(_) => false,
-});
-
-// create static LOC_LOGGING from env LOC_LOGGING
-static LOC_LOGGING: Lazy<String> = Lazy::new(|| match env::var("LOC_LOGGING") {
-    Ok(val) => val,
-    Err(_) => "logs".to_string(),
 });
 
 // Ensure endpoint logging happens only once even if server factory runs multiple times
@@ -611,11 +600,13 @@ async fn main() -> std::io::Result<()> {
     };
 
     let mut is_cachedb = false;
-
+    let mut write_queue_enabled = false;
+    let mut write_queue_fast_ack = true; // default true: handlers return immediately
     // check if REDIS_HOST is configured in .env
-    if env::var("REDIS_HOST") != Ok("".to_string()) {
-        is_cachedb = true;
-    }
+    if let Ok(val) = env::var("REDIS_HOST") { if !val.is_empty() { is_cachedb = true; } }
+    // enable write queue if configured (default false)
+    if let Ok(val) = env::var("WRITE_QUEUE_ENABLED") { write_queue_enabled = matches!(val.to_lowercase().as_str(), "1"|"true"|"yes"); }
+    if let Ok(val) = env::var("WRITE_QUEUE_FAST_ACK") { write_queue_fast_ack = matches!(val.to_lowercase().as_str(), "1"|"true"|"yes"); }
 
     let app_state = web::Data::new(AppState {
         db: db_repo,
@@ -628,6 +619,8 @@ async fn main() -> std::io::Result<()> {
         converter_token: CONFIG.converter_token.clone(),
         store: store_adapter,
         is_cachedb,
+        write_queue_enabled,
+        write_queue_fast_ack,
     });
 
     let (is_createdb, id_user_str) = generate_users(app_state.clone()).await;
@@ -635,6 +628,17 @@ async fn main() -> std::io::Result<()> {
     // Initialize Routes only once, using Lazy
     let _ = &*CONFIG;
     let _ = &*SCHEMAS;
+
+    // Start Redis consumer if write queue enabled
+    if app_state.write_queue_enabled {
+        // verify Redis connectivity early
+        if let Err(e) = crate::database::redis::get_manager().await {
+            eprintln!("WRITE QUEUE enabled but Redis not available: {}", e);
+        } else {
+            start_consumer(app_state.clone(), SCHEMAS.clone()).await;
+            log_output("QUEUE", "BOOT", "consumer", "Write consumer started".to_string(), true);
+        }
+    }
 
     // loop every config.routes and check if table is exist in database
     if is_createdb {
@@ -662,7 +666,8 @@ async fn main() -> std::io::Result<()> {
         if app_state.db_type != "mongodb" {
             // convert id_user_string to i64
             let id_user: i64 = id_user_str.parse().unwrap_or(1);
-            let _ = generate_role_admin(&app_state, ds, id_user, CONFIG.routes.clone());
+            let fut = generate_role_admin(&app_state, ds, id_user, CONFIG.routes.clone());
+            std::mem::drop(fut); // fire-and-forget as before
         }
     }
 

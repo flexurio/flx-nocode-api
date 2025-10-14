@@ -89,6 +89,115 @@ pub async fn insert(
     multipart: Multipart,
     req: actix_web::HttpRequest,
 ) -> impl Responder {
+    // If write queue enabled, parse body and enqueue instead of executing now
+    if state.write_queue_enabled {
+        let t0 = std::time::Instant::now();
+        let mut body_for_queue = match multipart_to_json(multipart).await {
+            Ok(json) => json,
+            Err(e) => {
+                return HttpResponse::BadRequest().json(WebResponse {
+                    success: false,
+                    message: format!("Failed to parse multipart data: {}", e),
+                    total_data: 0,
+                    data: Value::Null,
+                });
+            }
+        };
+
+        // Basic auth/authorization check before enqueueing (fast fail on invalid token)
+        let mut actor_id_opt: Option<String> = None;
+        if !state.route_publics.contains(&route) {
+            let req_for_auth = req.clone();
+            let claims = match get_user_info_from_token(req_for_auth, state.clone()) {
+                Ok(c) => c,
+                Err(_) => {
+                    return HttpResponse::Unauthorized().json(WebResponse {
+                        success: false,
+                        message: "Invalid token".to_string(),
+                        total_data: 0,
+                        data: Value::Null,
+                    });
+                }
+            };
+            if !check_access(&claims, &route, "write") {
+                return HttpResponse::Unauthorized().json(WebResponse {
+                    success: false,
+                    message: "Unauthorized".to_string(),
+                    total_data: 0,
+                    data: Value::Null,
+                });
+            }
+            // add created_by_id into body based on schema type
+            let schema = filter_table_schema(&table_schemas, route.clone()).await;
+            if let Some(col) = schema.columns.iter().find(|c| c.name == "created_by_id") {
+                let id_val = &claims.id;
+                actor_id_opt = Some(id_val.clone());
+                if col.type_data.contains("int") {
+                    if let Ok(n) = id_val.parse::<i64>() {
+                        if let Some(map) = body_for_queue.as_object_mut() { map.insert("created_by_id".into(), serde_json::json!(n)); }
+                    } else if let Some(map) = body_for_queue.as_object_mut() { map.insert("created_by_id".into(), serde_json::json!(id_val.clone())); }
+                } else if col.type_data.contains("float") || col.type_data.contains("double") || col.type_data.contains("decimal") || col.type_data.contains("money") {
+                    if let Ok(f) = id_val.parse::<f64>() {
+                        if let Some(map) = body_for_queue.as_object_mut() { map.insert("created_by_id".into(), serde_json::json!(f)); }
+                    } else if let Some(map) = body_for_queue.as_object_mut() { map.insert("created_by_id".into(), serde_json::json!(id_val.clone())); }
+                } else if let Some(map) = body_for_queue.as_object_mut() { map.insert("created_by_id".into(), serde_json::json!(id_val.clone())); }
+            }
+        }
+
+        let job = crate::nocode::consumer::WriteJob {
+            route: route.clone(),
+            op: crate::nocode::consumer::WriteOpKind::Post,
+            body: body_for_queue,
+            headers: vec![],
+            enqueued_at: chrono::Utc::now().to_rfc3339(),
+            actor_id: actor_id_opt,
+        };
+        if state.write_queue_fast_ack {
+            // Fire-and-forget enqueue to avoid waiting for Redis roundtrip
+            tokio::spawn(async move {
+                let _ = crate::nocode::consumer::enqueue_job(&job).await;
+            });
+            crate::log::log_output(
+                "QUEUE",
+                "POST-HANDLER",
+                route.as_str(),
+                format!("queued (async) in {} ms", t0.elapsed().as_millis()),
+                true,
+            );
+            return HttpResponse::Accepted().json(WebResponse {
+                success: true,
+                message: "Enqueued".to_string(),
+                total_data: 0,
+                data: Value::Null,
+            });
+        } else {
+            match crate::nocode::consumer::enqueue_job(&job).await {
+                Ok(_) => {
+                    crate::log::log_output(
+                        "QUEUE",
+                        "POST-HANDLER",
+                        route.as_str(),
+                        format!("queued in {} ms", t0.elapsed().as_millis()),
+                        true,
+                    );
+                    return HttpResponse::Accepted().json(WebResponse {
+                        success: true,
+                        message: "Enqueued".to_string(),
+                        total_data: 0,
+                        data: Value::Null,
+                    });
+                }
+                Err(e) => {
+                    return HttpResponse::InternalServerError().json(WebResponse {
+                        success: false,
+                        message: format!("Queue error: {}", e),
+                        total_data: 0,
+                        data: Value::Null,
+                    });
+                }
+            }
+        }
+    }
     let mut claims = Claims::default();
     if !state.route_publics.contains(&route) {
         let req_for_auth = req.clone();

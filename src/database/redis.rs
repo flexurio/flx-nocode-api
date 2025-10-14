@@ -36,7 +36,7 @@ fn build_redis_connection_url() -> Result<String> {
     Ok(format!("redis://{}{}:{}/{}", auth_part, host, port, db))
 }
 
-async fn get_manager() -> Result<&'static ConnectionManager> {
+pub(crate) async fn get_manager() -> Result<&'static ConnectionManager> {
     if let Some(mgr) = REDIS_MANAGER.get() {
         return Ok(mgr);
     }
@@ -102,4 +102,25 @@ pub async fn redis_get_json<T: serde::de::DeserializeOwned>(key: &str) -> Result
         Some(s) => Ok(Some(serde_json::from_str::<T>(&s)?)),
         None => Ok(None),
     }
+}
+
+/// Delete all keys matching the given prefix (prefix*) using KEYS then DEL.
+/// Returns the number of keys deleted.
+pub async fn redis_delete_by_prefix(prefix: &str) -> Result<usize> {
+    let pattern = format!("{}*", prefix);
+    let mut conn = get_manager().await?.clone();
+    let keys: Vec<String> = redis::cmd("KEYS")
+        .arg(&pattern)
+        .query_async(&mut conn)
+        .await
+        .map_err(|e| anyhow!("Redis KEYS failed: {}", e))?;
+    if keys.is_empty() {
+        return Ok(0);
+    }
+    let deleted: i64 = redis::cmd("DEL")
+        .arg(keys)
+        .query_async(&mut conn)
+        .await
+        .map_err(|e| anyhow!("Redis DEL failed: {}", e))?;
+    Ok(deleted.max(0) as usize)
 }

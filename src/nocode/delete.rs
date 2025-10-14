@@ -28,6 +28,88 @@ pub async fn delete(
     path: Path<String>,
     req: actix_web::HttpRequest,
 ) -> impl Responder {
+    if state.write_queue_enabled {
+        let t0 = std::time::Instant::now();
+        let id_raw: String = path.into_inner();
+        // auth check before enqueue
+        let mut actor_id_opt: Option<String> = None;
+        if !state.route_publics.contains(&route) {
+            let req_for_auth = req.clone();
+            let claims = match get_user_info_from_token(req_for_auth, state.clone()) {
+                Ok(c) => c,
+                Err(_) => {
+                    return HttpResponse::Unauthorized().json(WebResponse {
+                        success: false,
+                        message: "Invalid token".to_string(),
+                        total_data: 0,
+                        data: Value::Null,
+                    });
+                }
+            };
+            if !check_access(&claims, &route, "delete") {
+                return HttpResponse::Unauthorized().json(WebResponse {
+                    success: false,
+                    message: "Unauthorized".to_string(),
+                    total_data: 0,
+                    data: Value::Null,
+                });
+            }
+            actor_id_opt = Some(claims.id.clone());
+        }
+
+        let job = crate::nocode::consumer::WriteJob {
+            route: route.clone(),
+            op: crate::nocode::consumer::WriteOpKind::Delete { id: id_raw },
+            body: Value::Null,
+            headers: vec![],
+            enqueued_at: chrono::Utc::now().to_rfc3339(),
+            actor_id: actor_id_opt,
+        };
+        if state.write_queue_fast_ack {
+            tokio::spawn(async move {
+                let _ = crate::nocode::consumer::enqueue_job(&job).await;
+            });
+            log_output(
+                "QUEUE",
+                "DELETE-HANDLER",
+                route.as_str(),
+                format!("queued (async) in {} ms", t0.elapsed().as_millis()),
+                true,
+            );
+            return HttpResponse::Accepted().json(WebResponse {
+                success: true,
+                message: "Enqueued".to_string(),
+                total_data: 0,
+                data: Value::Null,
+            });
+        } else {
+            match crate::nocode::consumer::enqueue_job(&job).await {
+                Ok(_) => {
+                    log_output(
+                        "QUEUE",
+                        "DELETE-HANDLER",
+                        route.as_str(),
+                        format!("queued in {} ms", t0.elapsed().as_millis()),
+                        true,
+                    );
+                    return HttpResponse::Accepted().json(WebResponse {
+                        success: true,
+                        message: "Enqueued".to_string(),
+                        total_data: 0,
+                        data: Value::Null,
+                    });
+                }
+                Err(e) => {
+                    return HttpResponse::InternalServerError().json(WebResponse {
+                        success: false,
+                        message: format!("Queue error: {}", e),
+                        total_data: 0,
+                        data: Value::Null,
+                    });
+                }
+            }
+        }
+    }
     let table_schemas = &schemas.0;
     let reference_foreign_keys = &schemas.1;
     let mut claims = Claims::default();

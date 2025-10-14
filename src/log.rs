@@ -1,42 +1,10 @@
 // create function to log message and save it to file
 
-use crate::{ISDEBUG, ISLOGGING, LOC_LOGGING};
+use crate::{ISDEBUG};
 use colored::Colorize;
 use regex::Regex;
 use std::fs::OpenOptions;
 use std::io::Write;
-
-pub fn log_to_file(message: &str) {
-    let file_path = LOC_LOGGING.clone() + "/.log.txt";
-    let path = std::path::Path::new(&file_path);
-    if let Some(parent) = path.parent() {
-        if !parent.exists() {
-            if let Err(e) = std::fs::create_dir_all(parent) {
-                eprintln!("Failed to create log directory: {}", e);
-                return;
-            }
-        }
-    }
-    let mut file = match OpenOptions::new().create(true).append(true).open(path) {
-        Ok(file) => file,
-        Err(e) => {
-            eprintln!("Failed to open log file: {}", e);
-            return;
-        }
-    };
-    // Regex untuk mendeteksi karakter ANSI escape
-    let ansi_escape = match Regex::new(r"\x1B\[[0-9;]*[mK]") {
-        Ok(regex) => regex,
-        Err(e) => {
-            eprintln!("Failed to compile ANSI regex: {}", e);
-            return;
-        }
-    };
-    let clean_message = ansi_escape.replace_all(message, "").to_string();
-    if let Err(e) = writeln!(file, "{}", clean_message) {
-        eprintln!("Failed to write to log file: {}", e);
-    }
-}
 
 pub fn log_output(tipe: &str, title: &str, ssubtitle: &str, body: String, print_datetime: bool) {
     let mut subtitle = ssubtitle.to_string();
@@ -71,8 +39,4 @@ pub fn log_output(tipe: &str, title: &str, ssubtitle: &str, body: String, print_
         }
     }
 
-    if *ISLOGGING {
-        log_to_file(s_message_1.as_str());
-        log_to_file(&body);
-    }
 }
