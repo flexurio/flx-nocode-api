@@ -959,10 +959,12 @@ async fn main() -> std::io::Result<()> {
                             // register create_nocode
                             .route(web::post().to(
                                 move |state: web::Data<AppState>,
+                                      parameters: web::Query<Value>,
                                       multipart: Multipart,
                                       req: actix_web::HttpRequest| {
                                     insert(
                                         state,
+                                        parameters,
                                         route_post.to_string(),
                                         SCHEMAS.0.clone().into(),
                                         multipart,
@@ -1033,19 +1035,22 @@ async fn main() -> std::io::Result<()> {
                             // register delete_nocode
                             .route(web::delete().to(
                                 move |state: web::Data<AppState>,
+                                      parameters: web::Query<Value>,
                                       path: Path<String>,
                                       req: actix_web::HttpRequest| {
-                                    delete(state, route_delete.to_string(), SCHEMAS.clone(), path, req)
+                                    delete(state,parameters, route_delete.to_string(), SCHEMAS.clone(), path, req)
                                 },
                             ))
                             // register create_nocode
                             .route(web::put().to(
                                 move |state: web::Data<AppState>,
+                                      parameters: web::Query<Value>,
                                       multipart: Multipart,
                                       path: Path<String>,
                                       req: actix_web::HttpRequest| {
                                     update(
                                         state,
+                                        parameters,
                                         route_put.to_string(),
                                         SCHEMAS.clone(),
                                         multipart,
@@ -1076,10 +1081,12 @@ async fn main() -> std::io::Result<()> {
                         web::resource(format!("/import/{}", route_import.as_ref()))
                             .route(web::post().to(
                                 move |state: web::Data<AppState>,
+                                      parameters: web::Query<Value>,
                                       multipart: Multipart,
                                       req: actix_web::HttpRequest| {
                                     import(
                                         state,
+                                        parameters,
                                         route_import.to_string(),
                                         SCHEMAS.clone(),
                                         multipart,

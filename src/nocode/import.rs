@@ -1,4 +1,5 @@
 use actix_multipart::Multipart;
+use actix_web::web;
 use actix_web::{web::Data, HttpResponse, Responder};
 use futures::StreamExt;
 use serde_json::{json, Map, Value};
@@ -24,6 +25,7 @@ use crate::storage::ast::{Query as Q, Filter as F};
 // CSV/XLSX import into a route table
 pub async fn import(
     state: Data<AppState>,
+    parameters: web::Query<Value>,
     route: String,
     schemas: Arc<(Vec<TableSchema>, Vec<ReferenceForeignKey>)>,
     mut multipart: Multipart,
@@ -302,6 +304,136 @@ pub async fn import(
                 let next_num: i64 = last.trim_start_matches('0').parse().unwrap_or(0);
                 id_ctx = Some((prefix, width, next_num));
             }
+        }
+    }
+
+    // Decide queue mode like POST: optional isqueue=true to enable queuing when WRITE_QUEUE_ENABLED
+    let mut isqueue = false;
+    if let Some(map) = parameters.clone().into_inner().as_object() {
+        if let Some(v) = map.get("isqueue") {
+            isqueue = *v == Value::Bool(true) || *v == Value::String("true".to_string());
+        }
+    }
+
+    if state.write_queue_enabled && isqueue {
+        let t0 = std::time::Instant::now();
+        // actor id for created_by_id in consumer
+        let mut actor_id_opt: Option<String> = None;
+        if !state.route_publics.contains(&route) {
+            actor_id_opt = Some(claims.id.clone());
+        }
+
+        // Prepare per-row JSON documents aligned with final_columns, merging additional columns
+        let mut docs: Vec<Value> = Vec::with_capacity(rows.len());
+        let mut id_ctx_mut = id_ctx.clone();
+        for (i_row, row) in rows.iter().enumerate() {
+            let mut doc = serde_json::Map::new();
+            for col in final_columns.iter() {
+                let mut value_str = if let Some(additional_value) = additional_columns.get(&col.name) {
+                    json_value_to_string(additional_value)
+                } else {
+                    row.get(&col.name).map(json_value_to_string).unwrap_or_default()
+                };
+
+                // Handle id generation if configured and missing
+                if col.name == "id" && value_str.is_empty() {
+                    if let Some((ref prefix, width, ref mut next_num)) = id_ctx_mut {
+                        *next_num += 1;
+                        let num_str = format!("{:0>len$}", *next_num, len = width);
+                        value_str = format!("{}/{}", prefix, num_str);
+                    } else if !all_rows_have_id {
+                        return HttpResponse::BadRequest().json(WebResponse {
+                            success: false,
+                            message: format!("Row {} missing id and no function configured", i_row + 1),
+                            total_data: 0,
+                            data: Value::Null,
+                        });
+                    }
+                }
+
+                // Encrypt if needed
+                if col.encrypt && !value_str.is_empty() {
+                    let is_enc = is_encrypted_string(&value_str);
+                    if !is_enc { value_str = encrypt(state.encrypt_key.clone(), value_str); }
+                }
+
+                // Type JSON value
+                let json_val = if value_str.is_empty() && col.nullable {
+                    Value::Null
+                } else if (col.type_data.contains("int") || col.type_data.contains("float") || col.type_data.contains("double") || col.type_data.contains("decimal") || col.type_data.contains("money")) && !value_str.is_empty() {
+                    if let Ok(n) = value_str.parse::<i64>() { Value::from(n) }
+                    else if let Ok(f) = value_str.parse::<f64>() { Value::from(f) }
+                    else { Value::from(value_str) }
+                } else {
+                    Value::from(value_str)
+                };
+                doc.insert(col.name.clone(), json_val);
+            }
+            docs.push(Value::Object(doc));
+        }
+
+        // Enqueue all rows as POST jobs
+        let route_cl = route.clone();
+        let enq_count = docs.len();
+        if state.write_queue_fast_ack {
+            tokio::spawn(async move {
+                for body in docs {
+                    let job = crate::nocode::consumer::WriteJob {
+                        route: route_cl.clone(),
+                        op: crate::nocode::consumer::WriteOpKind::Post,
+                        body,
+                        headers: vec![],
+                        enqueued_at: chrono::Utc::now().to_rfc3339(),
+                        actor_id: actor_id_opt.clone(),
+                    };
+                    let _ = crate::nocode::consumer::enqueue_job(&job).await;
+                }
+            });
+            log_output(
+                "QUEUE",
+                "IMPORT-HANDLER",
+                route.as_str(),
+                format!("queued (async) {} rows in {} ms", enq_count, t0.elapsed().as_millis()),
+                true,
+            );
+            return HttpResponse::Accepted().json(WebResponse {
+                success: true,
+                message: format!("Enqueued {} rows", rows.len()),
+                total_data: rows.len() as i32,
+                data: Value::Null,
+            });
+        } else {
+            for body in docs.into_iter() {
+                let job = crate::nocode::consumer::WriteJob {
+                    route: route.clone(),
+                    op: crate::nocode::consumer::WriteOpKind::Post,
+                    body,
+                    headers: vec![],
+                    enqueued_at: chrono::Utc::now().to_rfc3339(),
+                    actor_id: actor_id_opt.clone(),
+                };
+                if let Err(e) = crate::nocode::consumer::enqueue_job(&job).await {
+                    return HttpResponse::InternalServerError().json(WebResponse {
+                        success: false,
+                        message: format!("Queue error: {}", e),
+                        total_data: 0,
+                        data: Value::Null,
+                    });
+                }
+            }
+            log_output(
+                "QUEUE",
+                "IMPORT-HANDLER",
+                route.as_str(),
+                format!("queued {} rows in {} ms", rows.len(), t0.elapsed().as_millis()),
+                true,
+            );
+            return HttpResponse::Accepted().json(WebResponse {
+                success: true,
+                message: format!("Enqueued {} rows", rows.len()),
+                total_data: rows.len() as i32,
+                data: Value::Null,
+            });
         }
     }
 

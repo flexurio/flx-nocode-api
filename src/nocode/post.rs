@@ -1,4 +1,5 @@
 use actix_multipart::Multipart;
+use actix_web::web;
 use actix_web::{web::Data, HttpResponse, Responder};
 use serde_json::Value;
 use regex::Regex;
@@ -84,25 +85,61 @@ async fn validate_foreign_keys_batch(
 // NCO-POST
 pub async fn insert(
     state: Data<AppState>,
+    parameters: web::Query<Value>,
     route: String,
     table_schemas: Arc<Vec<TableSchema>>,
     multipart: Multipart,
     req: actix_web::HttpRequest,
 ) -> impl Responder {
     // If write queue enabled, parse body and enqueue instead of executing now
-    if state.write_queue_enabled {
-        let t0 = std::time::Instant::now();
-        let mut body_for_queue = match multipart_to_json(multipart).await {
-            Ok(json) => json,
-            Err(e) => {
-                return HttpResponse::BadRequest().json(WebResponse {
+    let mut claims = Claims::default();
+    if !state.route_publics.contains(&route) {
+        let req_for_auth = req.clone();
+        claims = match get_user_info_from_token(req_for_auth, state.clone()) {
+            Ok(c) => c,
+            Err(_) => {
+                return HttpResponse::Unauthorized().json(WebResponse {
                     success: false,
-                    message: format!("Failed to parse multipart data: {}", e),
+                    message: "Invalid token".to_string(),
                     total_data: 0,
                     data: Value::Null,
                 });
             }
         };
+
+
+        if !check_access(&claims, &route, "write") {
+            return HttpResponse::Unauthorized().json(WebResponse {
+                success: false,
+                message: "Unauthorized".to_string(),
+                total_data: 0,
+                data: Value::Null,
+            });
+        }
+    }
+
+    let mut function_id_split: Vec<String> = Vec::new();
+
+    let mut body = match multipart_to_json(multipart).await {
+        Ok(json) => json,
+        Err(e) => {
+            return HttpResponse::BadRequest().json(WebResponse {
+                success: false,
+                message: format!("Failed to parse multipart data: {}", e),
+                total_data: 0,
+                data: Value::Null,
+            });
+        }
+    };
+
+    let mut isqueue = false;
+    if let Some(map) = parameters.clone().into_inner().as_object() {
+        if let Some(v) = map.get("isqueue") {
+            isqueue = *v == Value::Bool(true) || *v == Value::String("true".to_string());
+        }
+    }    
+    if state.write_queue_enabled && isqueue {
+        let t0 = std::time::Instant::now();
 
         // Basic auth/authorization check before enqueueing (fast fail on invalid token)
         let mut actor_id_opt: Option<String> = None;
@@ -134,20 +171,20 @@ pub async fn insert(
                 actor_id_opt = Some(id_val.clone());
                 if col.type_data.contains("int") {
                     if let Ok(n) = id_val.parse::<i64>() {
-                        if let Some(map) = body_for_queue.as_object_mut() { map.insert("created_by_id".into(), serde_json::json!(n)); }
-                    } else if let Some(map) = body_for_queue.as_object_mut() { map.insert("created_by_id".into(), serde_json::json!(id_val.clone())); }
+                        if let Some(map) = body.as_object_mut() { map.insert("created_by_id".into(), serde_json::json!(n)); }
+                    } else if let Some(map) = body.as_object_mut() { map.insert("created_by_id".into(), serde_json::json!(id_val.clone())); }
                 } else if col.type_data.contains("float") || col.type_data.contains("double") || col.type_data.contains("decimal") || col.type_data.contains("money") {
                     if let Ok(f) = id_val.parse::<f64>() {
-                        if let Some(map) = body_for_queue.as_object_mut() { map.insert("created_by_id".into(), serde_json::json!(f)); }
-                    } else if let Some(map) = body_for_queue.as_object_mut() { map.insert("created_by_id".into(), serde_json::json!(id_val.clone())); }
-                } else if let Some(map) = body_for_queue.as_object_mut() { map.insert("created_by_id".into(), serde_json::json!(id_val.clone())); }
+                        if let Some(map) = body.as_object_mut() { map.insert("created_by_id".into(), serde_json::json!(f)); }
+                    } else if let Some(map) = body.as_object_mut() { map.insert("created_by_id".into(), serde_json::json!(id_val.clone())); }
+                } else if let Some(map) = body.as_object_mut() { map.insert("created_by_id".into(), serde_json::json!(id_val.clone())); }
             }
         }
 
         let job = crate::nocode::consumer::WriteJob {
             route: route.clone(),
             op: crate::nocode::consumer::WriteOpKind::Post,
-            body: body_for_queue,
+            body,
             headers: vec![],
             enqueued_at: chrono::Utc::now().to_rfc3339(),
             actor_id: actor_id_opt,
@@ -198,47 +235,7 @@ pub async fn insert(
             }
         }
     }
-    let mut claims = Claims::default();
-    if !state.route_publics.contains(&route) {
-        let req_for_auth = req.clone();
-        claims = match get_user_info_from_token(req_for_auth, state.clone()) {
-            Ok(c) => c,
-            Err(_) => {
-                return HttpResponse::Unauthorized().json(WebResponse {
-                    success: false,
-                    message: "Invalid token".to_string(),
-                    total_data: 0,
-                    data: Value::Null,
-                });
-            }
-        };
 
-
-        if !check_access(&claims, &route, "write") {
-            return HttpResponse::Unauthorized().json(WebResponse {
-                success: false,
-                message: "Unauthorized".to_string(),
-                total_data: 0,
-                data: Value::Null,
-            });
-        }
-    }
-
-    let mut function_id_split: Vec<String> = Vec::new();
-
-    let mut body = match multipart_to_json(multipart).await {
-        Ok(json) => json,
-        Err(e) => {
-            return HttpResponse::BadRequest().json(WebResponse {
-                success: false,
-                message: format!("Failed to parse multipart data: {}", e),
-                total_data: 0,
-                data: Value::Null,
-            });
-        }
-    };
-
-    // Rate limiting removed; handled globally.
 
     // Generate SQL query INSERT to table in variable route, from data structure table in table_schemas
     let table_schema: TableSchema = filter_table_schema(&table_schemas, route.clone()).await;
@@ -959,7 +956,7 @@ pub async fn insert(
             let _ = tx.rollback().await;
             let mut err_message = err.to_string().to_lowercase();
             if err_message.contains("created_by_id") {
-                err_message += format!(" \n id from token : {}", &claims.id).as_str();
+                err_message += format!(" \n id user from token : `{}`", &claims.id).as_str();
             }
             HttpResponse::InternalServerError().json(WebResponse {
                 success: false,

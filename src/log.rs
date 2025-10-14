@@ -2,13 +2,9 @@
 
 use crate::{ISDEBUG};
 use colored::Colorize;
-use regex::Regex;
-use std::fs::OpenOptions;
-use std::io::Write;
 
 pub fn log_output(tipe: &str, title: &str, ssubtitle: &str, body: String, print_datetime: bool) {
     let mut subtitle = ssubtitle.to_string();
-    let mut s_message_1 = "".to_string();
     if *ISDEBUG {
         // make subtitle length to 6
         if !tipe.contains("QUERY") && subtitle.len() < 6 {
@@ -22,7 +18,7 @@ pub fn log_output(tipe: &str, title: &str, ssubtitle: &str, body: String, print_
             s_datetime = "".to_string();
         }
 
-        s_message_1 = format!(
+        let s_message_1 = format!(
             "# {}, {} {} at {}: ",
             tipe.yellow(),
             title.cyan(),

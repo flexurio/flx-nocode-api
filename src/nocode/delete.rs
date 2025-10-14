@@ -1,6 +1,5 @@
 use actix_web::{
-    web::{Data, Path},
-    HttpResponse, Responder,
+    HttpResponse, Responder, web::{self, Data, Path}
 };
 use serde_json::Value;
 
@@ -23,14 +22,51 @@ use crate::storage::ast::{Filter as QF, Val as QV};
 // NCO-DELETE
 pub async fn delete(
     state: Data<AppState>,
+    parameters: web::Query<Value>,
     route: String,
     schemas: Arc<(Vec<TableSchema>, Vec<ReferenceForeignKey>)>,
     path: Path<String>,
     req: actix_web::HttpRequest,
 ) -> impl Responder {
-    if state.write_queue_enabled {
+    let table_schemas = &schemas.0;
+    let reference_foreign_keys = &schemas.1;
+    let mut claims = Claims::default();
+    if !state.route_publics.contains(&route) {
+        let req_for_auth = req.clone();
+        claims = match get_user_info_from_token(req_for_auth, state.clone()) {
+            Ok(c) => c,
+            Err(_) => {
+                return HttpResponse::Unauthorized().json(WebResponse {
+                    success: false,
+                    message: "Invalid token".to_string(),
+                    total_data: 0,
+                    data: Value::Null,
+                });
+            }
+        };
+
+        if !check_access(&claims, &route, "delete") {
+            return HttpResponse::Unauthorized().json(WebResponse {
+                success: false,
+                message: "Unauthorized".to_string(),
+                total_data: 0,
+                data: Value::Null,
+            });
+        }
+    }
+
+    let id_raw: String = path.into_inner();
+    // Rate limiting removed; handled globally
+
+    let mut isqueue = false;
+    if let Some(map) = parameters.clone().into_inner().as_object() {
+        if let Some(v) = map.get("isqueue") {
+            isqueue = *v == Value::Bool(true) || *v == Value::String("true".to_string());
+        }
+    }    
+
+    if state.write_queue_enabled && isqueue {
         let t0 = std::time::Instant::now();
-        let id_raw: String = path.into_inner();
         // auth check before enqueue
         let mut actor_id_opt: Option<String> = None;
         if !state.route_publics.contains(&route) {
@@ -110,35 +146,6 @@ pub async fn delete(
             }
         }
     }
-    let table_schemas = &schemas.0;
-    let reference_foreign_keys = &schemas.1;
-    let mut claims = Claims::default();
-    if !state.route_publics.contains(&route) {
-        let req_for_auth = req.clone();
-        claims = match get_user_info_from_token(req_for_auth, state.clone()) {
-            Ok(c) => c,
-            Err(_) => {
-                return HttpResponse::Unauthorized().json(WebResponse {
-                    success: false,
-                    message: "Invalid token".to_string(),
-                    total_data: 0,
-                    data: Value::Null,
-                });
-            }
-        };
-
-        if !check_access(&claims, &route, "delete") {
-            return HttpResponse::Unauthorized().json(WebResponse {
-                success: false,
-                message: "Unauthorized".to_string(),
-                total_data: 0,
-                data: Value::Null,
-            });
-        }
-    }
-
-    let id_raw: String = path.into_inner();
-    // Rate limiting removed; handled globally
 
     let table_schema = filter_table_schema(table_schemas, route.clone()).await;
     if table_schema.table.is_empty() {
