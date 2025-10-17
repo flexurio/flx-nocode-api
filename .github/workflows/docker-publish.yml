@@ -11,6 +11,8 @@ on:
       - main
   workflow_dispatch:
 
+permissions:
+  contents: read
 env:
   DOCKER_IMAGE: jayuda/flx_nocode_api
   PLATFORMS: linux/amd64,linux/arm64
