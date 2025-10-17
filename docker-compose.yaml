@@ -1,6 +1,11 @@
 services:
   rust-app:
-    build: .
+    # Option 1: Use pre-built image from Docker Hub (recommended for production)
+    image: jayuda/flx_nocode_api:latest
+    
+    # Option 2: Build from local Dockerfile (uncomment to use)
+    # build: .
+    
     container_name: flx-nocode-api
     restart: always
     ports:
