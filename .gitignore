@@ -13,3 +13,4 @@ build_apple.sh
 __pycache__/locustfile.cpython-313.pyc
 __pycache__/locustfile.cpython-313.pyc
 __pycache__
+__pycache__/*
