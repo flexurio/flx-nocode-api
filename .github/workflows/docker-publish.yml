@@ -7,6 +7,8 @@ on:
       - 'v*.*.*-*'  # Support pre-release tags like v1.0.0-beta
   workflow_dispatch:  # Allow manual trigger from GitHub UI
 
+permissions:
+  contents: read
 env:
   DOCKER_IMAGE: jayuda/flx_nocode_api
   PLATFORMS: linux/amd64,linux/arm64
