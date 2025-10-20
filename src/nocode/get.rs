@@ -605,11 +605,10 @@ pub async fn select(
                     });
                 }
             };
-            let total_data = 9999;
             let result = WebResponse {
                 success: true,
                 message: "Data found".to_string(),
-                total_data,
+                total_data: 9999,
                 data: Value::Array(rows),
             };
             
@@ -624,7 +623,7 @@ pub async fn select(
                                     "REDIS",
                                     "CACHE WRITE",
                                     route.as_str(),
-                                    format!("Key: {}, TTL: {}s, Records: {}", k, ttl, total_data),
+                                    format!("Key: {}, TTL: {}s, Records: {}", k, ttl, 9999),
                                     true,
                                 );
                             }
