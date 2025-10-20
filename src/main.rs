@@ -259,7 +259,6 @@ async fn main() -> std::io::Result<()> {
     // Load .env early so DEBUG/LOG_* are visible before any Lazy env reads
     dotenv().ok();
     // Initialize async, non-blocking logger (no-op if DEBUG is off)
-    crate::log::init_logger();
     // Early CLI handling: print version and exit
     {
         let mut args = env::args();
