@@ -4,6 +4,7 @@ use actix_web::web::Data;
 use anyhow::{anyhow, Result};
 use chrono::Utc;
 use redis::AsyncCommands;
+use redis::aio::MultiplexedConnection;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::task::JoinSet;
@@ -41,35 +42,20 @@ pub async fn enqueue_job(job: &WriteJob) -> Result<i64> {
     let client = crate::database::redis::get_manager().await?;
     let mut conn = client.get_multiplexed_async_connection().await?;
     let len: i64 = conn.lpush(WriteJob::queue_key(), payload).await?;
-    log_output(
-        "QUEUE",
-        "ENQUEUE",
-        job.route.as_str(),
-        format!("op={:?}, new_len={}", job.op, len),
-        true,
-    );
     Ok(len)
 }
 
-/// Blocking pop with timeout (BRPOP with 1s) to allow graceful shutdown checks.
-pub async fn dequeue_job() -> Result<Option<WriteJob>> {
-    let client = crate::database::redis::get_manager().await?;
-    let mut conn = client.get_multiplexed_async_connection().await?;
+
+/// BRPOP with an existing Redis connection. Returns None on timeout.
+async fn dequeue_with_conn(conn: &mut MultiplexedConnection) -> Result<Option<WriteJob>> {
     // BRPOP returns (key, value)
     let res: Option<(String, String)> = redis::cmd("BRPOP")
         .arg(WriteJob::queue_key())
-        .arg(1) // seconds
-        .query_async(&mut conn)
+        .arg(10) // seconds (longer to reduce wakeups)
+        .query_async(conn)
         .await?;
     if let Some((_k, v)) = res {
         let job: WriteJob = serde_json::from_str(&v)?;
-        log_output(
-            "QUEUE",
-            "DEQUEUE",
-            job.route.as_str(),
-            format!("op={:?}", job.op),
-            true,
-        );
         Ok(Some(job))
     } else {
         Ok(None)
@@ -99,30 +85,51 @@ pub async fn start_consumer(state: Data<AppState>, schemas: Arc<(Vec<TableSchema
             let max_consecutive_errors = 10; // Circuit breaker threshold
             let mut backoff_ms = 250u64; // Initial backoff
             
+            // Establish a dedicated Redis connection for this worker and reuse it
+            let client = match crate::database::redis::get_manager().await {
+                Ok(c) => c,
+                Err(e) => {
+                    log_output(
+                        "QUEUE",
+                        "DEQUEUE-ERR",
+                        format!("worker-{}", idx).as_str(),
+                        format!("{}", e),
+                        false,
+                    );
+                    // If we cannot even get a client, enter a slow retry loop
+                    loop {
+                        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                        if let Ok(c2) = crate::database::redis::get_manager().await {
+                            break c2;
+                        }
+                    }
+                }
+            };
+            let mut conn = loop {
+                match client.get_multiplexed_async_connection().await {
+                    Ok(c) => break c,
+                    Err(e) => {
+                        log_output(
+                            "QUEUE",
+                            "DEQUEUE-ERR",
+                            format!("worker-{}", idx).as_str(),
+                            format!("{}", e),
+                            false,
+                        );
+                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    }
+                }
+            };
+            
             loop {
-                match dequeue_job().await {
+                match dequeue_with_conn(&mut conn).await {
                     Ok(Some(job)) => {
                         // Reset error counter on success
                         consecutive_errors = 0;
                         backoff_ms = 250;
                         
-                        log_output(
-                            "QUEUE",
-                            "EXEC-START",
-                            job.route.as_str(),
-                            format!("worker={}, op={:?}", idx, job.op),
-                            true,
-                        );
                         if let Err(e) = execute_job(state_cl.clone(), schemas_cl.clone(), job).await {
                             log_output("QUEUE", "EXEC-ERR", format!("worker-{}", idx).as_str(), format!("{}", e), false);
-                        } else {
-                            log_output(
-                                "QUEUE",
-                                "EXEC-OK",
-                                format!("worker-{}", idx).as_str(),
-                                "done".to_string(),
-                                true,
-                            );
                         }
                     }
                     Ok(None) => {
@@ -141,6 +148,22 @@ pub async fn start_consumer(state: Data<AppState>, schemas: Arc<(Vec<TableSchema
                                 format!("{} (count: {})", e, consecutive_errors), 
                                 false
                             );
+                        }
+
+                        // Attempt to re-establish the connection on error
+                        match client.get_multiplexed_async_connection().await {
+                            Ok(c) => {
+                                conn = c;
+                            }
+                            Err(e2) => {
+                                log_output(
+                                    "QUEUE",
+                                    "DEQUEUE-ERR",
+                                    format!("worker-{}", idx).as_str(),
+                                    format!("reconnect failed: {}", e2),
+                                    false,
+                                );
+                            }
                         }
                         
                         // Circuit breaker: if too many errors, sleep longer
@@ -221,15 +244,11 @@ async fn exec_post(state: Data<AppState>, route: String, table_schemas: Arc<Vec<
         }
     }
 
-    log_output("QUEUE", "INSERT", route.as_str(), format!("table={}, body_keys={}", schema.table, schema.post.columns.len()), true);
     match state.store.insert(&schema.table, Value::Object(doc)).await {
         Ok(_) => {
-            log_output("QUEUE", "INSERT-OK", route.as_str(), schema.table.clone(), true);
             // Invalidate cached GET results for this route (public scope)
             let cache_prefix = crate::database::redis::build_key_prefix("public", &route);
-            if let Ok(n) = crate::database::redis::redis_delete_by_prefix(&cache_prefix).await {
-                log_output("REDIS", "INVALIDATE", route.as_str(), format!("prefix={}, deleted={}", cache_prefix, n), true);
-            }
+            let _ = crate::database::redis::redis_delete_by_prefix(&cache_prefix).await;
             Ok(())
         }
         Err(e) => {
@@ -269,14 +288,10 @@ async fn exec_put(state: Data<AppState>, route: String, schemas: Arc<(Vec<TableS
     let filt_val = if let Ok(n) = id_for_filter.parse::<i64>() { QV::I64(n) } else { QV::Str(id_for_filter) };
     let filter = Some(QF::Eq("id".into(), filt_val));
 
-    log_output("QUEUE", "UPDATE", route.as_str(), format!("table={}, id={}", schema.table, id), true);
     match state.store.update(&schema.table, filter, Value::Object(patch)).await {
         Ok(_) => {
-            log_output("QUEUE", "UPDATE-OK", route.as_str(), schema.table.clone(), true);
             let cache_prefix = crate::database::redis::build_key_prefix("public", &route);
-            if let Ok(n) = crate::database::redis::redis_delete_by_prefix(&cache_prefix).await {
-                log_output("REDIS", "INVALIDATE", route.as_str(), format!("prefix={}, deleted={}", cache_prefix, n), true);
-            }
+            let _ = crate::database::redis::redis_delete_by_prefix(&cache_prefix).await;
             Ok(())
         }
         Err(e) => {
@@ -300,10 +315,9 @@ async fn exec_delete(state: Data<AppState>, route: String, schemas: Arc<(Vec<Tab
         patch.insert("deleted_at".into(), Value::String(Utc::now().to_rfc3339()));
         // deleted_by_id from actor if provided
         // Note: could set deleted_by_id if actor was carried; skipped for now.
-    log_output("QUEUE", "DELETE-SOFT", route.as_str(), format!("table={}, id={}", schema.table, id.clone()), true);
+
         match state.store.update(&schema.table, filter, Value::Object(patch)).await {
             Ok(_) => {
-                log_output("QUEUE", "DELETE-OK", route.as_str(), schema.table.clone(), true);
                 let cache_prefix = crate::database::redis::build_key_prefix("public", &route);
                 if let Ok(n) = crate::database::redis::redis_delete_by_prefix(&cache_prefix).await {
                     log_output("REDIS", "INVALIDATE", route.as_str(), format!("prefix={}, deleted={}", cache_prefix, n), true);
@@ -316,10 +330,8 @@ async fn exec_delete(state: Data<AppState>, route: String, schemas: Arc<(Vec<Tab
             }
         }
     } else {
-    log_output("QUEUE", "DELETE-HARD", route.as_str(), format!("table={}, id={}", schema.table, id.clone()), true);
         match state.store.delete(&schema.table, filter).await {
             Ok(_) => {
-                log_output("QUEUE", "DELETE-OK", route.as_str(), schema.table.clone(), true);
                 let cache_prefix = crate::database::redis::build_key_prefix("public", &route);
                 if let Ok(n) = crate::database::redis::redis_delete_by_prefix(&cache_prefix).await {
                     log_output("REDIS", "INVALIDATE", route.as_str(), format!("prefix={}, deleted={}", cache_prefix, n), true);

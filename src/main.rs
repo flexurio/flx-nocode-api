@@ -256,6 +256,8 @@ static SCHEMAS: Lazy<Arc<(Vec<TableSchema>, Vec<ReferenceForeignKey>)>> = Lazy::
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
+    // Load .env early so DEBUG/LOG_* are visible before any Lazy env reads
+    dotenv().ok();
     // Initialize async, non-blocking logger (no-op if DEBUG is off)
     crate::log::init_logger();
     // Early CLI handling: print version and exit
@@ -282,7 +284,6 @@ async fn main() -> std::io::Result<()> {
         }
     }
 
-    dotenv().ok();
     let secret_key = env::var("SECRET_KEY").expect("SECRET_KEY must be set");
     let encrypt_key = env::var("ENCRYPT_KEY").expect("ENCRYPT_KEY must be set");
 
@@ -314,25 +315,41 @@ async fn main() -> std::io::Result<()> {
     }
 
     let db_type = env::var("DB_TYPE").unwrap_or_else(|_| "mysql".to_string());
-    // Pool configuration via env - optimized defaults for better resource management
+    // Determine CPU to scale defaults
+    let cpu = num_cpus::get().max(1);
+    // Pool configuration via env - tuned for higher concurrency
+    // Defaults: max_pool ~= 8 per core (cap reasonable), min_pool ~= per-core, timeouts balanced
     let max_pool: u32 = env::var("MAX_POOL")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(10); // Reduced from 100 to 10 for better memory usage
+        .unwrap_or(((cpu as u32) * 8).clamp(16, 128));
     let acquire_secs: u64 = env::var("CONNECT_TIMEOUT")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(5);
+        .unwrap_or(10);
     // Optional pool tunings
-    let min_pool: Option<u32> = env::var("MIN_POOL").ok().and_then(|s| s.parse().ok());
+    let min_pool: Option<u32> = env::var("MIN_POOL").ok().and_then(|s| s.parse().ok()).or(Some((cpu as u32).clamp(4, 32)));
     let max_lifetime: Option<Duration> = env::var("POOL_MAX_LIFETIME_SECS")
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
-        .map(Duration::from_secs);
+        .map(Duration::from_secs)
+        .or(Some(Duration::from_secs(60 * 60))); // 1h
     let idle_timeout: Option<Duration> = env::var("POOL_IDLE_TIMEOUT_SECS")
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
-        .map(Duration::from_secs);
+        .map(Duration::from_secs)
+        .or(Some(Duration::from_secs(60))); // 60s
+    log_output(
+        "BOOT",
+        "POOL",
+        &db_type,
+        format!(
+            "cpu={} max_pool={} min_pool={:?} acquire_timeout={}s max_lifetime={:?} idle_timeout={:?}",
+            cpu, max_pool, min_pool, acquire_secs, max_lifetime, idle_timeout
+        ),
+        false,
+    );
+
     let db_repo: Arc<dyn DbRepository> = match db_type.as_str() {
         "mysql" => {
             #[cfg(not(feature = "mysql"))]
@@ -729,9 +746,26 @@ async fn main() -> std::io::Result<()> {
     cetak_label(host.to_string(), port);
 
     // HTTP server tunables (with sensible defaults)
-    let keepalive_secs: u64 = env::var("HTTP_KEEPALIVE_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(60);
-    let http_backlog: u32 = env::var("HTTP_BACKLOG").ok().and_then(|s| s.parse().ok()).unwrap_or(4096);
-    let max_conn_rate: usize = env::var("HTTP_MAX_CONN_RATE").ok().and_then(|s| s.parse().ok()).unwrap_or(4096);
+    // HTTP server defaults tuned for higher concurrency; override via env for fine control
+    let keepalive_secs: u64 = env::var("HTTP_KEEPALIVE_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(30);
+    let http_backlog: u32 = env::var("HTTP_BACKLOG").ok().and_then(|s| s.parse().ok()).unwrap_or(32768);
+    let max_conn_rate: usize = env::var("HTTP_MAX_CONN_RATE").ok().and_then(|s| s.parse().ok()).unwrap_or(16384);
+    let workers_default = (cpu * 2).clamp(2, 32);
+
+    log_output(
+        "BOOT",
+        "HTTP",
+        "ACTIX",
+        format!(
+            "workers={} keepalive={}s backlog={} max_conn_rate={} max_connections={}",
+            env::var("ACTIX_WORKERS").ok().unwrap_or_else(|| workers_default.to_string()),
+            keepalive_secs,
+            http_backlog,
+            max_conn_rate,
+            env::var("HTTP_MAX_CONNECTIONS").ok().unwrap_or_else(|| "25000".to_string())
+        ),
+        false,
+    );
 
     HttpServer::new(move || {
         // Build CORS policy from env
@@ -1227,7 +1261,7 @@ async fn main() -> std::io::Result<()> {
         env::var("ACTIX_WORKERS")
             .ok()
             .and_then(|s| s.parse().ok())
-            .unwrap_or(1),
+            .unwrap_or(workers_default),
     )
     .max_connections(
         env::var("HTTP_MAX_CONNECTIONS")
@@ -1238,8 +1272,8 @@ async fn main() -> std::io::Result<()> {
     .max_connection_rate(max_conn_rate)
     .keep_alive(Duration::from_secs(keepalive_secs))
     .backlog(http_backlog)
-    .client_request_timeout(std::time::Duration::from_secs(30)) // 30 second timeout
-    .client_disconnect_timeout(std::time::Duration::from_secs(5)) // 5 second disconnect timeout
+    .client_request_timeout(std::time::Duration::from_secs(30)) // 30s request timeout
+    .client_disconnect_timeout(std::time::Duration::from_secs(5)) // 5s disconnect timeout
     .bind((host, port))
     .map_err(|e| {
         eprintln!("Failed to bind to {}:{} - {}", host, port, e);

@@ -475,8 +475,7 @@ pub async fn update(
         // Determine PK name and param for exclusion
         let pk_name = table_schema
             .primary_key
-            .columns
-            .get(0)
+            .columns.first()
             .cloned()
             .unwrap_or_else(|| "id".to_string());
         let pk_meta = table_schema.columns.iter().find(|c| c.name == pk_name);

@@ -272,7 +272,6 @@ pub async fn insert(
         }
     }    
     if state.write_queue_enabled && isqueue {
-        let t0 = std::time::Instant::now();
 
         // Basic auth/authorization check before enqueueing (fast fail on invalid token)
         let mut actor_id_opt: Option<String> = None;
@@ -327,13 +326,6 @@ pub async fn insert(
             tokio::spawn(async move {
                 let _ = crate::nocode::consumer::enqueue_job(&job).await;
             });
-            crate::log::log_output(
-                "QUEUE",
-                "POST-HANDLER",
-                route.as_str(),
-                format!("queued (async) in {} ms", t0.elapsed().as_millis()),
-                true,
-            );
             return HttpResponse::Accepted().json(WebResponse {
                 success: true,
                 message: "Enqueued".to_string(),
@@ -343,13 +335,6 @@ pub async fn insert(
         } else {
             match crate::nocode::consumer::enqueue_job(&job).await {
                 Ok(_) => {
-                    crate::log::log_output(
-                        "QUEUE",
-                        "POST-HANDLER",
-                        route.as_str(),
-                        format!("queued in {} ms", t0.elapsed().as_millis()),
-                        true,
-                    );
                     return HttpResponse::Accepted().json(WebResponse {
                         success: true,
                         message: "Enqueued".to_string(),
