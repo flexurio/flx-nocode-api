@@ -3,6 +3,7 @@ use actix_web::web;
 use actix_web::{web::Data, HttpResponse, Responder};
 use serde_json::Value;
 use regex::Regex;
+use once_cell::sync::Lazy;
 use std::collections::HashSet;
 // use std::result; // unused
 
@@ -15,13 +16,33 @@ use crate::{
     database::state::{DbParam},
     helpers::{extract_expressions, filter_table_schema, find_column_match, multipart_to_json},
     log::log_output,
-    model::{Column, TableSchema, WebResponse},
+    model::{Column, TableSchema, WebResponse, Index},
     AppState,
 };
 use chrono::Local;
 use std::sync::Arc;
 use crate::storage::sql_store::{SqlStore, InsertValue};
 use crate::storage::ast::{Query as Q, Filter as F, Val as V};
+
+// Precompiled regex patterns to avoid recompilation on each request (hot path)
+static RE_SQL_SELECT: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r"(?is)^\s*select\s+(?P<cols>.+?)\s+from\s+(?P<table>[A-Za-z_][A-Za-z0-9_]*)\s*(?:where\s+(?P<where>.+?))?\s*;?\s*$",
+    )
+    .expect("valid select regex")
+});
+static RE_WHERE_EQ: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?i)^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\?\s*$").expect("valid where = regex")
+});
+static RE_WHERE_LIKE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?i)^\s*([A-Za-z_][A-Za-z0-9_]*)\s+like\s*\?\s*$").expect("valid where like regex")
+});
+static RE_WHERE_ILIKE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?i)^\s*([A-Za-z_][A-Za-z0-9_]*)\s+ilike\s*\?\s*$").expect("valid where ilike regex")
+});
+static RE_AND_SPLIT: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?i)\s+AND\s+").expect("valid AND split regex")
+});
 
 /// Batch validate foreign keys in a single query for better performance (optimization)
 /// This replaces N sequential DB queries with 1 UNION ALL query
@@ -79,6 +100,118 @@ async fn validate_foreign_keys_batch(
         }
     }
     
+    Ok(())
+}
+
+/// Batch unique constraint validation to avoid N+1 queries
+/// For each unique index where all indexed column values are present in the request body,
+/// validate with a single UNION ALL query.
+async fn validate_unique_constraints_batch(
+    state: &Data<AppState>,
+    table: &str,
+    indexes: &[Index],
+    columns_meta: &[Column],
+    body: &Value,
+) -> Result<(), String> {
+    // Build checks only for unique indexes with all columns present and non-empty in body
+    let mut queries: Vec<String> = Vec::new();
+    let mut params: Vec<DbParam> = Vec::new();
+    let mut idx_cols_map: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+
+    for ix in indexes.iter().filter(|ix| ix.unique) {
+        let mut ix_params: Vec<DbParam> = Vec::with_capacity(ix.columns.len());
+        let mut all_present = true;
+        for col_name in &ix.columns {
+            // Find meta for type
+            let meta = columns_meta.iter().find(|c| &c.name == col_name);
+            let raw_val_opt = body.get(col_name).cloned();
+            let val = match raw_val_opt {
+                Some(v) => v,
+                None => { all_present = false; Value::Null }
+            };
+            if !all_present { break; }
+            // Empty string treated as missing -> skip this index
+            let is_empty = match &val {
+                Value::Null => true,
+                Value::String(s) => s.trim().is_empty(),
+                _ => false,
+            };
+            if is_empty { all_present = false; break; }
+
+            // Type-aware param
+            if let Some(m) = meta {
+                let td = m.type_data.to_lowercase();
+                match (&val, td.as_str()) {
+                    (Value::Number(n), t) if t.contains("float") || t.contains("double") || t.contains("decimal") || t.contains("money") => {
+                        ix_params.push(DbParam::F64(n.as_f64().unwrap_or(0.0)))
+                    }
+                    (Value::Number(n), t) if t.contains("int") => {
+                        ix_params.push(DbParam::I64(n.as_i64().unwrap_or(0)))
+                    }
+                    (Value::String(s), t) if t.contains("int") => {
+                        if let Ok(nn) = s.parse::<i64>() { ix_params.push(DbParam::I64(nn)); }
+                        else if let Ok(ff) = s.parse::<f64>() { ix_params.push(DbParam::F64(ff)); }
+                        else { ix_params.push(DbParam::Str(s.clone())); }
+                    }
+                    (Value::String(s), t) if t.contains("float") || t.contains("double") || t.contains("decimal") || t.contains("money") => {
+                        if let Ok(ff) = s.parse::<f64>() { ix_params.push(DbParam::F64(ff)); }
+                        else if let Ok(nn) = s.parse::<i64>() { ix_params.push(DbParam::I64(nn)); }
+                        else { ix_params.push(DbParam::Str(s.clone())); }
+                    }
+                    (Value::Bool(b), _) => ix_params.push(DbParam::Bool(*b)),
+                    (Value::Null, _) => { all_present = false; break; }
+                    (other, _) => ix_params.push(DbParam::Str(other.to_string().trim_matches('"').to_string())),
+                }
+            } else {
+                // No meta, bind as string
+                ix_params.push(match val {
+                    Value::Number(n) => DbParam::Str(n.to_string()),
+                    Value::String(s) => DbParam::Str(s),
+                    Value::Bool(b) => DbParam::Bool(b),
+                    _ => DbParam::Null,
+                });
+            }
+        }
+
+        if all_present {
+            // Build EXISTS query for this index
+            let conds: Vec<String> = ix
+                .columns
+                .iter()
+                .map(|c| format!("{} = ?", c))
+                .collect();
+            let where_clause = conds.join(" AND ");
+            queries.push(format!(
+                "SELECT '{}' as _idx, EXISTS(SELECT 1 FROM {} WHERE {}) as _dup",
+                ix.name, table, where_clause
+            ));
+            params.extend(ix_params.into_iter());
+            idx_cols_map.insert(ix.name.clone(), ix.columns.clone());
+        }
+    }
+
+    if queries.is_empty() { return Ok(()); }
+
+    let union_sql = queries.join(" UNION ALL ");
+    log_output("QUERY", "UNIQUE BATCH", "POST", union_sql.clone(), true);
+    log_output("PARAMS", "UNIQUE BATCH", "POST", format!("{:?}", params), true);
+
+    let rows = state
+        .db
+        .query_with_params(&union_sql, params)
+        .await
+        .map_err(|e| format!("Unique batch validation failed: {}", e))?;
+    for r in rows {
+        let dup = r.get("_dup").and_then(|v| v.as_bool()).unwrap_or(false);
+        if dup {
+            let idx = r.get("_idx").and_then(|v| v.as_str()).unwrap_or("");
+            let cols = idx_cols_map.get(idx).cloned().unwrap_or_default();
+            return Err(format!(
+                "Unique constraint violation on columns: {}",
+                cols.join(", ")
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -458,6 +591,18 @@ pub async fn insert(
         }
     }
 
+    // Batch validate unique constraints when all indexed columns are present
+    if state.db_type != "mongodb" {
+        if let Err(err_msg) = validate_unique_constraints_batch(&state, &table_schema.table, &table_schema.indexes, &table_schema.columns, &body).await {
+            return HttpResponse::BadRequest().json(WebResponse {
+                success: false,
+                message: err_msg,
+                total_data: 0,
+                data: Value::Null,
+            });
+        }
+    }
+
     // Note: we no longer build insert_values manually; using insert_fields per column
 
     // Begin transaction early for SQL backends so ID generation runs in the same TX
@@ -735,11 +880,7 @@ pub async fn insert(
                         Ok((built_sql, params)) => {
                             // Try to parse a simple SELECT ... FROM ... [WHERE ...] statement
                             // Note: we intentionally keep this conservative; unsupported forms are no-ops.
-                            let re = Regex::new(
-                                r"(?is)^\s*select\s+(?P<cols>.+?)\s+from\s+(?P<table>[A-Za-z_][A-Za-z0-9_]*)\s*(?:where\s+(?P<where>.+?))?\s*;?\s*$",
-                            )
-                            .unwrap();
-                            if let Some(cap) = re.captures(&built_sql) {
+                            if let Some(cap) = RE_SQL_SELECT.captures(&built_sql) {
                                 let table = cap.name("table").unwrap().as_str().to_string();
                                 let cols_raw = cap.name("cols").unwrap().as_str().trim().to_string();
                                 let where_raw = cap.name("where").map(|m| m.as_str().trim().to_string());
@@ -759,13 +900,8 @@ pub async fn insert(
                                 if let Some(w) = where_raw {
                                     // Support a single predicate in the form: <col> = ? | <col> like ? | <col> ilike ?
                                     // If multiple predicates exist, take the first recognizable one.
-                                    let w_eq = Regex::new(r"(?i)^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\?\s*$").unwrap();
-                                    let w_like = Regex::new(r"(?i)^\s*([A-Za-z_][A-Za-z0-9_]*)\s+like\s*\?\s*$").unwrap();
-                                    let w_ilike = Regex::new(r"(?i)^\s*([A-Za-z_][A-Za-z0-9_]*)\s+ilike\s*\?\s*$").unwrap();
-
                                     // In case of compound conditions (AND ...), try the first recognizable segment
-                                    let re_and = Regex::new(r"(?i)\s+AND\s+").unwrap();
-                                    let first_part = re_and
+                                    let first_part = RE_AND_SPLIT
                                         .split(&w)
                                         .next()
                                         .unwrap_or(w.as_str())
@@ -773,7 +909,7 @@ pub async fn insert(
                                         .to_string();
 
                                     let mut applied_filter = false;
-                                    if let Some(capw) = w_eq.captures(first_part.trim()) {
+                                    if let Some(capw) = RE_WHERE_EQ.captures(first_part.trim()) {
                                         let col = capw.get(1).unwrap().as_str().to_string();
                                         if let Some(p) = params.first() {
                                             let val = match p.clone() {
@@ -786,7 +922,7 @@ pub async fn insert(
                                             q = q.r#where(F::Eq(col, val));
                                             applied_filter = true;
                                         }
-                                    } else if let Some(capw) = w_ilike.captures(first_part.trim()) {
+                                    } else if let Some(capw) = RE_WHERE_ILIKE.captures(first_part.trim()) {
                                         let col = capw.get(1).unwrap().as_str().to_string();
                                         if let Some(p) = params.first() {
                                             if let crate::database::state::DbParam::Str(s) = p.clone() {
@@ -794,7 +930,7 @@ pub async fn insert(
                                                 applied_filter = true;
                                             }
                                         }
-                                    } else if let Some(capw) = w_like.captures(first_part.trim()) {
+                                    } else if let Some(capw) = RE_WHERE_LIKE.captures(first_part.trim()) {
                                         let col = capw.get(1).unwrap().as_str().to_string();
                                         if let Some(p) = params.first() {
                                             if let crate::database::state::DbParam::Str(s) = p.clone() {
