@@ -256,6 +256,8 @@ static SCHEMAS: Lazy<Arc<(Vec<TableSchema>, Vec<ReferenceForeignKey>)>> = Lazy::
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
+    // Initialize async, non-blocking logger (no-op if DEBUG is off)
+    crate::log::init_logger();
     // Early CLI handling: print version and exit
     {
         let mut args = env::args();

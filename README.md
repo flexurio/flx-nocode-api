@@ -1,3 +1,19 @@
+# flx-nocode-api
+## Logging performance and controls
+
+This project uses a non-blocking background logger to avoid synchronous stdout writes on the request path. You can tune verbosity and reduce overhead using these environment variables:
+
+- DEBUG: Enable debug logging (1/true/yes). When off, logging is minimal.
+- LOG_MIN_LEVEL: error|warn|info|debug|trace (default info). Messages below this level are dropped.
+- LOG_MAX_BODY_BYTES: Maximum bytes printed for a single log body (default 8192). Longer bodies are truncated with an indicator.
+- LOG_SAMPLE_DEBUG_N: Sample every N debug/trace logs (default 1 = no sampling). Use higher values (e.g., 10, 100) to reduce volume under high load.
+- LOG_QUEUE_CAP: Bounded queue capacity for the logger (default 2048). If full, new messages are dropped.
+- LOG_COLOR: Set to 0/false/no to disable ANSI colors in logs.
+
+Notes:
+- The logger starts automatically on startup. No code changes required.
+- Many SQL/params logs are emitted at "debug" level by default. To reduce overhead, prefer LOG_MIN_LEVEL=info in production, or enable sampling.
+
 <div align="center">
 
 # Flexurio No‑Code API Engine
