@@ -1,7 +1,7 @@
 [package]
 name = "flx-nocode-api"
-version = "0.1.43"
-edition = "2021"
+version = "0.1.47"
+edition = "2024"
 
 # Optimization settings for performance
 [profile.release]
