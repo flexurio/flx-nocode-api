@@ -25,17 +25,7 @@ use std::time::Duration;
 mod auth;
 mod crypt;
 mod database;
-use database::state::{AppState, DbRepository, QueryConverter};
-#[cfg(feature = "mysql")]
-use database::mysql::MySqlRepo;
-#[cfg(feature = "postgres")]
-use database::postgres::PostgresRepo;
-#[cfg(feature = "sqlite")]
-use database::sqlite::SqliteRepo;
-#[cfg(feature = "mssql")]
-use database::mssql::MssqlRepo;
-#[cfg(all(feature = "mssql", feature = "bb8"))]
-use database::mssql::MssqlConnectionManager;
+use database::state::{AppState, QueryConverter};
 mod nocode;
 use nocode::{
     delete::delete, export::export, generate::create_table, get::select, import::import,
@@ -263,12 +253,11 @@ async fn main() -> std::io::Result<()> {
     {
         let mut args = env::args();
         let _ = args.next(); // skip binary name
-        if let Some(first) = args.next() {
-            if matches!(first.as_str(), "--version" | "-V" | "version") {
+        if let Some(first) = args.next()
+            && matches!(first.as_str(), "--version" | "-V" | "version") {
                 println!("flx-nocode-api {}", env!("CARGO_PKG_VERSION"));
                 return Ok(());
             }
-        }
     }
 
     // check .env exit or not
@@ -313,263 +302,11 @@ async fn main() -> std::io::Result<()> {
         }
     }
 
-    let db_type = env::var("DB_TYPE").unwrap_or_else(|_| "mysql".to_string());
-    // Determine CPU to scale defaults
+    // Determine CPU to scale defaults for database pooling and Actix workers
     let cpu = num_cpus::get().max(1);
-    // Pool configuration via env - tuned for higher concurrency
-    // Defaults: max_pool ~= 8 per core (cap reasonable), min_pool ~= per-core, timeouts balanced
-    let max_pool: u32 = env::var("MAX_POOL")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(((cpu as u32) * 8).clamp(16, 128));
-    let acquire_secs: u64 = env::var("CONNECT_TIMEOUT")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(10);
-    // Optional pool tunings
-    let min_pool: Option<u32> = env::var("MIN_POOL").ok().and_then(|s| s.parse().ok()).or(Some((cpu as u32).clamp(4, 32)));
-    let max_lifetime: Option<Duration> = env::var("POOL_MAX_LIFETIME_SECS")
-        .ok()
-        .and_then(|s| s.parse::<u64>().ok())
-        .map(Duration::from_secs)
-        .or(Some(Duration::from_secs(60 * 60))); // 1h
-    let idle_timeout: Option<Duration> = env::var("POOL_IDLE_TIMEOUT_SECS")
-        .ok()
-        .and_then(|s| s.parse::<u64>().ok())
-        .map(Duration::from_secs)
-        .or(Some(Duration::from_secs(60))); // 60s
-    log_output(
-        "BOOT",
-        "POOL",
-        &db_type,
-        format!(
-            "cpu={} max_pool={} min_pool={:?} acquire_timeout={}s max_lifetime={:?} idle_timeout={:?}",
-            cpu, max_pool, min_pool, acquire_secs, max_lifetime, idle_timeout
-        ),
-        false,
-    );
 
-    let db_repo: Arc<dyn DbRepository> = match db_type.as_str() {
-        "mysql" => {
-            #[cfg(not(feature = "mysql"))]
-            {
-                eprintln!("Feature 'mysql' not enabled at compile time");
-                return Err(std::io::Error::new(std::io::ErrorKind::Other, "mysql feature disabled"));
-            }
-            #[cfg(feature = "mysql")]
-            {
-            let url = match env::var("MYSQL_URL") {
-                Ok(url) => url,
-                Err(_) => {
-                    log_output(
-                        "ERROR",
-                        ".ENV",
-                        "MYSQL_URL",
-                        "Please set MYSQL_URL on .env file".to_string(),
-                        true,
-                    );
-                    exit(1);
-                }
-            };
-
-            // Optimized MySQL connection pool with PoolOptions
-            let mut opts = sqlx::mysql::MySqlPoolOptions::new()
-                .max_connections(max_pool)
-                .acquire_timeout(Duration::from_secs(acquire_secs));
-            if let Some(min) = min_pool { opts = opts.min_connections(min); }
-            if let Some(d) = max_lifetime { opts = opts.max_lifetime(d); }
-            if let Some(d) = idle_timeout { opts = opts.idle_timeout(d); }
-            let pool = opts
-                .connect(&url)
-                .await
-                .map_err(|e| {
-                    eprintln!("Failed to connect to MySQL: {}", e);
-                    std::io::Error::new(std::io::ErrorKind::ConnectionRefused, e)
-                })?;
-
-            Arc::new(MySqlRepo { pool })
-            }
-        }
-        "postgres" => {
-            #[cfg(not(feature = "postgres"))]
-            {
-                eprintln!("Feature 'postgres' not enabled at compile time");
-                return Err(std::io::Error::other("postgres feature disabled"));
-            }
-            #[cfg(feature = "postgres")]
-            {
-            let url = match env::var("POSTGRES_URL") {
-                Ok(url) => url,
-                Err(_) => {
-                    log_output(
-                        "ERROR",
-                        ".ENV",
-                        "POSTGRES_URL",
-                        "Please set POSTGRES_URL on .env file".to_string(),
-                        true,
-                    );
-                    exit(1);
-                }
-            };
-
-            // Optimized PostgreSQL connection pool with PoolOptions
-            let mut opts = sqlx::postgres::PgPoolOptions::new()
-                .max_connections(max_pool)
-                .acquire_timeout(Duration::from_secs(acquire_secs));
-            if let Some(min) = min_pool { opts = opts.min_connections(min); }
-            if let Some(d) = max_lifetime { opts = opts.max_lifetime(d); }
-            if let Some(d) = idle_timeout { opts = opts.idle_timeout(d); }
-            let pool = opts
-                .connect(&url)
-                .await
-                .map_err(|e| {
-                    eprintln!("Failed to connect to PostgreSQL: {}", e);
-                    std::io::Error::new(std::io::ErrorKind::ConnectionRefused, e)
-                })?;
-
-            Arc::new(PostgresRepo { pool })
-            }
-        }
-        "sqlite" => {
-            #[cfg(not(feature = "sqlite"))]
-            {
-                eprintln!("Feature 'sqlite' not enabled at compile time");
-                return Err(std::io::Error::other("sqlite feature disabled"));
-            }
-            #[cfg(feature = "sqlite")]
-            {
-            let url = match env::var("SQLITE_URL") {
-                Ok(url) => url,
-                Err(_) => {
-                    log_output(
-                        "ERROR",
-                        ".ENV",
-                        "SQLITE_URL",
-                        "Please set SQLITE_URL on .env file".to_string(),
-                        true,
-                    );
-                    exit(1);
-                }
-            };
-            let path_db = url.replace("sqlite://", "");
-            let db_path = std::path::Path::new(&path_db);
-
-            if let Some(parent) = db_path.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-
-            if !db_path.exists() {
-                std::fs::File::create(db_path)?;
-                println!("File {} berhasil dibuat.", db_path.display());
-            }
-
-            // Optimized SQLite connection with PoolOptions
-            let mut opts = sqlx::sqlite::SqlitePoolOptions::new()
-                .max_connections(max_pool)
-                .acquire_timeout(Duration::from_secs(acquire_secs));
-            if let Some(min) = min_pool { opts = opts.min_connections(min); }
-            if let Some(d) = max_lifetime { opts = opts.max_lifetime(d); }
-            if let Some(d) = idle_timeout { opts = opts.idle_timeout(d); }
-            let pool = opts
-                .connect(&url)
-                .await
-                .map_err(|e| {
-                    eprintln!("Failed to connect to SQLite: {}", e);
-                    std::io::Error::new(std::io::ErrorKind::ConnectionRefused, e)
-                })?;
-
-            // Improve SQLite concurrency for read-heavy workloads
-            // Switch to WAL, relax fsync, and add a busy timeout to reduce write-lock errors
-            let _ = sqlx::query("PRAGMA journal_mode=WAL;").execute(&pool).await;
-            let _ = sqlx::query("PRAGMA synchronous=NORMAL;").execute(&pool).await;
-            let _ = sqlx::query("PRAGMA busy_timeout=5000;").execute(&pool).await;
-
-            Arc::new(SqliteRepo { pool })
-            }
-        }
-        "mssql" => {
-            #[cfg(not(feature = "mssql"))]
-            {
-                eprintln!("Feature 'mssql' not enabled at compile time");
-                return Err(std::io::Error::other("mssql feature disabled"));
-            }
-            #[cfg(feature = "mssql")]
-            {
-            let url = match env::var("MSSQL_URL") {
-                Ok(url) => url,
-                Err(_) => {
-                    log_output(
-                        "ERROR",
-                        ".ENV",
-                        "MSSQL_URL",
-                        "Please set MSSQL_URL on .env file".to_string(),
-                        true,
-                    );
-                    exit(1);
-                }
-            };
-            let tcp_timeout = acquire_secs;
-            
-            #[cfg(feature = "bb8")]
-            {
-                // Use BB8 connection pool for high performance
-                let manager = MssqlConnectionManager::new(url.clone(), tcp_timeout);
-                let pool = bb8::Pool::builder()
-                    .max_size(max_pool)
-                    .build(manager)
-                    .await
-                    .map_err(|e| {
-                        eprintln!("Failed to create MSSQL pool: {}", e);
-                        std::io::Error::new(std::io::ErrorKind::ConnectionRefused, e)
-                    })?;
-                
-                log_output(
-                    "INFO",
-                    "MSSQL",
-                    "CONNECTION POOL",
-                    format!("✅ BB8 pool created with max_size={}", max_pool),
-                    false,
-                );
-                
-                Arc::new(MssqlRepo { pool })
-            }
-            
-            #[cfg(not(feature = "bb8"))]
-            {
-                // Fallback to single client (not recommended for production)
-                let client = connect_mssql(&url, tcp_timeout).await.map_err(|e| {
-                    eprintln!("Failed to connect to MSSQL: {}", e);
-                    std::io::Error::new(std::io::ErrorKind::ConnectionRefused, e)
-                })?;
-                
-                eprintln!("⚠️  WARNING: MSSQL running with single client. Enable 'bb8' feature for better performance!");
-                
-                Arc::new(MssqlRepo { client: std::sync::Arc::new(tokio::sync::Mutex::new(client)) })
-            }
-            }
-        }
-        #[cfg(feature = "mongodb")]
-        "mongodb" => {
-            // For MongoDB, we don't have an SQL DbRepository; provide a dummy that always succeeds for simple checks.
-            struct DummyRepo;
-            #[async_trait::async_trait]
-            impl DbRepository for DummyRepo {
-                async fn query(&self, _sql: &str) -> anyhow::Result<Vec<Value>, anyhow::Error> { Ok(vec![]) }
-                async fn begin_transaction(&self) -> anyhow::Result<Box<dyn database::state::DbTransaction>, anyhow::Error> {
-                    Err(anyhow::anyhow!("Transactions not supported for DummyRepo"))
-                }
-            }
-            Arc::new(DummyRepo)
-        }
-
-        _ => {
-            eprintln!("Unsupported DB_TYPE: {}", db_type);
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!("Unsupported DB_TYPE: {}", db_type),
-            ));
-        }
-    };
+    let database::connection::DbInitialization { db_type, repo: db_repo, .. } =
+        database::connection::initialize_database(cpu).await?;
 
     // Inline per-dialect datetime SQL function
     let datetime_now: String = match db_type.as_str() {

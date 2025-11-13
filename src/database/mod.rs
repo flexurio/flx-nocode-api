@@ -8,3 +8,4 @@ pub mod sqlite;
 pub mod mssql;
 pub mod state;
 pub mod redis;
+pub mod connection;
