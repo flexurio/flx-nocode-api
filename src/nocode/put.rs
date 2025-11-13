@@ -191,11 +191,10 @@ pub async fn update(
     let id_raw: String = path.into_inner();
     
     let mut isqueue = false;
-    if let Some(map) = parameters.clone().into_inner().as_object() {
-        if let Some(v) = map.get("isqueue") {
+    if let Some(map) = parameters.clone().into_inner().as_object()
+        && let Some(v) = map.get("isqueue") {
             isqueue = *v == Value::Bool(true) || *v == Value::String("true".to_string());
         }
-    }
 
     if state.write_queue_enabled && isqueue {
         let t0 = std::time::Instant::now();
@@ -597,8 +596,8 @@ pub async fn update(
         }
     }
 
-    if state.db_type != "mongodb" && table_schema.put.pre_process.contains("SQL:") {
-        if let Err(err) = crate::database::state::execute_sql_formula_with_txstore(
+    if state.db_type != "mongodb" && table_schema.put.pre_process.contains("SQL:")
+        && let Err(err) = crate::database::state::execute_sql_formula_with_txstore(
             tx_opt.as_mut().unwrap(),
             table_schema.put.pre_process,
             &body,
@@ -614,7 +613,6 @@ pub async fn update(
                 data: Value::Null,
             });
         }
-    }
 
     // If this is a password-only update for flx_users, prefer DataStore for clarity and consistency
     if route == "flx_users" && password_override.is_some() && table_schema.put.columns.len() == 1 {
@@ -754,8 +752,8 @@ pub async fn update(
     let mut tx = tx_opt.take().unwrap();
     match tx.raw_sql(&s_sql, params_compiled).await {
         Ok(_) => {
-            if state.db_type != "mongodb" && table_schema.put.post_process.contains("SQL:") {
-                if let Err(err) = crate::database::state::execute_sql_formula_with_txstore(
+            if state.db_type != "mongodb" && table_schema.put.post_process.contains("SQL:")
+                && let Err(err) = crate::database::state::execute_sql_formula_with_txstore(
                     &mut tx,
                     table_schema.put.post_process,
                     &body,
@@ -772,7 +770,6 @@ pub async fn update(
                         data: Value::Null,
                     });
                 }
-            }
 
             // jika id_new TIDAK SAMA dg "" maka ada perubahan nilai id
             if !id_new.is_empty()

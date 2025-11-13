@@ -104,11 +104,10 @@ pub async fn export(
     // Collect paramjoins and flag deleted_at override
     let mut paramjoins_ast: Vec<ParamJoin> = Vec::new();
     for p in &table_schema.get.parameters {
-        if p.contains("paramjoin") {
-            if let Some(v) = params_map.get(p).and_then(|vv| vv.as_str()) {
+        if p.contains("paramjoin")
+            && let Some(v) = params_map.get(p).and_then(|vv| vv.as_str()) {
                 paramjoins_ast.push(ParamJoin { name: p.replace(".eq", ""), value: v.to_string() });
             }
-        }
         if p.contains("deleted_at") && params_map.get(p).is_some() {
             is_deleted_at = false;
         }
@@ -471,11 +470,10 @@ pub async fn export(
     // Convert rows to a stable vector of maps for export
     let mut headers: Vec<String> = Vec::new();
     let mut data_rows: Vec<Vec<String>> = Vec::new();
-    if let Some(first) = rows.first() {
-        if let Some(obj) = first.as_object() {
+    if let Some(first) = rows.first()
+        && let Some(obj) = first.as_object() {
             headers = obj.keys().cloned().collect();
         }
-    }
     for row in rows.iter() {
         if let Some(obj) = row.as_object() {
             if headers.is_empty() {

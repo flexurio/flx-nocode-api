@@ -208,8 +208,8 @@ pub async fn login(state: web::Data<AppState>, req: actix_web::HttpRequest) -> i
         let mut first = true;
         
         for v in roles_rows {
-            if let Some(obj) = v.as_object() {
-                if let (Some(ep), Some(rl)) = (
+            if let Some(obj) = v.as_object()
+                && let (Some(ep), Some(rl)) = (
                     obj.get("endpoint").and_then(|v| v.as_str()),
                     obj.get("role")
                 ) {
@@ -230,7 +230,6 @@ pub async fn login(state: web::Data<AppState>, req: actix_web::HttpRequest) -> i
                         _ => continue,
                     }
                 }
-            }
         }
         result
     };

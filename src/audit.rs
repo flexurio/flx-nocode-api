@@ -15,11 +15,10 @@ pub struct AuditEntry<'a> {
 pub fn write_audit(entry: &AuditEntry<'_>) {
     let loc = std::env::var("LOC_AUDIT").unwrap_or_else(|_| "audit".to_string());
     let path = std::path::Path::new(&loc);
-    if let Some(parent) = path.parent() {
-        if !parent.exists() {
+    if let Some(parent) = path.parent()
+        && !parent.exists() {
             let _ = std::fs::create_dir_all(parent);
         }
-    }
     let file_path = if path.is_dir() {
         path.join("events.log")
     } else {
@@ -29,9 +28,7 @@ pub fn write_audit(entry: &AuditEntry<'_>) {
         .create(true)
         .append(true)
         .open(&file_path)
-    {
-        if let Ok(json) = serde_json::to_string(entry) {
+        && let Ok(json) = serde_json::to_string(entry) {
             let _ = writeln!(f, "{}", json);
         }
-    }
 }

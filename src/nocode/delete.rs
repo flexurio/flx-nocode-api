@@ -59,11 +59,10 @@ pub async fn delete(
     // Rate limiting removed; handled globally
 
     let mut isqueue = false;
-    if let Some(map) = parameters.clone().into_inner().as_object() {
-        if let Some(v) = map.get("isqueue") {
+    if let Some(map) = parameters.clone().into_inner().as_object()
+        && let Some(v) = map.get("isqueue") {
             isqueue = *v == Value::Bool(true) || *v == Value::String("true".to_string());
-        }
-    }    
+        }    
 
     if state.write_queue_enabled && isqueue {
         let t0 = std::time::Instant::now();

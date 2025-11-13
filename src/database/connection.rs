@@ -20,8 +20,6 @@ use crate::database::sqlite::SqliteRepo;
 use crate::database::mssql::MssqlRepo;
 #[cfg(all(feature = "mssql", feature = "bb8"))]
 use crate::database::mssql::MssqlConnectionManager;
-#[cfg(feature = "mssql")]
-use crate::database::mssql::connect_mssql;
 
 #[derive(Debug, Clone)]
 pub struct PoolSettings {
@@ -74,7 +72,6 @@ impl PoolSettings {
 pub struct DbInitialization {
     pub db_type: String,
     pub repo: Arc<dyn DbRepository>,
-    pub pool_settings: PoolSettings,
 }
 
 pub async fn initialize_database(cpu: usize) -> io::Result<DbInitialization> {
@@ -341,9 +338,5 @@ pub async fn initialize_database(cpu: usize) -> io::Result<DbInitialization> {
         }
     };
 
-    Ok(DbInitialization {
-        db_type,
-        repo,
-        pool_settings,
-    })
+    Ok(DbInitialization { db_type, repo })
 }

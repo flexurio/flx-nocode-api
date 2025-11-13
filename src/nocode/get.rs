@@ -184,11 +184,10 @@ pub async fn select(
             // collect paramjoin values if provided
             let mut paramjoins_ast: Vec<ParamJoin> = Vec::with_capacity(4);
             for p in &table_schema.get.parameters {
-                if p.contains("paramjoin") {
-                    if let Some(v) = params_map.get(p).and_then(|vv| vv.as_str()) {
+                if p.contains("paramjoin")
+                    && let Some(v) = params_map.get(p).and_then(|vv| vv.as_str()) {
                         paramjoins_ast.push(ParamJoin { name: p.replace(".eq", ""), value: v.to_string() });
                     }
-                }
             }
 
             // helper to parse value into QV
@@ -614,8 +613,8 @@ pub async fn select(
             
             if use_cache && state.is_cachedb {
                 // check if .env REDIS_HOST is set
-                if let Some(ref k) = cache_key {
-                    if table_schema.redis.ttl > 0 {
+                if let Some(ref k) = cache_key
+                    && table_schema.redis.ttl > 0 {
                         let ttl = table_schema.redis.ttl as usize;
                         match redis_set_json(k, &result, Some(ttl)).await {
                             Ok(_) => {
@@ -638,7 +637,6 @@ pub async fn select(
                             }
                         }
                     }
-                }
             }
             
             HttpResponse::Ok().json(result)

@@ -217,9 +217,9 @@ pub fn get_user_info_from_token(
         return Ok(Claims::default());
     }
 
-    if let Some(auth_header) = req.headers().get("Authorization") {
-        if let Ok(auth_str) = auth_header.to_str() {
-            if auth_str.starts_with("Bearer ") {
+    if let Some(auth_header) = req.headers().get("Authorization")
+        && let Ok(auth_str) = auth_header.to_str()
+            && auth_str.starts_with("Bearer ") {
                 if state.converter_token != ClaimsConverter::default() {
                     let claims = extract_token_claims_no_validation(auth_str, state.clone());
                     return Ok(claims);
@@ -229,8 +229,6 @@ pub fn get_user_info_from_token(
                     Err(_) => return Err(false),
                 }
             }
-        }
-    }
     Err(false)
 }
 
@@ -281,11 +279,10 @@ pub fn check_access(claims: &Claims, route: &str, permission: &str) -> bool {
         let route_rol = r.split("/").collect::<Vec<&str>>();
 
         // Cek route spesifik atau wildcard
-        if route_rol[0] == route || route_rol[0] == "*" {
-            if let Ok(val) = route_rol[1].parse::<i8>() {
+        if (route_rol[0] == route || route_rol[0] == "*")
+            && let Ok(val) = route_rol[1].parse::<i8>() {
                 role = val;
             }
-        }
     }
 
     let access = get_permissions(role);

@@ -84,8 +84,8 @@ async fn validate_foreign_keys_batch(
     
     // Check all results
     for row in results {
-        if let Some(valid) = row.get("_valid").and_then(|v| v.as_bool()) {
-            if !valid {
+        if let Some(valid) = row.get("_valid").and_then(|v| v.as_bool())
+            && !valid {
                 let col = row.get("_col").and_then(|v| v.as_str()).unwrap_or("unknown");
                 let tbl = row.get("_table").and_then(|v| v.as_str()).unwrap_or("unknown");
                 log_output(
@@ -97,7 +97,6 @@ async fn validate_foreign_keys_batch(
                 );
                 return Err(format!("Invalid foreign key value for column '{}' referencing table '{}'", col, tbl));
             }
-        }
     }
     
     Ok(())
@@ -266,11 +265,10 @@ pub async fn insert(
     };
 
     let mut isqueue = false;
-    if let Some(map) = parameters.clone().into_inner().as_object() {
-        if let Some(v) = map.get("isqueue") {
+    if let Some(map) = parameters.clone().into_inner().as_object()
+        && let Some(v) = map.get("isqueue") {
             isqueue = *v == Value::Bool(true) || *v == Value::String("true".to_string());
-        }
-    }    
+        }    
     if state.write_queue_enabled && isqueue {
 
         // Basic auth/authorization check before enqueueing (fast fail on invalid token)
@@ -369,8 +367,8 @@ pub async fn insert(
 
     // Validate required fields (non-nullable columns listed in post.columns)
     for post_col in &table_schema.post.columns {
-        if let Some(col_def) = table_schema.columns.iter().find(|c| c.name == *post_col) {
-            if !col_def.nullable && !col_def.auto_increment {
+        if let Some(col_def) = table_schema.columns.iter().find(|c| c.name == *post_col)
+            && !col_def.nullable && !col_def.auto_increment {
                 let present = body
                     .get(post_col)
                     .map(|v| v.to_string().replace('"', ""))
@@ -385,7 +383,6 @@ pub async fn insert(
                     });
                 }
             }
-        }
     }
 
     let skip_columns: HashSet<&str> = [
@@ -422,12 +419,11 @@ pub async fn insert(
     // check if table_schema.columns.id auto_increment false then insert_columns & filtered_columns must contain "id"
     if let Some(col) = table_schema
         .columns
-        .iter().find(|c| c.name == "id") {
-        if !col.auto_increment {
+        .iter().find(|c| c.name == "id")
+        && !col.auto_increment {
             insert_columns.push("id");
             filtered_columns.push(col);
         }
-    }
 
     log_output("COLUMNS", "insert_columns", route.as_str(), format!("{:?}", insert_columns), true);
     log_output("COLUMNS", "filtered_columns", route.as_str(), format!("{:?}", filtered_columns), true);
@@ -565,8 +561,8 @@ pub async fn insert(
     }
 
     // Batch validate all foreign keys in one query (optimization - replaces N queries with 1)
-    if !fk_checks.is_empty() {
-        if let Err(err_msg) = validate_foreign_keys_batch(&state, &fk_checks).await {
+    if !fk_checks.is_empty()
+        && let Err(err_msg) = validate_foreign_keys_batch(&state, &fk_checks).await {
             return HttpResponse::BadRequest().json(WebResponse {
                 success: false,
                 message: err_msg,
@@ -574,11 +570,10 @@ pub async fn insert(
                 data: Value::Null,
             });
         }
-    }
 
     // Batch validate unique constraints when all indexed columns are present
-    if state.db_type != "mongodb" {
-        if let Err(err_msg) = validate_unique_constraints_batch(&state, &table_schema.table, &table_schema.indexes, &table_schema.columns, &body).await {
+    if state.db_type != "mongodb"
+        && let Err(err_msg) = validate_unique_constraints_batch(&state, &table_schema.table, &table_schema.indexes, &table_schema.columns, &body).await {
             return HttpResponse::BadRequest().json(WebResponse {
                 success: false,
                 message: err_msg,
@@ -586,7 +581,6 @@ pub async fn insert(
                 data: Value::Null,
             });
         }
-    }
 
     // Note: we no longer build insert_values manually; using insert_fields per column
 
@@ -812,8 +806,8 @@ pub async fn insert(
         }
     }
 
-    if state.db_type != "mongodb" && table_schema.post.pre_process.contains("SQL:") {
-        if let Err(err) = crate::database::state::execute_sql_formula_with_txstore(
+    if state.db_type != "mongodb" && table_schema.post.pre_process.contains("SQL:")
+        && let Err(err) = crate::database::state::execute_sql_formula_with_txstore(
             tx_opt.as_mut().unwrap(),
             table_schema.post.pre_process,
             &body,
@@ -829,7 +823,6 @@ pub async fn insert(
                 data: Value::Null,
             });
         }
-    }
 
     if state.db_type == "mongodb" {
         // Insert using document map
@@ -909,20 +902,18 @@ pub async fn insert(
                                         }
                                     } else if let Some(capw) = RE_WHERE_ILIKE.captures(first_part.trim()) {
                                         let col = capw.get(1).unwrap().as_str().to_string();
-                                        if let Some(p) = params.first() {
-                                            if let crate::database::state::DbParam::Str(s) = p.clone() {
+                                        if let Some(p) = params.first()
+                                            && let crate::database::state::DbParam::Str(s) = p.clone() {
                                                 q = q.r#where(F::ILike(col, s));
                                                 applied_filter = true;
                                             }
-                                        }
                                     } else if let Some(capw) = RE_WHERE_LIKE.captures(first_part.trim()) {
                                         let col = capw.get(1).unwrap().as_str().to_string();
-                                        if let Some(p) = params.first() {
-                                            if let crate::database::state::DbParam::Str(s) = p.clone() {
+                                        if let Some(p) = params.first()
+                                            && let crate::database::state::DbParam::Str(s) = p.clone() {
                                                 q = q.r#where(F::Like(col, s));
                                                 applied_filter = true;
                                             }
-                                        }
                                     }
 
                                     if !applied_filter {
@@ -1006,27 +997,21 @@ pub async fn insert(
         Ok(result) => {
             // Try to capture returned id when supported
             let mut returned_id: Option<Value> = None;
-            if let Some(first) = result.first() {
-                if let Some(obj) = first.as_object() {
-                    if let Some(idv) = obj.get("id") { returned_id = Some(idv.clone()); }
-                }
-            }
+            if let Some(first) = result.first()
+                && let Some(obj) = first.as_object()
+                    && let Some(idv) = obj.get("id") { returned_id = Some(idv.clone()); }
             // MySQL fallback: fetch LAST_INSERT_ID() when INSERT has no RETURNING and id wasn't provided
-            if returned_id.is_none() && state.db_type == "mysql" {
-                if let Ok(rows) = tx.raw_sql("SELECT LAST_INSERT_ID() AS id", vec![]).await {
-                    if let Some(first) = rows.first() {
-                        if let Some(obj) = first.as_object() {
-                            if let Some(idv) = obj.get("id") { returned_id = Some(idv.clone()); }
-                        }
-                    }
-                }
-            }
+            if returned_id.is_none() && state.db_type == "mysql"
+                && let Ok(rows) = tx.raw_sql("SELECT LAST_INSERT_ID() AS id", vec![]).await
+                    && let Some(first) = rows.first()
+                        && let Some(obj) = first.as_object()
+                            && let Some(idv) = obj.get("id") { returned_id = Some(idv.clone()); }
+                
             // If LAST_INSERT_ID() yields 0 (common when custom id is supplied), treat as None to allow fallback to doc_map id
-            if let Some(Value::Number(n)) = &returned_id {
-                if n.as_i64() == Some(0) || n.as_u64() == Some(0) {
+            if let Some(Value::Number(n)) = &returned_id
+                && (n.as_i64() == Some(0) || n.as_u64() == Some(0)) {
                     returned_id = None;
                 }
-            }
 
             if returned_id.is_none() {
                 returned_id = doc_map.get("id").cloned();
@@ -1038,8 +1023,8 @@ pub async fn insert(
             }).unwrap();
             
 
-            if state.db_type != "mongodb" && table_schema.post.post_process.contains("SQL:") {
-                if let Err(err) = crate::database::state::execute_sql_formula_with_txstore(
+            if state.db_type != "mongodb" && table_schema.post.post_process.contains("SQL:")
+                && let Err(err) = crate::database::state::execute_sql_formula_with_txstore(
                     &mut tx,
                     table_schema.post.post_process,
                     &body,
@@ -1055,7 +1040,6 @@ pub async fn insert(
                         data: Value::Null,
                     });
                 }
-            }
             let _ = tx.commit().await;
             // Audit trail
             write_audit(&AuditEntry {

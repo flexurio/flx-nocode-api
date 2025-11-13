@@ -364,7 +364,7 @@ async fn main() -> std::io::Result<()> {
     let mut write_queue_enabled = false;
     let mut write_queue_fast_ack = true; // default true: handlers return immediately
     // check if REDIS_HOST is configured in .env
-    if let Ok(val) = env::var("REDIS_HOST") { if !val.is_empty() { is_cachedb = true; } }
+    if let Ok(val) = env::var("REDIS_HOST") && !val.is_empty() { is_cachedb = true; }
     // Proactively verify Redis connectivity once at startup for read-cache usage.
     // If unreachable, disable caching to avoid expensive per-request connection attempts
     // when clients pass `?redis=true`.

@@ -121,20 +121,18 @@ pub fn split_column_operator(key: &str, s_table: &str, value: &str) -> (String, 
 // Extract client IP reliably (supports proxies) with safe fallbacks
 pub fn get_client_ip(req: &actix_web::HttpRequest) -> String {
     // Check common proxy headers first (take the first IP when multiple)
-    if let Some(h) = req.headers().get("x-forwarded-for") {
-        if let Ok(v) = h.to_str() {
-            if let Some(ip) = v.split(',').map(|s| s.trim()).find(|s| !s.is_empty()) {
+    if let Some(h) = req.headers().get("x-forwarded-for")
+        && let Ok(v) = h.to_str()
+            && let Some(ip) = v.split(',').map(|s| s.trim()).find(|s| !s.is_empty()) {
                 return ip.to_string();
             }
-        }
-    }
-    if let Some(h) = req.headers().get("x-real-ip") {
-        if let Ok(v) = h.to_str() {
-            if !v.trim().is_empty() {
+    if let Some(h) = req.headers().get("x-real-ip")
+        && let Ok(v) = h.to_str()
+            && !v.trim().is_empty() {
                 return v.trim().to_string();
             }
-        }
-    }
+    
+    
     // Fallback to peer_addr
     req.peer_addr()
         .map(|a| a.ip().to_string())
@@ -234,19 +232,16 @@ pub async fn multipart_to_json(mut multipart: Multipart) -> Result<Value, actix_
 
             // Extension validation (if provided)
             let safe_name = sanitize_filename::sanitize(filename);
-            if let Some(ref allow) = allowed_ext {
-                if let Some(ext) = std::path::Path::new(&safe_name)
+            if let Some(ref allow) = allowed_ext
+                && let Some(ext) = std::path::Path::new(&safe_name)
                     .extension()
                     .and_then(|e| e.to_str())
                     .map(|s| s.to_lowercase())
-                {
-                    if !allow.contains(&ext) {
+                    && !allow.contains(&ext) {
                         return Err(actix_web::error::ErrorBadRequest(
                             "File extension not allowed",
                         ));
                     }
-                }
-            }
 
             let image_storage = std::env::var("LOC_IMAGE").unwrap_or("DB".to_string());
             if image_storage == "DB" {
@@ -427,11 +422,10 @@ pub fn extract_expressions(input: &str) -> HashSet<String> {
 
 pub fn find_column_match<'a>(columns: &'a [&str], target: &str) -> (bool, Option<&'a str>) {
     for col in columns.iter() {
-        if let Some((name, _)) = col.split_once('=') {
-            if name == target {
+        if let Some((name, _)) = col.split_once('=')
+            && name == target {
                 return (true, Some(*col));
             }
-        }
     }
     (false, None)
 }

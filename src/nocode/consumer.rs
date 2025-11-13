@@ -227,8 +227,8 @@ async fn exec_post(state: Data<AppState>, route: String, table_schemas: Arc<Vec<
     // server-side created_at
     doc.insert("created_at".into(), Value::String(Utc::now().to_rfc3339()));
     // ensure created_by_id if column exists but not provided
-    if schema.columns.iter().any(|c| c.name == "created_by_id") && !doc.contains_key("created_by_id") {
-        if let Some(actor) = actor_id.or_else(|| body.get("__actor_id__").and_then(|v| v.as_str()).map(|s| s.to_string())) {
+    if schema.columns.iter().any(|c| c.name == "created_by_id") && !doc.contains_key("created_by_id")
+        && let Some(actor) = actor_id.or_else(|| body.get("__actor_id__").and_then(|v| v.as_str()).map(|s| s.to_string())) {
             // detect type from schema
             if let Some(col) = schema.columns.iter().find(|c| c.name == "created_by_id") {
                 if col.type_data.contains("int") {
@@ -242,7 +242,6 @@ async fn exec_post(state: Data<AppState>, route: String, table_schemas: Arc<Vec<
                 }
             }
         }
-    }
 
     match state.store.insert(&schema.table, Value::Object(doc)).await {
         Ok(_) => {
@@ -270,8 +269,8 @@ async fn exec_put(state: Data<AppState>, route: String, schemas: Arc<(Vec<TableS
     }
     patch.insert("updated_at".into(), Value::String(Utc::now().to_rfc3339()));
     // updated_by_id if exists in schema and actor_id provided
-    if let Some(col) = schema.columns.iter().find(|c| c.name == "updated_by_id") {
-        if let Some(actor) = body.get("__actor_id__").and_then(|v| v.as_str()).map(|s| s.to_string()) {
+    if let Some(col) = schema.columns.iter().find(|c| c.name == "updated_by_id")
+        && let Some(actor) = body.get("__actor_id__").and_then(|v| v.as_str()).map(|s| s.to_string()) {
             if col.type_data.contains("int") {
                 if let Ok(n) = actor.parse::<i64>() { patch.insert("updated_by_id".into(), Value::Number(n.into())); }
                 else { patch.insert("updated_by_id".into(), Value::String(actor)); }
@@ -282,7 +281,6 @@ async fn exec_put(state: Data<AppState>, route: String, schemas: Arc<(Vec<TableS
                 patch.insert("updated_by_id".into(), Value::String(actor));
             }
         }
-    }
 
     let id_for_filter = id.clone();
     let filt_val = if let Ok(n) = id_for_filter.parse::<i64>() { QV::I64(n) } else { QV::Str(id_for_filter) };

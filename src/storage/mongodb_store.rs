@@ -476,11 +476,10 @@ impl DataStore for MongoStore {
             .unwrap_or_default();
         // Remap 'id' key in patch to '_id' if present, but generally _id shouldn't be updated; keep other fields
         let mut patch_value = patch;
-        if let Some(obj) = patch_value.as_object_mut() {
-            if let Some(id_json) = obj.remove("id") {
+        if let Some(obj) = patch_value.as_object_mut()
+            && let Some(id_json) = obj.remove("id") {
                 obj.insert("_id".to_string(), id_json);
             }
-        }
         let update_doc: Document = mongodb::bson::to_document(&serde_json::json!({ "$set": patch_value }))?;
         let res = coll.update_many(filt, update_doc).await?;
         Ok(res.modified_count as u64)
