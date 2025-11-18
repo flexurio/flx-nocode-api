@@ -23,8 +23,10 @@ static RL_MUTATE: Lazy<i64> = Lazy::new(|| std::env::var("RATE_LIMIT_MUTATE_PER_
 static RL_METHOD: Lazy<HashMap<&'static str, i64>> = Lazy::new(|| {
     let mut map = HashMap::new();
     for m in ["POST", "PUT", "DELETE", "PATCH", "TRACE", "IMPORT"].iter() {
-        if let Ok(val) = std::env::var(format!("RATE_LIMIT_{}_PER_SEC", m))
-            && let Ok(parsed) = val.parse::<i64>() { map.insert(*m, parsed); }
+        if let Some(parsed) = std::env::var(format!("RATE_LIMIT_{}_PER_SEC", m))
+            .ok()
+            .and_then(|v| v.parse::<i64>().ok())
+        { map.insert(*m, parsed); }
     }
     map
 });

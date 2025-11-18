@@ -190,11 +190,13 @@ pub async fn update(
     // Rate limiting removed; enforced by middleware
     let id_raw: String = path.into_inner();
     
-    let mut isqueue = false;
-    if let Some(map) = parameters.clone().into_inner().as_object()
-        && let Some(v) = map.get("isqueue") {
-            isqueue = *v == Value::Bool(true) || *v == Value::String("true".to_string());
-        }
+    let isqueue = parameters
+        .clone()
+        .into_inner()
+        .as_object()
+        .and_then(|m| m.get("isqueue"))
+        .map(|v| v.as_bool().unwrap_or(false) || v.as_str() == Some("true"))
+        .unwrap_or(false);
 
     if state.write_queue_enabled && isqueue {
         let t0 = std::time::Instant::now();
@@ -596,23 +598,24 @@ pub async fn update(
         }
     }
 
-    if state.db_type != "mongodb" && table_schema.put.pre_process.contains("SQL:")
-        && let Err(err) = crate::database::state::execute_sql_formula_with_txstore(
-            tx_opt.as_mut().unwrap(),
-            table_schema.put.pre_process,
-            &body,
-            route.as_str(),
-        )
-        .await
-        {
-            let _ = tx_opt.take().unwrap().rollback().await;
-            return HttpResponse::InternalServerError().json(WebResponse {
-                success: false,
-                message: format!("Error in pre-process: {}", err),
-                total_data: 0,
-                data: Value::Null,
-            });
-        }
+    if !(state.db_type != "mongodb" && table_schema.put.pre_process.contains("SQL:")) {
+        // skip pre-process
+    } else if let Err(err) = crate::database::state::execute_sql_formula_with_txstore(
+        tx_opt.as_mut().unwrap(),
+        table_schema.put.pre_process,
+        &body,
+        route.as_str(),
+    )
+    .await
+    {
+        let _ = tx_opt.take().unwrap().rollback().await;
+        return HttpResponse::InternalServerError().json(WebResponse {
+            success: false,
+            message: format!("Error in pre-process: {}", err),
+            total_data: 0,
+            data: Value::Null,
+        });
+    }
 
     // If this is a password-only update for flx_users, prefer DataStore for clarity and consistency
     if route == "flx_users" && password_override.is_some() && table_schema.put.columns.len() == 1 {
@@ -752,24 +755,25 @@ pub async fn update(
     let mut tx = tx_opt.take().unwrap();
     match tx.raw_sql(&s_sql, params_compiled).await {
         Ok(_) => {
-            if state.db_type != "mongodb" && table_schema.put.post_process.contains("SQL:")
-                && let Err(err) = crate::database::state::execute_sql_formula_with_txstore(
-                    &mut tx,
-                    table_schema.put.post_process,
-                    &body,
-                    route.as_str(),
-                )
-                .await
-                {
-                    let _ = tx.rollback().await;
-                    // Rollback transaction if post-process SQL fails
-                    return HttpResponse::InternalServerError().json(WebResponse {
-                        success: false,
-                        message: format!("Error executing post-process SQL: {}", err),
-                        total_data: 0,
-                        data: Value::Null,
-                    });
-                }
+            if !(state.db_type != "mongodb" && table_schema.put.post_process.contains("SQL:")) {
+                // skip post-process
+            } else if let Err(err) = crate::database::state::execute_sql_formula_with_txstore(
+                &mut tx,
+                table_schema.put.post_process,
+                &body,
+                route.as_str(),
+            )
+            .await
+            {
+                let _ = tx.rollback().await;
+                // Rollback transaction if post-process SQL fails
+                return HttpResponse::InternalServerError().json(WebResponse {
+                    success: false,
+                    message: format!("Error executing post-process SQL: {}", err),
+                    total_data: 0,
+                    data: Value::Null,
+                });
+            }
 
             // jika id_new TIDAK SAMA dg "" maka ada perubahan nilai id
             if !id_new.is_empty()

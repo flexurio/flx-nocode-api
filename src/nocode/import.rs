@@ -264,8 +264,7 @@ pub async fn import(
 
     // Build ID generator context if needed
     let mut id_ctx: Option<(String, usize, i64)> = None; // (prefix, width, next_number)
-    if include_id
-        && let Some(func) = id_fn.as_ref() {
+    if let Some(func) = if include_id { id_fn.as_ref() } else { None } {
             let (prefix, width) = derive_id_prefix_and_width(func);
             if state.db_type == "mongodb" {
                 // Use AST aggregation for Mongo: MAX(id) with prefix% (case-insensitive)
@@ -305,13 +304,16 @@ pub async fn import(
                 id_ctx = Some((prefix, width, next_num));
             }
         }
+        
 
     // Decide queue mode like POST: optional isqueue=true to enable queuing when WRITE_QUEUE_ENABLED
-    let mut isqueue = false;
-    if let Some(map) = parameters.clone().into_inner().as_object()
-        && let Some(v) = map.get("isqueue") {
-            isqueue = *v == Value::Bool(true) || *v == Value::String("true".to_string());
-        }
+    let isqueue = parameters
+        .clone()
+        .into_inner()
+        .as_object()
+        .and_then(|map| map.get("isqueue"))
+        .map(|v| *v == Value::Bool(true) || *v == Value::String("true".to_string()))
+        .unwrap_or(false);
 
     if state.write_queue_enabled && isqueue {
         let t0 = std::time::Instant::now();
@@ -798,10 +800,9 @@ fn parse_csv(bytes: Vec<u8>) -> anyhow::Result<Vec<Map<String, Value>>> {
         let rec = result?;
         let mut map = Map::new();
         for (i, val) in rec.iter().enumerate() {
-            if let Some(h) = headers.get(i)
-                && !h.is_empty() {
-                    map.insert(h.clone(), json!(val.trim())) ;
-                }
+            if let Some(h) = headers.get(i).filter(|h| !h.is_empty()) {
+                map.insert(h.clone(), json!(val.trim()));
+            }
         }
         if !map.is_empty() { rows.push(map); }
     }
@@ -828,14 +829,13 @@ fn parse_xlsx(bytes: Vec<u8>) -> anyhow::Result<Vec<Map<String, Value>>> {
         }
         let mut map = Map::new();
         for (i, cell) in row.iter().enumerate() {
-            if let Some(h) = headers.get(i)
-                && !h.is_empty() {
-                    // Avoid full enum matching; treat blank text as empty
-                    let text = cell.to_string();
-                    if !text.trim().is_empty() {
-                        map.insert(h.clone(), json!(text.trim()));
-                    }
+            if let Some(h) = headers.get(i).filter(|h| !h.is_empty()) {
+                // Avoid full enum matching; treat blank text as empty
+                let text = cell.to_string();
+                if !text.trim().is_empty() {
+                    map.insert(h.clone(), json!(text.trim()));
                 }
+            }
         }
         if !map.is_empty() { rows.push(map); }
     }

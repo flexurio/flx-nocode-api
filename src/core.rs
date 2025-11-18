@@ -208,11 +208,10 @@ pub async fn login(state: web::Data<AppState>, req: actix_web::HttpRequest) -> i
         let mut first = true;
         
         for v in roles_rows {
-            if let Some(obj) = v.as_object()
-                && let (Some(ep), Some(rl)) = (
-                    obj.get("endpoint").and_then(|v| v.as_str()),
-                    obj.get("role")
-                ) {
+            if let Some(obj) = v.as_object() {
+                let ep_opt = obj.get("endpoint").and_then(|v| v.as_str());
+                let rl_opt = obj.get("role");
+                if let (Some(ep), Some(rl)) = (ep_opt, rl_opt) {
                     if !first { 
                         result.push(','); 
                     }
@@ -230,6 +229,7 @@ pub async fn login(state: web::Data<AppState>, req: actix_web::HttpRequest) -> i
                         _ => continue,
                     }
                 }
+            }
         }
         result
     };

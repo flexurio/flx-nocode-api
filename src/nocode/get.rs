@@ -184,10 +184,12 @@ pub async fn select(
             // collect paramjoin values if provided
             let mut paramjoins_ast: Vec<ParamJoin> = Vec::with_capacity(4);
             for p in &table_schema.get.parameters {
-                if p.contains("paramjoin")
-                    && let Some(v) = params_map.get(p).and_then(|vv| vv.as_str()) {
-                        paramjoins_ast.push(ParamJoin { name: p.replace(".eq", ""), value: v.to_string() });
-                    }
+                let v_opt = if p.contains("paramjoin") {
+                    params_map.get(p).and_then(|vv| vv.as_str())
+                } else { None };
+                if let Some(v) = v_opt {
+                    paramjoins_ast.push(ParamJoin { name: p.replace(".eq", ""), value: v.to_string() });
+                }
             }
 
             // helper to parse value into QV
@@ -611,32 +613,31 @@ pub async fn select(
                 data: Value::Array(rows),
             };
             
-            if use_cache && state.is_cachedb {
-                // check if .env REDIS_HOST is set
-                if let Some(ref k) = cache_key
-                    && table_schema.redis.ttl > 0 {
-                        let ttl = table_schema.redis.ttl as usize;
-                        match redis_set_json(k, &result, Some(ttl)).await {
-                            Ok(_) => {
-                                log_output(
-                                    "REDIS",
-                                    "CACHE WRITE",
-                                    route.as_str(),
-                                    format!("Key: {}, TTL: {}s, Records: {}", k, ttl, 9999),
-                                    true,
-                                );
-                            }
-                            Err(e) => {
-                                log_output(
-                                    "ERROR",
-                                    "CACHE WRITE",
-                                    route.as_str(),
-                                    format!("Failed to cache: {}", e),
-                                    false,
-                                );
-                            }
-                        }
+            if let Some(k) = cache_key
+                .as_ref()
+                .filter(|_| use_cache && state.is_cachedb && table_schema.redis.ttl > 0)
+            {
+                let ttl = table_schema.redis.ttl as usize;
+                match redis_set_json(k, &result, Some(ttl)).await {
+                    Ok(_) => {
+                        log_output(
+                            "REDIS",
+                            "CACHE WRITE",
+                            route.as_str(),
+                            format!("Key: {}, TTL: {}s, Records: {}", k, ttl, 9999),
+                            true,
+                        );
                     }
+                    Err(e) => {
+                        log_output(
+                            "ERROR",
+                            "CACHE WRITE",
+                            route.as_str(),
+                            format!("Failed to cache: {}", e),
+                            false,
+                        );
+                    }
+                }
             }
             
             HttpResponse::Ok().json(result)

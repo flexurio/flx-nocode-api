@@ -251,13 +251,10 @@ async fn main() -> std::io::Result<()> {
     // Initialize async, non-blocking logger (no-op if DEBUG is off)
     // Early CLI handling: print version and exit
     {
-        let mut args = env::args();
-        let _ = args.next(); // skip binary name
-        if let Some(first) = args.next()
-            && matches!(first.as_str(), "--version" | "-V" | "version") {
-                println!("flx-nocode-api {}", env!("CARGO_PKG_VERSION"));
-                return Ok(());
-            }
+        if matches!(env::args().nth(1).as_deref(), Some("--version") | Some("-V") | Some("version")) {
+            println!("flx-nocode-api {}", env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
     }
 
     // check .env exit or not
@@ -360,11 +357,10 @@ async fn main() -> std::io::Result<()> {
         }
     };
 
-    let mut is_cachedb = false;
+    let mut is_cachedb = env::var("REDIS_HOST").map(|v| !v.is_empty()).unwrap_or(false);
     let mut write_queue_enabled = false;
     let mut write_queue_fast_ack = true; // default true: handlers return immediately
-    // check if REDIS_HOST is configured in .env
-    if let Ok(val) = env::var("REDIS_HOST") && !val.is_empty() { is_cachedb = true; }
+    // check if REDIS_HOST is configured in .env (already used to initialize is_cachedb above)
     // Proactively verify Redis connectivity once at startup for read-cache usage.
     // If unreachable, disable caching to avoid expensive per-request connection attempts
     // when clients pass `?redis=true`.
