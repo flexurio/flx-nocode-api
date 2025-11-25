@@ -120,11 +120,17 @@ pub struct PrimaryKey {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Column {
+    #[serde(default)]
     pub name: String,
+    #[serde(default)]
     pub auto_increment: bool,
+    #[serde(default)]
     pub nullable: bool,
+    #[serde(default)]
     pub type_data: String,
+    #[serde(default)]
     pub function: String,
+    #[serde(default)]
     pub encrypt: bool,
     #[serde(default)]
     pub collate: String,
@@ -132,44 +138,64 @@ pub struct Column {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Index {
+    #[serde(default)]
     pub name: String,
+    #[serde(default)]
     pub columns: Vec<String>,
+    #[serde(default)]
     pub unique: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Redis {
+    #[serde(default)]
     pub keys: Vec<String>,
+    #[serde(default)]
     pub ttl: u32,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct GetOperation {
+    #[serde(default)]
     pub columns: Vec<String>,
+    #[serde(default)]
     pub parameters: Vec<String>,
+    #[serde(default)]
     pub join_tables: Vec<JoinTable>,
+    #[serde(default)]
     pub column_groups: Vec<String>,
+    #[serde(default)]
     pub having: Vec<String>,
+    #[serde(default)]
     pub order_by: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct JoinTable {
+    #[serde(default)]
     pub table: String,
+    #[serde(default)]
     pub columns: Vec<String>,
+    #[serde(default)]
     pub logical: String,
+    #[serde(default)]
     pub type_join: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Operation {
+    #[serde(default)]
     pub columns: Vec<String>,
 }
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct OperationPostPut {
+    #[serde(default)]
     pub validate_data: String,
+    #[serde(default)]
     pub pre_process: String,
+    #[serde(default)]
     pub columns: Vec<String>,
+    #[serde(default)]
     pub post_process: String,
 }
 
@@ -183,7 +209,9 @@ pub struct OperationDelete {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Patch {
+    #[serde(default)]
     pub pre_process_sp: String,
+    #[serde(default)]
     pub parameters: Vec<String>,
     #[serde(default)]
     pub return_mode: String, // "" | "rows" | "affected"
@@ -191,12 +219,19 @@ pub struct Patch {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Trace {
+    #[serde(default)]
     pub insert_into: String,
+    #[serde(default)]
     pub column_inserts: Vec<String>,
+    #[serde(default)]
     pub column_selects: Vec<String>,
+    #[serde(default)]
     pub parameters: Vec<String>,
+    #[serde(default)]
     pub join_tables: Vec<JoinTable>,
+    #[serde(default)]
     pub column_groups: Vec<String>,
+    #[serde(default)]
     pub column_conflicts: Vec<String>,
 }
 
@@ -211,7 +246,10 @@ pub struct WebResponse {
 // create struct for logging
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Log {
+    #[serde(default)]
     pub level: String,
+    #[serde(default)]
     pub message: String,
+    #[serde(default)]
     pub timestamp: String,
 }
