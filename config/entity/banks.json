@@ -82,7 +82,7 @@
                         "auto_increment":false,
                         "nullable":true,
                         "function":"",
-                        "type_data":"varchar(255)",
+                        "type_data":"longtext",
                         "encrypt":false
                 }
         ],

@@ -31,6 +31,9 @@ pub fn mysqlrows_to_json(rows: Vec<MySqlRow>) -> Vec<Value> {
             // Check if column has BINARY flag
             let has_binary_flag = type_info_debug.contains("BINARY");
 
+            // check if type info is BLOB but contains MAX_SIZE: SOME(4294967295) so its LONGTEXT
+            let has_longtext_blob = type_info_debug.contains("BLOB") && type_info_debug.contains("MAX_SIZE: SOME(4294967295)");
+
             let value = if type_info_debug.contains("LONG") {
                 if is_unsigned {
                     match row.try_get::<Option<u64>, _>(name) {
@@ -77,6 +80,7 @@ pub fn mysqlrows_to_json(rows: Vec<MySqlRow>) -> Vec<Value> {
                 || type_info_debug.contains("NUMERIC")
                 || type_info_debug.contains("ENUM")
                 || type_info_debug.contains("SET")
+                || has_longtext_blob
             {
                 match row.try_get::<Option<String>, _>(name) {
                     Ok(Some(v)) => Value::String(v),
