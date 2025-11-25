@@ -155,6 +155,7 @@ pub fn validate_table_design(design: TableSchema) -> TableSchema {
             nullable: false,
             function: "NOT OK - root.columns.function do not exist".to_string(),
             encrypt: false,
+            collate: "NOT OK - root.columns.collate do not exist".to_string(),
         }]
     } else {
         vec![Column {
@@ -164,6 +165,7 @@ pub fn validate_table_design(design: TableSchema) -> TableSchema {
             nullable: false,
             function: "OK".to_string(),
             encrypt: false,
+            collate: "OK".to_string(),
         }]
     };
 

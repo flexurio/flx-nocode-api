@@ -23,6 +23,8 @@ pub struct ColumnDef {
     pub auto_increment: bool,
     /// Mark this column as part of primary key when needed (for SQLite INTEGER PRIMARY KEY AUTOINCREMENT special case, the builder should encode via col_type).
     pub primary_key_inline: bool,
+    /// Optional column collation (e.g. UTF8_GENERAL_CI, "en_US.utf8").
+    pub collate: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

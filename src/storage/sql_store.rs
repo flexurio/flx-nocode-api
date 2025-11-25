@@ -80,6 +80,12 @@ impl SqlStore {
             match &c.col_type {
                 ColumnType::Raw(t) => line.push_str(t),
             }
+            if let Some(coll) = &c.collate {
+                if !coll.trim().is_empty() {
+                    line.push_str(" COLLATE ");
+                    line.push_str(coll.trim());
+                }
+            }
             if !c.nullable { line.push_str(" NOT NULL"); }
             if let Some(def) = &c.default {
                 line.push_str(" DEFAULT ");

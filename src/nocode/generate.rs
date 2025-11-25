@@ -67,6 +67,7 @@ fn add_audit_columns(cols: &mut Vec<ColumnDef>, db_type: &str) {
                 default: None,
                 auto_increment: false,
                 primary_key_inline: false,
+                collate: None,
             });
         }
     }
@@ -368,6 +369,7 @@ pub fn generate_table(ds: &SqlStore, data: &TableSchema) -> (String, Vec<String>
             default: None,
             auto_increment,
             primary_key_inline,
+            collate: if c.collate.trim().is_empty() { None } else { Some(c.collate.trim().to_string()) },
         });
     }
 

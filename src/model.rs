@@ -126,6 +126,8 @@ pub struct Column {
     pub type_data: String,
     pub function: String,
     pub encrypt: bool,
+    #[serde(default)]
+    pub collate: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
