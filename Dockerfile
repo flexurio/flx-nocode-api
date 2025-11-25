@@ -1,4 +1,4 @@
-FROM rust:1.85-slim-bullseye
+FROM rust:1.91-slim
 
 RUN apt update
 RUN apt install pkg-config libssl-dev -y
