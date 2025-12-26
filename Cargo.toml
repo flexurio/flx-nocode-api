@@ -21,12 +21,12 @@ overflow-checks = true # Runtime integer overflow checks
 
 [dependencies]
 actix = "0.13.5"
-actix-web = "4.12.0"
+actix-web = "4.12.1"
 actix-files = "0.6"
 actix-multipart = "0.7"
 dotenv = "0.15.0"
 serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.145"
+serde_json = "1.0.147"
 sqlx = { version = "0.8.6", default-features = false, features = ["runtime-async-std-native-tls"] }
 tiberius = { version = "0.12", default-features = false, features = ["chrono", "rustls"] }
 tokio-util = { version = "0.7", features = ["compat"] }
@@ -48,7 +48,7 @@ regex = "1.12.2"
 actix-cors = "0.7.1"
 async-trait = "0.1"
 rust_decimal = "1.39.0"
-reqwest = { version = "0.12.24", features = ["blocking", "json"] }
+reqwest = { version = "0.12.28", features = ["blocking", "json"] }
 zip = "4.6.1"
 sanitize-filename = "0.5"
 infer = "0.15"

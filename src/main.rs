@@ -315,7 +315,7 @@ async fn main() -> std::io::Result<()> {
     };
 
     let query_converter = QueryConverter {
-        datetime_now: datetime_now.clone(),
+        datetime_now,
     };
 
     let whitelist_ips: Vec<String> = env::var("WHITE_LIST_IP")
@@ -386,7 +386,7 @@ async fn main() -> std::io::Result<()> {
         encrypt_key,
         query_converter,
         whitelist_ips,
-        route_publics: CONFIG.route_publics.clone().to_vec(),
+        route_publics: CONFIG.route_publics.clone(),
         converter_token: CONFIG.converter_token.clone(),
         store: store_adapter,
         is_cachedb,
@@ -406,7 +406,7 @@ async fn main() -> std::io::Result<()> {
         if let Err(e) = crate::database::redis::get_manager().await {
             eprintln!("WRITE QUEUE enabled but Redis not available: {}", e);
         } else {
-            start_consumer(app_state.clone(), SCHEMAS.clone()).await;
+            start_consumer(app_state.clone(), Arc::clone(&SCHEMAS)).await;
             log_output("QUEUE", "BOOT", "consumer", "Write consumer started".to_string(), true);
         }
     }
@@ -665,6 +665,8 @@ async fn main() -> std::io::Result<()> {
                 }
 
                 // setup endpoint for each route
+                // Cache Arc clone of SCHEMAS to avoid cloning per route (Arc clone is cheap but compound overhead)
+                let schemas_arc = Arc::clone(&SCHEMAS);
                 for route in CONFIG.routes.iter() {
                     // Use Arc<str> for efficient shared ownership - cheap to clone, reduces heap allocations
                     let route_arc: Arc<str> = Arc::from(route.as_str());
@@ -681,6 +683,16 @@ async fn main() -> std::io::Result<()> {
                     let route_put = Arc::clone(&route_arc);
                     let route_validate = Arc::clone(&route_arc);
                     let route_generate_table = Arc::clone(&route_arc);
+                    let schemas_get = Arc::clone(&schemas_arc);
+                    let schemas_post = Arc::clone(&schemas_arc);
+                    let schemas_trace = Arc::clone(&schemas_arc);
+                    let schemas_patch = Arc::clone(&schemas_arc);
+                    let schemas_delete = Arc::clone(&schemas_arc);
+                    let schemas_import = Arc::clone(&schemas_arc);
+                    let schemas_export = Arc::clone(&schemas_arc);
+                    let schemas_put = Arc::clone(&schemas_arc);
+                    let schemas_validate = Arc::clone(&schemas_arc);
+                    let schemas_generate = Arc::clone(&schemas_arc);
 
                     if do_log {
                         log_output(
@@ -744,7 +756,7 @@ async fn main() -> std::io::Result<()> {
                                         state,
                                         parameters,
                                         route_get.to_string(),
-                                        SCHEMAS.0.clone().into(),
+                                        schemas_get.as_ref().0.clone().into(),
                                         req,
                                     )
                                 },
@@ -759,7 +771,7 @@ async fn main() -> std::io::Result<()> {
                                         state,
                                         parameters,
                                         route_post.to_string(),
-                                        SCHEMAS.0.clone().into(),
+                                        schemas_post.as_ref().0.clone().into(),
                                         multipart,
                                         req,
                                     )
@@ -774,7 +786,7 @@ async fn main() -> std::io::Result<()> {
                                         state,
                                         parameters,
                                         route_trace.to_string(),
-                                        SCHEMAS.0.clone().into(),
+                                        schemas_trace.as_ref().0.clone().into(),
                                         req,
                                     )
                                 },
@@ -788,7 +800,7 @@ async fn main() -> std::io::Result<()> {
                                         state,
                                         parameters,
                                         route_patch.to_string(),
-                                        SCHEMAS.0.clone().into(),
+                                        schemas_patch.as_ref().0.clone().into(),
                                         req,
                                     )
                                 },
@@ -831,7 +843,7 @@ async fn main() -> std::io::Result<()> {
                                       parameters: web::Query<Value>,
                                       path: Path<String>,
                                       req: actix_web::HttpRequest| {
-                                    delete(state,parameters, route_delete.to_string(), SCHEMAS.clone(), path, req)
+                                    delete(state,parameters, route_delete.to_string(), schemas_delete.clone(), path, req)
                                 },
                             ))
                             // register create_nocode
@@ -845,7 +857,7 @@ async fn main() -> std::io::Result<()> {
                                         state,
                                         parameters,
                                         route_put.to_string(),
-                                        SCHEMAS.clone(),
+                                        schemas_put.clone(),
                                         multipart,
                                         path,
                                         req,
@@ -881,7 +893,7 @@ async fn main() -> std::io::Result<()> {
                                         state,
                                         parameters,
                                         route_import.to_string(),
-                                        SCHEMAS.clone(),
+                                        Arc::clone(&schemas_import),
                                         multipart,
                                         req,
                                     )
@@ -914,7 +926,7 @@ async fn main() -> std::io::Result<()> {
                                     export(
                                         state,
                                         route_export.to_string(),
-                                        SCHEMAS.clone(),
+                                        Arc::clone(&schemas_export),
                                         multipart,
                                         req,
                                     )
@@ -945,7 +957,7 @@ async fn main() -> std::io::Result<()> {
                                     check_table_design(
                                         state,
                                         route_validate.to_string(),
-                                        SCHEMAS.0.clone().into(),
+                                        schemas_validate.as_ref().0.clone().into(),
                                         req,
                                     )
                                 },
@@ -976,7 +988,7 @@ async fn main() -> std::io::Result<()> {
                                     create_table(
                                         state,
                                         route_generate_table.to_string(),
-                                        SCHEMAS.0.clone().into(),
+                                        schemas_generate.as_ref().0.clone().into(),
                                         req,
                                     )
                                 },
