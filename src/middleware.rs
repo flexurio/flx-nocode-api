@@ -5,7 +5,7 @@ use futures_util::future::{ready, Ready, LocalBoxFuture};
 use once_cell::sync::Lazy;
 use serde_json::Value;
 use std::rc::Rc;
-use std::collections::HashMap;
+use ahash::AHashMap;
 
 use crate::helpers::get_client_ip;
 use crate::model::WebResponse;
@@ -20,8 +20,9 @@ static RL_GET: Lazy<i64> = Lazy::new(|| std::env::var("RATE_LIMIT_GET_PER_SEC").
 static RL_MUTATE: Lazy<i64> = Lazy::new(|| std::env::var("RATE_LIMIT_MUTATE_PER_SEC").ok().and_then(|v| v.parse().ok()).unwrap_or(10));
 
 // Allow per-method override if desired (optional; falls back to GET / MUTATE buckets)
-static RL_METHOD: Lazy<HashMap<&'static str, i64>> = Lazy::new(|| {
-    let mut map = HashMap::new();
+// Use AHashMap for faster lookups (optimized hash function for strings)
+static RL_METHOD: Lazy<AHashMap<&'static str, i64>> = Lazy::new(|| {
+    let mut map = AHashMap::new();
     for m in ["POST", "PUT", "DELETE", "PATCH", "TRACE", "IMPORT"].iter() {
         if let Some(parsed) = std::env::var(format!("RATE_LIMIT_{}_PER_SEC", m))
             .ok()
@@ -147,7 +148,7 @@ where
         }
         // Validate token
         if let Some(app_state) = req.app_data::<web::Data<AppState>>() {
-            match validate_token(req.request().clone(), app_state.clone()) {
+            match validate_token(req.request(), &app_state) {
                 Ok(_) => {
                     let fut = self.service.call(req);
                     Box::pin(fut)

@@ -65,14 +65,14 @@ impl Default for ClaimsConverter {
 
 // Middleware untuk verifikasi token dengan optimized validation
 pub fn validate_token(
-    req: actix_web::HttpRequest,
-    state: web::Data<AppState>,
-) -> Result<web::Data<AppState>, HttpResponse> {
+    req: &actix_web::HttpRequest,
+    state: &web::Data<AppState>,
+) -> Result<(), HttpResponse> {
     // Fast path: check IP whitelist first to avoid expensive token operations
-    if is_ip_whitelisted(&req, &state.whitelist_ips) || 
+    if is_ip_whitelisted(req, &state.whitelist_ips) || 
         state.route_publics.contains(&req.path().to_string()) ||
         state.converter_token != ClaimsConverter::default() {
-        return Ok(state);
+        return Ok(());
     }
 
     // Extract Authorization header once
@@ -96,7 +96,7 @@ pub fn validate_token(
         &DecodingKey::from_secret(state.secret.as_ref()),
         &validation,
     ) {
-        Ok(_) => Ok(state),
+        Ok(_) => Ok(()),
         Err(e) => {
             eprintln!("Token validation failed: {}", e);
             Err(HttpResponse::Unauthorized().json("Invalid or expired token"))

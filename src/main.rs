@@ -52,13 +52,17 @@ use middleware::{GlobalRateLimit, AuthMiddleware};
 #[cfg(feature = "mongodb")]
 use crate::storage::mongodb_store::MongoStore;
 
+// Consolidate config location to avoid repeated env::var reads
+static CONFIG_LOCATION: Lazy<String> = Lazy::new(|| {
+    std::env::var("LOC_CONFIG").unwrap_or_else(|_| {
+        eprintln!("Warning: LOC_CONFIG not set, using default 'config'");
+        "config".to_string()
+    })
+});
+
 // Load routes.json once and expose via CONFIG
 static CONFIG: Lazy<crate::model::Config> = Lazy::new(|| {
-    let config_location = std::env::var("LOC_CONFIG").unwrap_or_else(|_| {
-        eprintln!("Warning: LOC_CONFIG not set, using default 'config/example'");
-        "config/example".to_string()
-    });
-    let file_path = format!("{}/routes.json", config_location);
+    let file_path = format!("{}/routes.json", CONFIG_LOCATION.as_str());
 
     let mut content = match std::fs::read_to_string(&file_path) {
         Ok(content) => content,
@@ -88,7 +92,7 @@ static CONFIG: Lazy<crate::model::Config> = Lazy::new(|| {
         Err(e) => {
             eprintln!(
                 "ERROR main 75 : Sorry, content of /{}/routes.json is not valid JSON, with ERROR Message : {}",
-                config_location, e
+                CONFIG_LOCATION.as_str(), e
             );
             std::process::exit(1);
         }
@@ -110,8 +114,7 @@ static ENDPOINT_LOG_ONCE: Lazy<AtomicBool> = Lazy::new(|| AtomicBool::new(false)
 static FOREIGNKEY_ACTION: [&str; 4] = ["cascade", "set null", "restrict", "no action"];
 
 static SCHEMAS: Lazy<Arc<(Vec<TableSchema>, Vec<ReferenceForeignKey>)>> = Lazy::new(|| {
-    let config_location = env::var("LOC_CONFIG").unwrap_or_else(|_| "config/example".to_string());
-    let config_dir = format!("{}/entity", config_location);
+    let config_dir = format!("{}/entity", CONFIG_LOCATION.as_str());
     let mut schemas = Vec::with_capacity(CONFIG.routes.len()); // Pre-allocate capacity
     let mut ref_foreign_keys: Vec<ReferenceForeignKey> = Vec::with_capacity(CONFIG.routes.len());
 
@@ -129,21 +132,21 @@ static SCHEMAS: Lazy<Arc<(Vec<TableSchema>, Vec<ReferenceForeignKey>)>> = Lazy::
                 exit(1);
             }
         };
-
         let schema: TableSchema = match serde_json::from_str(&content) {
             Ok(schema) => schema,
             Err(e) => {
                 eprintln!(
                     "Sorry, content of /{}/entity/{}.json is not valid JSON, with ERROR Message : {}",
-                    config_location, route, e
+                    CONFIG_LOCATION.as_str(), route, e
                 );
                 exit(1);
             }
         };
 
         // Early validation for TRACE upsert/merge requirements based on backend
-        // Determine db type from env (same as later runtime config)
-        let dbt = env::var("DB_TYPE").unwrap_or_else(|_| "mysql".to_string()).to_lowercase();
+        // Determine db type from env (same as later runtime config) - compute lowercase once
+        let dbt_raw = env::var("DB_TYPE").unwrap_or_else(|_| "mysql".to_string());
+        let dbt = dbt_raw.to_ascii_lowercase();  // Use ascii_lowercase which is faster than to_lowercase
         let trace_active = !schema.trace.insert_into.is_empty() || !schema.trace.column_selects.is_empty();
         if trace_active && (dbt == "postgres" || dbt == "mssql") {
             // Resolve conflict keys: allow special entry "index:NAME" to reference an index by name
@@ -272,8 +275,8 @@ async fn main() -> std::io::Result<()> {
     let secret_key = env::var("SECRET_KEY").expect("SECRET_KEY must be set");
     let encrypt_key = env::var("ENCRYPT_KEY").expect("ENCRYPT_KEY must be set");
 
-    // Check config folder
-    let config_location = env::var("LOC_CONFIG").unwrap_or_else(|_| "config".to_string());
+    // Check config folder - use consolidated CONFIG_LOCATION to avoid re-reading env
+    let config_location = CONFIG_LOCATION.as_str();
     if !std::path::Path::new(&config_location).exists() {
         if let Err(e) = core::create_dir_and_get_config(&config_location).await {
             eprintln!("Failed to initialize config directory: {}", e);
