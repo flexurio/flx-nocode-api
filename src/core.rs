@@ -326,9 +326,7 @@ pub async fn register(state: Data<AppState>, multipart: Multipart) -> impl Respo
 }
 
 // NCO-POST
-pub async fn generate_users(state: Data<AppState>) -> (bool, String) {
-    let mut iscreatedb = false;
-
+pub async fn generate_users(state: Data<AppState>) -> String {
     // MongoDB: no DDL. Seed collections and default data using DataStore.
     if state.db_type == "mongodb" {
         use crate::storage::ast::{Query as QQ, Filter as QF, Val as QV};
@@ -351,7 +349,6 @@ pub async fn generate_users(state: Data<AppState>) -> (bool, String) {
             .unwrap_or_default();
 
         if id_user_str.is_empty() {
-            iscreatedb = true;
             // create random password, encrypt, then insert admin
             let random_pass = rand::rng().random_range(1000..9999).to_string();
             let encrypt_password = encrypt(state.encrypt_key.clone(), random_pass.clone());
@@ -392,7 +389,7 @@ pub async fn generate_users(state: Data<AppState>) -> (bool, String) {
                         format!("Failed to insert admin user (continuing): {}", err),
                         true,
                     );
-                    return (iscreatedb, id_user_str);
+                    return id_user_str;
                 }
             }
 
@@ -413,7 +410,7 @@ pub async fn generate_users(state: Data<AppState>) -> (bool, String) {
             let _ = state.store.insert("flx_roles", role1).await;
             let _ = state.store.insert("flx_roles", role2).await;
         }
-        (iscreatedb, id_user_str)
+        id_user_str
     } else {
 
         // Create tables via DDL AST (vendor-aware)
@@ -602,7 +599,6 @@ pub async fn generate_users(state: Data<AppState>) -> (bool, String) {
         log_output("QUERY", "POST", "generate/table/users", sql_admin.to_string(), true);
 
         if id_user == 0 {
-            iscreatedb = true;
             id_user = 1;
             // create string number
             let random_pass = rand::rng().random_range(1000..9999).to_string();
@@ -656,7 +652,7 @@ pub async fn generate_users(state: Data<AppState>) -> (bool, String) {
             }
         }
 
-        (iscreatedb, "1".into())
+        "1".into()
     }
 }
 
@@ -814,10 +810,8 @@ pub(crate) async fn create_core_config_if_not_exists(conf: &str) -> Result<(), B
     );  
     let zip_path = "core_config.zip";
     let extract_to = "."; // current working directory
-    println!("Downloading core_config...");
     download_file(url, zip_path).await?;
 
-    println!("Extracting core_config...");
     extract_zip(zip_path, extract_to)?;
 
     // copy core_config/flx_roles.json to conf/flx_roles.json and flx_users.json to conf/flx_users.json

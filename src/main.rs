@@ -111,6 +111,12 @@ pub(crate) static ISDEBUG: Lazy<bool> = Lazy::new(|| match env::var("DEBUG") {
 // Ensure endpoint logging happens only once even if server factory runs multiple times
 static ENDPOINT_LOG_ONCE: Lazy<AtomicBool> = Lazy::new(|| AtomicBool::new(false));
 
+// Read REQUIRE_AUTH from .env (default: true for security)
+pub(crate) static REQUIRE_AUTH: Lazy<bool> = Lazy::new(|| match env::var("REQUIRE_AUTH") {
+    Ok(val) => matches!(val.to_lowercase().as_str(), "1" | "true" | "yes"),
+    Err(_) => true, // default to true (require auth) if not set
+});
+
 
 // Static Routes for once initialization
 static FOREIGNKEY_ACTION: [&str; 4] = ["cascade", "set null", "restrict", "no action"];
@@ -399,7 +405,11 @@ async fn main() -> std::io::Result<()> {
         write_queue_fast_ack,
     });
 
-    let (is_createdb, id_user_str) = generate_users(app_state.clone()).await;
+    let id_user_str: String = if *REQUIRE_AUTH {
+        generate_users(app_state.clone()).await
+    } else {
+        "1".to_string()
+    };
 
     // Initialize Routes only once, using Lazy
     let _ = &*CONFIG;
@@ -417,18 +427,23 @@ async fn main() -> std::io::Result<()> {
     }
 
     // loop every config.routes and check if table is exist in database
-    if is_createdb {
-        let state = web::Data::new(app_state.clone());
-        let ds = SqlStore::new(state.db.clone(), state.db_type.clone());
-        for route in CONFIG.routes.iter() {
-            println!("Checking table design for route: {}", route);
-            let schema = match SCHEMAS.0.iter().find(|s| s.table == *route) {
-                Some(s) => s.clone(),
-                None => {
-                    eprintln!("No schema found for route '{}'", route);
-                    exit(1);
-                }
-            };
+    let state = web::Data::new(app_state.clone());
+    let ds = SqlStore::new(state.db.clone(), state.db_type.clone());
+    for route in CONFIG.routes.iter() {
+        let schema = match SCHEMAS.0.iter().find(|s| s.table == *route) {
+            Some(s) => s.clone(),
+            None => {
+                eprintln!("No schema found for route '{}'", route);
+                exit(1);
+            }
+        };
+        let should_generate = if *REQUIRE_AUTH {
+            true
+        } else {
+            schema.table != "flx_users" && schema.table != "flx_roles"
+        };
+        
+        if should_generate {
             let (sql_create_table, sql_create_index) = generate_table(&ds, &schema);
             let (is_valid, msg) = execute_generate_table(route.to_string(), &app_state, sql_create_table, sql_create_index).await;
             if !is_valid {
@@ -437,17 +452,25 @@ async fn main() -> std::io::Result<()> {
             } else {
                 log_output("INFO", "TABLE DESIGN CHECK", "SUCCESS", route.to_string(), false);
             }
+        }
 
-        }
-        if app_state.db_type != "mongodb" {
-            // convert id_user_string to i64
-            let id_user: i64 = id_user_str.parse().unwrap_or(1);
-            let fut = generate_role_admin(&app_state, ds, id_user, CONFIG.routes.clone());
-            std::mem::drop(fut); // fire-and-forget as before
-        }
+    }
+    if app_state.db_type != "mongodb" {
+        // convert id_user_string to i64
+        let id_user: i64 = id_user_str.parse().unwrap_or(1);
+        let fut = generate_role_admin(&app_state, ds, id_user, CONFIG.routes.clone());
+        std::mem::drop(fut); // fire-and-forget as before
     }
 
     let _ = &*ISDEBUG;
+
+    log_output(
+        "BOOT",
+        "AUTH",
+        "REQUIRE_AUTH",
+        if *REQUIRE_AUTH { "enabled" } else { "disabled" }.to_string(),
+        false,
+    );
 
     if CONFIG.routes.is_empty() {
         println!("--------------------------------------");
@@ -591,46 +614,50 @@ async fn main() -> std::io::Result<()> {
                     );
                 }
 
-                // end point for login
-                cfg.service(web::resource("/login").route(web::post().to(
-                    move |state: web::Data<AppState>, req: actix_web::HttpRequest| {
-                        login(state, req)
-                    },
-                )));
-                if do_log {
-                    log_output(
-                        "CORE ENDPOINT",
-                        "METHOD",
-                        "POST",
-                        format!(
-                            "http://{}:{}/{}",
-                            host.red(),
-                            port.clone().to_string().green(),
-                            "login".purple()
-                        ),
-                        false,
-                    );
+                // end point for login (only if REQUIRE_AUTH is enabled)
+                if *REQUIRE_AUTH {
+                    cfg.service(web::resource("/login").route(web::post().to(
+                        move |state: web::Data<AppState>, req: actix_web::HttpRequest| {
+                            login(state, req)
+                        },
+                    )));
+                    if do_log {
+                        log_output(
+                            "CORE ENDPOINT",
+                            "METHOD",
+                            "POST",
+                            format!(
+                                "http://{}:{}/{}",
+                                host.red(),
+                                port.clone().to_string().green(),
+                                "login".purple()
+                            ),
+                            false,
+                        );
+                    }
                 }
 
-                // end point for register
-                cfg.service(web::resource("/register").route(web::post().to(
-                    move |state: web::Data<AppState>, multipart: Multipart| {
-                        register(state, multipart)
-                    },
-                )));
-                if do_log {
-                    log_output(
-                        "CORE ENDPOINT",
-                        "METHOD",
-                        "POST",
-                        format!(
-                            "http://{}:{}/{}",
-                            host.red(),
-                            port.clone().to_string().green(),
-                            "register".purple()
-                        ),
-                        false,
-                    );
+                // end point for register (only if REQUIRE_AUTH is enabled)
+                if *REQUIRE_AUTH {
+                    cfg.service(web::resource("/register").route(web::post().to(
+                        move |state: web::Data<AppState>, multipart: Multipart| {
+                            register(state, multipart)
+                        },
+                    )));
+                    if do_log {
+                        log_output(
+                            "CORE ENDPOINT",
+                            "METHOD",
+                            "POST",
+                            format!(
+                                "http://{}:{}/{}",
+                                host.red(),
+                                port.clone().to_string().green(),
+                                "register".purple()
+                            ),
+                            false,
+                        );
+                    }
                 }
 
                 // health check endpoint (public)
@@ -697,8 +724,13 @@ async fn main() -> std::io::Result<()> {
                 // Cache Arc clone of SCHEMAS to avoid cloning per route (Arc clone is cheap but compound overhead)
                 let schemas_arc = Arc::clone(&SCHEMAS);
                 for route in CONFIG.routes.iter() {
-                    // Use Arc<str> for efficient shared ownership - cheap to clone, reduces heap allocations
                     let route_arc: Arc<str> = Arc::from(route.as_str());
+                    let route_ra = Arc::clone(&route_arc);
+                    if !*REQUIRE_AUTH && ( route_ra.as_ref() == "flx_users" || route_ra.as_ref() == "flx_roles" ) {
+                        continue;
+                    }
+
+                    // Use Arc<str> for efficient shared ownership - cheap to clone, reduces heap allocations
                     let port_str = port.to_string(); // Cache port string conversion
                     
                     // Clone Arc only when needed (Arc clone is just pointer increment, very cheap)

@@ -42,7 +42,7 @@ impl PoolSettings {
         let acquire_timeout_secs = env::var("CONNECT_TIMEOUT")
             .ok()
             .and_then(|s| s.parse().ok())
-            .unwrap_or(10);
+            .unwrap_or(300);
 
         // Min pool: pre-warm connections to avoid cold starts
         // 50% of max_pool, but at least 8 connections for safety

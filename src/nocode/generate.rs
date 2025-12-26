@@ -192,17 +192,32 @@ pub async fn create_table(
         );
         
         if let Err(err) = tx.raw_sql(sql_idx, vec![]).await {
-            err_message = format!(
-                "{} \nFailed to create index {} with error : {}",
-                err_message, table_schema.table, err
-            );
-            log_output(
-                "QUERY",
-                "GENERATE INDEX",
-                route.clone().as_str(),
-                sql_idx.clone() + " ~ ERROR : " + &err_message,
-                true,
-            );
+            let err_str = err.to_string();
+            // Skip error if index already exists or column doesn't exist
+            if err_str.contains("Duplicate key name") 
+                || err_str.contains("already exists")
+                || err_str.contains("doesn't exist")
+                || err_str.contains("Key column") {
+                log_output(
+                    "QUERY",
+                    "GENERATE INDEX",
+                    route.clone().as_str(),
+                    format!("Skipping index ({}): {}", if err_str.contains("Duplicate") { "duplicate" } else { "column not found" }, sql_idx),
+                    true,
+                );
+            } else {
+                err_message = format!(
+                    "{} \nFailed to create index {} with error : {}",
+                    err_message, table_schema.table, err
+                );
+                log_output(
+                    "QUERY",
+                    "GENERATE INDEX",
+                    route.clone().as_str(),
+                    sql_idx.clone() + " ~ ERROR : " + &err_message,
+                    true,
+                );
+            }
         }
     }
 
@@ -276,17 +291,32 @@ pub async fn execute_generate_table(stable: String, state: &AppState, sql_create
         );
         
         if let Err(err) = tx.raw_sql(sql_idx, vec![]).await {
-            err_message = format!(
-                "{} \nFailed to create index {} with error : {}",
-                err_message, stable, err
-            );
-            log_output(
-                "QUERY",
-                "GENERATE INDEX",
-                stable.clone().as_str(),
-                sql_idx.clone() + " ~ ERROR : " + &err_message,
-                true,
-            );
+            let err_str = err.to_string();
+            // Skip error if index already exists or column doesn't exist
+            if err_str.contains("Duplicate key name") 
+                || err_str.contains("already exists")
+                || err_str.contains("doesn't exist")
+                || err_str.contains("Key column") {
+                log_output(
+                    "QUERY",
+                    "GENERATE INDEX",
+                    stable.clone().as_str(),
+                    format!("Skipping index ({}): {}", if err_str.contains("Duplicate") { "duplicate" } else { "column not found" }, sql_idx),
+                    true,
+                );
+            } else {
+                err_message = format!(
+                    "{} \nFailed to create index {} with error : {}",
+                    err_message, stable, err
+                );
+                log_output(
+                    "QUERY",
+                    "GENERATE INDEX",
+                    stable.clone().as_str(),
+                    sql_idx.clone() + " ~ ERROR : " + &err_message,
+                    true,
+                );
+            }
         }
     }
 
