@@ -32,20 +32,27 @@ pub struct PoolSettings {
 
 impl PoolSettings {
     pub fn from_env(cpu: usize) -> Self {
+        // Optimize pool size for better concurrency: 4-8x CPU for better connection utilization
+        // High concurrency: 8x CPU cores, Low latency: 4x CPU cores
         let max_pool = env::var("MAX_POOL")
             .ok()
             .and_then(|s| s.parse().ok())
-            .unwrap_or(((cpu as u32) * 8).clamp(16, 128));
+            .unwrap_or(((cpu as u32) * 8).clamp(32, 256));  // Increased min from 16 to 32 for high concurrency
 
         let acquire_timeout_secs = env::var("CONNECT_TIMEOUT")
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(10);
 
+        // Min pool: pre-warm connections to avoid cold starts
+        // 50% of max_pool, but at least 8 connections for safety
         let min_pool = env::var("MIN_POOL")
             .ok()
             .and_then(|s| s.parse().ok())
-            .or(Some((cpu as u32).clamp(4, 32)));
+            .or_else(|| {
+                let suggested = ((cpu as u32) * 4).clamp(8, 64);
+                Some(suggested)
+            });
 
         let max_lifetime = env::var("POOL_MAX_LIFETIME_SECS")
             .ok()
@@ -57,7 +64,7 @@ impl PoolSettings {
             .ok()
             .and_then(|s| s.parse::<u64>().ok())
             .map(Duration::from_secs)
-            .or(Some(Duration::from_secs(60)));
+            .or(Some(Duration::from_secs(300)));  // Increased from 60s to 300s to keep idle connections longer
 
         Self {
             max_pool,
