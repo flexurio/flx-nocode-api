@@ -437,8 +437,13 @@ async fn main() -> std::io::Result<()> {
                 exit(1);
             }
         };
+        let should_generate = if schema.table == "flx_users" || schema.table == "flx_roles" {
+                *REQUIRE_AUTH
+            } else {
+                schema.auto_generate
+            };
         
-        if *REQUIRE_AUTH {
+        if should_generate {
             let (sql_create_table, sql_create_index) = generate_table(&ds, &schema);
             let (is_valid, msg) = execute_generate_table(route.to_string(), &app_state, sql_create_table, sql_create_index).await;
             if !is_valid {

@@ -54,6 +54,8 @@ pub struct TableSchema {
     pub del: OperationDelete,
     pub patch: Patch,
     pub trace: Trace,
+    #[serde(default)]
+    pub auto_generate: bool,
 }
 
 // default value for TableSchema
@@ -109,6 +111,7 @@ impl Default for TableSchema {
                 column_groups: vec![],
                 column_conflicts: vec![],
             },
+            auto_generate: false,
         }
     }
 }

@@ -67,6 +67,7 @@ pub async fn check_table_design(
 pub fn validate_table_design(design: TableSchema) -> TableSchema {
     let mut schema_check = TableSchema {
         table: String::new(),
+        auto_generate: design.auto_generate,
         primary_key: PrimaryKey {
             columns: Vec::new(),
         },
