@@ -48,6 +48,8 @@ mod log;
 mod rate_limit;
 mod storage; // new optional storage abstraction (not used yet)
 mod middleware;
+mod metrics;
+use metrics::METRICS;
 use middleware::{GlobalRateLimit, AuthMiddleware};
 #[cfg(feature = "mongodb")]
 use crate::storage::mongodb_store::MongoStore;
@@ -277,12 +279,12 @@ async fn main() -> std::io::Result<()> {
 
     // Check config folder - use consolidated CONFIG_LOCATION to avoid re-reading env
     let config_location = CONFIG_LOCATION.as_str();
-    if !std::path::Path::new(&config_location).exists() {
-        if let Err(e) = core::create_dir_and_get_config(&config_location).await {
+    if !std::path::Path::new(config_location).exists() {
+        if let Err(e) = core::create_dir_and_get_config(config_location).await {
             eprintln!("Failed to initialize config directory: {}", e);
         }
     } else {
-        let _ = core::create_core_config_if_not_exists(&config_location).await;
+        let _ = core::create_core_config_if_not_exists(config_location).await;
     }
 
     // Ensure static directory
@@ -662,6 +664,30 @@ async fn main() -> std::io::Result<()> {
                             host.red(),
                             port.clone().to_string().green(),
                             "healthz".purple()
+                        ),
+                        false,
+                    );
+                }
+
+                // metrics endpoint for Prometheus monitoring
+                cfg.service(web::resource("/metrics").route(web::get().to(|| {
+                    async {
+                        let metrics_output = METRICS.to_prometheus_format();
+                        HttpResponse::Ok()
+                            .content_type("text/plain; charset=utf-8")
+                            .body(metrics_output)
+                    }
+                })));
+                if do_log {
+                    log_output(
+                        "CORE ENDPOINT",
+                        "METHOD",
+                        "GET",
+                        format!(
+                            "http://{}:{}/{}",
+                            host.red(),
+                            port.clone().to_string().green(),
+                            "metrics".purple()
                         ),
                         false,
                     );

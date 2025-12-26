@@ -12,6 +12,7 @@ use crate::model::WebResponse;
 use crate::rate_limit::{RL_WINDOW_GET, RL_WINDOW_MUTATE, build_key, RateOp};
 use crate::auth::validate_token;
 use crate::database::state::AppState;
+use crate::metrics::METRICS;
 use actix_web::{web, HttpResponse};
 
 // Preload limits: global override or per-class (GET vs MUTATE)
@@ -83,13 +84,15 @@ where
             let key = build_key(op, path_seg, &ip);
             let limiter = if method == "GET" { &*RL_WINDOW_GET } else { &*RL_WINDOW_MUTATE };
             if !limiter.check_and_increment(&key, limit_val as u32) {
+                METRICS.record_rate_limit_hit();  // Record rate limit metric
                 let resp = actix_web::HttpResponse::TooManyRequests().json(WebResponse { success: false, message: "Too many requests".into(), total_data: 0, data: Value::default() }).map_into_boxed_body();
                 let (req_head, _pl) = req.into_parts();
                 return Box::pin(async move { Ok(ServiceResponse::new(req_head, resp)) });
             }
         }
+        METRICS.record_request();  // Record all requests
         let fut = self.service.call(req);
-    Box::pin(fut)
+        Box::pin(fut)
     }
 }
 
@@ -148,6 +151,7 @@ where
         }
         // Validate token
         if let Some(app_state) = req.app_data::<web::Data<AppState>>() {
+            #[allow(clippy::needless_borrow)]
             match validate_token(req.request(), &app_state) {
                 Ok(_) => {
                     let fut = self.service.call(req);
