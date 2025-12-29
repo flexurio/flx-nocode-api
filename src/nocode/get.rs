@@ -5,12 +5,7 @@ use actix_web::{
 use serde_json::Value;
 
 use crate::{
-    auth::{check_access, get_user_info_from_token},
-    helpers::{filter_table_schema, split_column_operator, get_client_ip},
-    log::log_output,
-    model::{ParamJoin, TableSchema, WebResponse},
-    // rate limiting now centralized in GlobalRateLimit middleware
-    AppState,
+    AppState, auth::{check_access, get_user_info_from_token}, helpers::{filter_table_schema, get_client_ip, split_column_operator}, log::log_output, model::{ParamJoin, TableSchema, WebResponse}
 };
 use crate::storage::ast::{Filter as QF, Query as QQ, Val as QV, Expr as QE, Join as QJ, JoinKind as QJK};
 use std::sync::Arc;
@@ -62,8 +57,7 @@ pub async fn select(
 
     let table_schema: TableSchema = filter_table_schema(&table_schemas, route.clone()).await;
     // legacy SQL variables removed; using AST end-to-end
-
-
+                
     if table_schema.table.is_empty() {
         let message_error = format!(
             "ER01(nocode_get): Entity {} on folder config/{}.json not found",
@@ -77,7 +71,19 @@ pub async fn select(
         });
     }
 
-    
+    if table_schema.get.columns.is_empty() {
+        let message_error = format!(
+            "ER02(nocode_get): No columns defined for GET operation on entity {}",
+            route
+        );
+        return HttpResponse::FailedDependency().json(WebResponse {
+            success: false,
+            message: message_error,
+            total_data: 0,
+            data: Value::Null,
+        });
+    }    
+
 
 
     let mut is_deleted_at = true;
@@ -98,6 +104,36 @@ pub async fn select(
         }
     };
     let mut params_map = params_map_awal.clone();
+    let mut table_schema_get_params = table_schema.get.parameters.clone();
+
+    // ============ VALIDASI PARAMETER WAJIB (marked with *) ============
+    {
+        let mut missing_required: Vec<String> = Vec::new();
+        for i in 0..table_schema_get_params.len() {
+            let param = &table_schema_get_params[i];
+            if param.starts_with('*') {
+                // Parameter wajib: hapus * untuk cek di params_map
+                let param_name = param.trim_start_matches('*');
+                if !params_map.contains_key(param_name) || 
+                   params_map.get(param_name).map(|v| v.as_str().unwrap_or("").is_empty()).unwrap_or(true) {
+                    missing_required.push(param_name.to_string());
+                } else {
+                    // edit table_schema_get_params to remove *
+                    table_schema_get_params[i] = param_name.to_string();
+                }
+            }
+        }
+        if !missing_required.is_empty() {
+            return HttpResponse::BadRequest().json(WebResponse {
+                success: false,
+                message: format!("Required parameters missing: {}", missing_required.join(", ")),
+                total_data: 0,
+                data: Value::Null,
+            });
+        }
+    }
+    // ================================================================
+    
     let mut isredis = false;
     let mut use_cache = false;
     // Build cache key if caching enabled
@@ -180,10 +216,10 @@ pub async fn select(
             let mut order_col_ast = table_schema.get.order_by.clone().join(", ");
             let mut order_type_ast = "ASC".to_string();
             // Pre-allocate with estimated capacity to reduce reallocations (optimization)
-            let mut filters: Vec<QF> = Vec::with_capacity(table_schema.get.parameters.len());
+            let mut filters: Vec<QF> = Vec::with_capacity(table_schema_get_params.len());
             // collect paramjoin values if provided
             let mut paramjoins_ast: Vec<ParamJoin> = Vec::with_capacity(4);
-            for p in &table_schema.get.parameters {
+            for p in &table_schema_get_params {
                 let v_opt = if p.contains("paramjoin") {
                     params_map.get(p).and_then(|vv| vv.as_str())
                 } else { None };
@@ -202,7 +238,7 @@ pub async fn select(
             }
 
             // process allowed parameters
-            for param in &table_schema.get.parameters {
+            for param in &table_schema_get_params {
                 if let Some(value) = params_map.get(param) {
                     let value_str = value.as_str().unwrap_or("").to_string();
                     if param.contains("deleted_at") { is_deleted_at = false; }
@@ -598,6 +634,7 @@ pub async fn select(
             let rows = match state.store.query(&q).await {
                 Ok(rs) => rs,
                 Err(e) => {
+                    eprintln!("Error NCO-GET(AST) route {}: {}. Query : {:?}", route, e, q);
                     return HttpResponse::InternalServerError().json(WebResponse {
                         success: false,
                         message: format!("Error NCO-GET(AST): {}", e),
