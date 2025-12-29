@@ -5,7 +5,7 @@ use crate::{
     auth::{check_access, get_user_info_from_token},
     helpers::filter_table_schema,
     model::{
-        Column, GetOperation, Index, JoinTable, OperationDelete, OperationPostPut, Patch,
+        Column, OperationGet, Index, JoinTable, OperationDelete, OperationPost, OperationPut, Patch,
         PrimaryKey, Redis, TableSchema, Trace, WebResponse,
     },
     AppState,
@@ -78,7 +78,8 @@ pub fn validate_table_design(design: TableSchema) -> TableSchema {
             keys: Vec::new(),
             ttl: 0,
         },
-        get: GetOperation {
+        get: OperationGet {
+            enable_method: false,
             columns: Vec::new(),
             parameters: Vec::new(),
             join_tables: Vec::new(),
@@ -86,30 +87,35 @@ pub fn validate_table_design(design: TableSchema) -> TableSchema {
             having: Vec::new(),
             order_by: Vec::new(),
         },
-        post: OperationPostPut {
+        post: OperationPost {
+            enable_method: false,
             validate_data: String::new(),
             pre_process: String::new(),
             columns: Vec::new(),
             post_process: String::new(),
         },
-        put: OperationPostPut {
+        put: OperationPut {
+            enable_method: false,
             validate_data: String::new(),
             pre_process: String::new(),
             columns: Vec::new(),
             post_process: String::new(),
         },
         del: OperationDelete {
+            enable_method: false,
             pre_process: String::new(),
             columns: Vec::new(),
             type_delete: "soft".to_string(),
             post_process: String::new(),
         },
         patch: Patch {
+            enable_method: false,
             pre_process_sp: String::new(),
             parameters: Vec::new(),
             return_mode: String::new(),
         },
         trace: Trace {
+            enable_method: false,
             insert_into: String::new(),
             column_inserts: Vec::new(),
             column_selects: Vec::new(),

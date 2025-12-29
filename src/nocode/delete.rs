@@ -19,6 +19,45 @@ use std::sync::Arc;
 use crate::storage::sql_store::{SqlStore, InsertValue};
 use crate::storage::ast::{Filter as QF, Val as QV};
 
+/// Build a composite primary key filter
+/// For single PK: returns Eq(pk_col, value)
+/// For composite PK: returns And([Eq(pk_col1, val1), Eq(pk_col2, val2), ...])
+fn build_pk_filter(pk_columns: &[String], pk_values: &[String]) -> Result<QF, String> {
+    if pk_columns.is_empty() {
+        return Err("No primary key columns defined".to_string());
+    }
+    if pk_columns.len() != pk_values.len() {
+        return Err(format!(
+            "Primary key mismatch: expected {} values for {} columns",
+            pk_columns.len(),
+            pk_values.len()
+        ));
+    }
+
+    if pk_columns.len() == 1 {
+        // Single PK: use simple Eq
+        Ok(QF::Eq(pk_columns[0].clone(), QV::Str(pk_values[0].clone())))
+    } else {
+        // Composite PK: use And with multiple Eq
+        let filters = pk_columns
+            .iter()
+            .zip(pk_values.iter())
+            .map(|(col, val)| QF::Eq(col.clone(), QV::Str(val.clone())))
+            .collect();
+        Ok(QF::And(filters))
+    }
+}
+
+/// Parse composite PK values from path parameter using ~ as delimiter
+/// Single value: "123" -> ["123"]
+/// Composite: "123~456" -> ["123", "456"]
+fn parse_pk_values(id_raw: &str) -> Vec<String> {
+    id_raw
+        .split('~')
+        .map(|s| s.to_string())
+        .collect()
+}
+
 // NCO-DELETE
 pub async fn delete(
     state: Data<AppState>,
@@ -161,13 +200,9 @@ pub async fn delete(
 
     // check table_schemas.delete.type_delete
     let type_delete = table_schema.del.type_delete.clone();
-    // Get filter column(s) from del.columns, fallback to "id"
-    let filter_columns = if !table_schema.del.columns.is_empty() {
-        table_schema.del.columns.clone()
-    } else {
-        vec!["id".to_string()]
-    };
-    let filter_column = filter_columns.first().cloned().unwrap_or_else(|| "id".to_string());
+    
+    // Parse composite PK values using ~ delimiter
+    let pk_values = parse_pk_values(&id_raw);
     
     // Build AST-compiled SQL and params to execute
     let mut exec_sql = String::new();
@@ -208,10 +243,20 @@ pub async fn delete(
             fields.push(("deleted_by_id".into(), InsertValue::Param(crate::database::state::DbParam::Str(claims.id.clone()))));
         }
 
-        // Filter by configured column (from del.columns) with typed value
-        let id_filter_val = if let Ok(n) = id_raw.parse::<i64>() { QV::I64(n) } else { QV::Str(id_raw.clone()) };
+        // Filter by composite PK (parse ~ delimiter)
+        let filter = match build_pk_filter(&table_schema.primary_key.columns, &pk_values) {
+            Ok(f) => f,
+            Err(e) => {
+                return HttpResponse::BadRequest().json(WebResponse {
+                    success: false,
+                    message: format!("Error building PK filter: {}", e),
+                    total_data: 0,
+                    data: Value::Null,
+                });
+            }
+        };
         let ds = SqlStore::new(state.db.clone(), state.db_type.clone());
-        match ds.preview_update_with(&table_schema.table, Some(&QF::Eq(filter_column.clone(), id_filter_val)), &fields) {
+        match ds.preview_update_with(&table_schema.table, Some(&filter), &fields) {
             Ok((sql, params)) => {
                 if *crate::ISDEBUG {
                     log_output("QUERY", "DELETE(AST-soft)", route.as_str(), sql.clone(), true);
@@ -230,10 +275,20 @@ pub async fn delete(
             }
         }
     } else if type_delete == "hard" {
-        // compile DELETE via AST using configured filter column
-        let id_filter_val = if let Ok(n) = id_raw.parse::<i64>() { QV::I64(n) } else { QV::Str(id_raw.clone()) };
+        // compile DELETE via AST using composite PK (parse ~ delimiter)
+        let filter = match build_pk_filter(&table_schema.primary_key.columns, &pk_values) {
+            Ok(f) => f,
+            Err(e) => {
+                return HttpResponse::BadRequest().json(WebResponse {
+                    success: false,
+                    message: format!("Error building PK filter: {}", e),
+                    total_data: 0,
+                    data: Value::Null,
+                });
+            }
+        };
         let ds = SqlStore::new(state.db.clone(), state.db_type.clone());
-        match ds.preview_delete(&table_schema.table, Some(&QF::Eq(filter_column.clone(), id_filter_val))) {
+        match ds.preview_delete(&table_schema.table, Some(&filter)) {
             Ok((sql, params)) => {
                 if *crate::ISDEBUG {
                     log_output("QUERY", "DELETE(AST-hard)", route.as_str(), sql.clone(), true);
@@ -256,9 +311,18 @@ pub async fn delete(
 
     // MongoDB path: no transactions; perform direct update/delete
     if state.db_type == "mongodb" {
-        // Build filter using configured column from del.columns with numeric inference
-        let id_filter_val = if let Ok(n) = id_raw.parse::<i64>() { QV::I64(n) } else { QV::Str(id_raw.clone()) };
-        let filter = Some(QF::Eq(filter_column.clone(), id_filter_val));
+        // Build filter using composite PK (parse ~ delimiter)
+        let filter = match build_pk_filter(&table_schema.primary_key.columns, &pk_values) {
+            Ok(f) => Some(f),
+            Err(e) => {
+                return HttpResponse::BadRequest().json(WebResponse {
+                    success: false,
+                    message: format!("Error building PK filter: {}", e),
+                    total_data: 0,
+                    data: Value::Null,
+                });
+            }
+        };
         let result = if type_delete == "soft" {
             // patch deleted_at and deleted_by_id
             let mut patch = serde_json::Map::new();

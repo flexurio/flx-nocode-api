@@ -20,6 +20,45 @@ use std::sync::Arc;
 use crate::storage::sql_store::{SqlStore, InsertValue};
 use crate::storage::ast::{Filter as QF, Val as QV};
 
+/// Build a composite primary key filter
+/// For single PK: returns Eq(pk_col, value)
+/// For composite PK: returns And([Eq(pk_col1, val1), Eq(pk_col2, val2), ...])
+fn build_pk_filter(pk_columns: &[String], pk_values: &[String]) -> Result<QF, String> {
+    if pk_columns.is_empty() {
+        return Err("No primary key columns defined".to_string());
+    }
+    if pk_columns.len() != pk_values.len() {
+        return Err(format!(
+            "Primary key mismatch: expected {} values for {} columns",
+            pk_columns.len(),
+            pk_values.len()
+        ));
+    }
+
+    if pk_columns.len() == 1 {
+        // Single PK: use simple Eq
+        Ok(QF::Eq(pk_columns[0].clone(), QV::Str(pk_values[0].clone())))
+    } else {
+        // Composite PK: use And with multiple Eq
+        let filters = pk_columns
+            .iter()
+            .zip(pk_values.iter())
+            .map(|(col, val)| QF::Eq(col.clone(), QV::Str(val.clone())))
+            .collect();
+        Ok(QF::And(filters))
+    }
+}
+
+/// Parse composite PK values from path parameter using ~ as delimiter
+/// Single value: "123" -> ["123"]
+/// Composite: "123~456" -> ["123", "456"]
+fn parse_pk_values(id_raw: &str) -> Vec<String> {
+    id_raw
+        .split('~')
+        .map(|s| s.to_string())
+        .collect()
+}
+
 /// Batch validate foreign keys in a single query (PUT path)
 async fn validate_foreign_keys_batch_put(
     tx: &mut dyn crate::storage::traits::TxStore,
@@ -419,7 +458,21 @@ pub async fn update(
         (String::new(), vec![])
     } else {
         let ds = SqlStore::new(state.db.clone(), state.db_type.clone());
-        let filter = Some(QF::Eq("id".into(), QV::Str(id_raw.clone())));
+        let pk_values = parse_pk_values(&id_raw);
+        let filter = match build_pk_filter(
+            &table_schema.primary_key.columns,
+            &pk_values,
+        ) {
+            Ok(f) => Some(f),
+            Err(e) => {
+                return HttpResponse::BadRequest().json(WebResponse {
+                    success: false,
+                    message: format!("Error building PK filter: {}", e),
+                    total_data: 0,
+                    data: Value::Null,
+                });
+            }
+        };
         match ds.preview_update_with(&table_schema.table, filter.as_ref(), &update_fields) {
             Ok(pair) => pair,
             Err(e) => {
@@ -473,13 +526,10 @@ pub async fn update(
     // Build effective values map for unique checks: start with updated values (patch_fields)
     // and fetch any missing columns for affected unique indexes.
     if state.db_type != "mongodb" && !table_schema.indexes.is_empty() {
-        // Determine PK name and param for exclusion
-        let pk_name = table_schema
-            .primary_key
-            .columns.first()
-            .cloned()
-            .unwrap_or_else(|| "id".to_string());
-        let pk_meta = table_schema.columns.iter().find(|c| c.name == pk_name);
+        // Use primary key columns for uniqueness validation
+        let pk_cols = &table_schema.primary_key.columns;
+        let pk_col_first = pk_cols.first().cloned().unwrap_or_else(|| "id".to_string());
+        let pk_meta = table_schema.columns.iter().find(|c| c.name == pk_col_first);
         let pk_param = if let Some(m) = pk_meta { dbparam_from_value_and_type(&serde_json::json!(id_raw), Some(m)) } else { crate::database::state::DbParam::Str(id_raw.clone()) };
 
         // Figure out which unique indexes are impacted
@@ -500,7 +550,9 @@ pub async fn update(
             let mut effective_values = patch_fields.clone();
             if !needed.is_empty() {
                 let cols: Vec<String> = needed.iter().cloned().collect();
-                let select_sql = format!("SELECT {} FROM {} WHERE {} = ?", cols.join(","), table_schema.table, pk_name);
+                // For composite keys, use first PK column in WHERE (could extend to full PK if needed)
+                let pk_where_col = table_schema.primary_key.columns.first().cloned().unwrap_or_else(|| "id".to_string());
+                let select_sql = format!("SELECT {} FROM {} WHERE {} = ?", cols.join(","), table_schema.table, pk_where_col);
                 if *crate::ISDEBUG { log_output("QUERY", "UNIQUE PRELOAD", "PUT", select_sql.clone(), true); }
                 match tx_opt.as_mut().unwrap().raw_sql(&select_sql, vec![pk_param.clone()]).await {
                     Ok(rows) => {
@@ -522,14 +574,15 @@ pub async fn update(
                 }
             }
 
-            // Run batched unique validation
+            // Run batched unique validation (use first PK column)
+            let pk_where_col = table_schema.primary_key.columns.first().cloned().unwrap_or_else(|| "id".to_string());
             if let Err(msg) = validate_unique_constraints_batch_put(
                 tx_opt.as_mut().unwrap().as_mut(),
                 &table_schema.table,
                 &table_schema.indexes,
                 &table_schema.columns,
                 &effective_values,
-                &pk_name,
+                &pk_where_col,
                 pk_param.clone(),
             )
             .await
@@ -652,9 +705,23 @@ pub async fn update(
             doc["updated_by_id"] = serde_json::json!(claims.id.clone());
         }
 
-        // Build WHERE id = ? by calling update with Filter
-        use crate::storage::ast::{Filter as QF, Val as QV};
-        let filter = Some(QF::Eq("id".into(), QV::Str(id_raw.clone())));
+        // Build WHERE clause using composite PK filter (parse ~ delimiter)
+        let pk_values = parse_pk_values(&id_raw);
+        let filter = match build_pk_filter(
+            &table_schema.primary_key.columns,
+            &pk_values,
+        ) {
+            Ok(f) => Some(f),
+            Err(e) => {
+                let _ = tx_opt.take().unwrap().rollback().await;
+                return HttpResponse::BadRequest().json(WebResponse {
+                    success: false,
+                    message: format!("Error building PK filter: {}", e),
+                    total_data: 0,
+                    data: Value::Null,
+                });
+            }
+        };
         if state.db_type == "mongodb" {
             if *crate::ISDEBUG {
                 log_output("QUERY", "PUT", route.as_str(), "Mongo password update flx_users".to_string(), true);
@@ -719,9 +786,22 @@ pub async fn update(
         // Ensure updated_at exists in patch_fields for Mongo (ISO timestamp)
         let now_iso = Local::now().to_rfc3339();
         patch_fields.insert("updated_at".to_string(), serde_json::json!(now_iso));
-        // Build filter by id (attempt numeric, fallback to string)
-        let filt_val = if let Ok(n) = id_raw.parse::<i64>() { QV::I64(n) } else { QV::Str(id_raw.clone()) };
-        let filter = Some(QF::Eq("id".into(), filt_val));
+        // Build filter using composite PK (parse ~ delimiter)
+        let pk_values = parse_pk_values(&id_raw);
+        let filter = match build_pk_filter(
+            &table_schema.primary_key.columns,
+            &pk_values,
+        ) {
+            Ok(f) => Some(f),
+            Err(e) => {
+                return HttpResponse::BadRequest().json(WebResponse {
+                    success: false,
+                    message: format!("Error building PK filter: {}", e),
+                    total_data: 0,
+                    data: Value::Null,
+                });
+            }
+        };
         match state.store.update(&table_schema.table, filter, Value::Object(patch_fields.clone())).await {
             Ok(_) => {
                 // Audit

@@ -48,9 +48,9 @@ pub struct TableSchema {
     pub foreign_keys: Vec<ForeignKey>,
     pub indexes: Vec<Index>,
     pub redis: Redis,
-    pub get: GetOperation,
-    pub post: OperationPostPut,
-    pub put: OperationPostPut,
+    pub get: OperationGet,
+    pub post: OperationPost,
+    pub put: OperationPut,
     pub del: OperationDelete,
     pub patch: Patch,
     pub trace: Trace,
@@ -71,7 +71,8 @@ impl Default for TableSchema {
                 keys: vec![],
                 ttl: 0,
             },
-            get: GetOperation {
+            get: OperationGet {
+                enable_method: false,
                 columns: vec![],
                 parameters: vec![],
                 join_tables: vec![],
@@ -79,30 +80,35 @@ impl Default for TableSchema {
                 having: vec![],
                 order_by: vec![],
             },
-            post: OperationPostPut {
+            post: OperationPost {
+                enable_method: false,
                 validate_data: "".to_string(),
                 pre_process: "".to_string(),
                 columns: vec![],
                 post_process: "".to_string(),
             },
-            put: OperationPostPut {
+            put: OperationPut {
+                enable_method: false,
                 validate_data: "".to_string(),
                 pre_process: "".to_string(),
                 columns: vec![],
                 post_process: "".to_string(),
             },
             del: OperationDelete {
+                enable_method: false,
                 pre_process: "".to_string(),
                 columns: vec![],
                 type_delete: "soft".to_string(),
                 post_process: "".to_string(),
             },
             patch: Patch {
+                enable_method: false,
                 pre_process_sp: "".to_string(),
                 parameters: vec![],
                 return_mode: "".to_string(),
             },
             trace: Trace {
+                enable_method: false,
                 insert_into: "".to_string(),
                 column_inserts: vec![],
                 column_selects: vec![],
@@ -158,7 +164,10 @@ pub struct Redis {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct GetOperation {
+pub struct OperationGet {
+    
+    #[serde(default)]
+    pub enable_method: bool,
     #[serde(default)]
     pub columns: Vec<String>,
     #[serde(default)]
@@ -190,8 +199,11 @@ pub struct Operation {
     #[serde(default)]
     pub columns: Vec<String>,
 }
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct OperationPostPut {
+pub struct OperationPost {
+    #[serde(default)]
+    pub enable_method: bool,
     #[serde(default)]
     pub validate_data: String,
     #[serde(default)]
@@ -203,7 +215,24 @@ pub struct OperationPostPut {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct OperationPut {
+    #[serde(default)]
+    pub enable_method: bool,
+    #[serde(default)]
+    pub validate_data: String,
+    #[serde(default)]
+    pub pre_process: String,
+    #[serde(default)]
+    pub columns: Vec<String>,
+    #[serde(default)]
+    pub post_process: String,
+}
+
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct OperationDelete {
+    #[serde(default)]
+    pub enable_method: bool,
     pub pre_process: String,
     pub columns: Vec<String>,
     pub type_delete: String,
@@ -212,6 +241,8 @@ pub struct OperationDelete {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Patch {
+    #[serde(default)]
+    pub enable_method: bool,
     #[serde(default)]
     pub pre_process_sp: String,
     #[serde(default)]
@@ -222,6 +253,8 @@ pub struct Patch {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Trace {
+    #[serde(default)]
+    pub enable_method: bool,
     #[serde(default)]
     pub insert_into: String,
     #[serde(default)]

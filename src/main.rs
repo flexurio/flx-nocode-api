@@ -736,13 +736,6 @@ async fn main() -> std::io::Result<()> {
                         None => continue,
                     };
 
-                    // Check which methods should be enabled based on columns configuration
-                    let has_get_columns = !schema.get.columns.is_empty();
-                    let has_post_columns = !schema.post.columns.is_empty();
-                    let has_put_columns = !schema.put.columns.is_empty();
-                    let has_patch_columns = !schema.patch.parameters.is_empty();
-                    let has_delete_columns = !schema.del.columns.is_empty();
-
                     // Use Arc<str> for efficient shared ownership - cheap to clone, reduces heap allocations
                     let port_str = port.to_string(); // Cache port string conversion
                     
@@ -769,7 +762,7 @@ async fn main() -> std::io::Result<()> {
                     let schemas_generate = Arc::clone(&schemas_arc);
 
                     // Log and register GET endpoint (if columns are defined)
-                    if has_get_columns {
+                    if schema.get.enable_method {
                         if do_log {
                             log_output(
                                 "ENDPOINT",
@@ -804,7 +797,7 @@ async fn main() -> std::io::Result<()> {
                     }
 
                     // Log and register POST endpoint (if columns are defined)
-                    if has_post_columns {
+                    if schema.post.enable_method {
                         if do_log {
                             log_output(
                                 "ENDPOINT",
@@ -841,7 +834,7 @@ async fn main() -> std::io::Result<()> {
                     }
 
                     // Log and register TRACE endpoint (always available if get columns exist, since it's read-only)
-                    if has_get_columns {
+                    if schema.trace.enable_method {
                         if do_log {
                             log_output(
                                 "ENDPOINT",
@@ -876,7 +869,7 @@ async fn main() -> std::io::Result<()> {
                     }
 
                     // Log and register PATCH endpoint (if parameters are defined)
-                    if has_patch_columns {
+                    if schema.patch.enable_method {
                         if do_log {
                             log_output(
                                 "ENDPOINT",
@@ -912,7 +905,7 @@ async fn main() -> std::io::Result<()> {
 
 
                     // Log and register DELETE endpoint (if columns are defined)
-                    if has_delete_columns {
+                    if schema.del.enable_method {
                         if do_log {
                             log_output(
                                 "ENDPOINT",
@@ -942,7 +935,7 @@ async fn main() -> std::io::Result<()> {
                     }
 
                     // Log and register PUT endpoint (if columns are defined)
-                    if has_put_columns {
+                    if schema.put.enable_method {
                         if do_log {
                             log_output(
                                 "ENDPOINT",
@@ -981,72 +974,74 @@ async fn main() -> std::io::Result<()> {
                     }
 
                     // register import BEFORE the dynamic {id} route to avoid conflicts
-                    if do_log {
-                        log_output(
-                            "ENDPOINT",
-                            "METHOD",
-                            "POST",
-                            format!(
-                                "http://{}:{}/import/{}",
-                                host.red(),
-                                port_str.green(),
-                                route_import.as_ref().purple()
-                            ),
-                            false,
+                    if schema.post.enable_method {
+                        if do_log {
+                            log_output(
+                                "ENDPOINT",
+                                "METHOD",
+                                "POST",
+                                format!(
+                                    "http://{}:{}/import/{}",
+                                    host.red(),
+                                    port_str.green(),
+                                    route_import.as_ref().purple()
+                                ),
+                                false,
+                            );
+                        }
+                        cfg.service(
+                            web::resource(format!("/import/{}", route_import.as_ref()))
+                                .route(web::post().to(
+                                    move |state: web::Data<AppState>,
+                                        parameters: web::Query<Value>,
+                                        multipart: Multipart,
+                                        req: actix_web::HttpRequest| {
+                                        import(
+                                            state,
+                                            parameters,
+                                            route_import.to_string(),
+                                            Arc::clone(&schemas_import),
+                                            multipart,
+                                            req,
+                                        )
+                                    },
+                                )),
                         );
                     }
-                    cfg.service(
-                        web::resource(format!("/import/{}", route_import.as_ref()))
-                            .route(web::post().to(
-                                move |state: web::Data<AppState>,
-                                      parameters: web::Query<Value>,
-                                      multipart: Multipart,
-                                      req: actix_web::HttpRequest| {
-                                    import(
-                                        state,
-                                        parameters,
-                                        route_import.to_string(),
-                                        Arc::clone(&schemas_import),
-                                        multipart,
-                                        req,
-                                    )
-                                },
-                            )),
-                    );
-
 
                     // register export endpoint
-                    if do_log {
-                        log_output(
-                            "ENDPOINT",
-                            "METHOD",
-                            "GET",
-                            format!(
-                                "http://{}:{}/export/{}",
-                                host.red(),
-                                port_str.green(),
-                                route_export.as_ref().purple()
-                            ),
-                            false,
+                    if schema.get.enable_method {
+                        if do_log {
+                            log_output(
+                                "ENDPOINT",
+                                "METHOD",
+                                "GET",
+                                format!(
+                                    "http://{}:{}/export/{}",
+                                    host.red(),
+                                    port_str.green(),
+                                    route_export.as_ref().purple()
+                                ),
+                                false,
+                            );
+                        }
+                        cfg.service(
+                            web::resource(format!("/export/{}", route_export.as_ref()))
+                                .route(web::get().to(
+                                    move |state: web::Data<AppState>,
+                                        multipart: Multipart,
+                                        req: actix_web::HttpRequest| {
+                                        export(
+                                            state,
+                                            route_export.to_string(),
+                                            Arc::clone(&schemas_export),
+                                            multipart,
+                                            req,
+                                        )
+                                    },
+                                )),
                         );
                     }
-                    cfg.service(
-                        web::resource(format!("/export/{}", route_export.as_ref()))
-                            .route(web::get().to(
-                                move |state: web::Data<AppState>,
-                                      multipart: Multipart,
-                                      req: actix_web::HttpRequest| {
-                                    export(
-                                        state,
-                                        route_export.to_string(),
-                                        Arc::clone(&schemas_export),
-                                        multipart,
-                                        req,
-                                    )
-                                },
-                            )),
-                    );
-
 
                     if do_log {
                         log_output(
@@ -1078,36 +1073,36 @@ async fn main() -> std::io::Result<()> {
                         ),
                     );
 
-                    if route_generate_table.as_ref() != "flx_users" && route_generate_table.as_ref() != "flx_roles" {
-                        if do_log {
-                            log_output(
-                                "ENDPOINT",
-                                "METHOD",
-                                "POST",
-                                format!(
-                                    "http://{}:{}/{}/{}",
-                                    host.red(),
-                                    port_str.green(),
-                                    "generate/table".yellow(),
-                                    route_generate_table.as_ref().purple()
-                                ),
-                                false,
+                    if schema.auto_generate && route_generate_table.as_ref() != "flx_users" && route_generate_table.as_ref() != "flx_roles" {
+                            if do_log {
+                                log_output(
+                                    "ENDPOINT",
+                                    "METHOD",
+                                    "POST",
+                                    format!(
+                                        "http://{}:{}/{}/{}",
+                                        host.red(),
+                                        port_str.green(),
+                                        "generate/table".yellow(),
+                                        route_generate_table.as_ref().purple()
+                                    ),
+                                    false,
+                                );
+                            }
+                            cfg.service(
+                                web::resource(format!("generate/table/{}", route_generate_table.as_ref()))
+                                    .route(web::post().to(
+                                    move |state: web::Data<AppState>, req: actix_web::HttpRequest| {
+                                        create_table(
+                                            state,
+                                            route_generate_table.to_string(),
+                                            schemas_generate.as_ref().0.clone().into(),
+                                            req,
+                                        )
+                                    },
+                                )),
                             );
                         }
-                        cfg.service(
-                            web::resource(format!("generate/table/{}", route_generate_table.as_ref()))
-                                .route(web::post().to(
-                                move |state: web::Data<AppState>, req: actix_web::HttpRequest| {
-                                    create_table(
-                                        state,
-                                        route_generate_table.to_string(),
-                                        schemas_generate.as_ref().0.clone().into(),
-                                        req,
-                                    )
-                                },
-                            )),
-                        );
-                    }
                     if do_log {
                         println!("\n");
                     }

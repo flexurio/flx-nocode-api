@@ -96,7 +96,36 @@ pub async fn export(
 
     // Preprocess parameters map for convenience
     let params_map = body_json.as_object().cloned().unwrap_or_default();
+    let mut table_schema_get_params = table_schema.get.parameters.clone();
 
+
+    // ============ VALIDASI PARAMETER WAJIB (marked with *) ============
+    {
+        let mut missing_required: Vec<String> = Vec::new();
+        for param in &mut table_schema_get_params {
+            if param.starts_with('*') {
+                // Parameter wajib: hapus * untuk cek di params_map
+                let param_name = param.trim_start_matches('*');
+                if !params_map.contains_key(param_name) || 
+                   params_map.get(param_name).map(|v| v.as_str().unwrap_or("").is_empty()).unwrap_or(true) {
+                    missing_required.push(param_name.to_string());
+                } else {
+                    // edit table_schema_get_params to remove *
+                    *param = param_name.to_string();
+                }
+            }
+        }
+        if !missing_required.is_empty() {
+            return HttpResponse::BadRequest().json(WebResponse {
+                success: false,
+                message: format!("Required parameters missing: {}", missing_required.join(", ")),
+                total_data: 0,
+                data: Value::Null,
+            });
+        }
+    }
+    // ================================================================
+        
     // Defaults for ordering
     let mut order_col_ast = table_schema.get.order_by.clone().join(", ");
     let mut order_type_ast = "ASC".to_string();
