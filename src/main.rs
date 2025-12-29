@@ -730,6 +730,19 @@ async fn main() -> std::io::Result<()> {
                         continue;
                     }
 
+                    // Get the schema for this route to check column availability
+                    let schema = match SCHEMAS.0.iter().find(|s| s.table == *route) {
+                        Some(s) => s,
+                        None => continue,
+                    };
+
+                    // Check which methods should be enabled based on columns configuration
+                    let has_get_columns = !schema.get.columns.is_empty();
+                    let has_post_columns = !schema.post.columns.is_empty();
+                    let has_put_columns = !schema.put.columns.is_empty();
+                    let has_patch_columns = !schema.patch.parameters.is_empty();
+                    let has_delete_columns = !schema.del.columns.is_empty();
+
                     // Use Arc<str> for efficient shared ownership - cheap to clone, reduces heap allocations
                     let port_str = port.to_string(); // Cache port string conversion
                     
@@ -755,178 +768,217 @@ async fn main() -> std::io::Result<()> {
                     let schemas_validate = Arc::clone(&schemas_arc);
                     let schemas_generate = Arc::clone(&schemas_arc);
 
-                    if do_log {
-                        log_output(
-                            "ENDPOINT",
-                            "METHOD",
-                            "GET",
-                            format!(
-                                "http://{}:{}/{}",
-                                host.red(),
-                                port_str.green(),
-                                route_get.as_ref().purple()
-                            ),
-                            false,
-                        );
-                        log_output(
-                            "ENDPOINT",
-                            "METHOD",
-                            "POST",
-                            format!(
-                                "http://{}:{}/{}",
-                                host.red(),
-                                port_str.green(),
-                                route_post.as_ref().purple()
-                            ),
-                            false,
-                        );
-                        log_output(
-                            "ENDPOINT",
-                            "METHOD",
-                            "TRACE",
-                            format!(
-                                "http://{}:{}/{}",
-                                host.red(),
-                                port_str.green(),
-                                route_trace.as_ref().purple()
-                            ),
-                            false,
-                        );
-                        log_output(
-                            "ENDPOINT",
-                            "METHOD",
-                            "PATCH",
-                            format!(
-                                "http://{}:{}/{}",
-                                host.red(),
-                                port_str.green(),
-                                route_patch.as_ref().purple()
-                            ),
-                            false,
+                    // Log and register GET endpoint (if columns are defined)
+                    if has_get_columns {
+                        if do_log {
+                            log_output(
+                                "ENDPOINT",
+                                "METHOD",
+                                "GET",
+                                format!(
+                                    "http://{}:{}/{}",
+                                    host.red(),
+                                    port_str.green(),
+                                    route_get.as_ref().purple()
+                                ),
+                                false,
+                            );
+                        }
+                        
+                        cfg.service(
+                            web::resource(route_get.as_ref())
+                                .route(web::get().to(
+                                    move |state: web::Data<AppState>,
+                                          parameters: web::Query<Value>,
+                                          req: actix_web::HttpRequest| {
+                                        select(
+                                            state,
+                                            parameters,
+                                            route_get.to_string(),
+                                            schemas_get.as_ref().0.clone().into(),
+                                            req,
+                                        )
+                                    },
+                                ))
                         );
                     }
 
-                    cfg.service(
-                        web::resource(route_get.as_ref())
-                            // register nocode_get
-                            .route(web::get().to(
-                                move |state: web::Data<AppState>,
-                                      parameters: web::Query<Value>,
-                                      req: actix_web::HttpRequest| {
-                                    select(
-                                        state,
-                                        parameters,
-                                        route_get.to_string(),
-                                        schemas_get.as_ref().0.clone().into(),
-                                        req,
-                                    )
-                                },
-                            ))
-                            // register create_nocode
-                            .route(web::post().to(
-                                move |state: web::Data<AppState>,
-                                      parameters: web::Query<Value>,
-                                      multipart: Multipart,
-                                      req: actix_web::HttpRequest| {
-                                    insert(
-                                        state,
-                                        parameters,
-                                        route_post.to_string(),
-                                        schemas_post.as_ref().0.clone().into(),
-                                        multipart,
-                                        req,
-                                    )
-                                },
-                            ))
-                            // register nocode_trace
-                            .route(web::trace().to(
-                                move |state: web::Data<AppState>,
-                                      parameters: web::Query<Value>,
-                                      req: actix_web::HttpRequest| {
-                                    process(
-                                        state,
-                                        parameters,
-                                        route_trace.to_string(),
-                                        schemas_trace.as_ref().0.clone().into(),
-                                        req,
-                                    )
-                                },
-                            ))
-                            // register nocode_patch
-                            .route(web::patch().to(
-                                move |state: web::Data<AppState>,
-                                      parameters: web::Query<Value>,
-                                      req: actix_web::HttpRequest| {
-                                    process_sp(
-                                        state,
-                                        parameters,
-                                        route_patch.to_string(),
-                                        schemas_patch.as_ref().0.clone().into(),
-                                        req,
-                                    )
-                                },
-                            )),
-                    );
-
-
-                    if do_log {
-                        log_output(
-                            "ENDPOINT",
-                            "METHOD",
-                            "DELETE",
-                            format!(
-                                "http://{}:{}/{}",
-                                host.red(),
-                                port_str.green(),
-                                route_delete.as_ref().purple()
-                            ),
-                            false,
-                        );
-                        log_output(
-                            "ENDPOINT",
-                            "METHOD",
-                            "PUT",
-                            format!(
-                                "http://{}:{}/{}",
-                                host.red(),
-                                port_str.green(),
-                                route_put.as_ref().purple()
-                            ),
-                            false,
+                    // Log and register POST endpoint (if columns are defined)
+                    if has_post_columns {
+                        if do_log {
+                            log_output(
+                                "ENDPOINT",
+                                "METHOD",
+                                "POST",
+                                format!(
+                                    "http://{}:{}/{}",
+                                    host.red(),
+                                    port_str.green(),
+                                    route_post.as_ref().purple()
+                                ),
+                                false,
+                            );
+                        }
+                        
+                        cfg.service(
+                            web::resource(route_post.as_ref())
+                                .route(web::post().to(
+                                    move |state: web::Data<AppState>,
+                                          parameters: web::Query<Value>,
+                                          multipart: Multipart,
+                                          req: actix_web::HttpRequest| {
+                                        insert(
+                                            state,
+                                            parameters,
+                                            route_post.to_string(),
+                                            schemas_post.as_ref().0.clone().into(),
+                                            multipart,
+                                            req,
+                                        )
+                                    },
+                                ))
                         );
                     }
 
-                    cfg.service(
-                        web::resource(format!("{}/{{id}}", route_delete.as_ref()))
-                            // register delete_nocode
-                            .route(web::delete().to(
-                                move |state: web::Data<AppState>,
-                                      parameters: web::Query<Value>,
-                                      path: Path<String>,
-                                      req: actix_web::HttpRequest| {
-                                    delete(state,parameters, route_delete.to_string(), schemas_delete.clone(), path, req)
-                                },
-                            ))
-                            // register create_nocode
-                            .route(web::put().to(
-                                move |state: web::Data<AppState>,
-                                      parameters: web::Query<Value>,
-                                      multipart: Multipart,
-                                      path: Path<String>,
-                                      req: actix_web::HttpRequest| {
-                                    update(
-                                        state,
-                                        parameters,
-                                        route_put.to_string(),
-                                        schemas_put.clone(),
-                                        multipart,
-                                        path,
-                                        req,
-                                    )
-                                },
-                            )),
-                            
-                    );
+                    // Log and register TRACE endpoint (always available if get columns exist, since it's read-only)
+                    if has_get_columns {
+                        if do_log {
+                            log_output(
+                                "ENDPOINT",
+                                "METHOD",
+                                "TRACE",
+                                format!(
+                                    "http://{}:{}/{}",
+                                    host.red(),
+                                    port_str.green(),
+                                    route_trace.as_ref().purple()
+                                ),
+                                false,
+                            );
+                        }
+                        
+                        cfg.service(
+                            web::resource(route_trace.as_ref())
+                                .route(web::trace().to(
+                                    move |state: web::Data<AppState>,
+                                          parameters: web::Query<Value>,
+                                          req: actix_web::HttpRequest| {
+                                        process(
+                                            state,
+                                            parameters,
+                                            route_trace.to_string(),
+                                            schemas_trace.as_ref().0.clone().into(),
+                                            req,
+                                        )
+                                    },
+                                ))
+                        );
+                    }
+
+                    // Log and register PATCH endpoint (if parameters are defined)
+                    if has_patch_columns {
+                        if do_log {
+                            log_output(
+                                "ENDPOINT",
+                                "METHOD",
+                                "PATCH",
+                                format!(
+                                    "http://{}:{}/{}",
+                                    host.red(),
+                                    port_str.green(),
+                                    route_patch.as_ref().purple()
+                                ),
+                                false,
+                            );
+                        }
+                        
+                        cfg.service(
+                            web::resource(route_patch.as_ref())
+                                .route(web::patch().to(
+                                    move |state: web::Data<AppState>,
+                                          parameters: web::Query<Value>,
+                                          req: actix_web::HttpRequest| {
+                                        process_sp(
+                                            state,
+                                            parameters,
+                                            route_patch.to_string(),
+                                            schemas_patch.as_ref().0.clone().into(),
+                                            req,
+                                        )
+                                    },
+                                ))
+                        );
+                    }
+
+
+                    // Log and register DELETE endpoint (if columns are defined)
+                    if has_delete_columns {
+                        if do_log {
+                            log_output(
+                                "ENDPOINT",
+                                "METHOD",
+                                "DELETE",
+                                format!(
+                                    "http://{}:{}/{}",
+                                    host.red(),
+                                    port_str.green(),
+                                    route_delete.as_ref().purple()
+                                ),
+                                false,
+                            );
+                        }
+                        
+                        cfg.service(
+                            web::resource(format!("{}/{{id}}", route_delete.as_ref()))
+                                .route(web::delete().to(
+                                    move |state: web::Data<AppState>,
+                                          parameters: web::Query<Value>,
+                                          path: Path<String>,
+                                          req: actix_web::HttpRequest| {
+                                        delete(state,parameters, route_delete.to_string(), schemas_delete.clone(), path, req)
+                                    },
+                                ))
+                        );
+                    }
+
+                    // Log and register PUT endpoint (if columns are defined)
+                    if has_put_columns {
+                        if do_log {
+                            log_output(
+                                "ENDPOINT",
+                                "METHOD",
+                                "PUT",
+                                format!(
+                                    "http://{}:{}/{}",
+                                    host.red(),
+                                    port_str.green(),
+                                    route_put.as_ref().purple()
+                                ),
+                                false,
+                            );
+                        }
+                        
+                        cfg.service(
+                            web::resource(format!("{}/{{id}}", route_put.as_ref()))
+                                .route(web::put().to(
+                                    move |state: web::Data<AppState>,
+                                          parameters: web::Query<Value>,
+                                          multipart: Multipart,
+                                          path: Path<String>,
+                                          req: actix_web::HttpRequest| {
+                                        update(
+                                            state,
+                                            parameters,
+                                            route_put.to_string(),
+                                            schemas_put.clone(),
+                                            multipart,
+                                            path,
+                                            req,
+                                        )
+                                    },
+                                ))
+                        );
+                    }
 
                     // register import BEFORE the dynamic {id} route to avoid conflicts
                     if do_log {
