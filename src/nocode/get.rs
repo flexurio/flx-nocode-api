@@ -109,8 +109,7 @@ pub async fn select(
     // ============ VALIDASI PARAMETER WAJIB (marked with *) ============
     {
         let mut missing_required: Vec<String> = Vec::new();
-        for i in 0..table_schema_get_params.len() {
-            let param = &table_schema_get_params[i];
+        for param in &mut table_schema_get_params {
             if param.starts_with('*') {
                 // Parameter wajib: hapus * untuk cek di params_map
                 let param_name = param.trim_start_matches('*');
@@ -119,7 +118,7 @@ pub async fn select(
                     missing_required.push(param_name.to_string());
                 } else {
                     // edit table_schema_get_params to remove *
-                    table_schema_get_params[i] = param_name.to_string();
+                    *param = param_name.to_string();
                 }
             }
         }
