@@ -111,12 +111,6 @@ pub(crate) static ISDEBUG: Lazy<bool> = Lazy::new(|| match env::var("DEBUG") {
 // Ensure endpoint logging happens only once even if server factory runs multiple times
 static ENDPOINT_LOG_ONCE: Lazy<AtomicBool> = Lazy::new(|| AtomicBool::new(false));
 
-// Read REQUIRE_AUTH from .env (default: true for security)
-pub(crate) static REQUIRE_AUTH: Lazy<bool> = Lazy::new(|| match env::var("REQUIRE_AUTH") {
-    Ok(val) => matches!(val.to_lowercase().as_str(), "1" | "true" | "yes"),
-    Err(_) => true, // default to true (require auth) if not set
-});
-
 
 // Static Routes for once initialization
 static FOREIGNKEY_ACTION: [&str; 4] = ["cascade", "set null", "restrict", "no action"];
@@ -389,9 +383,13 @@ async fn main() -> std::io::Result<()> {
     // enable write queue if configured (default false)
     if let Ok(val) = env::var("WRITE_QUEUE_ENABLED") { write_queue_enabled = matches!(val.to_lowercase().as_str(), "1"|"true"|"yes"); }
     if let Ok(val) = env::var("WRITE_QUEUE_FAST_ACK") { write_queue_fast_ack = matches!(val.to_lowercase().as_str(), "1"|"true"|"yes"); }
+    let require_auth = env::var("REQUIRE_AUTH").map(|v| matches!(v.to_lowercase().as_str(), "1"|"true"|"yes")).unwrap_or(true);
+
+
 
     let app_state = web::Data::new(AppState {
         db: db_repo,
+        require_auth,
         db_type,
         secret: secret_key,
         encrypt_key,
@@ -405,7 +403,7 @@ async fn main() -> std::io::Result<()> {
         write_queue_fast_ack,
     });
 
-    let id_user_str: String = if *REQUIRE_AUTH {
+    let id_user_str: String = if require_auth {
         generate_users(app_state.clone()).await
     } else {
         "1".to_string()
@@ -438,7 +436,7 @@ async fn main() -> std::io::Result<()> {
             }
         };
         let should_generate = if schema.table == "flx_users" || schema.table == "flx_roles" {
-                *REQUIRE_AUTH
+                require_auth
             } else {
                 schema.auto_generate
             };
@@ -468,7 +466,7 @@ async fn main() -> std::io::Result<()> {
         "BOOT",
         "AUTH",
         "REQUIRE_AUTH",
-        if *REQUIRE_AUTH { "enabled" } else { "disabled" }.to_string(),
+        if require_auth { "enabled" } else { "disabled" }.to_string(),
         false,
     );
 
@@ -615,7 +613,7 @@ async fn main() -> std::io::Result<()> {
                 }
 
                 // end point for login (only if REQUIRE_AUTH is enabled)
-                if *REQUIRE_AUTH {
+                if require_auth {
                     cfg.service(web::resource("/login").route(web::post().to(
                         move |state: web::Data<AppState>, req: actix_web::HttpRequest| {
                             login(state, req)
@@ -638,7 +636,7 @@ async fn main() -> std::io::Result<()> {
                 }
 
                 // end point for register (only if REQUIRE_AUTH is enabled)
-                if *REQUIRE_AUTH {
+                if require_auth {
                     cfg.service(web::resource("/register").route(web::post().to(
                         move |state: web::Data<AppState>, multipart: Multipart| {
                             register(state, multipart)
@@ -726,7 +724,7 @@ async fn main() -> std::io::Result<()> {
                 for route in CONFIG.routes.iter() {
                     let route_arc: Arc<str> = Arc::from(route.as_str());
                     let route_ra = Arc::clone(&route_arc);
-                    if !*REQUIRE_AUTH && ( route_ra.as_ref() == "flx_users" || route_ra.as_ref() == "flx_roles" ) {
+                    if !require_auth && ( route_ra.as_ref() == "flx_users" || route_ra.as_ref() == "flx_roles" ) {
                         continue;
                     }
 

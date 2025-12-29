@@ -12,6 +12,7 @@ pub struct QueryConverter {
 
 pub struct AppState {
     pub db: Arc<dyn DbRepository>,
+    pub require_auth: bool,
     pub db_type: String,
     pub secret: String,
     pub encrypt_key: String,

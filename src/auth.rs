@@ -75,6 +75,10 @@ pub fn validate_token(
         return Ok(());
     }
 
+    if !state.require_auth {
+        return Ok(());
+    }
+
     // Extract Authorization header once
     let auth_header = match req.headers().get("Authorization") {
         Some(header) => match header.to_str() {

@@ -191,7 +191,15 @@ pub async fn update(
     let reference_foreign_keys = &schemas.1;
     
     let mut claims = Claims::default();
-    if !state.route_publics.contains(&route) {
+    let mut actor_id_opt: Option<String> = None;
+
+    println!("Auth required for route: {}", route);
+    println!("AppState.require_auth = {}", state.require_auth);
+
+    if !state.route_publics.contains(&route) && state.require_auth {
+        println!("Auth required for route: {}", route);
+        println!("AppState.require_auth = {}", state.require_auth);
+
         let req_for_auth = req.clone();
         claims = match get_user_info_from_token(req_for_auth, state.clone()) {
             Ok(c) => c,
@@ -213,6 +221,10 @@ pub async fn update(
                 data: Value::Null,
             });
         }
+    } else {
+        // public route; set default claims
+        claims.id = "0".to_string();
+        actor_id_opt = Some("0".to_string());
     }
 
     let mut body = match multipart_to_json(multipart).await {
@@ -242,7 +254,6 @@ pub async fn update(
 
 
         // auth check before enqueue
-        let mut actor_id_opt: Option<String> = None;
         if !state.route_publics.contains(&route) {
             let req_for_auth = req.clone();
             let claims = match get_user_info_from_token(req_for_auth, state.clone()) {
