@@ -35,7 +35,7 @@ pub async fn import(
 
     // AuthZ like POST (write)
     let mut claims = Claims::default();
-    if !state.route_publics.contains(&route) {
+    if !state.route_publics.contains(&route) || state.require_auth{
         let req_for_auth = req.clone();
         claims = match get_user_info_from_token(req_for_auth, state.clone()) {
             Ok(c) => c,
@@ -319,7 +319,7 @@ pub async fn import(
         let t0 = std::time::Instant::now();
         // actor id for created_by_id in consumer
         let mut actor_id_opt: Option<String> = None;
-        if !state.route_publics.contains(&route) {
+        if !state.route_publics.contains(&route) || state.require_auth{
             actor_id_opt = Some(claims.id.clone());
         }
 

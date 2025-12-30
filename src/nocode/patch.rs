@@ -27,7 +27,7 @@ pub async fn process_sp(
     req: actix_web::HttpRequest,
 ) -> impl Responder {
     let mut actor_id: Option<String> = None;
-    if !state.route_publics.contains(&route) {
+    if !state.route_publics.contains(&route) || state.require_auth{
         let req_for_auth = req.clone();
         let claims = match get_user_info_from_token(req_for_auth, state.clone()) {
             Ok(c) => c,
