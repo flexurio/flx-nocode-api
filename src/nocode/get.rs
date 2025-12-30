@@ -24,7 +24,7 @@ pub async fn select(
     let mut cache_tenant = String::from("public");
     // Removed per-handler rate limiting; handled centrally by GlobalRateLimit middleware
     let _ip_key = get_client_ip(&req);
-    if !state.route_publics.contains(&route) || state.require_auth {
+    if state.require_auth && !state.route_publics.contains(&route) {
         
         let claims = match get_user_info_from_token(req, state.clone()) {
             Ok(c) => c,

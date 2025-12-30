@@ -70,7 +70,7 @@ pub async fn delete(
     let table_schemas = &schemas.0;
     let reference_foreign_keys = &schemas.1;
     let mut claims = Claims::default();
-    if !state.route_publics.contains(&route) || state.require_auth{
+    if state.require_auth && !state.route_publics.contains(&route){
         let req_for_auth = req.clone();
         claims = match get_user_info_from_token(req_for_auth, state.clone()) {
             Ok(c) => c,
@@ -109,7 +109,7 @@ pub async fn delete(
         let t0 = std::time::Instant::now();
         // auth check before enqueue
         let mut actor_id_opt: Option<String> = None;
-        if !state.route_publics.contains(&route) || state.require_auth{
+        if state.require_auth && !state.route_publics.contains(&route){
             let req_for_auth = req.clone();
             let claims = match get_user_info_from_token(req_for_auth, state.clone()) {
                 Ok(c) => c,

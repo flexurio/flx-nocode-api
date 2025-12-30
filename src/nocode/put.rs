@@ -196,7 +196,7 @@ pub async fn update(
     println!("Auth required for route: {}", route);
     println!("AppState.require_auth = {}", state.require_auth);
 
-    if !state.route_publics.contains(&route) || state.require_auth {
+    if state.require_auth && !state.route_publics.contains(&route) {
         println!("Auth required for route: {}", route);
         println!("AppState.require_auth = {}", state.require_auth);
 
@@ -254,7 +254,7 @@ pub async fn update(
 
 
         // auth check before enqueue
-        if !state.route_publics.contains(&route) || state.require_auth{
+        if state.require_auth && !state.route_publics.contains(&route){
             let req_for_auth = req.clone();
             let claims = match get_user_info_from_token(req_for_auth, state.clone()) {
                 Ok(c) => c,

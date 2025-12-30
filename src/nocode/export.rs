@@ -28,7 +28,7 @@ pub async fn export(
 
     // AuthZ like GET (read)
     let mut claims = Claims::default();
-    if !state.route_publics.contains(&route) || state.require_auth{
+    if state.require_auth && !state.route_publics.contains(&route){
         let req_for_auth = req.clone();
         claims = match get_user_info_from_token(req_for_auth, state.clone()) {
             Ok(c) => c,

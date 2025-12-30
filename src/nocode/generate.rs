@@ -80,7 +80,7 @@ pub async fn create_table(
     table_schemas: Arc<Vec<TableSchema>>,
     req: actix_web::HttpRequest,
 ) -> impl Responder {
-    if !state.route_publics.contains(&route) || state.require_auth{
+    if state.require_auth && !state.route_publics.contains(&route){
         let claims = match get_user_info_from_token(req, state.clone()) {
             Ok(c) => c,
             Err(_) => {

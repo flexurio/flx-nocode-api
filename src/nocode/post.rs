@@ -232,7 +232,7 @@ pub async fn insert(
 ) -> impl Responder {
     // If write queue enabled, parse body and enqueue instead of executing now
     let mut claims = Claims::default();
-    if !state.route_publics.contains(&route) || state.require_auth{
+    if state.require_auth && !state.route_publics.contains(&route){
         let req_for_auth = req.clone();
         claims = match get_user_info_from_token(req_for_auth, state.clone()) {
             Ok(c) => c,
@@ -282,7 +282,7 @@ pub async fn insert(
 
         // Basic auth/authorization check before enqueueing (fast fail on invalid token)
         let mut actor_id_opt: Option<String> = None;
-        if !state.route_publics.contains(&route) || state.require_auth{
+        if state.require_auth && !state.route_publics.contains(&route){
             let req_for_auth = req.clone();
             let claims = match get_user_info_from_token(req_for_auth, state.clone()) {
                 Ok(c) => c,
