@@ -86,6 +86,7 @@ pub fn validate_table_design(design: TableSchema) -> TableSchema {
             column_groups: Vec::new(),
             having: Vec::new(),
             order_by: Vec::new(),
+            where_clause: Vec::new(),
         },
         post: OperationPost {
             enable_method: false,

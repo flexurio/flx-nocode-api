@@ -486,6 +486,19 @@ pub async fn select(
                 q = q.r#where(QF::And(filters));
             }
 
+            // Apply where_clause from schema (raw conditions)
+            if !table_schema.get.where_clause.is_empty() {
+                let mut where_exprs: Vec<QE> = Vec::new();
+                for wc in &table_schema.get.where_clause {
+                    if !wc.trim().is_empty() {
+                        where_exprs.push(QE::Raw(wc.clone()));
+                    }
+                }
+                if !where_exprs.is_empty() {
+                    q = q.having_expr(where_exprs);
+                }
+            }
+
             // order by: support formats
             // - "col" (uses global ascending)
             // - "-col" (desc)
@@ -629,6 +642,8 @@ pub async fn select(
             // pagination
             let offset_ast = (i_page_ast - 1) * i_limit_ast;
             q = q.limit(i_limit_ast as u32).offset(offset_ast.max(0) as u32);
+
+            eprintln!(" QUERY GET AST: {:?}", q);
 
             let rows = match state.store.query(&q).await {
                 Ok(rs) => rs,

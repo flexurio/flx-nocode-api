@@ -79,6 +79,7 @@ impl Default for TableSchema {
                 column_groups: vec![],
                 having: vec![],
                 order_by: vec![],
+                where_clause: vec![],
             },
             post: OperationPost {
                 enable_method: false,
@@ -180,6 +181,9 @@ pub struct OperationGet {
     pub having: Vec<String>,
     #[serde(default)]
     pub order_by: Vec<String>,
+    #[serde(default)]
+    pub where_clause: Vec<String>,
+    
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
