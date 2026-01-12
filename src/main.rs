@@ -401,6 +401,7 @@ async fn main() -> std::io::Result<()> {
         is_cachedb,
         write_queue_enabled,
         write_queue_fast_ack,
+        default_collate: env::var("DEFAULT_COLLATE").unwrap_or_else(|_| "utf8mb4_bin".to_string()),
     });
 
     let id_user_str: String = if require_auth {
@@ -442,7 +443,13 @@ async fn main() -> std::io::Result<()> {
             };
         
         if should_generate {
-            let (sql_create_table, sql_create_index) = generate_table(&ds, &schema);
+            // Apply default collate if not set in schema
+            let mut schema_with_collate = schema.clone();
+            if schema_with_collate.collate.trim().is_empty() && state.db_type == "mysql" {
+                schema_with_collate.collate = app_state.default_collate.clone();
+            }
+            
+            let (sql_create_table, sql_create_index) = generate_table(&ds, &schema_with_collate);
             let (is_valid, msg) = execute_generate_table(route.to_string(), &app_state, sql_create_table, sql_create_index).await;
             if !is_valid {
                 log_output("ERROR", "TABLE DESIGN CHECK", "FAILED", msg, true);

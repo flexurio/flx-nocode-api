@@ -494,6 +494,7 @@ pub async fn generate_users(state: Data<AppState>) -> String {
             name: "flx_users".into(),
             columns: users_cols,
             constraints: users_constraints,
+            collate: None,
         });
         let sql_users = ds.preview_ddl(&ddl_users);
         if let Err(e) = state.db.query(&sql_users).await {
@@ -569,6 +570,7 @@ pub async fn generate_users(state: Data<AppState>) -> String {
             name: "flx_roles".into(),
             columns: roles_cols,
             constraints: roles_constraints,
+            collate: None,
         });
         let sql_roles = ds.preview_ddl(&ddl_roles);
         if let Err(e) = state.db.query(&sql_roles).await {

@@ -125,6 +125,7 @@ pub fn validate_table_design(design: TableSchema) -> TableSchema {
             column_groups: Vec::new(),
             column_conflicts: Vec::new(),
         },
+        collate: String::new(),
     };
 
     // Check if table exists

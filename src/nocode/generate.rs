@@ -132,7 +132,14 @@ pub async fn create_table(
     }
 
     let ds = SqlStore::new(state.db.clone(), state.db_type.clone());
-    let (sql_create_table, sql_create_index) = generate_table(&ds, &table_schema);
+    
+    // Create a mutable copy of table_schema with default collate applied if not set
+    let mut table_schema_with_collate = table_schema.clone();
+    if table_schema_with_collate.collate.trim().is_empty() && state.db_type == "mysql" {
+        table_schema_with_collate.collate = state.default_collate.clone();
+    }
+    
+    let (sql_create_table, sql_create_index) = generate_table(&ds, &table_schema_with_collate);
     
     log_output(
         "INFO",
@@ -452,6 +459,7 @@ pub fn generate_table(ds: &SqlStore, data: &TableSchema) -> (String, Vec<String>
         name: data.table.clone(),
         columns: cols,
         constraints,
+        collate: if data.collate.trim().is_empty() { None } else { Some(data.collate.trim().to_string()) },
     });
 
     // Compile using SqlStore

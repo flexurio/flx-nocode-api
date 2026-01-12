@@ -70,4 +70,8 @@ LIMIT_DEFAULT=100
 LIMIT_MAX=1000
 JSON_LIMIT_KB=512
 
+# Database collation default (for MySQL/MariaDB)
+# Common values: utf8mb4_general_ci, utf8mb4_bin, utf8mb4_0900_ai_ci
+DEFAULT_COLLATE=utf8mb4_bin
+
 WHITE_LIST_IP=192.168.0.0/24

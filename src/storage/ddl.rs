@@ -48,6 +48,7 @@ pub struct CreateTable {
     pub name: String,
     pub columns: Vec<ColumnDef>,
     pub constraints: Vec<TableConstraint>,
+    pub collate: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

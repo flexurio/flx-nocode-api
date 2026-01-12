@@ -160,12 +160,24 @@ impl SqlStore {
                 ct.name
             ));
         }
-        sql.push_str(&format!(
-            "CREATE TABLE{} {} (\n    {}\n);",
+        
+        // Build CREATE TABLE statement with optional table-level collation
+        let mut create_table_sql = format!(
+            "CREATE TABLE{} {} (\n    {}\n)",
             if_not_exists,
             ct.name,
             col_lines.join(",\n    ")
-        ));
+        );
+        
+        // Add table-level collation for MySQL/MariaDB
+        if let Some(coll) = &ct.collate
+            && self.db_type == "mysql" && !coll.trim().is_empty() {
+            create_table_sql.push_str(&format!(" CHARACTER SET utf8mb4 COLLATE {}", coll.trim()));
+        }
+        
+        create_table_sql.push(';');
+        sql.push_str(&create_table_sql);
+        
         if self.db_type == "mssql" && ct.if_not_exists {
             sql.push_str("\nEND");
         }

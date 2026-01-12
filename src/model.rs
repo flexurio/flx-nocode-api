@@ -56,6 +56,8 @@ pub struct TableSchema {
     pub trace: Trace,
     #[serde(default)]
     pub auto_generate: bool,
+    #[serde(default)]
+    pub collate: String,
 }
 
 // default value for TableSchema
@@ -119,6 +121,7 @@ impl Default for TableSchema {
                 column_conflicts: vec![],
             },
             auto_generate: false,
+            collate: "".to_string(),
         }
     }
 }
