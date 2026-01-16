@@ -10,7 +10,7 @@ use crate::{
     auth::{check_access, get_user_info_from_token, Claims},
     crypt::{encrypt, is_encrypted_string},
     database::state::{DbParam},
-    helpers::{filter_table_schema, multipart_to_json},
+    helpers::{multipart_to_json},
     log::log_output,
     model::{ReferenceForeignKey, TableSchema, WebResponse, Index, Column},
     AppState,
@@ -182,13 +182,15 @@ pub async fn update(
     state: Data<AppState>,
     parameters: web::Query<Value>,
     route: String,
-    schemas: Arc<(Vec<TableSchema>, Vec<ReferenceForeignKey>)>,
+    table_schema: Arc<TableSchema>,
+    ref_fks: Arc<Vec<ReferenceForeignKey>>,
     multipart: Multipart,
     path: Path<String>,
     req: actix_web::HttpRequest,
 ) -> impl Responder {
-    let table_schemas = &schemas.0;
-    let reference_foreign_keys = &schemas.1;
+    // reference_foreign_keys passed as argument
+    // let table_schemas = &schemas.0;
+    let reference_foreign_keys = &ref_fks;
     
     let mut claims = Claims::default();
     let mut actor_id_opt: Option<String> = None;
@@ -335,7 +337,7 @@ pub async fn update(
     }
 
     // get body from request and compare with table_schemas.put.columns
-    let table_schema = filter_table_schema(table_schemas, route.clone()).await;
+    // let table_schema = filter_table_schema(table_schemas, route.clone()).await; // Use passed schema
     if table_schema.table.is_empty() {
         let message_error = format!("Entity {} on folder config/{}.json not found", route, route);
         return HttpResponse::FailedDependency().json(WebResponse {
@@ -666,7 +668,7 @@ pub async fn update(
         // skip pre-process
     } else if let Err(err) = crate::database::state::execute_sql_formula_with_txstore(
         tx_opt.as_mut().unwrap(),
-        table_schema.put.pre_process,
+        table_schema.put.pre_process.clone(),
         &body,
         route.as_str(),
     )
@@ -850,7 +852,7 @@ pub async fn update(
                 // skip post-process
             } else if let Err(err) = crate::database::state::execute_sql_formula_with_txstore(
                 &mut tx,
-                table_schema.put.post_process,
+                table_schema.put.post_process.clone(),
                 &body,
                 route.as_str(),
             )

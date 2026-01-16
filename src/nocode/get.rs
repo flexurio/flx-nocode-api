@@ -5,7 +5,7 @@ use actix_web::{
 use serde_json::Value;
 
 use crate::{
-    AppState, auth::{check_access, get_user_info_from_token}, helpers::{filter_table_schema, get_client_ip, split_column_operator}, log::log_output, model::{ParamJoin, TableSchema, WebResponse}
+    AppState, auth::{check_access, get_user_info_from_token}, helpers::{get_client_ip, split_column_operator}, log::log_output, model::{ParamJoin, TableSchema, WebResponse}
 };
 use crate::storage::ast::{Filter as QF, Query as QQ, Val as QV, Expr as QE, Join as QJ, JoinKind as QJK};
 use std::sync::Arc;
@@ -17,7 +17,7 @@ pub async fn select(
     state: web::Data<AppState>,
     parameters: web::Query<Value>,
     route: String,
-    table_schemas: Arc<Vec<TableSchema>>,
+    table_schema: Arc<TableSchema>,
     req: actix_web::HttpRequest,
 ) -> impl Responder {
     // Default cache tenant scope (use &str to avoid allocation)
@@ -55,7 +55,7 @@ pub async fn select(
         // Per-user rate limiting also centralized; removed here
     }
 
-    let table_schema: TableSchema = filter_table_schema(&table_schemas, route.clone()).await;
+    // pre-looked up schema passed in
     // legacy SQL variables removed; using AST end-to-end
                 
     if table_schema.table.is_empty() {

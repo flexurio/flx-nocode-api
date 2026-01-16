@@ -86,11 +86,23 @@ pub fn mysqlrows_to_json(rows: Vec<MySqlRow>) -> Vec<Value> {
                     Ok(Some(v)) => Value::String(v),
                     Ok(None) => Value::Null,
                     Err(e) => {
-                        eprintln!(
-                            "VARSTRING Failed to get {} as Option<String>: {:?}, {} \n",
-                            name, e, type_info_debug
-                        );
-                        Value::Null
+                        // Attempt fallback to binary read (e.g. for LONGBLOB misidentified as LONGTEXT or encrypted fields)
+                        match row.try_get::<Option<Vec<u8>>, _>(name) {
+                            Ok(Some(v)) => {
+                                match String::from_utf8(v.clone()) {
+                                    Ok(s) => Value::String(s),
+                                    Err(_) => Value::String(base64::engine::general_purpose::STANDARD.encode(v)),
+                                }
+                            }
+                            Ok(None) => Value::Null,
+                            Err(_) => {
+                                eprintln!(
+                                    "VARSTRING Failed to get {} as Option<String>: {:?}, {} \n",
+                                    name, e, type_info_debug
+                                );
+                                Value::Null
+                            }
+                        }
                     }
                 }
             } else if type_info_debug.contains("DATETIME") {

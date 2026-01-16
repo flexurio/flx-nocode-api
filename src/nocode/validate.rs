@@ -3,7 +3,7 @@ use serde_json::{json, Value};
 
 use crate::{
     auth::{check_access, get_user_info_from_token},
-    helpers::filter_table_schema,
+
     model::{
         Column, OperationGet, Index, JoinTable, OperationDelete, OperationPost, OperationPut, Patch,
         PrimaryKey, Redis, TableSchema, Trace, WebResponse,
@@ -16,7 +16,7 @@ use std::sync::Arc;
 pub async fn check_table_design(
     state: Data<AppState>,
     route: String,
-    mut table_schemas: Arc<Vec<TableSchema>>,
+    table_schema_in: Arc<TableSchema>,
     req: actix_web::HttpRequest,
 ) -> impl Responder {
     if state.require_auth && !state.route_publics.contains(&route){
@@ -43,7 +43,8 @@ pub async fn check_table_design(
     }
 
     // get table schema from table_schemas where table = route
-    let table_schema = filter_table_schema(&table_schemas, route.clone()).await;
+    // let table_schema = filter_table_schema(&table_schemas, route.clone()).await; -- Use passed schema
+    let table_schema = table_schema_in.as_ref().clone(); // Clone for validation mutation or just deref? validate_table_design takes value
     if table_schema.table.is_empty() {
         let message_error = format!("Entity {} on folder config/{}.json not found", route, route);
         return HttpResponse::FailedDependency().json(WebResponse {
@@ -54,7 +55,7 @@ pub async fn check_table_design(
         });
     }
 
-    table_schemas = Arc::new(vec![validate_table_design(table_schema.clone())]);
+    let table_schemas = Arc::new(vec![validate_table_design(table_schema.clone())]);
 
     HttpResponse::Ok().json(WebResponse {
         success: true,

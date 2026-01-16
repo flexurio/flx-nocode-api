@@ -9,7 +9,6 @@ use crate::audit::{write_audit, AuditEntry};
 use crate::{
     auth::{check_access, get_user_info_from_token},
     database::state::DbParam,
-    helpers::filter_table_schema,
     log::log_output,
     model::{TableSchema, WebResponse},
     AppState,
@@ -23,7 +22,7 @@ pub async fn process_sp(
     state: web::Data<AppState>,
     parameters: web::Query<Value>,
     route: String,
-    table_schemas: Arc<Vec<TableSchema>>,
+    table_schema: Arc<TableSchema>,
     req: actix_web::HttpRequest,
 ) -> impl Responder {
     let mut actor_id: Option<String> = None;
@@ -56,7 +55,7 @@ pub async fn process_sp(
     // get parameters value only allowed from table_schema.trace.parameters
     // loop every table_schema.trace.parameters
 
-    let table_schema: TableSchema = filter_table_schema(&table_schemas, route.clone()).await;
+    // let table_schema: TableSchema = filter_table_schema(&table_schemas, route.clone()).await; -- Use passed schema
     if table_schema.table.is_empty() {
         let message_error = format!("Entity {} on folder config/{}.json not found", route, route);
         return HttpResponse::FailedDependency().json(WebResponse {

@@ -6,7 +6,7 @@ use regex::Regex;
 use serde_json::{json, Value};
 use std::collections::HashSet;
 
-use crate::{log::log_output, model::TableSchema, ISDEBUG};
+use crate::{log::log_output, ISDEBUG};
 
 pub fn cetak_label(host: String, port: u16) {
     // print version from cargo.toml
@@ -42,49 +42,6 @@ fn is_safe_mime_type(mime: &str) -> bool {
             mime == *p
         }
     })
-}
-
-// create function to get data from table_schemas where table is equal to route
-pub async fn filter_table_schema(table_schemas: &[TableSchema], route: String) -> TableSchema {
-    // Use iterator for better performance instead of loop
-    if let Some(schema) = table_schemas.iter().find(|schema| {
-        let table_name = if schema.table.contains('.') {
-            schema.table.split('.').next_back().unwrap_or(&schema.table)
-        } else {
-            &schema.table
-        };
-        table_name == route
-    }) {
-        let mut table_schema_clone = schema.clone();
-
-        // Build HashSet from existing params for O(1) lookup
-        let existing_params: HashSet<String> =
-            table_schema_clone.get.parameters.iter().cloned().collect();
-
-        // Pre-calculate mandatory parameters
-        let deleted_at_param = format!("{}.deleted_at", table_schema_clone.table);
-        
-        // Static array, no heap allocation
-        const PARAMS_MANDATORY: &[&str] = &["page", "sort", "ascending", "limit", "search", "redis"];
-        
-        // Reserve capacity upfront to avoid multiple reallocations
-        let potential_additions = PARAMS_MANDATORY.len() + 1;
-        table_schema_clone.get.parameters.reserve(potential_additions);
-        
-        if !existing_params.contains(&deleted_at_param) {
-            table_schema_clone.get.parameters.push(deleted_at_param);
-        }
-        
-        for &param in PARAMS_MANDATORY {
-            if !existing_params.contains(param) {
-                table_schema_clone.get.parameters.push(param.to_string());
-            }
-        }
-
-        table_schema_clone
-    } else {
-        TableSchema::default()
-    }
 }
 
 // create function to split column and operator

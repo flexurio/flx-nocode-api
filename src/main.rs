@@ -115,9 +115,9 @@ static ENDPOINT_LOG_ONCE: Lazy<AtomicBool> = Lazy::new(|| AtomicBool::new(false)
 // Static Routes for once initialization
 static FOREIGNKEY_ACTION: [&str; 4] = ["cascade", "set null", "restrict", "no action"];
 
-static SCHEMAS: Lazy<Arc<(Vec<TableSchema>, Vec<ReferenceForeignKey>)>> = Lazy::new(|| {
+static SCHEMAS: Lazy<(Arc<std::collections::HashMap<String, Arc<TableSchema>>>, Arc<Vec<ReferenceForeignKey>>)> = Lazy::new(|| {
     let config_dir = format!("{}/entity", CONFIG_LOCATION.as_str());
-    let mut schemas = Vec::with_capacity(CONFIG.routes.len()); // Pre-allocate capacity
+    let mut schemas_map = std::collections::HashMap::new();
     let mut ref_foreign_keys: Vec<ReferenceForeignKey> = Vec::with_capacity(CONFIG.routes.len());
 
     for route in CONFIG.routes.iter() {
@@ -234,7 +234,8 @@ static SCHEMAS: Lazy<Arc<(Vec<TableSchema>, Vec<ReferenceForeignKey>)>> = Lazy::
             }
         }
 
-        schemas.push(schema);
+
+        schemas_map.insert(route.clone(), Arc::new(schema));
     }
 
     log_output(
@@ -245,8 +246,8 @@ static SCHEMAS: Lazy<Arc<(Vec<TableSchema>, Vec<ReferenceForeignKey>)>> = Lazy::
         true,
     );
     // Shrink to fit to reduce memory overhead
-    schemas.shrink_to_fit();
-    Arc::new((schemas, ref_foreign_keys))
+    schemas_map.shrink_to_fit();
+    (Arc::new(schemas_map), Arc::new(ref_foreign_keys))
 });
 
 #[actix_web::main]
@@ -420,7 +421,7 @@ async fn main() -> std::io::Result<()> {
         if let Err(e) = crate::database::redis::get_manager().await {
             eprintln!("WRITE QUEUE enabled but Redis not available: {}", e);
         } else {
-            start_consumer(app_state.clone(), Arc::clone(&SCHEMAS)).await;
+            start_consumer(app_state.clone(), Arc::clone(&SCHEMAS.0)).await;
             log_output("QUEUE", "BOOT", "consumer", "Write consumer started".to_string(), true);
         }
     }
@@ -429,13 +430,14 @@ async fn main() -> std::io::Result<()> {
     let state = web::Data::new(app_state.clone());
     let ds = SqlStore::new(state.db.clone(), state.db_type.clone());
     for route in CONFIG.routes.iter() {
-        let schema = match SCHEMAS.0.iter().find(|s| s.table == *route) {
+        let schema_arc = match SCHEMAS.0.get(route) {
             Some(s) => s.clone(),
             None => {
                 eprintln!("No schema found for route '{}'", route);
                 exit(1);
             }
         };
+        let schema = schema_arc.as_ref();
         let should_generate = if schema.table == "flx_users" || schema.table == "flx_roles" {
                 require_auth
             } else {
@@ -486,7 +488,7 @@ async fn main() -> std::io::Result<()> {
 
     // check if any table name in SCHEMAS is double
     let mut table_names: HashSet<String> = HashSet::new();
-    for schema in SCHEMAS.0.iter() {
+    for (_route, schema) in SCHEMAS.0.iter() {
         if !table_names.insert(schema.table.clone()) {
             println!("--------------------------------------");
             println!(
@@ -729,7 +731,8 @@ async fn main() -> std::io::Result<()> {
 
                 // setup endpoint for each route
                 // Cache Arc clone of SCHEMAS to avoid cloning per route (Arc clone is cheap but compound overhead)
-                let schemas_arc = Arc::clone(&SCHEMAS);
+                // Cache Arc clone of SCHEMAS to avoid cloning per route (Arc clone is cheap but compound overhead)
+                // let schemas_arc = Arc::clone(&SCHEMAS); // NO LONGER NEEDED
                 for route in CONFIG.routes.iter() {
                     let route_arc: Arc<str> = Arc::from(route.as_str());
                     let route_ra = Arc::clone(&route_arc);
@@ -737,36 +740,42 @@ async fn main() -> std::io::Result<()> {
                         continue;
                     }
 
-                    // Get the schema for this route to check column availability
-                    let schema = match SCHEMAS.0.iter().find(|s| s.table == *route) {
-                        Some(s) => s,
-                        None => continue,
-                    };
+                // Get the schema for this route to check column availability
+                let schema_arc = match SCHEMAS.0.get(route) {
+                    Some(s) => s.clone(),
+                    None => continue,
+                };
+                let schema = schema_arc.as_ref();
 
-                    // Use Arc<str> for efficient shared ownership - cheap to clone, reduces heap allocations
-                    let port_str = port.to_string(); // Cache port string conversion
-                    
-                    // Clone Arc only when needed (Arc clone is just pointer increment, very cheap)
-                    let route_get = Arc::clone(&route_arc);
-                    let route_trace = Arc::clone(&route_arc);
-                    let route_patch = Arc::clone(&route_arc);
-                    let route_post = Arc::clone(&route_arc);
-                    let route_delete = Arc::clone(&route_arc);
-                    let route_import = Arc::clone(&route_arc);
-                    let route_export = Arc::clone(&route_arc);
-                    let route_put = Arc::clone(&route_arc);
-                    let route_validate = Arc::clone(&route_arc);
-                    let route_generate_table = Arc::clone(&route_arc);
-                    let schemas_get = Arc::clone(&schemas_arc);
-                    let schemas_post = Arc::clone(&schemas_arc);
-                    let schemas_trace = Arc::clone(&schemas_arc);
-                    let schemas_patch = Arc::clone(&schemas_arc);
-                    let schemas_delete = Arc::clone(&schemas_arc);
-                    let schemas_import = Arc::clone(&schemas_arc);
-                    let schemas_export = Arc::clone(&schemas_arc);
-                    let schemas_put = Arc::clone(&schemas_arc);
-                    let schemas_validate = Arc::clone(&schemas_arc);
-                    let schemas_generate = Arc::clone(&schemas_arc);
+                // Use Arc<str> for efficient shared ownership - cheap to clone, reduces heap allocations
+                let port_str = port.to_string(); // Cache port string conversion
+                
+                // Clone Arc only when needed
+                let route_get = Arc::clone(&route_arc);
+                let route_trace = Arc::clone(&route_arc);
+                let route_patch = Arc::clone(&route_arc);
+                let route_post = Arc::clone(&route_arc);
+                let route_delete = Arc::clone(&route_arc);
+                let route_import = Arc::clone(&route_arc);
+                let route_export = Arc::clone(&route_arc);
+                let route_put = Arc::clone(&route_arc);
+                let route_validate = Arc::clone(&route_arc);
+                let route_generate_table = Arc::clone(&route_arc);
+                
+                let schema_get = schema_arc.clone();
+                let schema_post = schema_arc.clone();
+                let schema_trace = schema_arc.clone();
+                let schema_patch = schema_arc.clone();
+                let schema_delete = schema_arc.clone();
+                let schema_import = schema_arc.clone();
+                let schema_export = schema_arc.clone();
+                let schema_put = schema_arc.clone();
+                let schema_validate = schema_arc.clone();
+                let schema_generate = schema_arc.clone();
+
+                let ref_fks = SCHEMAS.1.clone();
+                let ref_fks_put = ref_fks.clone();
+                let ref_fks_delete = ref_fks.clone();
 
                     // Build a single base resource for this route and attach all enabled methods
                     let mut base_res = web::resource(route_arc.as_ref());
@@ -797,7 +806,7 @@ async fn main() -> std::io::Result<()> {
                                     state,
                                     parameters,
                                     route_get.to_string(),
-                                    schemas_get.as_ref().0.clone().into(),
+                                    schema_get.clone(),
                                     req,
                                 )
                             },
@@ -826,13 +835,13 @@ async fn main() -> std::io::Result<()> {
                         base_res = base_res.route(web::post().to(
                             move |state: web::Data<AppState>,
                                   parameters: web::Query<Value>,
-                                  multipart: Multipart,
+                                  multipart: actix_multipart::Multipart,
                                   req: actix_web::HttpRequest| {
                                 insert(
                                     state,
                                     parameters,
                                     route_post.to_string(),
-                                    schemas_post.as_ref().0.clone().into(),
+                                    schema_post.clone(),
                                     multipart,
                                     req,
                                 )
@@ -866,7 +875,7 @@ async fn main() -> std::io::Result<()> {
                                     state,
                                     parameters,
                                     route_trace.to_string(),
-                                    schemas_trace.as_ref().0.clone().into(),
+                                    schema_trace.clone(),
                                     req,
                                 )
                             },
@@ -899,7 +908,7 @@ async fn main() -> std::io::Result<()> {
                                     state,
                                     parameters,
                                     route_patch.to_string(),
-                                    schemas_patch.as_ref().0.clone().into(),
+                                    schema_patch.clone(),
                                     req,
                                 )
                             },
@@ -937,7 +946,7 @@ async fn main() -> std::io::Result<()> {
                                           parameters: web::Query<Value>,
                                           path: Path<String>,
                                           req: actix_web::HttpRequest| {
-                                        delete(state,parameters, route_delete.to_string(), schemas_delete.clone(), path, req)
+                                        delete(state,parameters, route_delete.to_string(), schema_delete.clone(), ref_fks_delete.clone(), path, req)
                                     },
                                 ))
                         );
@@ -972,7 +981,8 @@ async fn main() -> std::io::Result<()> {
                                             state,
                                             parameters,
                                             route_put.to_string(),
-                                            schemas_put.clone(),
+                                            schema_put.clone(),
+                                            ref_fks_put.clone(),
                                             multipart,
                                             path,
                                             req,
@@ -1009,7 +1019,7 @@ async fn main() -> std::io::Result<()> {
                                             state,
                                             parameters,
                                             route_import.to_string(),
-                                            Arc::clone(&schemas_import),
+                                            schema_import.clone(),
                                             multipart,
                                             req,
                                         )
@@ -1043,7 +1053,7 @@ async fn main() -> std::io::Result<()> {
                                         export(
                                             state,
                                             route_export.to_string(),
-                                            Arc::clone(&schemas_export),
+                                            schema_export.clone(),
                                             multipart,
                                             req,
                                         )
@@ -1074,7 +1084,7 @@ async fn main() -> std::io::Result<()> {
                                     check_table_design(
                                         state,
                                         route_validate.to_string(),
-                                        schemas_validate.as_ref().0.clone().into(),
+                                        schema_validate.clone(),
                                         req,
                                     )
                                 },
@@ -1105,7 +1115,7 @@ async fn main() -> std::io::Result<()> {
                                         create_table(
                                             state,
                                             route_generate_table.to_string(),
-                                            schemas_generate.as_ref().0.clone().into(),
+                                            schema_generate.clone(),
                                             req,
                                         )
                                     },

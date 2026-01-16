@@ -9,9 +9,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::task::JoinSet;
 
-use crate::helpers::filter_table_schema;
+use std::collections::HashMap;
+
 use crate::log::log_output;
-use crate::model::{ReferenceForeignKey, TableSchema};
+use crate::model::TableSchema;
 use crate::storage::ast::{Filter as QF, Val as QV};
 use crate::AppState;
 
@@ -63,14 +64,14 @@ async fn dequeue_with_conn(conn: &mut MultiplexedConnection) -> Result<Option<Wr
 }
 
 /// Start N concurrent workers to pull from queue and execute writes.
-pub async fn start_consumer(state: Data<AppState>, schemas: Arc<(Vec<TableSchema>, Vec<ReferenceForeignKey>)>) {
+pub async fn start_consumer(state: Data<AppState>, schemas_map: Arc<HashMap<String, Arc<TableSchema>>>) {
     let concurrency: usize = std::env::var("WRITE_CONCURRENCY").ok().and_then(|s| s.parse().ok()).unwrap_or(4);
     log_output("QUEUE", "START", "consumer", format!("Workers={}", concurrency), true);
 
     let mut set = JoinSet::new();
     for idx in 0..concurrency {
         let state_cl = state.clone();
-        let schemas_cl = schemas.clone();
+        let schemas_map_cl = schemas_map.clone();
         set.spawn(async move {
             log_output(
                 "QUEUE",
@@ -128,7 +129,7 @@ pub async fn start_consumer(state: Data<AppState>, schemas: Arc<(Vec<TableSchema
                         consecutive_errors = 0;
                         backoff_ms = 250;
                         
-                        if let Err(e) = execute_job(state_cl.clone(), schemas_cl.clone(), job).await {
+                        if let Err(e) = execute_job(state_cl.clone(), schemas_map_cl.clone(), job).await {
                             log_output("QUEUE", "EXEC-ERR", format!("worker-{}", idx).as_str(), format!("{}", e), false);
                         }
                     }
@@ -197,8 +198,9 @@ pub async fn start_consumer(state: Data<AppState>, schemas: Arc<(Vec<TableSchema
     });
 }
 
-async fn execute_job(state: Data<AppState>, schemas: Arc<(Vec<TableSchema>, Vec<ReferenceForeignKey>)>, job: WriteJob) -> Result<()> {
-    let table_schemas = &schemas.0;
+async fn execute_job(state: Data<AppState>, schemas_map: Arc<HashMap<String, Arc<TableSchema>>>, job: WriteJob) -> Result<()> {
+    // schemas_map lookup is O(1)
+
 
     // Build a fake HttpRequest headers for auth reuse if needed in future. For now handlers do their own auth when route not public.
     // Execute according to op using existing modules logic but via internal helpers.
@@ -206,18 +208,17 @@ async fn execute_job(state: Data<AppState>, schemas: Arc<(Vec<TableSchema>, Vec<
         WriteOpKind::Post => {
             // Use existing post::insert logic, but we need to call internal execution path.
             // For simplicity, we reconstruct a minimal Multipart-equivalent JSON and call a new helper.
-            exec_post(state, job.route, table_schemas.clone().into(), job.body, job.actor_id.clone()).await
+            exec_post(state, job.route, schemas_map.clone(), job.body, job.actor_id.clone()).await
         }
-        WriteOpKind::Put { id } => exec_put(state, job.route, schemas.clone(), job.body, id).await,
-        WriteOpKind::Delete { id } => exec_delete(state, job.route, schemas.clone(), id).await,
+        WriteOpKind::Put { id } => exec_put(state, job.route, schemas_map.clone(), job.body, id).await,
+        WriteOpKind::Delete { id } => exec_delete(state, job.route, schemas_map.clone(), id).await,
     }
 }
 
 // Internal execution helpers built from existing code paths without HTTP types
-async fn exec_post(state: Data<AppState>, route: String, table_schemas: Arc<Vec<TableSchema>>, body: Value, actor_id: Option<String>) -> Result<()> {
+async fn exec_post(state: Data<AppState>, route: String, schemas_map: Arc<HashMap<String, Arc<TableSchema>>>, body: Value, actor_id: Option<String>) -> Result<()> {
     // Reuse SQL generation by adapting internals would require refactor; as a pragmatic approach, call store.insert directly based on schema.post.columns
-    let schema = filter_table_schema(&table_schemas, route.clone()).await;
-    if schema.table.is_empty() { return Err(anyhow!("Schema not found for {}", route)); }
+    let schema = schemas_map.get(&route).ok_or_else(|| anyhow!("Schema not found for {}", route))?;
 
     // Build doc from allowed columns
     let mut doc = serde_json::Map::new();
@@ -257,10 +258,8 @@ async fn exec_post(state: Data<AppState>, route: String, table_schemas: Arc<Vec<
     }
 }
 
-async fn exec_put(state: Data<AppState>, route: String, schemas: Arc<(Vec<TableSchema>, Vec<ReferenceForeignKey>)>, body: Value, id: String) -> Result<()> {
-    let table_schemas = &schemas.0;
-    let schema = filter_table_schema(table_schemas, route.clone()).await;
-    if schema.table.is_empty() { return Err(anyhow!("Schema not found for {}", route)); }
+async fn exec_put(state: Data<AppState>, route: String, schemas_map: Arc<HashMap<String, Arc<TableSchema>>>, body: Value, id: String) -> Result<()> {
+    let schema = schemas_map.get(&route).ok_or_else(|| anyhow!("Schema not found for {}", route))?;
 
     // Build patch from allowed columns
     let mut patch = serde_json::Map::new();
@@ -300,10 +299,8 @@ async fn exec_put(state: Data<AppState>, route: String, schemas: Arc<(Vec<TableS
     }
 }
 
-async fn exec_delete(state: Data<AppState>, route: String, schemas: Arc<(Vec<TableSchema>, Vec<ReferenceForeignKey>)>, id: String) -> Result<()> {
-    let table_schemas = &schemas.0;
-    let schema = filter_table_schema(table_schemas, route.clone()).await;
-    if schema.table.is_empty() { return Err(anyhow!("Schema not found for {}", route)); }
+async fn exec_delete(state: Data<AppState>, route: String, schemas_map: Arc<HashMap<String, Arc<TableSchema>>>, id: String) -> Result<()> {
+    let schema = schemas_map.get(&route).ok_or_else(|| anyhow!("Schema not found for {}", route))?;
 
     let id_for_filter = id.clone();
     let filt_val = if let Ok(n) = id_for_filter.parse::<i64>() { QV::I64(n) } else { QV::Str(id_for_filter) };

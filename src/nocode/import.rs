@@ -7,14 +7,14 @@ use std::io::Cursor;
 use std::sync::Arc;
 
 use crate::audit::{write_audit, AuditEntry};
-use crate::helpers::get_client_ip; // retained; rate limiting moved to middleware
+
 use crate::{
     auth::{check_access, get_user_info_from_token, Claims},
     crypt::{encrypt, is_encrypted_string},
     database::state::DbParam,
-    helpers::filter_table_schema,
+    helpers::{get_client_ip},
     log::log_output,
-    model::{ReferenceForeignKey, TableSchema, WebResponse},
+    model::{TableSchema, WebResponse},
     nocode::foreign_key::check_data_foreign_key,
     AppState,
 };
@@ -27,11 +27,11 @@ pub async fn import(
     state: Data<AppState>,
     parameters: web::Query<Value>,
     route: String,
-    schemas: Arc<(Vec<TableSchema>, Vec<ReferenceForeignKey>)>,
+    table_schema: Arc<TableSchema>,
     mut multipart: Multipart,
     req: actix_web::HttpRequest,
 ) -> impl Responder {
-    let table_schemas = &schemas.0;
+    // let table_schemas = &schemas.0;
 
     // AuthZ like POST (write)
     let mut claims = Claims::default();
@@ -60,7 +60,7 @@ pub async fn import(
 
     // Rate limiting removed; handled globally
 
-    let table_schema: TableSchema = filter_table_schema(table_schemas, route.clone()).await;
+    // let table_schema: TableSchema = filter_table_schema(table_schemas, route.clone()).await; -- Use passed schema
     if table_schema.table.is_empty() {
         let message_error = format!("Entity {} on folder config/{}.json not found", route, route);
         return HttpResponse::FailedDependency().json(WebResponse {

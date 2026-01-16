@@ -8,7 +8,7 @@ use crate::helpers::get_client_ip;
 // Mutation rate limiting moved to middleware
 use crate::{
     auth::{check_access, get_user_info_from_token, Claims},
-    helpers::filter_table_schema,
+    // helpers::filter_table_schema, // unused
     log::log_output,
     model::{ReferenceForeignKey, TableSchema, WebResponse},
     nocode::foreign_key::process_foreign_keys_delete_update_txstore,
@@ -63,12 +63,13 @@ pub async fn delete(
     state: Data<AppState>,
     parameters: web::Query<Value>,
     route: String,
-    schemas: Arc<(Vec<TableSchema>, Vec<ReferenceForeignKey>)>,
+    table_schema: Arc<TableSchema>,
+    ref_fks: Arc<Vec<ReferenceForeignKey>>,
     path: Path<String>,
     req: actix_web::HttpRequest,
 ) -> impl Responder {
-    let table_schemas = &schemas.0;
-    let reference_foreign_keys = &schemas.1;
+    // let table_schemas = &schemas.0;
+    let reference_foreign_keys = &ref_fks;
     let mut claims = Claims::default();
     if state.require_auth && !state.route_publics.contains(&route){
         let req_for_auth = req.clone();
@@ -187,7 +188,7 @@ pub async fn delete(
         }
     }
 
-    let table_schema = filter_table_schema(table_schemas, route.clone()).await;
+    // let table_schema = filter_table_schema(table_schemas, route.clone()).await; -- Use passed schema
     if table_schema.table.is_empty() {
         let message_error = format!("Entity {} on folder config/{}.json not found", route, route);
         return HttpResponse::FailedDependency().json(WebResponse {

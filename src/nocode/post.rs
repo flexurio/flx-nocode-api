@@ -14,7 +14,7 @@ use crate::{
     auth::{check_access, get_user_info_from_token, Claims},
     crypt::{encrypt, is_encrypted_string},
     database::state::{DbParam},
-    helpers::{extract_expressions, filter_table_schema, find_column_match, multipart_to_json},
+    helpers::{extract_expressions, find_column_match, multipart_to_json},
     log::log_output,
     model::{Column, TableSchema, WebResponse, Index},
     AppState,
@@ -226,7 +226,7 @@ pub async fn insert(
     state: Data<AppState>,
     parameters: web::Query<Value>,
     route: String,
-    table_schemas: Arc<Vec<TableSchema>>,
+    table_schema: Arc<TableSchema>,
     multipart: Multipart,
     req: actix_web::HttpRequest,
 ) -> impl Responder {
@@ -307,7 +307,8 @@ pub async fn insert(
                 });
             }
             // add created_by_id into body based on schema type
-            let schema = filter_table_schema(&table_schemas, route.clone()).await;
+            // let schema = filter_table_schema(&table_schemas, route.clone()).await; -- Use passed schema
+            let schema = &table_schema;
             if let Some(col) = schema.columns.iter().find(|c| c.name == "created_by_id") {
                 let id_val = &claims.id;
                 actor_id_opt = Some(id_val.clone());
@@ -366,7 +367,8 @@ pub async fn insert(
 
 
     // Generate SQL query INSERT to table in variable route, from data structure table in table_schemas
-    let table_schema: TableSchema = filter_table_schema(&table_schemas, route.clone()).await;
+    // let table_schema: TableSchema = filter_table_schema(&table_schemas, route.clone()).await; -- Use passed schema
+    
     if table_schema.table.is_empty() {
         let message_error = format!("Entity {} on folder config/{}.json not found", route, route);
         return HttpResponse::FailedDependency().json(WebResponse {
@@ -823,7 +825,7 @@ pub async fn insert(
         // skip pre-process
     } else if let Err(err) = crate::database::state::execute_sql_formula_with_txstore(
         tx_opt.as_mut().unwrap(),
-        table_schema.post.pre_process,
+        table_schema.post.pre_process.clone(),
         &body,
         route.as_str(),
     )
@@ -1041,7 +1043,7 @@ pub async fn insert(
                 // skip post-process
             } else if let Err(err) = crate::database::state::execute_sql_formula_with_txstore(
                 &mut tx,
-                table_schema.post.post_process,
+                table_schema.post.post_process.clone(),
                 &body,
                 route.as_str(),
             )

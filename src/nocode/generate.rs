@@ -7,7 +7,7 @@ use serde_json::Value;
 use crate::{
     AppState,
     auth::{check_access, get_user_info_from_token},
-    helpers::filter_table_schema,
+
     log::log_output,
     model::{TableSchema, WebResponse},
     storage::prelude::{CreateTable as DdlCreateTable, TableConstraint, ColumnDef, ColumnType, ForeignAction, Ddl},
@@ -77,7 +77,7 @@ fn add_audit_columns(cols: &mut Vec<ColumnDef>, db_type: &str) {
 pub async fn create_table(
     state: web::Data<AppState>,
     route: String,
-    table_schemas: Arc<Vec<TableSchema>>,
+    table_schema: Arc<TableSchema>,
     req: actix_web::HttpRequest,
 ) -> impl Responder {
     if state.require_auth && !state.route_publics.contains(&route){
@@ -103,7 +103,7 @@ pub async fn create_table(
         }
     }
 
-    let table_schema = filter_table_schema(&table_schemas, route.clone()).await;
+    // let table_schema = filter_table_schema(&table_schemas, route.clone()).await; -- use passed schema
     if table_schema.table.is_empty() {
         let message_error = format!("Entity {} on folder config/{}.json not found", route, route);
         return HttpResponse::FailedDependency().json(WebResponse {
@@ -134,7 +134,7 @@ pub async fn create_table(
     let ds = SqlStore::new(state.db.clone(), state.db_type.clone());
     
     // Create a mutable copy of table_schema with default collate applied if not set
-    let mut table_schema_with_collate = table_schema.clone();
+    let mut table_schema_with_collate = table_schema.as_ref().clone();
     if table_schema_with_collate.collate.trim().is_empty() && state.db_type == "mysql" {
         table_schema_with_collate.collate = state.default_collate.clone();
     }

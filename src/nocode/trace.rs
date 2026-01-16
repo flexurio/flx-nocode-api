@@ -6,7 +6,7 @@ use serde_json::Value;
 
 use crate::{
     auth::{check_access, get_user_info_from_token},
-    helpers::{filter_table_schema, split_column_operator},
+    helpers::{split_column_operator},
     // rate limiting handled by middleware
     log::log_output,
     model::{TableSchema, WebResponse},
@@ -21,7 +21,7 @@ pub async fn process(
     state: web::Data<AppState>,
     parameters: web::Query<Value>,
     route: String,
-    table_schemas: Arc<Vec<TableSchema>>,
+    table_schema: Arc<TableSchema>,
     req: actix_web::HttpRequest,
 ) -> impl Responder {
     // Rate limiting removed (now global)
@@ -52,7 +52,7 @@ pub async fn process(
     // Per-user rate limiting removed (handled globally)
 
     // Resolve schema first
-    let table_schema: TableSchema = filter_table_schema(&table_schemas, route.clone()).await;
+    // let table_schema: TableSchema = filter_table_schema(&table_schemas, route.clone()).await; -- Use passed schema
     if table_schema.table.is_empty() {
         let message_error = format!("Entity {} on folder config/{}.json not found", route, route);
         return HttpResponse::FailedDependency().json(WebResponse {
