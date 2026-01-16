@@ -1,14 +1,12 @@
 {
-        "routes" : [
+        "routes": [
                 "flx_users",
                 "flx_roles",
-                "banks",
-                "bank_types",
-                "products",
-                "customers"
+                "users"
         ],
         "route_publics": [
                 "flx_users",
-                "flx_roles"
+                "flx_roles",
+                "users"
         ]
 }

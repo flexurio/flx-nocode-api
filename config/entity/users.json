@@ -1,0 +1,332 @@
+{
+        "table": "users",
+        "primary_key": {
+                "columns": [
+                        "id"
+                ],
+                "auto_increment": true
+        },
+        "foreign_keys": [],
+        "columns": [
+                {
+                        "name": "id",
+                        "auto_increment": true,
+                        "nullable": false,
+                        "function": "",
+                        "type_data": "bigint unsigned",
+                        "default_value": null,
+                        "encrypt": false
+                },
+                {
+                        "name": "created_at",
+                        "auto_increment": false,
+                        "nullable": true,
+                        "function": "",
+                        "type_data": "datetime(3)",
+                        "default_value": null,
+                        "encrypt": false
+                },
+                {
+                        "name": "updated_at",
+                        "auto_increment": false,
+                        "nullable": true,
+                        "function": "",
+                        "type_data": "datetime(3)",
+                        "default_value": null,
+                        "encrypt": false
+                },
+                {
+                        "name": "deleted_at",
+                        "auto_increment": false,
+                        "nullable": true,
+                        "function": "",
+                        "type_data": "datetime(3)",
+                        "default_value": null,
+                        "encrypt": false
+                },
+                {
+                        "name": "created_by_id",
+                        "auto_increment": false,
+                        "nullable": true,
+                        "function": "",
+                        "type_data": "bigint unsigned",
+                        "default_value": null,
+                        "encrypt": false
+                },
+                {
+                        "name": "updated_by_id",
+                        "auto_increment": false,
+                        "nullable": true,
+                        "function": "",
+                        "type_data": "bigint unsigned",
+                        "default_value": null,
+                        "encrypt": false
+                },
+                {
+                        "name": "deleted_by_id",
+                        "auto_increment": false,
+                        "nullable": true,
+                        "function": "",
+                        "type_data": "bigint unsigned",
+                        "default_value": null,
+                        "encrypt": false
+                },
+                {
+                        "name": "nip",
+                        "auto_increment": false,
+                        "nullable": false,
+                        "function": "",
+                        "type_data": "varchar(20)",
+                        "default_value": null,
+                        "encrypt": false
+                },
+                {
+                        "name": "password",
+                        "auto_increment": false,
+                        "nullable": false,
+                        "function": "",
+                        "type_data": "longtext",
+                        "default_value": null,
+                        "encrypt": true
+                },
+                {
+                        "name": "name",
+                        "auto_increment": false,
+                        "nullable": false,
+                        "function": "",
+                        "type_data": "varchar(50)",
+                        "default_value": null,
+                        "encrypt": false
+                },
+                {
+                        "name": "role",
+                        "auto_increment": false,
+                        "nullable": false,
+                        "function": "",
+                        "type_data": "varchar(30)",
+                        "default_value": null,
+                        "encrypt": false
+                },
+                {
+                        "name": "join_date",
+                        "auto_increment": false,
+                        "nullable": false,
+                        "function": "",
+                        "type_data": "varchar(8)",
+                        "default_value": null,
+                        "encrypt": false
+                },
+                {
+                        "name": "resign_date",
+                        "auto_increment": false,
+                        "nullable": true,
+                        "function": "",
+                        "type_data": "varchar(8)",
+                        "default_value": null,
+                        "encrypt": false
+                },
+                {
+                        "name": "phone",
+                        "auto_increment": false,
+                        "nullable": true,
+                        "function": "",
+                        "type_data": "varchar(500)",
+                        "default_value": null,
+                        "encrypt": false
+                },
+                {
+                        "name": "email",
+                        "auto_increment": false,
+                        "nullable": true,
+                        "function": "",
+                        "type_data": "varchar(500)",
+                        "default_value": null,
+                        "encrypt": false
+                },
+                {
+                        "name": "dept",
+                        "auto_increment": false,
+                        "nullable": false,
+                        "function": "",
+                        "type_data": "varchar(20)",
+                        "default_value": null,
+                        "encrypt": false
+                },
+                {
+                        "name": "token",
+                        "auto_increment": false,
+                        "nullable": true,
+                        "function": "",
+                        "type_data": "longtext",
+                        "default_value": null,
+                        "encrypt": false
+                },
+                {
+                        "name": "auth_at",
+                        "auto_increment": false,
+                        "nullable": true,
+                        "function": "",
+                        "type_data": "bigint",
+                        "default_value": null,
+                        "encrypt": false
+                },
+                {
+                        "name": "telegram_id",
+                        "auto_increment": false,
+                        "nullable": true,
+                        "function": "",
+                        "type_data": "bigint",
+                        "default_value": null,
+                        "encrypt": false
+                },
+                {
+                        "name": "group_auth_id",
+                        "auto_increment": false,
+                        "nullable": true,
+                        "function": "",
+                        "type_data": "bigint unsigned",
+                        "default_value": null,
+                        "encrypt": false
+                }
+        ],
+        "indexes": [
+                {
+                        "name": "idx_users_deleted_at",
+                        "columns": [
+                                "deleted_at"
+                        ],
+                        "unique": false
+                },
+                {
+                        "name": "nip",
+                        "columns": [
+                                "nip"
+                        ],
+                        "unique": true
+                },
+                {
+                        "name": "fk_users_group_auth",
+                        "columns": [
+                                "group_auth_id"
+                        ],
+                        "unique": false
+                }
+        ],
+        "redis": {
+                "keys": [],
+                "ttl": 1800
+        },
+        "get": {
+                "enable_method": true,
+                "endpoint": "",
+                "columns": [
+                        "id",
+                        "nip",
+                        "name",
+                        "role",
+                        "dept",
+                        "phone",
+                        "email",
+                        "join_date",
+                        "resign_date",
+                        "auth_at",
+                        "telegram_id",
+                        "group_auth_id",
+                        "created_at",
+                        "updated_at",
+                        "deleted_at",
+                        "created_by_id",
+                        "updated_by_id",
+                        "deleted_by_id"
+                ],
+                "parameters": [
+                        "search",
+                        "page",
+                        "sort",
+                        "ascending",
+                        "limit",
+                        "redis",
+                        "id.eq",
+                        "nip.eq",
+                        "name.eq",
+                        "role.eq",
+                        "dept.eq",
+                        "join_date.eq",
+                        "resign_date.eq",
+                        "group_auth_id.eq",
+                        "created_at.eq",
+                        "updated_at.eq",
+                        "deleted_at.eq",
+                        "created_by_id.eq",
+                        "updated_by_id.eq",
+                        "deleted_by_id.eq"
+                ],
+                "join_tables": [],
+                "column_groups": [],
+                "order_by": [],
+                "having": [],
+                "where_clauses": []
+        },
+        "post": {
+                "enable_method": true,
+                "validate_data": "",
+                "pre_process": "",
+                "post_process": "",
+                "columns": [
+                        "id",
+                        "nip",
+                        "password",
+                        "name",
+                        "role",
+                        "dept",
+                        "join_date",
+                        "phone",
+                        "email"
+                ]
+        },
+        "put": {
+                "enable_method": true,
+                "validate_data": "",
+                "pre_process": "",
+                "post_process": "",
+                "columns": [
+                        "name",
+                        "role",
+                        "dept",
+                        "phone",
+                        "email",
+                        "resign_date",
+                        "password"
+                ]
+        },
+        "del": {
+                "enable_method": true,
+                "type_delete": "soft",
+                "pre_process": "",
+                "post_process": "",
+                "columns": [
+                        "id"
+                ]
+        },
+        "patch": {
+                "enable_method": false,
+                "pre_process_sp": "",
+                "parameters": [],
+                "return_mode": ""
+        },
+        "trace": {
+                "enable_method": false,
+                "insert_into": "",
+                "column_inserts": [],
+                "column_selects": [],
+                "parameters": [],
+                "join_tables": [],
+                "column_groups": [],
+                "column_conflicts": []
+        },
+        "auto_generate": false,
+        "position": {
+                "x": 800,
+                "y": 0
+        }
+}

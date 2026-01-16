@@ -50,7 +50,7 @@ mod storage; // new optional storage abstraction (not used yet)
 mod middleware;
 mod metrics;
 use metrics::METRICS;
-use middleware::{GlobalRateLimit, AuthMiddleware};
+use middleware::{GlobalRateLimit, AuthMiddleware, StatusLogger};
 #[cfg(feature = "mongodb")]
 use crate::storage::mongodb_store::MongoStore;
 
@@ -594,6 +594,8 @@ async fn main() -> std::io::Result<()> {
             ))
             // Enable response compression to reduce memory/bandwidth
             .wrap(Compress::default())
+            // Log 404 / 405 responses for easier debugging (e.g. POST 405)
+            .wrap(StatusLogger)
             .configure(|cfg: &mut web::ServiceConfig| {
                 let static_loc =
                     std::env::var("LOC_STATIC").unwrap_or_else(|_| "static".to_string());
@@ -766,6 +768,10 @@ async fn main() -> std::io::Result<()> {
                     let schemas_validate = Arc::clone(&schemas_arc);
                     let schemas_generate = Arc::clone(&schemas_arc);
 
+                    // Build a single base resource for this route and attach all enabled methods
+                    let mut base_res = web::resource(route_arc.as_ref());
+                    let mut has_base_route = false;
+
                     // Log and register GET endpoint (if columns are defined)
                     if schema.get.enable_method {
                         if do_log {
@@ -782,27 +788,26 @@ async fn main() -> std::io::Result<()> {
                                 false,
                             );
                         }
-                        
-                        cfg.service(
-                            web::resource(route_get.as_ref())
-                                .route(web::get().to(
-                                    move |state: web::Data<AppState>,
-                                          parameters: web::Query<Value>,
-                                          req: actix_web::HttpRequest| {
-                                        select(
-                                            state,
-                                            parameters,
-                                            route_get.to_string(),
-                                            schemas_get.as_ref().0.clone().into(),
-                                            req,
-                                        )
-                                    },
-                                ))
-                        );
+
+                        base_res = base_res.route(web::get().to(
+                            move |state: web::Data<AppState>,
+                                  parameters: web::Query<Value>,
+                                  req: actix_web::HttpRequest| {
+                                select(
+                                    state,
+                                    parameters,
+                                    route_get.to_string(),
+                                    schemas_get.as_ref().0.clone().into(),
+                                    req,
+                                )
+                            },
+                        ));
+                        has_base_route = true;
                     }
 
                     // Log and register POST endpoint (if columns are defined)
                     if schema.post.enable_method {
+                        println!("Registering POST endpoint for route A : {}", route_post.as_ref());
                         if do_log {
                             log_output(
                                 "ENDPOINT",
@@ -817,25 +822,23 @@ async fn main() -> std::io::Result<()> {
                                 false,
                             );
                         }
-                        
-                        cfg.service(
-                            web::resource(route_post.as_ref())
-                                .route(web::post().to(
-                                    move |state: web::Data<AppState>,
-                                          parameters: web::Query<Value>,
-                                          multipart: Multipart,
-                                          req: actix_web::HttpRequest| {
-                                        insert(
-                                            state,
-                                            parameters,
-                                            route_post.to_string(),
-                                            schemas_post.as_ref().0.clone().into(),
-                                            multipart,
-                                            req,
-                                        )
-                                    },
-                                ))
-                        );
+
+                        base_res = base_res.route(web::post().to(
+                            move |state: web::Data<AppState>,
+                                  parameters: web::Query<Value>,
+                                  multipart: Multipart,
+                                  req: actix_web::HttpRequest| {
+                                insert(
+                                    state,
+                                    parameters,
+                                    route_post.to_string(),
+                                    schemas_post.as_ref().0.clone().into(),
+                                    multipart,
+                                    req,
+                                )
+                            },
+                        ));
+                        has_base_route = true;
                     }
 
                     // Log and register TRACE endpoint (always available if get columns exist, since it's read-only)
@@ -854,23 +857,21 @@ async fn main() -> std::io::Result<()> {
                                 false,
                             );
                         }
-                        
-                        cfg.service(
-                            web::resource(route_trace.as_ref())
-                                .route(web::trace().to(
-                                    move |state: web::Data<AppState>,
-                                          parameters: web::Query<Value>,
-                                          req: actix_web::HttpRequest| {
-                                        process(
-                                            state,
-                                            parameters,
-                                            route_trace.to_string(),
-                                            schemas_trace.as_ref().0.clone().into(),
-                                            req,
-                                        )
-                                    },
-                                ))
-                        );
+
+                        base_res = base_res.route(web::trace().to(
+                            move |state: web::Data<AppState>,
+                                  parameters: web::Query<Value>,
+                                  req: actix_web::HttpRequest| {
+                                process(
+                                    state,
+                                    parameters,
+                                    route_trace.to_string(),
+                                    schemas_trace.as_ref().0.clone().into(),
+                                    req,
+                                )
+                            },
+                        ));
+                        has_base_route = true;
                     }
 
                     // Log and register PATCH endpoint (if parameters are defined)
@@ -889,23 +890,26 @@ async fn main() -> std::io::Result<()> {
                                 false,
                             );
                         }
-                        
-                        cfg.service(
-                            web::resource(route_patch.as_ref())
-                                .route(web::patch().to(
-                                    move |state: web::Data<AppState>,
-                                          parameters: web::Query<Value>,
-                                          req: actix_web::HttpRequest| {
-                                        process_sp(
-                                            state,
-                                            parameters,
-                                            route_patch.to_string(),
-                                            schemas_patch.as_ref().0.clone().into(),
-                                            req,
-                                        )
-                                    },
-                                ))
-                        );
+
+                        base_res = base_res.route(web::patch().to(
+                            move |state: web::Data<AppState>,
+                                  parameters: web::Query<Value>,
+                                  req: actix_web::HttpRequest| {
+                                process_sp(
+                                    state,
+                                    parameters,
+                                    route_patch.to_string(),
+                                    schemas_patch.as_ref().0.clone().into(),
+                                    req,
+                                )
+                            },
+                        ));
+                        has_base_route = true;
+                    }
+
+                    // Only register the base resource if at least one method is attached
+                    if has_base_route {
+                        cfg.service(base_res);
                     }
 
 

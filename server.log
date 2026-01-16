@@ -1,0 +1,3 @@
+    Finished `dev` profile [optimized + debuginfo] target(s) in 0.76s
+     Running `target/debug/flx-nocode-api`
+# BOOT, POOL mysql  at : cpu=8 max_pool=128 min_pool=Some(32) acquire_timeout=300s max_lifetime=Some(3600s) idle_timeout=Some(300s)

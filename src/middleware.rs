@@ -1,6 +1,7 @@
 use actix_web::dev::{Service, ServiceRequest, ServiceResponse, Transform};
 use actix_web::Error;
 use actix_web::body::BoxBody;
+use actix_web::http::StatusCode;
 use futures_util::future::{ready, Ready, LocalBoxFuture};
 use once_cell::sync::Lazy;
 use serde_json::Value;
@@ -14,6 +15,7 @@ use crate::auth::validate_token;
 use crate::database::state::AppState;
 use crate::metrics::METRICS;
 use actix_web::{web, HttpResponse};
+use crate::log::log_output;
 
 // Preload limits: global override or per-class (GET vs MUTATE)
 static RL_ALL: Lazy<Option<i64>> = Lazy::new(|| std::env::var("RATE_LIMIT_ALL_PER_SEC").ok().and_then(|v| v.parse().ok()));
@@ -168,5 +170,74 @@ where
             let (parts, _pl) = req.into_parts();
             Box::pin(async move { Ok(ServiceResponse::new(parts, resp)) })
         }
+    }
+}
+
+// ---------------- Status Logger Middleware ----------------
+// Log all requests that end up with 404 / 405 for easier debugging
+pub struct StatusLogger;
+
+impl<S, B> Transform<S, ServiceRequest> for StatusLogger
+where
+    S: Service<ServiceRequest, Response = ServiceResponse<B>, Error = Error> + 'static,
+    B: 'static,
+{
+    type Response = ServiceResponse<B>;
+    type Error = Error;
+    type InitError = ();
+    type Transform = StatusLoggerImpl<S>;
+    type Future = Ready<Result<Self::Transform, Self::InitError>>;
+
+    fn new_transform(&self, service: S) -> Self::Future {
+        ready(Ok(StatusLoggerImpl { service: Rc::new(service) }))
+    }
+}
+
+pub struct StatusLoggerImpl<S> { service: Rc<S> }
+
+impl<S, B> Service<ServiceRequest> for StatusLoggerImpl<S>
+where
+    S: Service<ServiceRequest, Response = ServiceResponse<B>, Error = Error> + 'static,
+    B: 'static,
+{
+    type Response = ServiceResponse<B>;
+    type Error = Error;
+    type Future = LocalBoxFuture<'static, Result<Self::Response, Self::Error>>;
+
+    fn poll_ready(&self, ctx: &mut std::task::Context<'_>) -> std::task::Poll<Result<(), Self::Error>> {
+        self.service.poll_ready(ctx)
+    }
+
+    fn call(&self, req: ServiceRequest) -> Self::Future {
+        let method = req.method().clone();
+        let path = req.path().to_string();
+
+        let fut = self.service.call(req);
+        Box::pin(async move {
+            let res = fut.await?;
+            let status = res.status();
+
+            if status == StatusCode::METHOD_NOT_ALLOWED || status == StatusCode::NOT_FOUND {
+                let allow_hdr = res
+                    .headers()
+                    .get("Allow")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("");
+
+                log_output(
+                    "HTTP",
+                    "STATUS",
+                    "DEBUG",
+                    if allow_hdr.is_empty() {
+                        format!("{} {} -> {}", method, path, status)
+                    } else {
+                        format!("{} {} -> {} (Allow: {})", method, path, status, allow_hdr)
+                    },
+                    false,
+                );
+            }
+
+            Ok(res)
+        })
     }
 }

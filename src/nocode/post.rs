@@ -232,6 +232,9 @@ pub async fn insert(
 ) -> impl Responder {
     // If write queue enabled, parse body and enqueue instead of executing now
     let mut claims = Claims::default();
+
+     // Basic auth/authorization check
+
     if state.require_auth && !state.route_publics.contains(&route){
         let req_for_auth = req.clone();
         claims = match get_user_info_from_token(req_for_auth, state.clone()) {
