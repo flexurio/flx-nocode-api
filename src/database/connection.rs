@@ -77,21 +77,37 @@ impl PoolSettings {
 }
 
 pub struct DbInitialization {
-    pub db_type: String,
+    pub db_type: crate::model::DbType,
     pub repo: Arc<dyn DbRepository>,
 }
 
 pub async fn initialize_database(cpu: usize) -> io::Result<DbInitialization> {
-    let db_type = env::var("DB_TYPE")
+    let db_type_str = env::var("DB_TYPE")
         .unwrap_or_else(|_| "mysql".to_string())
         .to_lowercase();
+
+    let db_type = match db_type_str.as_str() {
+        "mysql" => crate::model::DbType::Mysql,
+        "postgres" => crate::model::DbType::Postgres,
+        "sqlite" => crate::model::DbType::Sqlite,
+        "mssql" => crate::model::DbType::Mssql,
+        "mongodb" => crate::model::DbType::Mongodb,
+        _ => {
+            eprintln!("Unsupported DB_TYPE: {}", db_type_str);
+            return Err(io::Error::new(
+                ErrorKind::InvalidInput,
+                format!("Unsupported DB_TYPE: {}", db_type_str),
+            ));
+        }
+    };
+
 
     let pool_settings = PoolSettings::from_env(cpu);
 
     log_output(
         "BOOT",
         "POOL",
-        &db_type,
+        &db_type_str,
         format!(
             "cpu={} max_pool={} min_pool={:?} acquire_timeout={}s max_lifetime={:?} idle_timeout={:?}",
             cpu,
@@ -104,8 +120,8 @@ pub async fn initialize_database(cpu: usize) -> io::Result<DbInitialization> {
         false,
     );
 
-    let repo: Arc<dyn DbRepository> = match db_type.as_str() {
-        "mysql" => {
+    let repo: Arc<dyn DbRepository> = match db_type {
+        crate::model::DbType::Mysql => {
             #[cfg(not(feature = "mysql"))]
             {
                 eprintln!("Feature 'mysql' not enabled at compile time");
@@ -150,7 +166,7 @@ pub async fn initialize_database(cpu: usize) -> io::Result<DbInitialization> {
                 Arc::new(MySqlRepo { pool })
             }
         }
-        "postgres" => {
+        crate::model::DbType::Postgres => {
             #[cfg(not(feature = "postgres"))]
             {
                 eprintln!("Feature 'postgres' not enabled at compile time");
@@ -195,7 +211,7 @@ pub async fn initialize_database(cpu: usize) -> io::Result<DbInitialization> {
                 Arc::new(PostgresRepo { pool })
             }
         }
-        "sqlite" => {
+        crate::model::DbType::Sqlite => {
             #[cfg(not(feature = "sqlite"))]
             {
                 eprintln!("Feature 'sqlite' not enabled at compile time");
@@ -255,7 +271,7 @@ pub async fn initialize_database(cpu: usize) -> io::Result<DbInitialization> {
                 Arc::new(SqliteRepo { pool })
             }
         }
-        "mssql" => {
+        crate::model::DbType::Mssql => {
             #[cfg(not(feature = "mssql"))]
             {
                 eprintln!("Feature 'mssql' not enabled at compile time");
@@ -317,7 +333,7 @@ pub async fn initialize_database(cpu: usize) -> io::Result<DbInitialization> {
             }
         }
         #[cfg(feature = "mongodb")]
-        "mongodb" => {
+        crate::model::DbType::Mongodb => {
             struct DummyRepo;
 
             #[async_trait::async_trait]
@@ -336,13 +352,7 @@ pub async fn initialize_database(cpu: usize) -> io::Result<DbInitialization> {
 
             Arc::new(DummyRepo)
         }
-        _ => {
-            eprintln!("Unsupported DB_TYPE: {}", db_type);
-            return Err(io::Error::new(
-                ErrorKind::InvalidInput,
-                format!("Unsupported DB_TYPE: {}", db_type),
-            ));
-        }
+
     };
 
     Ok(DbInitialization { db_type, repo })

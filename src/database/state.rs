@@ -13,7 +13,7 @@ pub struct QueryConverter {
 pub struct AppState {
     pub db: Arc<dyn DbRepository>,
     pub require_auth: bool,
-    pub db_type: String,
+    pub db_type: crate::model::DbType,
     pub secret: String,
     pub encrypt_key: String,
     pub query_converter: QueryConverter,

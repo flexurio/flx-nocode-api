@@ -25,7 +25,7 @@ pub(crate) async fn process_foreign_keys_delete_update_txstore(
 ) -> (bool, String) {
     let mut status_executed = true;
     let mut error_message = String::new();
-    let ds = SqlStore::new(state.db.clone(), state.db_type.clone());
+    let ds = SqlStore::new(state.db.clone(), state.db_type.as_str().to_string());
 
     for fk in reference_foreign_keys.iter() {
         if route == fk.table {
@@ -40,7 +40,7 @@ pub(crate) async fn process_foreign_keys_delete_update_txstore(
                         let filter = if let Ok(n) = id_data.clone().parse::<i64>() { F::Eq(data_table.column.clone(), V::I64(n)) } else { F::Eq(data_table.column.clone(), V::Str(id_data.clone())) };
                         match ds.preview_update_with(&data_table.table, Some(&filter), &fields) {
                             Ok((sql_u, params_u)) => {
-                                let built = crate::database::state::rehydrate_placeholders(&sql_u, &state.db_type);
+                                let built = crate::database::state::rehydrate_placeholders(&sql_u, state.db_type.as_str());
                                 if let Err(err) = tx.raw_sql(&built, params_u).await { status_executed = false; error_message = err.to_string(); break; }
                             }
                             Err(err) => { status_executed = false; error_message = err.to_string(); break; }
@@ -49,7 +49,7 @@ pub(crate) async fn process_foreign_keys_delete_update_txstore(
                         let filter = if let Ok(n) = id_data.clone().parse::<i64>() { F::Eq(data_table.column.clone(), V::I64(n)) } else { F::Eq(data_table.column.clone(), V::Str(id_data.clone())) };
                         match ds.preview_delete(&data_table.table, Some(&filter)) {
                             Ok((sql_d, params_d)) => {
-                                let built = crate::database::state::rehydrate_placeholders(&sql_d, &state.db_type);
+                                let built = crate::database::state::rehydrate_placeholders(&sql_d, state.db_type.as_str());
                                 if let Err(err) = tx.raw_sql(&built, params_d).await { status_executed = false; error_message = err.to_string(); break; }
                             }
                             Err(err) => { status_executed = false; error_message = err.to_string(); break; }
@@ -63,7 +63,7 @@ pub(crate) async fn process_foreign_keys_delete_update_txstore(
                     let filter = if let Ok(n) = id_data.clone().parse::<i64>() { F::Eq(data_table.column.clone(), V::I64(n)) } else { F::Eq(data_table.column.clone(), V::Str(id_data.clone())) };
                     match ds.preview_update_with(&data_table.table, Some(&filter), &fields) {
                         Ok((sql_u, params_u)) => {
-                            let built = crate::database::state::rehydrate_placeholders(&sql_u, &state.db_type);
+                            let built = crate::database::state::rehydrate_placeholders(&sql_u, state.db_type.as_str());
                             if let Err(err) = tx.raw_sql(&built, params_u).await { status_executed = false; error_message = err.to_string(); break; }
                         }
                         Err(err) => { status_executed = false; error_message = err.to_string(); break; }
@@ -72,7 +72,7 @@ pub(crate) async fn process_foreign_keys_delete_update_txstore(
                     let filter = if let Ok(n) = id_data.clone().parse::<i64>() { F::Eq(data_table.column.clone(), V::I64(n)) } else { F::Eq(data_table.column.clone(), V::Str(id_data.clone())) };
                     let q = Q::from(data_table.table.clone()).select(["1"]).r#where(filter).limit(1);
                     let (sql_q, params_q) = ds.preview_sql(&q);
-                    let built = crate::database::state::rehydrate_placeholders(&sql_q, &state.db_type);
+                    let built = crate::database::state::rehydrate_placeholders(&sql_q, state.db_type.as_str());
                     match tx.raw_sql(&built, params_q).await {
                         Ok(rows) => {
                             if !rows.is_empty() { status_executed = false; error_message = format!("Cannot delete data because it is referenced in table {}", data_table.table); break; }
@@ -91,7 +91,7 @@ pub(crate) async fn process_foreign_keys_delete_update_txstore(
                     let filter = if let Ok(n) = id_data.clone().parse::<i64>() { F::Eq(data_table.column.clone(), V::I64(n)) } else { F::Eq(data_table.column.clone(), V::Str(id_data.clone())) };
                     match ds.preview_update_with(&data_table.table, Some(&filter), &fields) {
                         Ok((sql_u, params_u)) => {
-                            let built = crate::database::state::rehydrate_placeholders(&sql_u, &state.db_type);
+                            let built = crate::database::state::rehydrate_placeholders(&sql_u, state.db_type.as_str());
                             if let Err(err) = tx.raw_sql(&built, params_u).await { status_executed = false; error_message = err.to_string(); break; }
                         }
                         Err(err) => { status_executed = false; error_message = err.to_string(); break; }
@@ -103,7 +103,7 @@ pub(crate) async fn process_foreign_keys_delete_update_txstore(
                     let filter = if let Ok(n) = id_data.clone().parse::<i64>() { F::Eq(data_table.column.clone(), V::I64(n)) } else { F::Eq(data_table.column.clone(), V::Str(id_data.clone())) };
                     match ds.preview_update_with(&data_table.table, Some(&filter), &fields) {
                         Ok((sql_u, params_u)) => {
-                            let built = crate::database::state::rehydrate_placeholders(&sql_u, &state.db_type);
+                            let built = crate::database::state::rehydrate_placeholders(&sql_u, state.db_type.as_str());
                             if let Err(err) = tx.raw_sql(&built, params_u).await { status_executed = false; error_message = err.to_string(); break; }
                         }
                         Err(err) => { status_executed = false; error_message = err.to_string(); break; }
@@ -112,7 +112,7 @@ pub(crate) async fn process_foreign_keys_delete_update_txstore(
                     let filter = if let Ok(n) = id_data.clone().parse::<i64>() { F::Eq(data_table.column.clone(), V::I64(n)) } else { F::Eq(data_table.column.clone(), V::Str(id_data.clone())) };
                     let q = Q::from(data_table.table.clone()).select(["1"]).r#where(filter).limit(1);
                     let (sql_q, params_q) = ds.preview_sql(&q);
-                    let built = crate::database::state::rehydrate_placeholders(&sql_q, &state.db_type);
+                    let built = crate::database::state::rehydrate_placeholders(&sql_q, state.db_type.as_str());
                     match tx.raw_sql(&built, params_q).await {
                         Ok(rows) => {
                             if !rows.is_empty() { status_executed = false; error_message = format!("Cannot delete data because it is referenced in table {}", data_table.table); break; }

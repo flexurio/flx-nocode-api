@@ -467,10 +467,10 @@ pub async fn update(
     // legacy set_clause kept only for logging; actual SQL compiled via AST
 
     // Compile AST update (SQL only). For MongoDB we'll use DataStore.update with patch_fields
-    let (s_sql, params_compiled) = if state.db_type == "mongodb" {
+    let (s_sql, params_compiled) = if state.db_type == crate::model::DbType::Mongodb {
         (String::new(), vec![])
     } else {
-        let ds = SqlStore::new(state.db.clone(), state.db_type.clone());
+        let ds = SqlStore::new(state.db.clone(), state.db_type.as_str().to_string());
         let pk_values = parse_pk_values(&id_raw);
         let filter = match build_pk_filter(
             &table_schema.primary_key.columns,
@@ -500,7 +500,7 @@ pub async fn update(
     };
 
     // Preview AST-style update for debug (filter id, patch keys from body + timestamps)
-    if *crate::ISDEBUG && state.db_type != "mongodb" {
+    if *crate::ISDEBUG && state.db_type != crate::model::DbType::Mongodb {
         log_output("QUERY", "PUT(AST)", route.as_str(), s_sql.clone(), true);
         log_output("PARAM", "PUT(AST)", route.as_str(), format!("{:?}", params_compiled), true);
     }
@@ -508,7 +508,7 @@ pub async fn update(
     // validation_data moved to run inside the transaction below
     // Begin transaction for SQL backends only
     let mut tx_opt: Option<Box<dyn crate::storage::traits::TxStore>> = None;
-    if state.db_type != "mongodb" {
+    if state.db_type != crate::model::DbType::Mongodb {
         match state.store.begin_tx().await {
             Ok(t) => tx_opt = Some(t),
             Err(err) => {
@@ -523,7 +523,7 @@ pub async fn update(
     }
 
     // Execute batched FK validation inside transaction
-    if state.db_type != "mongodb" && !fk_checks.is_empty() {
+    if state.db_type != crate::model::DbType::Mongodb && !fk_checks.is_empty() {
         let res = validate_foreign_keys_batch_put(tx_opt.as_mut().unwrap().as_mut(), &fk_checks).await;
         if let Err(msg) = res {
             let _ = tx_opt.take().unwrap().rollback().await;
@@ -538,7 +538,7 @@ pub async fn update(
 
     // Build effective values map for unique checks: start with updated values (patch_fields)
     // and fetch any missing columns for affected unique indexes.
-    if state.db_type != "mongodb" && !table_schema.indexes.is_empty() {
+    if state.db_type != crate::model::DbType::Mongodb && !table_schema.indexes.is_empty() {
         // Use primary key columns for uniqueness validation
         let pk_cols = &table_schema.primary_key.columns;
         let pk_col_first = pk_cols.first().cloned().unwrap_or_else(|| "id".to_string());
@@ -612,7 +612,7 @@ pub async fn update(
     }
 
     // Run validate_data inside transaction (expects boolean in first column of first row)
-    if state.db_type != "mongodb" && table_schema.put.validate_data.contains("SQL:") {
+    if state.db_type != crate::model::DbType::Mongodb && table_schema.put.validate_data.contains("SQL:") {
         match crate::database::state::build_sql_and_params_from_formula(
             &table_schema.put.validate_data,
             &body,
@@ -664,7 +664,7 @@ pub async fn update(
         }
     }
 
-    if !(state.db_type != "mongodb" && table_schema.put.pre_process.contains("SQL:")) {
+    if !(state.db_type != crate::model::DbType::Mongodb && table_schema.put.pre_process.contains("SQL:")) {
         // skip pre-process
     } else if let Err(err) = crate::database::state::execute_sql_formula_with_txstore(
         tx_opt.as_mut().unwrap(),
@@ -735,7 +735,7 @@ pub async fn update(
                 });
             }
         };
-        if state.db_type == "mongodb" {
+        if state.db_type == crate::model::DbType::Mongodb {
             if *crate::ISDEBUG {
                 log_output("QUERY", "PUT", route.as_str(), "Mongo password update flx_users".to_string(), true);
             }
@@ -795,7 +795,7 @@ pub async fn update(
     }
 
     // MongoDB main update path (no transaction)
-    if state.db_type == "mongodb" {
+    if state.db_type == crate::model::DbType::Mongodb {
         // Ensure updated_at exists in patch_fields for Mongo (ISO timestamp)
         let now_iso = Local::now().to_rfc3339();
         patch_fields.insert("updated_at".to_string(), serde_json::json!(now_iso));
@@ -848,7 +848,7 @@ pub async fn update(
     let mut tx = tx_opt.take().unwrap();
     match tx.raw_sql(&s_sql, params_compiled).await {
         Ok(_) => {
-            if !(state.db_type != "mongodb" && table_schema.put.post_process.contains("SQL:")) {
+            if !(state.db_type != crate::model::DbType::Mongodb && table_schema.put.post_process.contains("SQL:")) {
                 // skip post-process
             } else if let Err(err) = crate::database::state::execute_sql_formula_with_txstore(
                 &mut tx,
@@ -870,7 +870,7 @@ pub async fn update(
 
             // jika id_new TIDAK SAMA dg "" maka ada perubahan nilai id
             if !id_new.is_empty()
-                && state.db_type != "mongodb" {
+                && state.db_type != crate::model::DbType::Mongodb {
                     let (is_fk_ok, err_message) = crate::nocode::foreign_key::process_foreign_keys_delete_update_txstore(
                         "UPDATE", // "DELETE" or "UPDATE"
                         state.clone(),

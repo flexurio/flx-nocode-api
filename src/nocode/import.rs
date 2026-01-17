@@ -266,7 +266,7 @@ pub async fn import(
     let mut id_ctx: Option<(String, usize, i64)> = None; // (prefix, width, next_number)
     if let Some(func) = if include_id { id_fn.as_ref() } else { None } {
             let (prefix, width) = derive_id_prefix_and_width(func);
-            if state.db_type == "mongodb" {
+            if state.db_type == crate::model::DbType::Mongodb {
                 // Use AST aggregation for Mongo: MAX(id) with prefix% (case-insensitive)
                 use crate::storage::ast::{Query as QQ};
                 let qmax = QQ::from(table_schema.table.clone())
@@ -438,7 +438,7 @@ pub async fn import(
     }
 
     // MongoDB path: no transactions, insert each row via DataStore
-    if state.db_type == "mongodb" {
+    if state.db_type == crate::model::DbType::Mongodb {
         let mut inserted: i32 = 0;
         let now_iso = Local::now().to_rfc3339();
         // detect created_by_id type
@@ -684,7 +684,7 @@ pub async fn import(
         col_names.push("created_by_id".into());
 
         // Use adapter to build dialect-aware SQL and params
-        let ds = SqlStore::new(state.db.clone(), state.db_type.clone());
+        let ds = SqlStore::new(state.db.clone(), state.db_type.as_str().to_string());
         let (sql, params) = match ds.preview_insert_bulk(&table_schema.table, &col_names, &bulk_rows) {
             Ok(p) => p,
             Err(e) => {

@@ -256,7 +256,7 @@ pub async fn delete(
                 });
             }
         };
-        let ds = SqlStore::new(state.db.clone(), state.db_type.clone());
+        let ds = SqlStore::new(state.db.clone(), state.db_type.as_str().to_string());
         match ds.preview_update_with(&table_schema.table, Some(&filter), &fields) {
             Ok((sql, params)) => {
                 if *crate::ISDEBUG {
@@ -288,7 +288,7 @@ pub async fn delete(
                 });
             }
         };
-        let ds = SqlStore::new(state.db.clone(), state.db_type.clone());
+        let ds = SqlStore::new(state.db.clone(), state.db_type.as_str().to_string());
         match ds.preview_delete(&table_schema.table, Some(&filter)) {
             Ok((sql, params)) => {
                 if *crate::ISDEBUG {
@@ -311,7 +311,7 @@ pub async fn delete(
     log_output("QUERY", "DELETE(AST)", route.as_str(), exec_sql.clone(), true);
 
     // MongoDB path: no transactions; perform direct update/delete
-    if state.db_type == "mongodb" {
+    if state.db_type == crate::model::DbType::Mongodb {
         // Build filter using composite PK (parse ~ delimiter)
         let filter = match build_pk_filter(&table_schema.primary_key.columns, &pk_values) {
             Ok(f) => Some(f),

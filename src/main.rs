@@ -312,11 +312,11 @@ async fn main() -> std::io::Result<()> {
         database::connection::initialize_database(cpu).await?;
 
     // Inline per-dialect datetime SQL function
-    let datetime_now: String = match db_type.as_str() {
-        "mysql" => "NOW()".to_string(),
-        "postgres" => "NOW()".to_string(),
-        "sqlite" => "CURRENT_TIMESTAMP".to_string(),
-        "mssql" => "GETDATE()".to_string(),
+    let datetime_now: String = match db_type {
+        crate::model::DbType::Mysql => "NOW()".to_string(),
+        crate::model::DbType::Postgres => "NOW()".to_string(),
+        crate::model::DbType::Sqlite => "CURRENT_TIMESTAMP".to_string(),
+        crate::model::DbType::Mssql => "GETDATE()".to_string(),
         _ => "CURRENT_TIMESTAMP".to_string(),
     };
 
@@ -333,9 +333,9 @@ async fn main() -> std::io::Result<()> {
 
     // Build generic DataStore adapter: SQL by default, MongoDB when selected
     let store_adapter: Arc<dyn crate::storage::traits::DataStore> = {
-        match db_type.as_str() {
+        match db_type {
             #[cfg(feature = "mongodb")]
-            "mongodb" => {
+            crate::model::DbType::Mongodb => {
                 let uri = match env::var("MONGODB_URI") {
                     Ok(v) => v,
                     Err(_) => {
@@ -357,7 +357,7 @@ async fn main() -> std::io::Result<()> {
                 Arc::new(mongo)
             }
             _ => {
-                let sql = crate::storage::sql_store::SqlStore::new(db_repo.clone(), db_type.clone());
+                let sql = crate::storage::sql_store::SqlStore::new(db_repo.clone(), db_type.as_str().to_string());
                 Arc::new(sql)
             }
         }
@@ -428,7 +428,7 @@ async fn main() -> std::io::Result<()> {
 
     // loop every config.routes and check if table is exist in database
     let state = web::Data::new(app_state.clone());
-    let ds = SqlStore::new(state.db.clone(), state.db_type.clone());
+    let ds = SqlStore::new(state.db.clone(), state.db_type.as_str().to_string());
     for route in CONFIG.routes.iter() {
         let schema_arc = match SCHEMAS.0.get(route) {
             Some(s) => s.clone(),
@@ -447,7 +447,7 @@ async fn main() -> std::io::Result<()> {
         if should_generate {
             // Apply default collate if not set in schema
             let mut schema_with_collate = schema.clone();
-            if schema_with_collate.collate.trim().is_empty() && state.db_type == "mysql" {
+            if schema_with_collate.collate.trim().is_empty() && state.db_type == crate::model::DbType::Mysql {
                 schema_with_collate.collate = app_state.default_collate.clone();
             }
             
@@ -462,7 +462,7 @@ async fn main() -> std::io::Result<()> {
         }
 
     }
-    if app_state.db_type != "mongodb" {
+    if app_state.db_type != crate::model::DbType::Mongodb {
         // convert id_user_string to i64
         let id_user: i64 = id_user_str.parse().unwrap_or(1);
         let fut = generate_role_admin(&app_state, ds, id_user, CONFIG.routes.clone());

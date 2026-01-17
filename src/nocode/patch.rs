@@ -112,7 +112,7 @@ pub async fn process_sp(
     }
 
     // Use SqlStore to compile dialect-aware procedure call
-    let ds = SqlStore::new(state.db.clone(), state.db_type.clone());
+    let ds = SqlStore::new(state.db.clone(), state.db_type.as_str().to_string());
     let param_count = param_sp.len();
     let (s_sql, compiled_params) = match ds.preview_call_procedure(&table_schema.patch.pre_process_sp, param_count, bind_params.clone()) {
         Ok((sql, params)) => {
@@ -133,7 +133,7 @@ pub async fn process_sp(
     };
 
     // MongoDB does not support raw SQL stored procedure execution; return explicit unsupported
-    if state.db_type == "mongodb" {
+    if state.db_type == crate::model::DbType::Mongodb {
         return HttpResponse::BadRequest().json(WebResponse {
             success: false,
             message: "PATCH procedure execution is not supported for MongoDB".to_string(),

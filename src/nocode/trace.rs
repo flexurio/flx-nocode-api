@@ -63,7 +63,7 @@ pub async fn process(
         });
     }
     // Build AST for SELECT part and bind parameters safely
-    let ds = SqlStore::new(state.db.clone(), state.db_type.clone());
+    let ds = SqlStore::new(state.db.clone(), state.db_type.as_str().to_string());
     let mut q = Q::from(table_schema.table.clone());
 
     let mut is_deleted_at = true;
@@ -145,7 +145,7 @@ pub async fn process(
 
     // Conflict keys and extra update assignments, dialect-aware via SqlStore
     let mut conflict_keys: Vec<String> = Vec::new();
-    let dbt = state.db_type.to_lowercase();
+    let dbt = state.db_type.as_str().to_lowercase();
     // Resolve conflict keys allowing special token index:NAME
     if !table_schema.trace.column_conflicts.is_empty() {
         if let Some(idx_tok) = table_schema
@@ -198,7 +198,7 @@ pub async fn process(
         log_output("PARAMS", "TRACE(AST-SELECT)", route.as_str(), format!("{:?}", select_params), true);
     }
 
-    let ds = SqlStore::new(state.db.clone(), state.db_type.clone());
+    let ds = SqlStore::new(state.db.clone(), state.db_type.as_str().to_string());
     let (s_sql, compiled_params) = match ds.preview_insert_select_upsert(
         &table_schema.trace.insert_into,
         &insert_cols,
@@ -224,7 +224,7 @@ pub async fn process(
     }
 
     // MongoDB: current TRACE path relies on SQL upsert; return explicit unsupported for Mongo
-    if state.db_type == "mongodb" {
+    if state.db_type == crate::model::DbType::Mongodb {
         return HttpResponse::BadRequest().json(WebResponse {
             success: false,
             message: "TRACE insert-select upsert is not supported for MongoDB yet".to_string(),

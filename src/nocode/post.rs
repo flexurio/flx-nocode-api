@@ -586,7 +586,7 @@ pub async fn insert(
     }
 
     // Batch validate unique constraints when all indexed columns are present
-    if state.db_type == "mongodb" {
+    if state.db_type == crate::model::DbType::Mongodb {
         // skip unique constraint validation for Mongo
     } else if let Err(err_msg) = validate_unique_constraints_batch(&state, &table_schema.table, &table_schema.indexes, &table_schema.columns, &body).await {
         return HttpResponse::BadRequest().json(WebResponse {
@@ -601,7 +601,7 @@ pub async fn insert(
 
     // Begin transaction early for SQL backends so ID generation runs in the same TX
     let mut tx_opt: Option<Box<dyn crate::storage::traits::TxStore>> = None;
-    if state.db_type != "mongodb" {
+    if state.db_type != crate::model::DbType::Mongodb {
         match state.store.begin_tx().await {
             Ok(t) => tx_opt = Some(t),
             Err(err) => {
@@ -637,7 +637,7 @@ pub async fn insert(
                 let q_max = Q::from(table_schema.table.clone())
                     .select(["id"]).r#where(F::ILike("id".into(), like_pat))
                     .order_by("id", false).limit(1);
-                let max_id: String = if state.db_type == "mongodb" {
+                let max_id: String = if state.db_type == crate::model::DbType::Mongodb {
                     match state.store.query(&q_max).await {
                         Ok(rows) if !rows.is_empty() => rows[0].get("id").and_then(|v| v.as_str().map(|s| s.to_string())).unwrap_or_else(|| "0".to_string()),
                         _ => "0".to_string(),
@@ -645,7 +645,7 @@ pub async fn insert(
                 } else {
                     // Debug SQL preview for SQL backends
                     if *crate::ISDEBUG {
-                        let ds_dbg = SqlStore::new(state.db.clone(), state.db_type.clone());
+                        let ds_dbg = SqlStore::new(state.db.clone(), state.db_type.as_str().to_string());
                         let (sql_dbg, params_dbg) = ds_dbg.preview_sql(&q_max);
                         log_output("QUERY", "MAX-ID", route.as_str(), sql_dbg, true);
                         log_output("PARAMS", "MAX-ID", route.as_str(), format!("{:?}", params_dbg), true);
@@ -741,8 +741,8 @@ pub async fn insert(
     }
 
     // For MongoDB, directly insert JSON doc without SQL; for SQL, compile INSERT
-    let ds = SqlStore::new(state.db.clone(), state.db_type.clone());
-    let (exec_sql, exec_params) = if state.db_type == "mongodb" {
+    let ds = SqlStore::new(state.db.clone(), state.db_type.as_str().to_string());
+    let (exec_sql, exec_params) = if state.db_type == crate::model::DbType::Mongodb {
         (String::new(), vec![])
     } else {
         // Try to include RETURNING id when supported
@@ -769,7 +769,7 @@ pub async fn insert(
 
     // (moved) validation_data will be executed inside the transaction below (SQL only)
     // Run validate_data inside transaction for SQL backends
-    if state.db_type != "mongodb" && table_schema.post.validate_data.contains("SQL:") {
+    if state.db_type != crate::model::DbType::Mongodb && table_schema.post.validate_data.contains("SQL:") {
         match crate::database::state::build_sql_and_params_from_formula(
             &table_schema.post.validate_data,
             &body,
@@ -821,7 +821,7 @@ pub async fn insert(
         }
     }
 
-    if !(state.db_type != "mongodb" && table_schema.post.pre_process.contains("SQL:")) {
+    if !(state.db_type != crate::model::DbType::Mongodb && table_schema.post.pre_process.contains("SQL:")) {
         // skip pre-process
     } else if let Err(err) = crate::database::state::execute_sql_formula_with_txstore(
         tx_opt.as_mut().unwrap(),
@@ -840,7 +840,7 @@ pub async fn insert(
         });
     }
 
-    if state.db_type == "mongodb" {
+    if state.db_type == crate::model::DbType::Mongodb {
         // Insert using document map
         let doc = Value::Object(doc_map.clone());
         match state.store.insert(&table_schema.table, doc).await {
@@ -1016,7 +1016,7 @@ pub async fn insert(
                 .and_then(|obj| obj.get("id"))
                 .cloned();
             // MySQL fallback: fetch LAST_INSERT_ID() when INSERT has no RETURNING and id wasn't provided
-            if returned_id.is_none() && state.db_type == "mysql" {
+            if returned_id.is_none() && state.db_type == crate::model::DbType::Mysql {
                 returned_id = tx
                     .raw_sql("SELECT LAST_INSERT_ID() AS id", vec![])
                     .await
@@ -1039,7 +1039,7 @@ pub async fn insert(
             }).unwrap();
             
 
-            if !(state.db_type != "mongodb" && table_schema.post.post_process.contains("SQL:")) {
+            if !(state.db_type != crate::model::DbType::Mongodb && table_schema.post.post_process.contains("SQL:")) {
                 // skip post-process
             } else if let Err(err) = crate::database::state::execute_sql_formula_with_txstore(
                 &mut tx,

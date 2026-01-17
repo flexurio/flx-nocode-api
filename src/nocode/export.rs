@@ -480,7 +480,7 @@ pub async fn export(
     q = q.limit(i_limit as u32);
 
     // Execute via DataStore (AST). Use SqlStore only for preview logs.
-    let ds = SqlStore::new(state.db.clone(), state.db_type.clone());
+    let ds = SqlStore::new(state.db.clone(), state.db_type.as_str().to_string());
     if *crate::ISDEBUG {
         let (s_sql_dbg, params_dbg) = ds.preview_sql(&q);
         log_output("QUERY", "EXPORT(AST)", route.as_str(), s_sql_dbg.clone(), true);

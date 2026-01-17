@@ -89,7 +89,7 @@ pub async fn login(state: web::Data<AppState>, req: actix_web::HttpRequest) -> i
     let pass_in = parts.next().unwrap_or("");
 
     // Query via DataStore; for SQL we can still use SqlStore preview in debug
-    let ds = SqlStore::new(state.db.clone(), state.db_type.clone());
+    let ds = SqlStore::new(state.db.clone(), state.db_type.as_str().to_string());
     // DB-specific cast for password so we always read it as string (skip casts for Mongo)
     let pass_expr: &str = match state.db_type.as_str() {
         "mysql" | "postgres" => "CAST(password as CHAR(255)) as password",
@@ -106,7 +106,7 @@ pub async fn login(state: web::Data<AppState>, req: actix_web::HttpRequest) -> i
         ]))
         .limit(1);
     if *crate::ISDEBUG {
-        if state.db_type == "mongodb" {
+        if state.db_type == crate::model::DbType::Mongodb {
             log_output("QUERY", "POST", "login", "AST (mongo) flx_users by email".to_string(), true);
         } else {
             let (sql_dbg, _params_dbg) = ds.preview_sql(&q_user);
@@ -276,7 +276,7 @@ pub async fn register(state: Data<AppState>, multipart: Multipart) -> impl Respo
     let encrypt_password = encrypt(state.encrypt_key.clone(), password);
 
     // Use DataStore insert with app-side timestamps for cross-DB compatibility
-    let ds = SqlStore::new(state.db.clone(), state.db_type.clone());
+    let ds = SqlStore::new(state.db.clone(), state.db_type.as_str().to_string());
     let now = chrono::Local::now().naive_local().format("%Y-%m-%d %H:%M:%S").to_string();
     let email = body["email"].to_string().trim_matches('"').to_string();
     let phone = body["phone"].to_string().trim_matches('"').to_string();
@@ -299,7 +299,7 @@ pub async fn register(state: Data<AppState>, multipart: Multipart) -> impl Respo
     });
 
     if *crate::ISDEBUG {
-        if state.db_type == "mongodb" {
+        if state.db_type == crate::model::DbType::Mongodb {
             log_output("QUERY", "POST", "register", "AST(mongo) insert flx_users".to_string(), true);
         } else if let Ok((sql_dbg, params_dbg)) = ds.preview_insert("flx_users", &doc) {
             log_output("QUERY", "POST", "register", sql_dbg, true);
@@ -328,7 +328,7 @@ pub async fn register(state: Data<AppState>, multipart: Multipart) -> impl Respo
 // NCO-POST
 pub async fn generate_users(state: Data<AppState>) -> String {
     // MongoDB: no DDL. Seed collections and default data using DataStore.
-    if state.db_type == "mongodb" {
+    if state.db_type == crate::model::DbType::Mongodb {
         use crate::storage::ast::{Query as QQ, Filter as QF, Val as QV};
         // Check if admin exists
         let q_admin = QQ::from("flx_users")
@@ -414,7 +414,7 @@ pub async fn generate_users(state: Data<AppState>) -> String {
     } else {
 
         // Create tables via DDL AST (vendor-aware)
-        let ds = SqlStore::new(state.db.clone(), state.db_type.clone());
+        let ds = SqlStore::new(state.db.clone(), state.db_type.as_str().to_string());
 
         // flx_users definition simplified; use Raw types per dialect where necessary
         let users_cols: Vec<ColumnDef> = match state.db_type.as_str() {
@@ -578,11 +578,11 @@ pub async fn generate_users(state: Data<AppState>) -> String {
         }
 
         // AST query to check if admin user exists: SELECT id FROM flx_users WHERE email='admin' LIMIT 1
-        let ds = SqlStore::new(state.db.clone(), state.db_type.clone());
+        let ds = SqlStore::new(state.db.clone(), state.db_type.as_str().to_string());
         use crate::storage::ast::{Query as QQ, Filter as QF, Val as QV};
         let q_admin = QQ::from("flx_users").select(["id"]).r#where(QF::Eq("email".into(), QV::Str("admin".into()))).limit(1);
         let (sql_admin, params_admin) = ds.preview_sql(&q_admin);
-        let built_admin = crate::database::state::rehydrate_placeholders(&sql_admin, &state.db_type);
+        let built_admin = crate::database::state::rehydrate_placeholders(&sql_admin, state.db_type.as_str());
         let mut id_user: i64 = match &state.db.query_with_params(&built_admin, params_admin).await {
             Ok(rows) => {
                 if rows.is_empty() { 0 } else { rows[0].get("id").and_then(|v| v.as_i64()).unwrap_or(0) }
@@ -611,7 +611,7 @@ pub async fn generate_users(state: Data<AppState>) -> String {
             println!("==========================================");
 
         // Insert admin using AST insert_with for cross-db NOW()
-            let ds = SqlStore::new(state.db.clone(), state.db_type.clone());
+            let ds = SqlStore::new(state.db.clone(), state.db_type.as_str().to_string());
             let now_fn = state.query_converter.datetime_now.clone();
             let (sql_insert_admin, params_insert_admin) = ds
                 .preview_insert_with(
@@ -628,9 +628,9 @@ pub async fn generate_users(state: Data<AppState>) -> String {
                     ],
                 )
                 .unwrap();
-            let built = crate::database::state::rehydrate_placeholders(&sql_insert_admin, &state.db_type);
+            let built = crate::database::state::rehydrate_placeholders(&sql_insert_admin, state.db_type.as_str());
             // For MSSQL identity column, allow explicit ID insertion by toggling IDENTITY_INSERT
-            let result = if state.db_type == "mssql" {
+            let result = if state.db_type == crate::model::DbType::Mssql {
                 let _ = state.db.query("SET IDENTITY_INSERT flx_users ON").await;
                 let r = state.db.query_with_params(&built, params_insert_admin).await;
                 let _ = state.db.query("SET IDENTITY_INSERT flx_users OFF").await;
@@ -662,7 +662,7 @@ pub async fn generate_users(state: Data<AppState>) -> String {
 // create function generate flx_roles
 pub async fn generate_role_admin(state: &AppState, ds: SqlStore, id_user: i64, routes: Vec<String>) -> Result<(), Box<dyn Error + Send + Sync>> {
     let now_fn = state.query_converter.datetime_now.clone();
-    if state.db_type != "mongodb" {
+    if state.db_type != crate::model::DbType::Mongodb {
         // Insert default roles (two rows) with AST bulk insert
         use crate::storage::sql_store::InsertValue as IV;
         let cols = vec!["id_users".into(), "endpoint".into(), "role".into(), "created_at".into()];
@@ -672,7 +672,7 @@ pub async fn generate_role_admin(state: &AppState, ds: SqlStore, id_user: i64, r
                 vec![IV::Param(crate::database::state::DbParam::I64(id_user)), IV::Param(crate::database::state::DbParam::Str(route.into())), IV::Param(crate::database::state::DbParam::I64(127)), IV::Raw(now_fn.clone())],
             ];
             if let Ok((sql_roles_ins, params_roles_ins)) = ds.preview_insert_bulk("flx_roles", &cols, &rows) {
-                let built_roles = crate::database::state::rehydrate_placeholders(&sql_roles_ins, &state.db_type);
+                let built_roles = crate::database::state::rehydrate_placeholders(&sql_roles_ins, state.db_type.as_str());
                 // Properly await the async query and handle errors
                 match state.db.query_with_params(&built_roles, params_roles_ins).await {
                     Ok(_) => {

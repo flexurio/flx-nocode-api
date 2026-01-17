@@ -115,7 +115,7 @@ pub async fn create_table(
     }
 
     // MongoDB: No DDL needed. Consider this a success to match behavior.
-    if state.db_type == "mongodb" {
+    if state.db_type == crate::model::DbType::Mongodb {
         log_output(
             "INFO",
             "GENERATE TABLE",
@@ -131,11 +131,11 @@ pub async fn create_table(
         });
     }
 
-    let ds = SqlStore::new(state.db.clone(), state.db_type.clone());
+    let ds = SqlStore::new(state.db.clone(), state.db_type.as_str().to_string());
     
     // Create a mutable copy of table_schema with default collate applied if not set
     let mut table_schema_with_collate = table_schema.as_ref().clone();
-    if table_schema_with_collate.collate.trim().is_empty() && state.db_type == "mysql" {
+    if table_schema_with_collate.collate.trim().is_empty() && state.db_type == crate::model::DbType::Mysql {
         table_schema_with_collate.collate = state.default_collate.clone();
     }
     

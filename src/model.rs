@@ -2,6 +2,39 @@ use serde::{Deserialize, Serialize};
 
 use crate::auth::ClaimsConverter;
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DbType {
+    Mysql,
+    Postgres,
+    Sqlite,
+    Mssql,
+    Mongodb,
+}
+
+impl DbType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            DbType::Mysql => "mysql",
+            DbType::Postgres => "postgres",
+            DbType::Sqlite => "sqlite",
+            DbType::Mssql => "mssql",
+            DbType::Mongodb => "mongodb",
+        }
+    }
+    
+    pub fn is_sql(&self) -> bool {
+        !matches!(self, DbType::Mongodb)
+    }
+}
+
+impl std::fmt::Display for DbType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Config {
     pub routes: Vec<String>,
