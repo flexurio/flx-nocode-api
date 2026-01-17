@@ -184,25 +184,28 @@ fn extract_token_claims(token: &str, secret: &[u8]) -> Result<Claims, jsonwebtok
 }
 
 // function JWWT Decoder tanpa validasi key
-fn extract_token_claims_no_validation(token: &str, state: web::Data<AppState>) -> Claims {
+fn extract_token_claims_no_validation(token: &str, state: web::Data<AppState>) -> Option<Claims> {
     let token = token.trim_start_matches("Bearer ");
 
     let parts: Vec<&str> = token.split('.').collect();
+    if parts.len() < 2 {
+        return None;
+    }
     let payload_b64 = parts[1];
 
-    let decoded = URL_SAFE_NO_PAD.decode(payload_b64).unwrap();
-    let json: Value = serde_json::from_slice(&decoded).unwrap();
+    let decoded = URL_SAFE_NO_PAD.decode(payload_b64).ok()?;
+    let json: Value = serde_json::from_slice(&decoded).ok()?;
 
     // read converter_token from state
     let converter = &state.converter_token;
-    Claims {
+    Some(Claims {
         id: json.get(&converter.id).and_then(|v| v.as_str()).unwrap_or("").to_string(),
         nm: json.get(&converter.nm).and_then(|v| v.as_str()).unwrap_or("").to_string(),
         exp: json.get(&converter.exp).and_then(|v| v.as_u64()).unwrap_or(0) as usize,
         at: json.get(&converter.at).and_then(|v| v.as_u64()).unwrap_or(0) as usize,
         rl: json.get(&converter.rl).and_then(|v| v.as_str()).unwrap_or("").to_string(),
         cs: json.get(&converter.cs).and_then(|v| v.as_str()).unwrap_or("converter_token").to_string(),
-    }
+    })
 }
 
 fn is_ip_whitelisted(req: &actix_web::HttpRequest, whitelist: &[String]) -> bool {
@@ -229,8 +232,11 @@ pub fn get_user_info_from_token(
 
     if let Some(auth) = auth_str {
         if state.converter_token != ClaimsConverter::default() {
-            let claims = extract_token_claims_no_validation(auth, state.clone());
-            return Ok(claims);
+            if let Some(claims) = extract_token_claims_no_validation(auth, state.clone()) {
+                return Ok(claims);
+            } else {
+                return Err(false);
+            }
         }
         return match extract_token_claims(auth, state.secret.as_ref()) {
             Ok(claims) => Ok(claims),

@@ -200,44 +200,9 @@ pub async fn process_insert_request(
              let string_formula = matched_string.unwrap_or("").to_string();
              if string_formula.contains('=') {
                  isformula = true;
-                 // It's a formula, handled in repo or here? 
-                 // The extraction logic from post.rs handled formula parsing inline.
-                 // We need to keep that logic.
-                 // Ideally repo shouldn't do parsing of body against formula strings if possible, but repo needs to construct the SQL.
-                 // Actually, `data_create_repo` expects `insert_fields` which ALREADY contains `InsertValue::Raw` or `RawWithParams`.
-                 // So we must prepare it here.
-                 
-                 // Reuse logic from post.rs (needs `build_formula_value` helper, but that was moved to repo private?)
-                 // Ah, I made `build_formula_value` private in repo. I should probably duplicate it or expose it, 
-                 // OR move the entire loop logic to repo?
-                 // Moving loop to repo means passing `body` which is fine. But encryption happens here in Service.
-                 // Encryption makes sense in Service.
-                 // FK check gathering makes sense in Service or Repo? Repo validates it.
-                 // Let's implement basics here. To do that I need `build_formula_value` exposed or implemented here.
-                 // Since it parses body to build params, it CAN be here.
-                 
-                 // wait, I put `build_formula_value` in repo but it is private.
-                 // I should move this loop logic to repo to avoid duplicating formula parsing?
-                 // But encryption is logic.
-                 
-                 // Let's decide: Service prepares `effective_values` (encrypted, etc), Repo builds AST/SQL?
-                 // But `custom formula` implies AST generation.
-                 
-                 // The previous `post.rs` loop did EVERYTHING: encryption, formula parsing, FK collecting.
-                 // If I move the loop to Service, I need to pass massive amount of args to Repo.
-                 // If I move loop to Repo, Repo handles encryption (which depends on State key) and body parsing.
-                 
-                 // `put.rs` had `effective_values` prepared in Service (encrypted), then Repo used them.
-                 // `post.rs` is more complex due to `build_formula_value`.
-                 
-                 // Strategy: Move `build_formula_value` logic to Service or expose from helper?
-                 // It uses `extract_expressions` from crate::helpers.
-                 // I'll implement `build_formula_value` locally here in Service as a helper function (or closure).
-                 
-                 let rhs = string_formula.replace(&format!("{}=", col.name), "");
-                 // We need a helper for this.
-                let (frag, params) = build_formula_value_service(&rhs, &body);
-                insert_fields.push((col.name.clone(), InsertValue::RawWithParams { sql: frag, params }));
+                  let rhs = string_formula.replace(&format!("{}=", col.name), "");
+                 let (frag, params) = build_formula_value_service(&rhs, &body);
+                 insert_fields.push((col.name.clone(), InsertValue::RawWithParams { sql: frag, params }));
              }
         }
         
@@ -304,20 +269,9 @@ pub async fn process_insert_request(
          Ok((msg, _count)) => {
              // Audit Log
              if let Some(actor) = &actor_id_opt {
-                  // We don't have the inserted ID easily unless we parse it from msg or return it from repo.
-                  // Repo returns (String, i64). String is message, i64 is count?
-                  // `post.rs` didn't seem to log the inserted ID in audit explicitly, just "POST" action.
-                  // Wait, `put.rs` refactor logged audit.
-                  // `post.rs` code I viewed shows `write_audit` is imported but ONLY used in `delete.rs`?
-                  // Let me check `post.rs` view again. I don't see `write_audit` called in the main flow.
-                  // Ah, line 10: `use crate::audit::{write_audit, AuditEntry};` was imported.
-                  // But searching `post.rs` content, I don't see `write_audit` being CALLED.
-                  // It seems `post.rs` might have missed audit logging or I missed it.
-                  
-                  // In `put.rs`, we added it. It's good practice to add it here too.
-                  // For now, I will NOT add it if it wasn't there, to avoid changing behavior too much, 
-                  // but `put.rs` refactor added it. I'll consistency add it.
+                  // Audit Log
                   let ip_opt = get_client_ip(req);
+
                   crate::audit::write_audit(&crate::audit::AuditEntry {
                         at: Local::now().to_rfc3339(),
                         actor_id: actor.clone(),

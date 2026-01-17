@@ -31,8 +31,7 @@ async fn validate_foreign_keys_batch(
     
     log_output("QUERY", "FK BATCH", "POST", union_sql.clone(), true);
     log_output("PARAMS", "FK BATCH", "POST", format!("{:?}", params), true);
-    println!("DEBUG: FK Batch SQL: {}", union_sql);
-    println!("DEBUG: FK Batch Params: {:?}", params);
+
     
     let results = state.db.query_with_params(&union_sql, params).await
         .map_err(|e| format!("FK batch validation failed: {}", e))?;
@@ -140,8 +139,7 @@ async fn validate_unique_constraints_batch(
 
     log_output("QUERY", "UNIQUE BATCH", "POST", union_sql.clone(), true);
     log_output("PARAMS", "UNIQUE BATCH", "POST", format!("{:?}", params), true);
-    println!("DEBUG: Unique Batch SQL: {}", union_sql);
-    println!("DEBUG: Unique Batch Params: {:?}", params);
+
 
     let rows = state.db.query_with_params(&union_sql, params).await
         .map_err(|e| format!("Unique batch validation failed: {}", e))?;
@@ -288,8 +286,7 @@ pub async fn perform_insert(
                 body,
             ) {
                 Ok((built_sql, params)) => {
-                     println!("DEBUG: Validate Data SQL: {}", built_sql);
-                     println!("DEBUG: Validate Data Params: {:?}", params);
+
                      match tx.raw_sql(&built_sql, params).await {
                         Ok(row) => {
                              if !row.is_empty() {
@@ -336,10 +333,9 @@ pub async fn perform_insert(
                     log_output("QUERY", "POST(AST)", route, sql.clone(), true);
                     log_output("PARAMS", "POST(AST)", route, format!("{:?}", params), true);
                 }
-                println!("DEBUG: Insert SQL: {}", sql);
-                println!("DEBUG: Insert Params: {:?}", params);
                 
                 match tx.raw_sql(&sql, params).await {
+
                     Ok(_) => {
                          // POST-PROCESS (SQL based)
                         if table_schema.post.post_process.contains("SQL:") {
