@@ -23,6 +23,7 @@ impl DbType {
         }
     }
     
+    #[allow(dead_code)]
     pub fn is_sql(&self) -> bool {
         !matches!(self, DbType::Mongodb)
     }
@@ -164,7 +165,7 @@ pub struct PrimaryKey {
     pub columns: Vec<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct Column {
     #[serde(default)]
     pub name: String,

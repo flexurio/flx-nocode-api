@@ -1,0 +1,228 @@
+use actix_web::web;
+use crate::AppState;
+use crate::model::{TableSchema, ReferenceForeignKey};
+use crate::storage::ast::{Filter as QF, Val as QV};
+use crate::storage::sql_store::{SqlStore, InsertValue};
+use crate::log::log_output;
+use crate::nocode::foreign_key::process_foreign_keys_delete_update_txstore;
+use chrono::Local;
+use serde_json::Value;
+
+/// Build a composite primary key filter
+fn build_pk_filter(pk_columns: &[String], pk_values: &[String]) -> Result<QF, String> {
+    if pk_columns.is_empty() {
+        return Err("No primary key columns defined".to_string());
+    }
+    if pk_columns.len() != pk_values.len() {
+        return Err(format!(
+            "Primary key mismatch: expected {} values for {} columns",
+            pk_columns.len(),
+            pk_values.len()
+        ));
+    }
+
+    if pk_columns.len() == 1 {
+        Ok(QF::Eq(pk_columns[0].clone(), QV::Str(pk_values[0].clone())))
+    } else {
+        let filters = pk_columns
+            .iter()
+            .zip(pk_values.iter())
+            .map(|(col, val)| QF::Eq(col.clone(), QV::Str(val.clone())))
+            .collect();
+        Ok(QF::And(filters))
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn perform_delete_sql(
+    state: &web::Data<AppState>,
+    table_schema: &TableSchema,
+    route: &str,
+    id_raw: &str,
+    pk_values: &[String],
+    ref_fks: &[ReferenceForeignKey],
+    actor_id: &str,
+    is_soft: bool,
+) -> Result<(), String> {
+    
+    let (exec_sql, exec_params) = if is_soft {
+        // Decide types for deleted_by_id
+        let deleted_by_type = table_schema
+            .columns
+            .iter()
+            .find(|c| c.name == "deleted_by_id")
+            .map(|c| c.type_data.clone())
+            .unwrap_or("int".to_string());
+        log_output("TYPE", "deleted_by_id", route, deleted_by_type.clone(), true);
+
+        // Build fields with a raw DB now() expression
+        let mut fields: Vec<(String, InsertValue)> = vec![
+            ("deleted_at".to_string(), InsertValue::Raw(state.query_converter.datetime_now.clone())),
+        ];
+        
+        // Typed deleted_by_id
+        if deleted_by_type.contains("int") {
+            if let Ok(n) = actor_id.parse::<i64>() {
+                fields.push(("deleted_by_id".into(), InsertValue::Param(crate::database::state::DbParam::I64(n))));
+            } else {
+                fields.push(("deleted_by_id".into(), InsertValue::Param(crate::database::state::DbParam::Str(actor_id.to_string()))));
+            }
+        } else if deleted_by_type.contains("float")
+            || deleted_by_type.contains("double")
+            || deleted_by_type.contains("decimal")
+            || deleted_by_type.contains("money")
+        {
+            if let Ok(n) = actor_id.parse::<f64>() {
+                fields.push(("deleted_by_id".into(), InsertValue::Param(crate::database::state::DbParam::F64(n))));
+            } else {
+                fields.push(("deleted_by_id".into(), InsertValue::Param(crate::database::state::DbParam::Str(actor_id.to_string()))));
+            }
+        } else {
+            fields.push(("deleted_by_id".into(), InsertValue::Param(crate::database::state::DbParam::Str(actor_id.to_string()))));
+        }
+
+        let filter = build_pk_filter(&table_schema.primary_key.columns, pk_values)
+            .map_err(|e| format!("Error building PK filter: {}", e))?;
+            
+        let ds = SqlStore::new(state.db.clone(), state.db_type.as_str().to_string());
+        match ds.preview_update_with(&table_schema.table, Some(&filter), &fields) {
+            Ok((sql, params)) => {
+                if *crate::ISDEBUG {
+                    log_output("QUERY", "DELETE(AST-soft)", route, sql.clone(), true);
+                    log_output("PARAMS", "DELETE(AST-soft)", route, format!("{:?}", params), true);
+                }
+                (sql, params)
+            }
+            Err(e) => return Err(format!("Error compiling AST soft delete: {}", e)),
+        }
+    } else {
+        // Hard delete
+        let filter = build_pk_filter(&table_schema.primary_key.columns, pk_values)
+            .map_err(|e| format!("Error building PK filter: {}", e))?;
+            
+        let ds = SqlStore::new(state.db.clone(), state.db_type.as_str().to_string());
+        match ds.preview_delete(&table_schema.table, Some(&filter)) {
+            Ok((sql, params)) => {
+                if *crate::ISDEBUG {
+                    log_output("QUERY", "DELETE(AST-hard)", route, sql.clone(), true);
+                    log_output("PARAMS", "DELETE(AST-hard)", route, format!("{:?}", params), true);
+                }
+                (sql, params)
+            }
+            Err(e) => return Err(format!("Error compiling AST hard delete: {}", e)),
+        }
+    };
+    log_output("QUERY", "DELETE(AST)", route, exec_sql.clone(), true);
+
+    // Transaction
+    let mut tx = state.store.begin_tx().await.map_err(|e| format!("Error starting transaction: {}", e))?;
+
+    match tx.raw_sql(&exec_sql, exec_params).await {
+        Ok(_) => {
+            let (is_fk_ok, err_message) = process_foreign_keys_delete_update_txstore(
+                "DELETE", 
+                state.clone(),
+                route.to_string(),
+                &mut tx,
+                ref_fks,
+                actor_id.to_string(),
+                id_raw.to_string(),
+                "".to_string(), // for UPDATE
+            ).await;
+
+            if is_fk_ok {
+                tx.commit().await.map_err(|e| format!("Error committing transaction: {}", e))?;
+                Ok(())
+            } else {
+                let _ = tx.rollback().await;
+                Err(format!("Transaction rolled back due to foreign key failures: {}", err_message))
+            }
+        }
+        Err(err) => {
+            let _ = tx.rollback().await;
+            Err(format!("Error NCO-DELETE: {}", err))
+        }
+    }
+}
+
+pub async fn perform_delete_mongo(
+    state: &web::Data<AppState>,
+    table_schema: &TableSchema,
+    _route: &str, // route used for logging/logic if needed
+    _id_raw: &str,
+    pk_values: &[String],
+    actor_id: &str,
+    is_soft: bool,
+) -> Result<(), String> {
+    
+    let filter = build_pk_filter(&table_schema.primary_key.columns, pk_values)
+        .map_err(|e| format!("Error building PK filter: {}", e))
+        .map(Some)?;
+
+    if is_soft {
+        let mut patch = serde_json::Map::new();
+        patch.insert("deleted_at".into(), serde_json::json!(Local::now().to_rfc3339()));
+        
+        let deleted_by_type = table_schema
+            .columns
+            .iter()
+            .find(|c| c.name == "deleted_by_id")
+            .map(|c| c.type_data.clone())
+            .unwrap_or("int".to_string());
+            
+        if deleted_by_type.contains("int") {
+            if let Ok(n) = actor_id.parse::<i64>() {
+                patch.insert("deleted_by_id".into(), serde_json::json!(n));
+            } else {
+                patch.insert("deleted_by_id".into(), serde_json::json!(actor_id));
+            }
+        } else if deleted_by_type.contains("float")
+            || deleted_by_type.contains("double")
+            || deleted_by_type.contains("decimal")
+            || deleted_by_type.contains("money")
+        {
+            if let Ok(n) = actor_id.parse::<f64>() {
+                patch.insert("deleted_by_id".into(), serde_json::json!(n));
+            } else {
+                patch.insert("deleted_by_id".into(), serde_json::json!(actor_id));
+            }
+        } else {
+            patch.insert("deleted_by_id".into(), serde_json::json!(actor_id));
+        }
+        
+        state.store.update(&table_schema.table, filter, Value::Object(patch)).await
+            .map(|_| ())
+            .map_err(|e| format!("Error NCO-DELETE (mongo): {}", e))
+    } else {
+        state.store.delete(&table_schema.table, filter).await
+            .map(|_| ())
+            .map_err(|e| format!("Error NCO-DELETE (mongo): {}", e))
+    }
+}
+
+// Unit tests
+#[cfg(test)]
+mod tests {
+    use super::*;
+    // Add tests for build_pk_filter
+    #[test]
+    fn test_build_pk_filter() {
+        // Single
+        let pk = vec!["id".to_string()];
+        let val = vec!["1".to_string()];
+        let f = build_pk_filter(&pk, &val).unwrap();
+        match f {
+            QF::Eq(c, _) => assert_eq!(c, "id"),
+            _ => panic!("Expected Eq"),
+        }
+        
+        // Composite
+        let pk2 = vec!["a".to_string(), "b".to_string()];
+        let val2 = vec!["1".to_string(), "2".to_string()];
+        let f2 = build_pk_filter(&pk2, &val2).unwrap();
+        match f2 {
+            QF::And(list) => assert_eq!(list.len(), 2),
+            _ => panic!("Expected And"),
+        }
+    }
+}

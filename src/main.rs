@@ -15,7 +15,6 @@ use once_cell::sync::Lazy;
 use serde_json::Value;
 use std::collections::HashSet;
 use std::fs;
-use std::process::exit;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -26,10 +25,11 @@ mod auth;
 mod crypt;
 mod database;
 use database::state::{AppState, QueryConverter};
+mod error;
 mod nocode;
 use nocode::{
-    delete::delete, export::export, generate::create_table, get::select, import::import,
-    patch::process_sp, post::insert, put::update, trace::process, validate::check_table_design,
+    generate::create_table,
+    validate::check_table_design,
 };
 use nocode::consumer::{start_consumer};
 mod core;
@@ -96,7 +96,7 @@ static CONFIG: Lazy<crate::model::Config> = Lazy::new(|| {
                 "ERROR main 75 : Sorry, content of /{}/routes.json is not valid JSON, with ERROR Message : {}",
                 CONFIG_LOCATION.as_str(), e
             );
-            std::process::exit(1);
+            panic!("Invalid routes.json");
         }
     }
 });
@@ -115,6 +115,7 @@ static ENDPOINT_LOG_ONCE: Lazy<AtomicBool> = Lazy::new(|| AtomicBool::new(false)
 // Static Routes for once initialization
 static FOREIGNKEY_ACTION: [&str; 4] = ["cascade", "set null", "restrict", "no action"];
 
+#[allow(clippy::type_complexity)]
 static SCHEMAS: Lazy<(Arc<std::collections::HashMap<String, Arc<TableSchema>>>, Arc<Vec<ReferenceForeignKey>>)> = Lazy::new(|| {
     let config_dir = format!("{}/entity", CONFIG_LOCATION.as_str());
     let mut schemas_map = std::collections::HashMap::new();
@@ -131,7 +132,7 @@ static SCHEMAS: Lazy<(Arc<std::collections::HashMap<String, Arc<TableSchema>>>, 
                     file_path.on_bright_red(),
                     e
                 );
-                exit(1);
+                panic!("Cannot read entity file");
             }
         };
         let schema: TableSchema = match serde_json::from_str(&content) {
@@ -141,7 +142,7 @@ static SCHEMAS: Lazy<(Arc<std::collections::HashMap<String, Arc<TableSchema>>>, 
                     "Sorry, content of /{}/entity/{}.json is not valid JSON, with ERROR Message : {}",
                     CONFIG_LOCATION.as_str(), route, e
                 );
-                exit(1);
+                panic!("Invalid entity JSON");
             }
         };
 
@@ -172,7 +173,7 @@ static SCHEMAS: Lazy<(Arc<std::collections::HashMap<String, Arc<TableSchema>>>, 
                             "TRACE config error for table '{}': referenced index '{}' not found in indexes",
                             schema.table, name
                         );
-                        exit(1);
+                        panic!("Trace config error: index not found");
                     }
                 } else {
                     resolved_conflict_cols = schema.trace.column_conflicts.clone();
@@ -185,7 +186,7 @@ static SCHEMAS: Lazy<(Arc<std::collections::HashMap<String, Arc<TableSchema>>>, 
                         "TRACE config error for table '{}': Postgres requires 'column_conflicts' (or index:<name>) for upsert",
                         schema.table
                     );
-                    exit(1);
+                    panic!("Trace config error: Postgres requires column_conflicts");
                 }
             } else if dbt == "mssql" && resolved_conflict_cols.is_empty() {
                 // Allow fallback to a single unique index if present unambiguously
@@ -197,7 +198,7 @@ static SCHEMAS: Lazy<(Arc<std::collections::HashMap<String, Arc<TableSchema>>>, 
                         "TRACE config error for table '{}': MSSQL requires 'column_conflicts' (or index:<name>); no unambiguous unique index found",
                         schema.table
                     );
-                    exit(1);
+                    panic!("Trace config error: MSSQL ambiguous unique index");
                 }
             }
         }
@@ -209,11 +210,11 @@ static SCHEMAS: Lazy<(Arc<std::collections::HashMap<String, Arc<TableSchema>>>, 
                 // check if fk.on_delete not in FOREIGNKEY_ACTION
                 if !FOREIGNKEY_ACTION.contains(&fk.on_delete.as_str()) {
                     eprintln!("ERROR FK_Check Delete : Foreign key on_delete action '{}' is not supported", fk.on_delete);
-                    exit(1);
+                    panic!("Unsupported FK on_delete action");
                 }
                 if !FOREIGNKEY_ACTION.contains(&fk.on_update.as_str()) {
                     eprintln!("ERROR FK_Check Update : Foreign key on_update action '{}' is not supported", fk.on_update);
-                    exit(1);
+                    panic!("Unsupported FK on_update action");
                 }
                 ref_foreign_keys.push(ReferenceForeignKey {
                     table: fk.reference_table.clone(),
@@ -251,7 +252,7 @@ static SCHEMAS: Lazy<(Arc<std::collections::HashMap<String, Arc<TableSchema>>>, 
 });
 
 #[actix_web::main]
-async fn main() -> std::io::Result<()> {
+async fn main() -> anyhow::Result<()> {
     // Load .env early so DEBUG/LOG_* are visible before any Lazy env reads
     dotenv().ok();
     // Initialize async, non-blocking logger (no-op if DEBUG is off)
@@ -267,11 +268,11 @@ async fn main() -> std::io::Result<()> {
     if !std::path::Path::new(".env").exists() {
         if let Err(e) = core::download_env_file().await {
             eprintln!("Failed to download .env file: {}", e);
-            return Err(std::io::Error::other(e));
+            return Err(anyhow::anyhow!("Failed to download .env file: {}", e));
         } else {
             println!(".env file downloaded successfully.");
             println!("Please configure your .env file with the required settings.");
-            exit(1);
+            return Err(anyhow::anyhow!("Please configure your .env file"));
         }
     }
 
@@ -340,14 +341,14 @@ async fn main() -> std::io::Result<()> {
                     Ok(v) => v,
                     Err(_) => {
                         eprintln!("Please set MONGODB_URI in .env for DB_TYPE=mongodb");
-                        std::process::exit(1);
+                        return Err(anyhow::anyhow!("MONGODB_URI not set"));
                     }
                 };
                 let dbname = match env::var("MONGODB_DB") {
                     Ok(v) => v,
                     Err(_) => {
                         eprintln!("Please set MONGODB_DB in .env for DB_TYPE=mongodb");
-                        std::process::exit(1);
+                        return Err(anyhow::anyhow!("MONGODB_DB not set"));
                     }
                 };
                 let mongo = MongoStore::connect(&uri, &dbname).await.map_err(|e| {
@@ -434,7 +435,7 @@ async fn main() -> std::io::Result<()> {
             Some(s) => s.clone(),
             None => {
                 eprintln!("No schema found for route '{}'", route);
-                exit(1);
+                return Err(anyhow::anyhow!("No schema found for route '{}'", route));
             }
         };
         let schema = schema_arc.as_ref();
@@ -454,8 +455,8 @@ async fn main() -> std::io::Result<()> {
             let (sql_create_table, sql_create_index) = generate_table(&ds, &schema_with_collate);
             let (is_valid, msg) = execute_generate_table(route.to_string(), &app_state, sql_create_table, sql_create_index).await;
             if !is_valid {
-                log_output("ERROR", "TABLE DESIGN CHECK", "FAILED", msg, true);
-                exit(1);
+                log_output("ERROR", "TABLE DESIGN CHECK", "FAILED", msg.clone(), true);
+                return Err(anyhow::anyhow!("Table design check failed for route '{}': {}", route, msg));
             } else {
                 log_output("INFO", "TABLE DESIGN CHECK", "SUCCESS", route.to_string(), false);
             }
@@ -500,7 +501,8 @@ async fn main() -> std::io::Result<()> {
                 .on_red()
             );
             println!("--------------------------------------");
-            exit(1);
+            println!("--------------------------------------");
+            return Err(anyhow::anyhow!("ERROR 9081231287 : Table name '{}' is duplicated in config entity.", schema.table));
         }
     }
 
@@ -800,9 +802,9 @@ async fn main() -> std::io::Result<()> {
 
                         base_res = base_res.route(web::get().to(
                             move |state: web::Data<AppState>,
-                                  parameters: web::Query<Value>,
-                                  req: actix_web::HttpRequest| {
-                                select(
+                                  req: actix_web::HttpRequest,
+                                  parameters: web::Query<Value>| {
+                                crate::nocode::handlers::get_handler::select(
                                     state,
                                     parameters,
                                     route_get.to_string(),
@@ -816,7 +818,6 @@ async fn main() -> std::io::Result<()> {
 
                     // Log and register POST endpoint (if columns are defined)
                     if schema.post.enable_method {
-                        println!("Registering POST endpoint for route A : {}", route_post.as_ref());
                         if do_log {
                             log_output(
                                 "ENDPOINT",
@@ -835,9 +836,9 @@ async fn main() -> std::io::Result<()> {
                         base_res = base_res.route(web::post().to(
                             move |state: web::Data<AppState>,
                                   parameters: web::Query<Value>,
-                                  multipart: actix_multipart::Multipart,
+                                  multipart: Multipart,
                                   req: actix_web::HttpRequest| {
-                                insert(
+                                crate::nocode::handlers::post_handler::insert(
                                     state,
                                     parameters,
                                     route_post.to_string(),
@@ -871,7 +872,7 @@ async fn main() -> std::io::Result<()> {
                             move |state: web::Data<AppState>,
                                   parameters: web::Query<Value>,
                                   req: actix_web::HttpRequest| {
-                                process(
+                                crate::nocode::handlers::trace_handler::process(
                                     state,
                                     parameters,
                                     route_trace.to_string(),
@@ -904,7 +905,7 @@ async fn main() -> std::io::Result<()> {
                             move |state: web::Data<AppState>,
                                   parameters: web::Query<Value>,
                                   req: actix_web::HttpRequest| {
-                                process_sp(
+                                crate::nocode::handlers::patch_handler::process_sp(
                                     state,
                                     parameters,
                                     route_patch.to_string(),
@@ -946,7 +947,7 @@ async fn main() -> std::io::Result<()> {
                                           parameters: web::Query<Value>,
                                           path: Path<String>,
                                           req: actix_web::HttpRequest| {
-                                        delete(state,parameters, route_delete.to_string(), schema_delete.clone(), ref_fks_delete.clone(), path, req)
+                                        crate::nocode::handlers::delete_handler::delete(state, parameters, route_delete.to_string(), schema_delete.clone(), ref_fks_delete.clone(), path, req)
                                     },
                                 ))
                         );
@@ -977,7 +978,7 @@ async fn main() -> std::io::Result<()> {
                                           multipart: Multipart,
                                           path: Path<String>,
                                           req: actix_web::HttpRequest| {
-                                        update(
+                                        crate::nocode::handlers::put_handler::update(
                                             state,
                                             parameters,
                                             route_put.to_string(),
@@ -1012,10 +1013,10 @@ async fn main() -> std::io::Result<()> {
                             web::resource(format!("/import/{}", route_import.as_ref()))
                                 .route(web::post().to(
                                     move |state: web::Data<AppState>,
-                                        parameters: web::Query<Value>,
-                                        multipart: Multipart,
-                                        req: actix_web::HttpRequest| {
-                                        import(
+                                          parameters: web::Query<Value>,
+                                          multipart: Multipart,
+                                          req: actix_web::HttpRequest| {
+                                        crate::nocode::handlers::import_handler::import(
                                             state,
                                             parameters,
                                             route_import.to_string(),
@@ -1024,7 +1025,7 @@ async fn main() -> std::io::Result<()> {
                                             req,
                                         )
                                     },
-                                )),
+                                ))
                         );
                     }
 
@@ -1048,9 +1049,9 @@ async fn main() -> std::io::Result<()> {
                             web::resource(format!("/export/{}", route_export.as_ref()))
                                 .route(web::get().to(
                                     move |state: web::Data<AppState>,
-                                        multipart: Multipart,
-                                        req: actix_web::HttpRequest| {
-                                        export(
+                                          multipart: Multipart,
+                                          req: actix_web::HttpRequest| {
+                                        crate::nocode::handlers::export_handler::export(
                                             state,
                                             route_export.to_string(),
                                             schema_export.clone(),
@@ -1152,4 +1153,5 @@ async fn main() -> std::io::Result<()> {
     })?
     .run()
     .await
+    .map_err(Into::into)
 }

@@ -1561,6 +1561,7 @@ dependencies = [
  "sha2",
  "smallvec",
  "sqlx",
+ "thiserror 1.0.69",
  "tiberius",
  "tokio",
  "tokio-util",

@@ -1,12 +1,12 @@
-pub mod delete;
 pub mod foreign_key;
 pub mod generate;
-pub mod import;
-pub mod export;
-pub mod get;
-pub mod patch;
-pub mod post;
-pub mod put;
-pub mod trace;
+
+
+
+
 pub mod validate;
 pub mod consumer;
+
+pub mod handlers;
+pub mod services;
+pub mod repositories;

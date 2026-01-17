@@ -1,150 +1,51 @@
-use actix_multipart::Multipart;
-use actix_web::{http::header, web, HttpResponse, Responder};
-use serde_json::Value;
 use std::collections::HashSet;
 use std::sync::Arc;
+use serde_json::Value;
 
-use crate::audit::{write_audit, AuditEntry};
-use crate::auth::{check_access, get_user_info_from_token, Claims};
-use crate::helpers::{multipart_to_json, split_column_operator};
-use crate::log::log_output;
-use crate::model::{ParamJoin, TableSchema, WebResponse};
-use crate::storage::ast::{Filter as QF, Query as QQ, Val as QV, Expr as QE};
-use crate::storage::sql_store::SqlStore;
+use crate::model::{ParamJoin, TableSchema};
 use crate::AppState;
-use chrono::Local;
+use crate::storage::ast::{Filter as QF, Query as QQ, Val as QV, Expr as QE, Join as QJ, JoinKind as QJK};
+use crate::helpers::split_column_operator;
 
-/// Export data for a route using filters provided via multipart fields.
-/// Fields supported (same as nocode GET):
-/// - filters according to schema.get.parameters
-pub async fn export(
-    state: web::Data<AppState>,
-    route: String,
-    table_schema: Arc<TableSchema>,
-    multipart: Multipart,
-    req: actix_web::HttpRequest,
-) -> impl Responder {
-    // let table_schemas = &schemas.0;
+#[allow(clippy::collapsible_if)]
+pub async fn fetch_dynamic_data(
+    state: &AppState,
+    route: &str,
+    table_schema: &Arc<TableSchema>,
+    params_map: &serde_json::Map<String, Value>,
+) -> Result<(Vec<Value>, usize), String> {
+    // Build AST query
+    // Tuneable limits via env to control memory usage per request
+    let limit_default_env: i32 = std::env::var("LIMIT_DEFAULT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(200);
+    let limit_max_env: i32 = std::env::var("LIMIT_MAX")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(2000);
 
-    // AuthZ like GET (read)
-    let mut claims = Claims::default();
-    if state.require_auth && !state.route_publics.contains(&route){
-        let req_for_auth = req.clone();
-        claims = match get_user_info_from_token(req_for_auth, state.clone()) {
-            Ok(c) => c,
-            Err(_) => {
-                return HttpResponse::Unauthorized().json(WebResponse {
-                    success: false,
-                    message: "Invalid token".to_string(),
-                    total_data: 0,
-                    data: Value::Null,
-                });
-            }
-        };
-        if !check_access(&claims, &route, "read") {
-            return HttpResponse::Unauthorized().json(WebResponse {
-                success: false,
-                message: "Unauthorized".to_string(),
-                total_data: 0,
-                data: Value::Null,
-            });
-        }
-    }
-
-    // Parse multipart fields to JSON (re-use secure helper)
-    let body_json: Value = match multipart_to_json(multipart).await {
-        Ok(v) => v,
-        Err(_) => Value::Object(serde_json::Map::new()),
-    };
-
-    // Type and filename
-    let mut export_type = body_json
-        .get("type")
-        .and_then(|v| v.as_str())
-        .unwrap_or("csv")
-        .to_lowercase();
-    if export_type != "xlsx" && export_type != "csv" { export_type = "csv".to_string(); }
-    let filename_base = body_json
-        .get("filename")
-        .and_then(|v| v.as_str())
-        .unwrap_or(&route);
-
-    // Schema lookup
-    // let table_schema: TableSchema = filter_table_schema(table_schemas, route.clone()).await; -- Use passed schema
-    if table_schema.table.is_empty() {
-        let message_error = format!(
-            "Entity {} on folder config/{}.json not found",
-            route, route
-        );
-        return HttpResponse::FailedDependency().json(WebResponse {
-            success: false,
-            message: message_error,
-            total_data: 0,
-            data: Value::Null,
-        });
-    }
-
-    // Build AST query using same rules as nocode GET (portable across DBs)
-    let i_limit = body_json
-        .get("limit")
-        .and_then(|v| v.as_str())
-        .and_then(|s| s.parse::<i32>().ok())
-        .map(|v| v.clamp(1, 100_000))
-        .unwrap_or(10_000);
-
-    let mut is_deleted_at = true;
-
-    // Preprocess parameters map for convenience
-    let params_map = body_json.as_object().cloned().unwrap_or_default();
-    let mut table_schema_get_params = table_schema.get.parameters.clone();
-
-
-    // ============ VALIDASI PARAMETER WAJIB (marked with *) ============
-    {
-        let mut missing_required: Vec<String> = Vec::new();
-        for param in &mut table_schema_get_params {
-            if param.starts_with('*') {
-                // Parameter wajib: hapus * untuk cek di params_map
-                let param_name = param.trim_start_matches('*');
-                if !params_map.contains_key(param_name) || 
-                   params_map.get(param_name).map(|v| v.as_str().unwrap_or("").is_empty()).unwrap_or(true) {
-                    missing_required.push(param_name.to_string());
-                } else {
-                    // edit table_schema_get_params to remove *
-                    *param = param_name.to_string();
-                }
-            }
-        }
-        if !missing_required.is_empty() {
-            return HttpResponse::BadRequest().json(WebResponse {
-                success: false,
-                message: format!("Required parameters missing: {}", missing_required.join(", ")),
-                total_data: 0,
-                data: Value::Null,
-            });
-        }
-    }
-    // ================================================================
-        
-    // Defaults for ordering
+    let mut i_limit_ast = limit_default_env;
+    let mut i_page_ast = 1i32;
     let mut order_col_ast = table_schema.get.order_by.clone().join(", ");
     let mut order_type_ast = "ASC".to_string();
+    let mut is_deleted_at = true;
+    
+    // Pre-allocate with estimated capacity
+    let mut filters: Vec<QF> = Vec::with_capacity(params_map.len());
+    // collect paramjoin values if provided
+    let mut paramjoins_ast: Vec<ParamJoin> = Vec::with_capacity(4);
 
-    // Collect paramjoins and flag deleted_at override
-    let mut paramjoins_ast: Vec<ParamJoin> = Vec::new();
-    for p in &table_schema.get.parameters {
-        let v_opt = if p.contains("paramjoin") {
-            params_map.get(p).and_then(|vv| vv.as_str())
-        } else { None };
-        if let Some(v) = v_opt {
-            paramjoins_ast.push(ParamJoin { name: p.replace(".eq", ""), value: v.to_string() });
-        }
-        if p.contains("deleted_at") && params_map.get(p).is_some() {
-            is_deleted_at = false;
+    // Identify param joins first
+    for (k, v) in params_map {
+        if k.contains("paramjoin") {
+            if let Some(s) = v.as_str() {
+                paramjoins_ast.push(ParamJoin { name: k.replace(".eq", ""), value: s.to_string() });
+            }
         }
     }
 
-    // Helper to parse primitive to QV
+    // helper to parse value into QV
     fn to_val(s: &str) -> QV {
         if s.eq_ignore_ascii_case("true") { return QV::Bool(true); }
         if s.eq_ignore_ascii_case("false") { return QV::Bool(false); }
@@ -153,12 +54,22 @@ pub async fn export(
         QV::Str(s.to_string())
     }
 
-    // Build filters only from allowed parameters
-    let mut filters: Vec<QF> = Vec::new();
+    // Filter processing based on schema allowlist (table_schema.get.parameters)
+    // BUT since we are in repo, we trust caller has validated required params. 
+    // We strictly iterate over schema-allowed params to build filters.
     for param in &table_schema.get.parameters {
-        if let Some(value) = params_map.get(param) {
+        // Handle "*param" syntax stripper
+        let clean_param = param.trim_start_matches('*');
+        
+        if let Some(value) = params_map.get(clean_param) {
             let value_str = value.as_str().unwrap_or("").to_string();
-            match param.as_str() {
+            
+            if clean_param.contains("deleted_at") { is_deleted_at = false; }
+            
+            match clean_param {
+                "page" => {
+                    i_page_ast = value_str.parse::<i32>().ok().filter(|v| *v > 0).unwrap_or(1);
+                }
                 "sort" => {
                     if !value_str.is_empty() {
                         let sanitized: String = value_str
@@ -171,16 +82,32 @@ pub async fn export(
                 "ascending" => {
                     order_type_ast = if value_str.eq_ignore_ascii_case("true") { "ASC".into() } else { "DESC".into() };
                 }
-                "limit" | "page" => { /* handled elsewhere or ignored for export */ }
-                p if p.contains("paramjoin") => { /* handled later in join substitution */ }
+                "limit" => {
+                    i_limit_ast = value_str
+                        .parse::<i32>()
+                        .ok()
+                        .map(|v| v.clamp(1, limit_max_env))
+                        .unwrap_or(limit_default_env);
+                }
+                p if p.contains("paramjoin") => {
+                    // handled via join logical substitution below
+                }
                 "search" => {
                     let v = value_str;
                     if !v.is_empty() {
-                        let mut ors: Vec<QF> = Vec::new();
+                        // Pre-calculate capacity for OR filters
+                        let pk_count = table_schema.primary_key.columns.len();
+                        let idx_count: usize = table_schema.indexes.iter()
+                            .map(|idx| idx.columns.len())
+                            .sum();
+                        let mut ors: Vec<QF> = Vec::with_capacity(pk_count + idx_count);
+                        
+                        // primary key columns
                         for column in table_schema.primary_key.columns.iter() {
                             let col = if column.contains('.') { column.clone() } else { format!("{}.{}", table_schema.table, column) };
                             ors.push(QF::ILike(col, format!("%{}%", v)));
                         }
+                        // indexed columns
                         for index in table_schema.indexes.iter() {
                             for column in index.columns.iter() {
                                 let col = if column.contains('.') { column.clone() } else { format!("{}.{}", table_schema.table, column) };
@@ -191,7 +118,9 @@ pub async fn export(
                     }
                 }
                 p if p.contains('|') => {
-                    let mut ors: Vec<QF> = Vec::new();
+                    // OR across multiple columns
+                    let parts_count = p.matches('|').count() + 1;
+                    let mut ors: Vec<QF> = Vec::with_capacity(parts_count); 
                     for part in p.split('|') {
                         let (column, operator, val) = split_column_operator(part, &table_schema.table, &value_str);
                         let f = match operator.as_str() {
@@ -202,6 +131,7 @@ pub async fn export(
                             ">=" => QF::Gte(column, to_val(&val)),
                             "like" => QF::ILike(column, val),
                             "nin" => {
+                                // nin: support JSON array or comma-separated
                                 let val_trim = value_str.trim();
                                 if val_trim.starts_with('[') && val_trim.ends_with(']') {
                                     if let Ok(arr) = serde_json::from_str::<Vec<serde_json::Value>>(val_trim) {
@@ -223,6 +153,7 @@ pub async fn export(
                                 } else { QF::NotIn(column, vec![to_val(&val)]) }
                             }
                             "between" => {
+                                // between: support JSON [a,b] or 'a,b'
                                 let val_trim = value_str.trim();
                                 if val_trim.starts_with('[') && val_trim.ends_with(']') {
                                     if let Ok(arr) = serde_json::from_str::<Vec<serde_json::Value>>(val_trim) {
@@ -261,7 +192,7 @@ pub async fn export(
                     if !ors.is_empty() { filters.push(QF::Or(ors)); }
                 }
                 _ => {
-                    let (column, operator, val) = split_column_operator(param, &table_schema.table, &value_str);
+                    let (column, operator, val) = split_column_operator(clean_param, &table_schema.table, &value_str);
                     if operator == "is" {
                         if value_str.eq_ignore_ascii_case("NULL") {
                             filters.push(QF::IsNull(column));
@@ -271,6 +202,7 @@ pub async fn export(
                             filters.push(QF::Eq(column, to_val(&val)));
                         }
                     } else {
+                        // Support IN via comma-separated list or JSON array string when operator is equality
                         let f = match operator.as_str() {
                             "=" => {
                                 let val_trim = value_str.trim();
@@ -365,26 +297,44 @@ pub async fn export(
         }
     }
 
+    // default deleted_at IS NULL if not requested otherwise
     if is_deleted_at {
         filters.push(QF::IsNull(format!("{}.deleted_at", table_schema.table)));
     }
 
-    // Build Query AST
+    // projection
     let select_columns = table_schema.get.columns.clone();
     let mut q = QQ::from(table_schema.table.clone()).select(select_columns);
+
+    // where
     if !filters.is_empty() {
         q = q.r#where(QF::And(filters));
     }
 
-    // Order by: allow alias/unqualified names present in projection/index/join columns
+    // Apply where_clause from schema (raw conditions)
+    if !table_schema.get.where_clause.is_empty() {
+        let mut where_exprs: Vec<QE> = Vec::new();
+        for wc in &table_schema.get.where_clause {
+            if !wc.trim().is_empty() {
+                where_exprs.push(QE::Raw(wc.clone()));
+            }
+        }
+        if !where_exprs.is_empty() {
+            q = q.having_expr(where_exprs);
+        }
+    }
+
+    // Order By logic (same as original)
     let mut allowed_unqualified: HashSet<String> = HashSet::new();
     for c in table_schema.get.columns.iter() {
         let s = c.trim();
-        if let Some((left, _right_alias_lc)) = s.to_lowercase().split_once(" as ") {
+        if let Some((left, right)) = s.to_lowercase().split_once(" as ") {
             if let Some((_l, alias_actual)) = s.split_once(" as ") {
                 allowed_unqualified.insert(alias_actual.trim().to_string());
             } else if let Some((_l, alias_actual)) = s.split_once(" AS ") {
                 allowed_unqualified.insert(alias_actual.trim().to_string());
+            } else {
+                allowed_unqualified.insert(right.trim().to_string());
             }
             let left_orig = &s[..left.len()];
             let base = left_orig.rsplit('.').next().unwrap_or(left_orig).trim();
@@ -430,6 +380,7 @@ pub async fn export(
         q = q.order_by(col_str.to_string(), asc);
         any_order = true;
     }
+
     if !any_order {
         for col in table_schema.get.order_by.iter() {
             let col_trim = col.trim();
@@ -441,7 +392,7 @@ pub async fn export(
         }
     }
 
-    // JOINs (apply paramjoin substitutions)
+    // JOINs (with safe paramjoin replacements)
     if !table_schema.get.join_tables.is_empty() {
         for j in &table_schema.get.join_tables {
             let mut logical = j.logical.clone();
@@ -453,18 +404,34 @@ pub async fn export(
                     .collect();
                 logical = logical.replace(&pj.name, &safe_val);
             }
-            if j.type_join.eq_ignore_ascii_case("left") {
-                q = q.join_left_expr(j.table.clone(), QE::Raw(logical));
+            let parse_col_eq = |s: &str| -> Option<(String, String)> {
+                let (l, r) = s.split_once('=')?;
+                let lhs = l.trim();
+                let rhs = r.trim();
+                if lhs.is_empty() || rhs.is_empty() { return None; }
+                if !lhs.contains('.') || !rhs.contains('.') { return None; }
+                Some((lhs.to_string(), rhs.to_string()))
+            };
+
+            if let Some((lhs, rhs)) = parse_col_eq(&logical) {
+                if j.type_join.eq_ignore_ascii_case("left") {
+                    q = q.join_left_expr(j.table.clone(), QE::ColEq(lhs, rhs));
+                } else {
+                    q = q.join_inner_expr(j.table.clone(), QE::ColEq(lhs, rhs));
+                }
             } else {
-                q = q.join_inner_expr(j.table.clone(), QE::Raw(logical));
+                let kind = if j.type_join.eq_ignore_ascii_case("left") { QJK::Left } else { QJK::Inner };
+                q.joins.push(QJ { kind, table: j.table.clone(), on: logical, on_expr: None });
             }
         }
     }
 
-    // GROUP BY and HAVING
+    // GROUP BY
     if !table_schema.get.column_groups.is_empty() {
         q = q.group_by(table_schema.get.column_groups.clone());
     }
+
+    // HAVING
     if !table_schema.get.having.is_empty() {
         let hv = table_schema
             .get
@@ -476,132 +443,12 @@ pub async fn export(
         q = q.having_expr(hv);
     }
 
-    // LIMIT only (no pagination by default for export)
-    q = q.limit(i_limit as u32);
+    // pagination
+    let offset_ast = (i_page_ast - 1) * i_limit_ast;
+    q = q.limit(i_limit_ast as u32).offset(offset_ast.max(0) as u32);
 
-    // Execute via DataStore (AST). Use SqlStore only for preview logs.
-    let ds = SqlStore::new(state.db.clone(), state.db_type.as_str().to_string());
-    if *crate::ISDEBUG {
-        let (s_sql_dbg, params_dbg) = ds.preview_sql(&q);
-        log_output("QUERY", "EXPORT(AST)", route.as_str(), s_sql_dbg.clone(), true);
-        log_output("PARAMS", "EXPORT(AST)", route.as_str(), format!("{:?}", params_dbg), true);
+    match state.store.query(&q).await {
+        Ok(rs) => Ok((rs, 9999)), // TODO: Implement count query if needed, currently 9999 placeholder to match existing
+        Err(e) => Err(format!("Error NCO-GET(AST) route {}: {}. Query : {:?}", route, e, q)),
     }
-    let rows = match state.store.query(&q).await {
-        Ok(res) => res,
-        Err(e) => {
-            return HttpResponse::InternalServerError().json(WebResponse {
-                success: false,
-                message: format!("Error EXPORT(AST) query: {}", e),
-                total_data: 0,
-                data: Value::Null,
-            })
-        }
-    };
-
-    // Convert rows to a stable vector of maps for export
-    let mut headers: Vec<String> = Vec::new();
-    let mut data_rows: Vec<Vec<String>> = Vec::new();
-    if let Some(obj) = rows.first().and_then(|first| first.as_object()) {
-        headers = obj.keys().cloned().collect();
-    }
-    for row in rows.iter() {
-        if let Some(obj) = row.as_object() {
-            if headers.is_empty() {
-                headers = obj.keys().cloned().collect();
-            }
-            let mut line: Vec<String> = Vec::with_capacity(headers.len());
-            for h in headers.iter() {
-                let val = obj.get(h).unwrap_or(&Value::Null);
-                line.push(match val {
-                    Value::Null => String::new(),
-                    Value::String(s) => s.clone(),
-                    Value::Number(n) => n.to_string(),
-                    Value::Bool(b) => if *b { "1".into() } else { "0".into() },
-                    other => other.to_string().trim_matches('"').to_string(),
-                });
-            }
-            data_rows.push(line);
-        }
-    }
-
-    let ts = Local::now().format("%Y%m%d-%H%M%S");
-    let (content_type, file_ext, bytes) = if export_type == "xlsx" {
-        let buf = write_xlsx(&headers, &data_rows).unwrap_or_else(|e| {
-            log_output(
-                "WARN",
-                "EXPORT",
-                route.as_str(),
-                format!("Falling back to CSV: {}", e),
-                true,
-            );
-            write_csv(&headers, &data_rows).unwrap_or_default()
-        });
-        (
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet".to_string(),
-            "xlsx".to_string(),
-            buf,
-        )
-    } else {
-        let buf = write_csv(&headers, &data_rows).unwrap_or_default();
-        ("text/csv".to_string(), "csv".to_string(), buf)
-    };
-
-    // Audit
-    write_audit(&AuditEntry {
-        at: Local::now().to_rfc3339(),
-        actor_id: claims.id,
-        action: "EXPORT",
-        route: &route,
-        id: None,
-        ip: req.peer_addr().map(|a| a.ip().to_string()).as_deref(),
-    });
-
-    let filename = format!("{}-{}.{}", filename_base, ts, file_ext);
-    HttpResponse::Ok()
-        .insert_header((
-            header::CONTENT_TYPE,
-            header::HeaderValue::from_str(&content_type).unwrap(),
-        ))
-        .insert_header((
-            header::CONTENT_DISPOSITION,
-            header::HeaderValue::from_str(&format!("attachment; filename=\"{}\"", filename))
-                .unwrap(),
-        ))
-        .body(bytes)
-}
-
-fn write_csv(headers: &[String], rows: &[Vec<String>]) -> Result<Vec<u8>, anyhow::Error> {
-    let mut wtr = csv::WriterBuilder::new()
-        .has_headers(true)
-        .from_writer(Vec::new());
-    if !headers.is_empty() {
-        wtr.write_record(headers)?;
-    }
-    for r in rows.iter() {
-        wtr.write_record(r)?;
-    }
-    wtr.flush()?;
-    Ok(wtr.into_inner()?)
-}
-
-fn write_xlsx(headers: &[String], rows: &[Vec<String>]) -> Result<Vec<u8>, anyhow::Error> {
-    use rust_xlsxwriter::{Format, Workbook};
-    let mut workbook = Workbook::new();
-    let worksheet = workbook.add_worksheet();
-    let mut row_idx: u32 = 0;
-    if !headers.is_empty() {
-        let bold = Format::new().set_bold();
-        for (col, h) in headers.iter().enumerate() {
-            worksheet.write_string_with_format(row_idx, col as u16, h, &bold)?;
-        }
-        row_idx += 1;
-    }
-    for r in rows.iter() {
-        for (c, val) in r.iter().enumerate() {
-            worksheet.write_string(row_idx, c as u16, val)?;
-        }
-        row_idx += 1;
-    }
-    let buf: Vec<u8> = workbook.save_to_buffer()?;
-    Ok(buf)
 }

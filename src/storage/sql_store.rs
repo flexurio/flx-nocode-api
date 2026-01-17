@@ -24,6 +24,12 @@ pub enum InsertValue {
     RawWithParams { sql: String, params: Vec<DbParam> },
 }
 
+#[derive(Debug, Clone)]
+pub struct UniqueCheck {
+    pub index_name: String,
+    pub columns: Vec<(String, DbParam)>,
+}
+
 impl SqlStore {
     pub fn new(inner: Arc<dyn DbRepository>, db_type: String) -> Self {
         Self { inner, db_type }
@@ -420,7 +426,7 @@ impl SqlStore {
         idx: &mut usize,
         params: &mut Vec<DbParam>,
     ) -> String {
-        if frag_params.is_empty() {
+        if frag_params.is_empty() && !sql.contains('?') {
             return sql.to_string();
         }
         let parts: Vec<&str> = sql.split('?').collect();
@@ -690,6 +696,68 @@ impl SqlStore {
         filter: Option<&Filter>,
     ) -> anyhow::Result<(String, Vec<DbParam>)> {
         self.build_delete(collection, filter)
+    }
+
+    /// Build a batch UNION ALL query to validate foreign keys.
+    /// checks: (col_name, ref_table, ref_column, value_to_check)
+    pub fn preview_validate_fk_batch(
+        &self,
+        checks: &[(String, String, String, String)],
+    ) -> anyhow::Result<(String, Vec<DbParam>)> {
+        if checks.is_empty() { return Ok(("".to_string(), vec![])); }
+        
+        let mut queries = Vec::with_capacity(checks.len());
+        let mut params = Vec::with_capacity(checks.len());
+        
+        for (col_name, ref_table, ref_column, value) in checks {
+            // Use CASE WHEN EXISTS(...) THEN 1 ELSE 0 END to ensure compatibility (MSSQL doesn't support raw EXISTS in select list)
+            // Functionally returns 1 for valid (exists), 0 for invalid.
+            queries.push(format!(
+                "SELECT '{}' as _col, '{}' as _table, CASE WHEN EXISTS(SELECT 1 FROM {} WHERE {} = ?) THEN 1 ELSE 0 END as _valid",
+                col_name, ref_table, ref_table, ref_column
+            ));
+            params.push(DbParam::Str(value.clone()));
+        }
+        let sql = queries.join(" UNION ALL ");
+        Ok((sql, params))
+    }
+
+    /// Build a batch UNION ALL query to validate unique constraints.
+    /// Supports optional PK exclusion for UPDATE operations.
+    pub fn preview_validate_unique_batch(
+        &self,
+        table: &str,
+        checks: &[UniqueCheck],
+        exclude_pk: Option<(&str, DbParam)>,
+    ) -> anyhow::Result<(String, Vec<DbParam>)> {
+        if checks.is_empty() { return Ok(("".to_string(), vec![])); }
+
+        let mut queries = Vec::with_capacity(checks.len());
+        let mut params = Vec::new();
+        let mut idx = 0usize;
+
+        for check in checks {
+             let mut conds = Vec::with_capacity(check.columns.len() + 1);
+             for (col, val) in &check.columns {
+                 idx += 1;
+                 conds.push(format!("{} = {}", col, next_placeholder_for(&self.db_type, idx)));
+                 params.push(val.clone());
+             }
+             if let Some((pk_col, pk_val)) = &exclude_pk {
+                 idx += 1;
+                 conds.push(format!("{} <> {}", pk_col, next_placeholder_for(&self.db_type, idx)));
+                 params.push(pk_val.clone());
+             }
+             
+             // Returns 1 if duplicate exists (invalid), 0 if unique (valid)
+             queries.push(format!(
+                 "SELECT '{}' as _idx, CASE WHEN EXISTS(SELECT 1 FROM {} WHERE {}) THEN 1 ELSE 0 END as _dup",
+                 check.index_name, table, conds.join(" AND ")
+             ));
+        }
+
+        let sql = queries.join(" UNION ALL ");
+        Ok((sql, params))
     }
 }
 

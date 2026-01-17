@@ -1,7 +1,5 @@
 use std::env;
-use std::io::{self, ErrorKind};
 use std::path::Path;
-use std::process::exit;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -81,7 +79,7 @@ pub struct DbInitialization {
     pub repo: Arc<dyn DbRepository>,
 }
 
-pub async fn initialize_database(cpu: usize) -> io::Result<DbInitialization> {
+pub async fn initialize_database(cpu: usize) -> anyhow::Result<DbInitialization> {
     let db_type_str = env::var("DB_TYPE")
         .unwrap_or_else(|_| "mysql".to_string())
         .to_lowercase();
@@ -94,10 +92,7 @@ pub async fn initialize_database(cpu: usize) -> io::Result<DbInitialization> {
         "mongodb" => crate::model::DbType::Mongodb,
         _ => {
             eprintln!("Unsupported DB_TYPE: {}", db_type_str);
-            return Err(io::Error::new(
-                ErrorKind::InvalidInput,
-                format!("Unsupported DB_TYPE: {}", db_type_str),
-            ));
+            return Err(anyhow::anyhow!("Unsupported DB_TYPE: {}", db_type_str));
         }
     };
 
@@ -125,7 +120,7 @@ pub async fn initialize_database(cpu: usize) -> io::Result<DbInitialization> {
             #[cfg(not(feature = "mysql"))]
             {
                 eprintln!("Feature 'mysql' not enabled at compile time");
-                return Err(io::Error::new(ErrorKind::Other, "mysql feature disabled"));
+                return Err(anyhow::anyhow!("mysql feature disabled"));
             }
             #[cfg(feature = "mysql")]
             {
@@ -139,7 +134,7 @@ pub async fn initialize_database(cpu: usize) -> io::Result<DbInitialization> {
                             "Please set MYSQL_URL on .env file".to_string(),
                             true,
                         );
-                        exit(1);
+                        return Err(anyhow::anyhow!("MYSQL_URL not set"));
                     }
                 };
 
@@ -160,7 +155,7 @@ pub async fn initialize_database(cpu: usize) -> io::Result<DbInitialization> {
                     .await
                     .map_err(|e| {
                         eprintln!("Failed to connect to MySQL: {}", e);
-                        io::Error::new(ErrorKind::ConnectionRefused, e)
+                        anyhow::anyhow!("Failed to connect to MySQL: {}", e)
                     })?;
 
                 Arc::new(MySqlRepo { pool })
@@ -170,7 +165,7 @@ pub async fn initialize_database(cpu: usize) -> io::Result<DbInitialization> {
             #[cfg(not(feature = "postgres"))]
             {
                 eprintln!("Feature 'postgres' not enabled at compile time");
-                return Err(io::Error::other("postgres feature disabled"));
+                return Err(anyhow::anyhow!("postgres feature disabled"));
             }
             #[cfg(feature = "postgres")]
             {
@@ -184,7 +179,7 @@ pub async fn initialize_database(cpu: usize) -> io::Result<DbInitialization> {
                             "Please set POSTGRES_URL on .env file".to_string(),
                             true,
                         );
-                        exit(1);
+                        return Err(anyhow::anyhow!("POSTGRES_URL not set"));
                     }
                 };
 
@@ -205,7 +200,7 @@ pub async fn initialize_database(cpu: usize) -> io::Result<DbInitialization> {
                     .await
                     .map_err(|e| {
                         eprintln!("Failed to connect to PostgreSQL: {}", e);
-                        io::Error::new(ErrorKind::ConnectionRefused, e)
+                        anyhow::anyhow!("Failed to connect to PostgreSQL: {}", e)
                     })?;
 
                 Arc::new(PostgresRepo { pool })
@@ -215,7 +210,7 @@ pub async fn initialize_database(cpu: usize) -> io::Result<DbInitialization> {
             #[cfg(not(feature = "sqlite"))]
             {
                 eprintln!("Feature 'sqlite' not enabled at compile time");
-                return Err(io::Error::other("sqlite feature disabled"));
+                return Err(anyhow::anyhow!("sqlite feature disabled"));
             }
             #[cfg(feature = "sqlite")]
             {
@@ -229,7 +224,7 @@ pub async fn initialize_database(cpu: usize) -> io::Result<DbInitialization> {
                             "Please set SQLITE_URL on .env file".to_string(),
                             true,
                         );
-                        exit(1);
+                        return Err(anyhow::anyhow!("SQLITE_URL not set"));
                     }
                 };
                 let path_db = url.replace("sqlite://", "");
@@ -261,7 +256,7 @@ pub async fn initialize_database(cpu: usize) -> io::Result<DbInitialization> {
                     .await
                     .map_err(|e| {
                         eprintln!("Failed to connect to SQLite: {}", e);
-                        io::Error::new(ErrorKind::ConnectionRefused, e)
+                        anyhow::anyhow!("Failed to connect to SQLite: {}", e)
                     })?;
 
                 let _ = sqlx::query("PRAGMA journal_mode=WAL;").execute(&pool).await;
@@ -275,7 +270,7 @@ pub async fn initialize_database(cpu: usize) -> io::Result<DbInitialization> {
             #[cfg(not(feature = "mssql"))]
             {
                 eprintln!("Feature 'mssql' not enabled at compile time");
-                return Err(io::Error::other("mssql feature disabled"));
+                return Err(anyhow::anyhow!("mssql feature disabled"));
             }
             #[cfg(feature = "mssql")]
             {
@@ -289,7 +284,7 @@ pub async fn initialize_database(cpu: usize) -> io::Result<DbInitialization> {
                             "Please set MSSQL_URL on .env file".to_string(),
                             true,
                         );
-                        exit(1);
+                        return Err(anyhow::anyhow!("MSSQL_URL not set"));
                     }
                 };
                 let tcp_timeout = pool_settings.acquire_timeout.as_secs();
@@ -303,7 +298,7 @@ pub async fn initialize_database(cpu: usize) -> io::Result<DbInitialization> {
                         .await
                         .map_err(|e| {
                             eprintln!("Failed to create MSSQL pool: {}", e);
-                            io::Error::new(ErrorKind::ConnectionRefused, e)
+                            anyhow::anyhow!("Failed to create MSSQL pool: {}", e)
                         })?;
 
                     log_output(
@@ -321,7 +316,7 @@ pub async fn initialize_database(cpu: usize) -> io::Result<DbInitialization> {
                 {
                     let client = connect_mssql(&url, tcp_timeout).await.map_err(|e| {
                         eprintln!("Failed to connect to MSSQL: {}", e);
-                        io::Error::new(ErrorKind::ConnectionRefused, e)
+                        anyhow::anyhow!("Failed to connect to MSSQL: {}", e)
                     })?;
 
                     eprintln!("⚠️  WARNING: MSSQL running with single client. Enable 'bb8' feature for better performance!");
@@ -340,6 +335,13 @@ pub async fn initialize_database(cpu: usize) -> io::Result<DbInitialization> {
             impl DbRepository for DummyRepo {
                 async fn query(&self, _sql: &str) -> anyhow::Result<Vec<Value>, anyhow::Error> {
                     Ok(vec![])
+                }
+                 async fn query_with_params(
+                    &self,
+                    _sql: &str,
+                    _params: Vec<crate::database::state::DbParam>,
+                ) -> anyhow::Result<Vec<Value>, anyhow::Error> {
+                     Ok(vec![])
                 }
 
                 async fn begin_transaction(
