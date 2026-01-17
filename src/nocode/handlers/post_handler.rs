@@ -16,8 +16,6 @@ pub async fn insert(
     req: HttpRequest,
 ) -> impl Responder {
 
-    println!("Received insert request for route: {}", route);
-
     match data_create_service::process_insert_request(
         &state,
         &parameters,

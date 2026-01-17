@@ -180,13 +180,6 @@ pub async fn perform_insert(
     route: &str,
 ) -> Result<(String, i64), String> {
 
-
-    if *crate::ISDEBUG {
-        log_output("PERFORM_INSERT", "POST(AST)", route, "Masuk Sini".to_string(), true);
-    }
-
-
-
     // Batch validate all foreign keys in one query
     validate_foreign_keys_batch(state, &fk_checks).await?;
 

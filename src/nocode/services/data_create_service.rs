@@ -285,8 +285,6 @@ pub async fn process_insert_request(
      }
 
 
-     println!("Masuk Sini");
-
     // 7. Audit Log Preparation (before execution?) No, logic usually logs after success.
     // We execute now.
     
