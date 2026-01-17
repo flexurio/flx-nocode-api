@@ -1,5 +1,6 @@
 use actix_multipart::Multipart;
 use base64::Engine;
+use tokio::io::AsyncWriteExt;
 use colored::Colorize;
 use futures::StreamExt;
 use regex::Regex;
@@ -257,7 +258,7 @@ pub async fn multipart_to_json(mut multipart: Multipart) -> Result<Value, actix_
 
                 // Ensure directory
                 if let Some(parent) = file_path.parent() {
-                    std::fs::create_dir_all(parent)?;
+                    tokio::fs::create_dir_all(parent).await?;
                 }
 
                 // Defensive path check
@@ -265,11 +266,12 @@ pub async fn multipart_to_json(mut multipart: Multipart) -> Result<Value, actix_
                     return Err(actix_web::error::ErrorBadRequest("Invalid file path"));
                 }
 
-                let mut f = match std::fs::OpenOptions::new()
+                let mut f = match tokio::fs::OpenOptions::new()
                     .create(true)
                     .write(true)
                     .truncate(true)
                     .open(&file_path)
+                    .await
                 {
                     Ok(f) => f,
                     Err(e) => {
@@ -288,7 +290,7 @@ pub async fn multipart_to_json(mut multipart: Multipart) -> Result<Value, actix_
                     if total_size > max_file_size {
                         return Err(actix_web::error::ErrorPayloadTooLarge("File too large"));
                     }
-                    use std::io::Write as _;
+
                     // collect first bytes for sniffing
                     if !detected_checked {
                         if sniff_buf.len() < 8192 {
@@ -300,7 +302,7 @@ pub async fn multipart_to_json(mut multipart: Multipart) -> Result<Value, actix_
                             if let Some(kind) = infer::get(&sniff_buf) {
                                 let detected = kind.mime_type();
                                 if !is_safe_mime_type(detected) {
-                                    let _ = std::fs::remove_file(&file_path);
+                                    let _ = tokio::fs::remove_file(&file_path).await;
                                     return Err(actix_web::error::ErrorBadRequest(
                                         "Detected MIME not allowed",
                                     ));
@@ -308,7 +310,7 @@ pub async fn multipart_to_json(mut multipart: Multipart) -> Result<Value, actix_
                                 if let Some(ref allow) = allowed_ext {
                                     let ext = kind.extension();
                                     if !allow.contains(&ext.to_lowercase()) {
-                                        let _ = std::fs::remove_file(&file_path);
+                                        let _ = tokio::fs::remove_file(&file_path).await;
                                         return Err(actix_web::error::ErrorBadRequest(
                                             "Detected extension not allowed",
                                         ));
@@ -318,7 +320,7 @@ pub async fn multipart_to_json(mut multipart: Multipart) -> Result<Value, actix_
                             detected_checked = true;
                         }
                     }
-                    if let Err(e) = f.write_all(&data) {
+                    if let Err(e) = f.write_all(&data).await {
                         return Err(actix_web::error::ErrorInternalServerError(format!(
                             "Write failed: {}",
                             e
