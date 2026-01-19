@@ -411,7 +411,7 @@ async fn main() -> anyhow::Result<()> {
     });
 
     let id_user_str: String = if require_auth {
-        generate_users(app_state.clone()).await
+        generate_users(app_state.clone(), &SCHEMAS.0).await
     } else {
         "1".to_string()
     };

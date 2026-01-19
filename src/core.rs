@@ -22,7 +22,7 @@ use crate::{
 };
 use crate::storage::ast::{Filter as QF, Query as QQ, Val as QV};
 use crate::storage::sql_store::SqlStore;
-use crate::storage::prelude::{Ddl, CreateTable, ColumnDef, ColumnType, TableConstraint, DefaultExpr, ForeignAction};
+// removed unused import: DataStore trait not needed in scope for method calls on trait objects
 // removed unused import: DataStore trait not needed in scope for method calls on trait objects
 
 pub async fn login(state: web::Data<AppState>, req: actix_web::HttpRequest) -> impl Responder {
@@ -365,7 +365,7 @@ pub async fn get_roles(_state: Data<AppState>) -> impl Responder {
 }
 
 // NCO-POST
-pub async fn generate_users(state: Data<AppState>) -> String {
+pub async fn generate_users(state: Data<AppState>, schemas: &std::collections::HashMap<String, std::sync::Arc<crate::model::TableSchema>>) -> String {
     // MongoDB: no DDL. Seed collections and default data using DataStore.
     if state.db_type == crate::model::DbType::Mongodb {
         use crate::storage::ast::{Query as QQ, Filter as QF, Val as QV};
@@ -452,168 +452,64 @@ pub async fn generate_users(state: Data<AppState>) -> String {
         id_user_str
     } else {
 
-        // Create tables via DDL AST (vendor-aware)
+        // Create tables via DDL AST from Schema (Single Source of Truth)
         let ds = SqlStore::new(state.db.clone(), state.db_type.as_str().to_string());
+        
+        // Ensure flx_users exists
+        if let Some(schema) = schemas.get("flx_users") {
+            // Apply default collate if needed (consistent with main.rs logic)
+            let mut schema_with_collate = schema.as_ref().clone();
+            if schema_with_collate.collate.trim().is_empty() && state.db_type == crate::model::DbType::Mysql {
+                schema_with_collate.collate = state.default_collate.clone();
+            }
 
-        // flx_users definition simplified; use Raw types per dialect where necessary
-        let users_cols: Vec<ColumnDef> = match state.db_type.as_str() {
-            "mssql" => vec![
-                ColumnDef { name: "id".into(), col_type: ColumnType::Raw("BIGINT IDENTITY(1,1)".into()), nullable: false, default: None, auto_increment: false, primary_key_inline: true, collate: None },
-                ColumnDef { name: "email".into(), col_type: ColumnType::Raw("VARCHAR(100)".into()), nullable: false, default: None, auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "phone".into(), col_type: ColumnType::Raw("VARCHAR(15)".into()), nullable: false, default: None, auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "password".into(), col_type: ColumnType::Raw("NVARCHAR(MAX)".into()), nullable: false, default: None, auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "name".into(), col_type: ColumnType::Raw("VARCHAR(50)".into()), nullable: false, default: None, auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "photo".into(), col_type: ColumnType::Raw("VARCHAR(50)".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "email_verified".into(), col_type: ColumnType::Raw("BIT".into()), nullable: false, default: Some(DefaultExpr::Raw("0".into())), auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "enabled".into(), col_type: ColumnType::Raw("BIT".into()), nullable: true, default: Some(DefaultExpr::Raw("1".into())), auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "created_at".into(), col_type: ColumnType::Raw("DATETIME2".into()), nullable: false, default: Some(DefaultExpr::Raw("SYSDATETIME()".into())), auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "updated_at".into(), col_type: ColumnType::Raw("DATETIME2".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "deleted_at".into(), col_type: ColumnType::Raw("DATETIME2".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "created_by_id".into(), col_type: ColumnType::Raw("BIGINT".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "updated_by_id".into(), col_type: ColumnType::Raw("BIGINT".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "deleted_by_id".into(), col_type: ColumnType::Raw("BIGINT".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false, collate: None },
-            ],
-            "postgres" => vec![
-                ColumnDef { name: "id".into(), col_type: ColumnType::Raw("BIGSERIAL".into()), nullable: false, default: None, auto_increment: true, primary_key_inline: true, collate: None },
-                ColumnDef { name: "email".into(), col_type: ColumnType::Raw("VARCHAR(100)".into()), nullable: false, default: None, auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "phone".into(), col_type: ColumnType::Raw("VARCHAR(15)".into()), nullable: false, default: None, auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "password".into(), col_type: ColumnType::Raw("TEXT".into()), nullable: false, default: None, auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "name".into(), col_type: ColumnType::Raw("VARCHAR(50)".into()), nullable: false, default: None, auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "photo".into(), col_type: ColumnType::Raw("VARCHAR(50)".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "email_verified".into(), col_type: ColumnType::Raw("BOOLEAN".into()), nullable: false, default: Some(DefaultExpr::Raw("false".into())), auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "enabled".into(), col_type: ColumnType::Raw("BOOLEAN".into()), nullable: true, default: Some(DefaultExpr::Raw("true".into())), auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "created_at".into(), col_type: ColumnType::Raw("TIMESTAMP".into()), nullable: true, default: Some(DefaultExpr::Raw("CURRENT_TIMESTAMP".into())), auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "updated_at".into(), col_type: ColumnType::Raw("TIMESTAMP".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "deleted_at".into(), col_type: ColumnType::Raw("TIMESTAMP".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "created_by_id".into(), col_type: ColumnType::Raw("BIGINT".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "updated_by_id".into(), col_type: ColumnType::Raw("BIGINT".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "deleted_by_id".into(), col_type: ColumnType::Raw("BIGINT".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false, collate: None },
-            ],
-            "sqlite" => vec![
-                ColumnDef { name: "id".into(), col_type: ColumnType::Raw("INTEGER PRIMARY KEY AUTOINCREMENT".into()), nullable: false, default: None, auto_increment: true, primary_key_inline: false, collate: None },
-                ColumnDef { name: "email".into(), col_type: ColumnType::Raw("VARCHAR(100)".into()), nullable: false, default: None, auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "phone".into(), col_type: ColumnType::Raw("VARCHAR(15)".into()), nullable: false, default: None, auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "password".into(), col_type: ColumnType::Raw("TEXT".into()), nullable: false, default: None, auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "name".into(), col_type: ColumnType::Raw("VARCHAR(50)".into()), nullable: false, default: None, auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "photo".into(), col_type: ColumnType::Raw("VARCHAR(50)".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "email_verified".into(), col_type: ColumnType::Raw("BOOLEAN".into()), nullable: false, default: Some(DefaultExpr::Raw("0".into())), auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "enabled".into(), col_type: ColumnType::Raw("BOOLEAN".into()), nullable: true, default: Some(DefaultExpr::Raw("1".into())), auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "created_at".into(), col_type: ColumnType::Raw("DATETIME".into()), nullable: true, default: Some(DefaultExpr::CurrentTimestamp), auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "updated_at".into(), col_type: ColumnType::Raw("DATETIME".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "deleted_at".into(), col_type: ColumnType::Raw("DATETIME".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "created_by_id".into(), col_type: ColumnType::Raw("BIGINT".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "updated_by_id".into(), col_type: ColumnType::Raw("BIGINT".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "deleted_by_id".into(), col_type: ColumnType::Raw("BIGINT".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false, collate: None },
-            ],
-            _ => vec![
-                ColumnDef { name: "id".into(), col_type: ColumnType::Raw("BIGINT AUTO_INCREMENT".into()), nullable: false, default: None, auto_increment: true, primary_key_inline: true, collate: None },
-                ColumnDef { name: "email".into(), col_type: ColumnType::Raw("VARCHAR(100)".into()), nullable: false, default: None, auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "phone".into(), col_type: ColumnType::Raw("VARCHAR(15)".into()), nullable: false, default: None, auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "password".into(), col_type: ColumnType::Raw("LONGTEXT".into()), nullable: false, default: None, auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "name".into(), col_type: ColumnType::Raw("VARCHAR(50)".into()), nullable: false, default: None, auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "photo".into(), col_type: ColumnType::Raw("VARCHAR(50)".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "email_verified".into(), col_type: ColumnType::Raw("BOOLEAN".into()), nullable: false, default: Some(DefaultExpr::Raw("0".into())), auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "enabled".into(), col_type: ColumnType::Raw("BOOLEAN".into()), nullable: true, default: Some(DefaultExpr::Raw("1".into())), auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "created_at".into(), col_type: ColumnType::Raw("DATETIME".into()), nullable: true, default: Some(DefaultExpr::Now), auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "updated_at".into(), col_type: ColumnType::Raw("DATETIME".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "deleted_at".into(), col_type: ColumnType::Raw("DATETIME".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "created_by_id".into(), col_type: ColumnType::Raw("BIGINT".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "updated_by_id".into(), col_type: ColumnType::Raw("BIGINT".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "deleted_by_id".into(), col_type: ColumnType::Raw("BIGINT".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false, collate: None },
-            ],
-        };
+            let (sql_create_table, sql_create_index) = crate::nocode::generate::generate_table(&ds, &schema_with_collate);
+            
+            // Log the Create Table query
+            log_output("QUERY", "BOOT", "generate/table/flx_users", format!("Executing SQL: {}", sql_create_table), true);
 
-        let users_constraints = vec![
-            TableConstraint::Unique { name: Some("idx_user_email".into()), columns: vec!["email".into()] },
-            TableConstraint::Unique { name: Some("idx_user_phone".into()), columns: vec!["phone".into()] },
-        ];
-
-        let ddl_users = Ddl::CreateTable(CreateTable {
-            if_not_exists: true,
-            name: "flx_users".into(),
-            columns: users_cols,
-            constraints: users_constraints,
-            collate: None,
-        });
-        let sql_users = ds.preview_ddl(&ddl_users);
-        if let Err(e) = state.db.query(&sql_users).await {
-            log_output("ERROR QUERY", "POST", "generate/table/flx_users", format!("{} ~ ERROR : {}", sql_users, e), true);
+            // Execute Create Table
+            if let Err(e) = state.db.query(&sql_create_table).await {
+                log_output("ERROR QUERY", "POST", "generate/table/flx_users", format!("{} ~ ERROR : {}", sql_create_table, e), true);
+            }
+            
+            // Execute Create Index
+            for sql_idx in sql_create_index {
+                if let Err(e) = state.db.query(&sql_idx).await {
+                     // Start ignoring duplicate index errors similar to generate.rs if needed, or just log
+                     log_output("ERROR QUERY", "POST", "generate/index/flx_users", format!("{} ~ ERROR : {}", sql_idx, e), true);
+                }
+            }
+        } else {
+             log_output("ERROR", "BOOT", "generate_users", "Schema for flx_users not found!".to_string(), true);
         }
 
-        // flx_roles
-        let roles_cols: Vec<ColumnDef> = match state.db_type.as_str() {
-            "mssql" => vec![
-                ColumnDef { name: "id".into(), col_type: ColumnType::Raw("BIGINT IDENTITY(1,1)".into()), nullable: false, default: None, auto_increment: false, primary_key_inline: true, collate: None },
-                ColumnDef { name: "id_users".into(), col_type: ColumnType::Raw("BIGINT".into()), nullable: false, default: None, auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "endpoint".into(), col_type: ColumnType::Raw("VARCHAR(100)".into()), nullable: false, default: None, auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "role".into(), col_type: ColumnType::Raw("TINYINT".into()), nullable: false, default: None, auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "created_at".into(), col_type: ColumnType::Raw("DATETIME2".into()), nullable: false, default: Some(DefaultExpr::Raw("SYSDATETIME()".into())), auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "updated_at".into(), col_type: ColumnType::Raw("DATETIME2".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "deleted_at".into(), col_type: ColumnType::Raw("DATETIME2".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "created_by_id".into(), col_type: ColumnType::Raw("BIGINT".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "updated_by_id".into(), col_type: ColumnType::Raw("BIGINT".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "deleted_by_id".into(), col_type: ColumnType::Raw("BIGINT".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false, collate: None },
-            ],
-            "postgres" => vec![
-                ColumnDef { name: "id".into(), col_type: ColumnType::Raw("BIGSERIAL".into()), nullable: false, default: None, auto_increment: true, primary_key_inline: true, collate: None },
-                ColumnDef { name: "id_users".into(), col_type: ColumnType::Raw("BIGINT".into()), nullable: false, default: None, auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "endpoint".into(), col_type: ColumnType::Raw("VARCHAR(100)".into()), nullable: false, default: None, auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "role".into(), col_type: ColumnType::Raw("SMALLINT".into()), nullable: false, default: None, auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "created_at".into(), col_type: ColumnType::Raw("TIMESTAMP".into()), nullable: true, default: Some(DefaultExpr::CurrentTimestamp), auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "updated_at".into(), col_type: ColumnType::Raw("TIMESTAMP".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "deleted_at".into(), col_type: ColumnType::Raw("TIMESTAMP".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "created_by_id".into(), col_type: ColumnType::Raw("BIGINT".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "updated_by_id".into(), col_type: ColumnType::Raw("BIGINT".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "deleted_by_id".into(), col_type: ColumnType::Raw("BIGINT".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false, collate: None },
-            ],
-            "sqlite" => vec![
-                ColumnDef { name: "id".into(), col_type: ColumnType::Raw("INTEGER PRIMARY KEY AUTOINCREMENT".into()), nullable: false, default: None, auto_increment: true, primary_key_inline: false, collate: None },
-                ColumnDef { name: "id_users".into(), col_type: ColumnType::Raw("BIGINT".into()), nullable: false, default: None, auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "endpoint".into(), col_type: ColumnType::Raw("VARCHAR(100)".into()), nullable: false, default: None, auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "role".into(), col_type: ColumnType::Raw("SMALLINT".into()), nullable: false, default: None, auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "created_at".into(), col_type: ColumnType::Raw("DATETIME".into()), nullable: true, default: Some(DefaultExpr::CurrentTimestamp), auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "updated_at".into(), col_type: ColumnType::Raw("DATETIME".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "deleted_at".into(), col_type: ColumnType::Raw("DATETIME".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "created_by_id".into(), col_type: ColumnType::Raw("BIGINT".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "updated_by_id".into(), col_type: ColumnType::Raw("BIGINT".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "deleted_by_id".into(), col_type: ColumnType::Raw("BIGINT".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false, collate: None },
-            ],
-            _ => vec![
-                ColumnDef { name: "id".into(), col_type: ColumnType::Raw("BIGINT AUTO_INCREMENT".into()), nullable: false, default: None, auto_increment: true, primary_key_inline: true, collate: None },
-                ColumnDef { name: "id_users".into(), col_type: ColumnType::Raw("BIGINT".into()), nullable: false, default: None, auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "endpoint".into(), col_type: ColumnType::Raw("VARCHAR(100)".into()), nullable: false, default: None, auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "role".into(), col_type: ColumnType::Raw("TINYINT".into()), nullable: false, default: None, auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "created_at".into(), col_type: ColumnType::Raw("DATETIME".into()), nullable: true, default: Some(DefaultExpr::Now), auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "updated_at".into(), col_type: ColumnType::Raw("DATETIME".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "deleted_at".into(), col_type: ColumnType::Raw("DATETIME".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "created_by_id".into(), col_type: ColumnType::Raw("BIGINT".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "updated_by_id".into(), col_type: ColumnType::Raw("BIGINT".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false, collate: None },
-                ColumnDef { name: "deleted_by_id".into(), col_type: ColumnType::Raw("BIGINT".into()), nullable: true, default: None, auto_increment: false, primary_key_inline: false, collate: None },
-            ],
-        };
+        // Ensure flx_roles exists
+        if let Some(schema) = schemas.get("flx_roles") {
+             // Apply default collate if needed
+            let mut schema_with_collate = schema.as_ref().clone();
+            if schema_with_collate.collate.trim().is_empty() && state.db_type == crate::model::DbType::Mysql {
+                schema_with_collate.collate = state.default_collate.clone();
+            }
 
-        let roles_constraints = vec![
-            TableConstraint::Unique { name: Some("uq_role_user_endpoint".into()), columns: vec!["id_users".into(), "endpoint".into()] },
-            TableConstraint::ForeignKey {
-                name: Some("fk_roles_user".into()),
-                columns: vec!["id_users".into()],
-                ref_table: "flx_users".into(),
-                ref_columns: vec!["id".into()],
-                on_delete: Some(ForeignAction::Cascade),
-                on_update: Some(ForeignAction::NoAction),
-            },
-        ];
+            let (sql_create_table, sql_create_index) = crate::nocode::generate::generate_table(&ds, &schema_with_collate);
 
-        let ddl_roles = Ddl::CreateTable(CreateTable {
-            if_not_exists: true,
-            name: "flx_roles".into(),
-            columns: roles_cols,
-            constraints: roles_constraints,
-            collate: None,
-        });
-        let sql_roles = ds.preview_ddl(&ddl_roles);
-        if let Err(e) = state.db.query(&sql_roles).await {
-            log_output("ERROR QUERY", "POST", "generate/table/flx_roles", format!("{} ~ ERROR : {}", sql_roles, e), true);
+            // Log the Create Table query
+            log_output("QUERY", "BOOT", "generate/table/flx_roles", format!("Executing SQL: {}", sql_create_table), true);
+
+            // Execute Create Table
+            if let Err(e) = state.db.query(&sql_create_table).await {
+                log_output("ERROR QUERY", "POST", "generate/table/flx_roles", format!("{} ~ ERROR : {}", sql_create_table, e), true);
+            }
+
+            // Execute Create Index
+             for sql_idx in sql_create_index {
+                if let Err(e) = state.db.query(&sql_idx).await {
+                     log_output("ERROR QUERY", "POST", "generate/index/flx_roles", format!("{} ~ ERROR : {}", sql_idx, e), true);
+                }
+            }
+        } else {
+             log_output("ERROR", "BOOT", "generate_users", "Schema for flx_roles not found!".to_string(), true);
         }
 
         // AST query to check if admin user exists: SELECT id FROM flx_users WHERE email='admin' LIMIT 1

@@ -6,7 +6,15 @@
                 ],
                 "auto_increment": true
         },
-        "foreign_keys": [],
+        "foreign_keys": [
+                {
+                        "column": "id_users",
+                        "reference_table": "flx_users",
+                        "reference_column": "id",
+                        "on_delete": "cascade",
+                        "on_update": "cascade"
+                }
+        ],
         "columns": [
                 {
                         "name": "id",
