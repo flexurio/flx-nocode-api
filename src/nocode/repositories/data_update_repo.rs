@@ -189,7 +189,12 @@ pub async fn perform_update(
     if state.db_type != crate::model::DbType::Mongodb {
         let ds = SqlStore::new(state.db.clone(), state.db_type.as_str().to_string());
         let pk_values = parse_pk_values(id_raw);
-        let filter = build_pk_filter(&table_schema.primary_key.columns, &pk_values)?;
+        let mut filter = build_pk_filter(&table_schema.primary_key.columns, &pk_values)?;
+        
+        // Ensure not deleted
+        if table_schema.columns.iter().any(|c| c.name == "deleted_at") {
+            filter = QF::And(vec![filter, QF::IsNull("deleted_at".to_string())]);
+        }
         
         match ds.preview_update_with(&table_schema.table, Some(&filter), &update_fields) {
             Ok((s_sql, params_compiled)) => {
@@ -294,7 +299,12 @@ pub async fn perform_update(
 
         // Execute Update
         let pk_values = parse_pk_values(id_raw);
-        let filter = build_pk_filter(&table_schema.primary_key.columns, &pk_values)?;
+        let mut filter = build_pk_filter(&table_schema.primary_key.columns, &pk_values)?;
+
+        // Ensure not deleted
+        if table_schema.columns.iter().any(|c| c.name == "deleted_at") {
+            filter = QF::And(vec![filter, QF::IsNull("deleted_at".to_string())]);
+        }
         
         // Convert Map to json Value for DB update
         let doc_json = Value::Object(patch_fields); 
@@ -314,7 +324,13 @@ pub async fn perform_update(
     } else {
         // Mongo Path
         let pk_values = parse_pk_values(id_raw);
-        let filter = build_pk_filter(&table_schema.primary_key.columns, &pk_values)?;
+        let mut filter = build_pk_filter(&table_schema.primary_key.columns, &pk_values)?;
+        
+        // Ensure not deleted
+        if table_schema.columns.iter().any(|c| c.name == "deleted_at") {
+            filter = QF::And(vec![filter, QF::IsNull("deleted_at".to_string())]);
+        }
+
         let doc_json = Value::Object(patch_fields);
 
         if *crate::ISDEBUG {

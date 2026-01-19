@@ -121,6 +121,9 @@ pub async fn process_get_request(
         params_map.remove("redis");
     }
 
+    // log isredis 
+    log_output("DEBUG", "ISREDIS", route, format!("isredis: {}", isredis), true);
+
     if isredis {
         use_cache = (isredis || table_schema.redis.ttl > 0) && state.is_cachedb;
         if use_cache {
@@ -153,7 +156,7 @@ pub async fn process_get_request(
 
     // Call Repository
     match data_read_repo::fetch_dynamic_data(state, route, table_schema, &params_map).await {
-        Ok((rows, total)) => {
+        Ok((rows, total)) => {            
             let result = WebResponse {
                 success: true,
                 message: "Data found".to_string(),

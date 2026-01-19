@@ -298,12 +298,16 @@ async fn main() -> anyhow::Result<()> {
 
     // Ensure static directory
     let image_storage = std::env::var("LOC_IMAGE").unwrap_or("DB".to_string());
+
+    println!("image_storage: {}", image_storage);
+
     if image_storage != "DB" {
         let path_image = format!("{}/{}", static_storage, image_storage);
         // check if directory exists
         if !std::path::Path::new(&path_image).exists() {
             std::fs::create_dir_all(&path_image)?;
         }
+        println!("path image: {}", path_image);
     }
 
     // Determine CPU to scale defaults for database pooling and Actix workers
@@ -627,48 +631,48 @@ async fn main() -> anyhow::Result<()> {
 
                 // end point for login (only if REQUIRE_AUTH is enabled)
                 if require_auth {
-                    cfg.service(web::resource("/login").route(web::post().to(
-                        move |state: web::Data<AppState>, req: actix_web::HttpRequest| {
-                            login(state, req)
-                        },
-                    )));
-                    if do_log {
-                        log_output(
-                            "CORE ENDPOINT",
-                            "METHOD",
-                            "POST",
-                            format!(
-                                "http://{}:{}/{}",
-                                host.red(),
-                                port.clone().to_string().green(),
-                                "login".purple()
-                            ),
-                            false,
-                        );
-                    }
+                cfg.service(web::resource("/login").route(web::post().to(
+                    move |state: web::Data<AppState>, req: actix_web::HttpRequest| {
+                        login(state, req)
+                    },
+                )));
+                if do_log {
+                    log_output(
+                        "CORE ENDPOINT",
+                        "METHOD",
+                        "POST",
+                        format!(
+                            "http://{}:{}/{}",
+                            host.red(),
+                            port.clone().to_string().green(),
+                            "login".purple()
+                        ),
+                        false,
+                    );
+                }
                 }
 
                 // end point for register (only if REQUIRE_AUTH is enabled)
                 if require_auth {
-                    cfg.service(web::resource("/register").route(web::post().to(
-                        move |state: web::Data<AppState>, multipart: Multipart| {
-                            register(state, multipart)
-                        },
-                    )));
-                    if do_log {
-                        log_output(
-                            "CORE ENDPOINT",
-                            "METHOD",
-                            "POST",
-                            format!(
-                                "http://{}:{}/{}",
-                                host.red(),
-                                port.clone().to_string().green(),
-                                "register".purple()
-                            ),
-                            false,
-                        );
-                    }
+                cfg.service(web::resource("/register").route(web::post().to(
+                    move |state: web::Data<AppState>, multipart: Multipart| {
+                        register(state, multipart)
+                    },
+                )));
+                if do_log {
+                    log_output(
+                        "CORE ENDPOINT",
+                        "METHOD",
+                        "POST",
+                        format!(
+                            "http://{}:{}/{}",
+                            host.red(),
+                            port.clone().to_string().green(),
+                            "register".purple()
+                        ),
+                        false,
+                    );
+                }
                 }
 
                 // health check endpoint (public)
@@ -923,6 +927,10 @@ async fn main() -> anyhow::Result<()> {
                     }
 
 
+                    // Shared resource for /{id} endpoints (DELETE, PUT)
+                    let mut base_id_res = web::resource(format!("{}/{{id}}", route_arc.as_ref()));
+                    let mut has_id_route = false;
+
                     // Log and register DELETE endpoint (if columns are defined)
                     if schema.del.enable_method {
                         if do_log {
@@ -940,17 +948,15 @@ async fn main() -> anyhow::Result<()> {
                             );
                         }
                         
-                        cfg.service(
-                            web::resource(format!("{}/{{id}}", route_delete.as_ref()))
-                                .route(web::delete().to(
-                                    move |state: web::Data<AppState>,
-                                          parameters: web::Query<Value>,
-                                          path: Path<String>,
-                                          req: actix_web::HttpRequest| {
-                                        crate::nocode::handlers::delete_handler::delete(state, parameters, route_delete.to_string(), schema_delete.clone(), ref_fks_delete.clone(), path, req)
-                                    },
-                                ))
-                        );
+                        base_id_res = base_id_res.route(web::delete().to(
+                            move |state: web::Data<AppState>,
+                                    parameters: web::Query<Value>,
+                                    path: Path<String>,
+                                    req: actix_web::HttpRequest| {
+                                crate::nocode::handlers::delete_handler::delete(state, parameters, route_delete.to_string(), schema_delete.clone(), ref_fks_delete.clone(), path, req)
+                            },
+                        ));
+                        has_id_route = true;
                     }
 
                     // Log and register PUT endpoint (if columns are defined)
@@ -970,27 +976,29 @@ async fn main() -> anyhow::Result<()> {
                             );
                         }
                         
-                        cfg.service(
-                            web::resource(format!("{}/{{id}}", route_put.as_ref()))
-                                .route(web::put().to(
-                                    move |state: web::Data<AppState>,
-                                          parameters: web::Query<Value>,
-                                          multipart: Multipart,
-                                          path: Path<String>,
-                                          req: actix_web::HttpRequest| {
-                                        crate::nocode::handlers::put_handler::update(
-                                            state,
-                                            parameters,
-                                            route_put.to_string(),
-                                            schema_put.clone(),
-                                            ref_fks_put.clone(),
-                                            multipart,
-                                            path,
-                                            req,
-                                        )
-                                    },
-                                ))
-                        );
+                        base_id_res = base_id_res.route(web::put().to(
+                            move |state: web::Data<AppState>,
+                                    parameters: web::Query<Value>,
+                                    multipart: Multipart,
+                                    path: Path<String>,
+                                    req: actix_web::HttpRequest| {
+                                crate::nocode::handlers::put_handler::update(
+                                    state,
+                                    parameters,
+                                    route_put.to_string(),
+                                    schema_put.clone(),
+                                    ref_fks_put.clone(),
+                                    multipart,
+                                    path,
+                                    req,
+                                )
+                            },
+                        ));
+                        has_id_route = true;
+                    }
+
+                    if has_id_route {
+                        cfg.service(base_id_res);
                     }
 
                     // register import BEFORE the dynamic {id} route to avoid conflicts

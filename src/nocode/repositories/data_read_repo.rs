@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use serde_json::Value;
 
+use crate::log::log_output;
 use crate::model::{ParamJoin, TableSchema};
 use crate::AppState;
 use crate::storage::ast::{Filter as QF, Query as QQ, Val as QV, Expr as QE, Join as QJ, JoinKind as QJK};
@@ -447,6 +448,9 @@ pub async fn fetch_dynamic_data(
     let offset_ast = (i_page_ast - 1) * i_limit_ast;
     q = q.limit(i_limit_ast as u32).offset(offset_ast.max(0) as u32);
 
+    // log query
+    log_output("DEBUG", "DATA READ", route, format!("Query: {:?}", q), true);
+    
     match state.store.query(&q).await {
         Ok(rs) => Ok((rs, 9999)), // TODO: Implement count query if needed, currently 9999 placeholder to match existing
         Err(e) => Err(format!("Error NCO-GET(AST) route {}: {}. Query : {:?}", route, e, q)),

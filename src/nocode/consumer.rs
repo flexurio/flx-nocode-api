@@ -216,35 +216,105 @@ async fn execute_job(state: Data<AppState>, schemas_map: Arc<HashMap<String, Arc
 }
 
 // Internal execution helpers built from existing code paths without HTTP types
+// Internal execution helpers built from existing code paths without HTTP types
+use crate::crypt::{encrypt, is_encrypted_string};
+use crate::helpers::find_column_match;
+// use crate::database::state::DbParam;
+use std::collections::HashSet;
+
 async fn exec_post(state: Data<AppState>, route: String, schemas_map: Arc<HashMap<String, Arc<TableSchema>>>, body: Value, actor_id: Option<String>) -> Result<()> {
-    // Reuse SQL generation by adapting internals would require refactor; as a pragmatic approach, call store.insert directly based on schema.post.columns
     let schema = schemas_map.get(&route).ok_or_else(|| anyhow!("Schema not found for {}", route))?;
 
-    // Build doc from allowed columns
-    let mut doc = serde_json::Map::new();
-    for col in schema.post.columns.iter() {
-        if let Some(v) = body.get(col) { doc.insert(col.clone(), v.clone()); }
+    // Logic ported from data_create_service.rs
+    let skip_columns: HashSet<&str> = [
+        "created_at", "created_by_id", "updated_at", "updated_by_id", "deleted_at", "deleted_by_id",
+    ].iter().cloned().collect();
+
+    let mut filtered_columns: Vec<&crate::model::Column> = Vec::with_capacity(schema.post.columns.len());
+    filtered_columns.extend(
+        schema
+            .columns
+            .iter()
+            .filter(|col| !col.auto_increment && !skip_columns.contains(col.name.as_str()) && schema.post.columns.contains(&col.name))
+    );
+     // explicit id check
+    if let Some(col) = schema.columns.iter().find(|c| c.name == "id" && !c.auto_increment) {
+        filtered_columns.push(col);
     }
-    // server-side created_at
-    doc.insert("created_at".into(), Value::String(Utc::now().to_rfc3339()));
-    // ensure created_by_id if column exists but not provided
-    if schema.columns.iter().any(|c| c.name == "created_by_id") && !doc.contains_key("created_by_id") {
-        let actor_opt = actor_id.or_else(|| body.get("__actor_id__").and_then(|v| v.as_str()).map(|s| s.to_string()));
-        let col_opt = schema.columns.iter().find(|c| c.name == "created_by_id");
-        if let (Some(actor), Some(col)) = (actor_opt, col_opt) {
-            if col.type_data.contains("int") {
-                if let Ok(n) = actor.parse::<i64>() { doc.insert("created_by_id".into(), serde_json::json!(n)); }
-                else { doc.insert("created_by_id".into(), Value::String(actor)); }
-            } else if col.type_data.contains("float") || col.type_data.contains("double") || col.type_data.contains("decimal") || col.type_data.contains("money") {
-                if let Ok(f) = actor.parse::<f64>() { doc.insert("created_by_id".into(), serde_json::json!(f)); }
-                else { doc.insert("created_by_id".into(), Value::String(actor)); }
-            } else {
-                doc.insert("created_by_id".into(), Value::String(actor));
-            }
+    
+    let mut doc_map = serde_json::Map::new();
+
+    for col in filtered_columns.iter() {
+        if col.auto_increment { continue; }
+
+        let mut isformula = false;
+        let post_columns: Vec<&str> = schema.post.columns.iter().map(|s| s.as_str()).collect();
+        let (exists, matched_string) = find_column_match(&post_columns, &col.name);
+
+        if exists && col.name != "id" {
+             let string_formula = matched_string.unwrap_or("").to_string();
+             if string_formula.contains('=') {
+                 isformula = true;
+                 // Formulas not fully supported in queue yet without major refactor of InsertValue; 
+                 // For now, skip formula calculation in queue or use simpler logic. 
+                 // We will skip formulas for now in consumer to avoid complex dependencies, 
+                 // assuming queue is mostly for raw data.
+                 // If formula is critical, we need to port `build_formula_value_service` too.
+             }
+        }
+        
+        if !isformula && (col.name != "id" || col.function.is_empty()) {
+             let mut value = body
+                .get(&col.name)
+                .map(|v| v.to_string().replace('"', "").replace("null", ""))
+                .unwrap_or_default();
+
+             // Encrypt
+             if col.encrypt {
+                 if !is_encrypted_string(&value) {
+                     value = encrypt(state.encrypt_key.clone(), value);
+                 }
+             }
+
+             // Bind with type conversion
+             if col.type_data.contains("int") || col.type_data.contains("float") {
+                 if let Ok(n) = value.parse::<i64>() {
+                     doc_map.insert(col.name.clone(), serde_json::json!(n));
+                 } else if let Ok(f) = value.parse::<f64>() {
+                     doc_map.insert(col.name.clone(), serde_json::json!(f));
+                 } else {
+                     doc_map.insert(col.name.clone(), body.get(&col.name).cloned().unwrap_or(Value::String(String::new())));
+                 }
+             } else {
+                 doc_map.insert(col.name.clone(), body.get(&col.name).cloned().unwrap_or(Value::String(String::new())));
+                 // Update value with encrypted version if needed
+                 if col.encrypt {
+                    doc_map.insert(col.name.clone(), serde_json::json!(value));
+                 }
+             }
         }
     }
 
-    match state.store.insert(&schema.table, Value::Object(doc)).await {
+    // server-side created_at
+    doc_map.insert("created_at".into(), Value::String(Utc::now().to_rfc3339()));
+    
+    // ensure created_by_id if column exists
+    if schema.columns.iter().any(|c| c.name == "created_by_id") && !doc_map.contains_key("created_by_id") {
+        let actor_opt = actor_id.or_else(|| body.get("__actor_id__").and_then(|v| v.as_str()).map(|s| s.to_string()));
+         if let Some(actor) = actor_opt {
+              if let Some(col) = schema.columns.iter().find(|c| c.name == "created_by_id") {
+                   if col.type_data.contains("int") {
+                        if let Ok(n) = actor.parse::<i64>() { doc_map.insert("created_by_id".into(), serde_json::json!(n)); }
+                   } else if col.type_data.contains("float") || col.type_data.contains("double") {
+                        if let Ok(f) = actor.parse::<f64>() { doc_map.insert("created_by_id".into(), serde_json::json!(f)); }
+                   } else {
+                        doc_map.insert("created_by_id".into(), Value::String(actor));
+                   }
+              }
+         }
+    }
+
+    match state.store.insert(&schema.table, Value::Object(doc_map)).await {
         Ok(_) => {
             // Invalidate cached GET results for this route (public scope)
             let cache_prefix = crate::database::redis::build_key_prefix("public", &route);
@@ -261,24 +331,82 @@ async fn exec_post(state: Data<AppState>, route: String, schemas_map: Arc<HashMa
 async fn exec_put(state: Data<AppState>, route: String, schemas_map: Arc<HashMap<String, Arc<TableSchema>>>, body: Value, id: String) -> Result<()> {
     let schema = schemas_map.get(&route).ok_or_else(|| anyhow!("Schema not found for {}", route))?;
 
-    // Build patch from allowed columns
-    let mut patch = serde_json::Map::new();
-    for col in schema.put.columns.iter() {
-        if let Some(v) = body.get(col) { patch.insert(col.clone(), v.clone()); }
+    let mut doc_map = serde_json::Map::new();
+    let put_columns = &schema.put.columns;
+
+    // Filter columns that are in schema.put.columns
+    let skip_columns: HashSet<&str> = [
+        "created_at", "created_by_id", "updated_at", "updated_by_id", "deleted_at", "deleted_by_id",
+    ].iter().cloned().collect();
+
+    let mut filtered_columns: Vec<&crate::model::Column> = Vec::with_capacity(put_columns.len());
+    filtered_columns.extend(
+        schema
+            .columns
+            .iter()
+            .filter(|col| !skip_columns.contains(col.name.as_str()) && put_columns.contains(&col.name))
+    );
+
+    for col in filtered_columns.iter() {
+        let mut isformula = false;
+        let put_cols_slice: Vec<&str> = put_columns.iter().map(|s| s.as_str()).collect();
+        let (exists, matched_string) = find_column_match(&put_cols_slice, &col.name);
+        
+        if exists {
+             let string_formula = matched_string.unwrap_or("").to_string();
+             if string_formula.contains('=') {
+                 isformula = true;
+             }
+        }
+
+        if !isformula {
+             let mut value = body
+                .get(&col.name)
+                .map(|v| v.to_string().replace('"', "").replace("null", ""))
+                .unwrap_or_default();
+
+             // Encrypt
+             if col.encrypt {
+                 if !is_encrypted_string(&value) {
+                     value = encrypt(state.encrypt_key.clone(), value);
+                 }
+             }
+
+             // Bind with type conversion
+             if col.type_data.contains("int") || col.type_data.contains("float") {
+                 if let Ok(n) = value.parse::<i64>() {
+                     doc_map.insert(col.name.clone(), serde_json::json!(n));
+                 } else if let Ok(f) = value.parse::<f64>() {
+                     doc_map.insert(col.name.clone(), serde_json::json!(f));
+                 } else {
+                     doc_map.insert(col.name.clone(), body.get(&col.name).cloned().unwrap_or(Value::String(String::new())));
+                 }
+             } else {
+                 doc_map.insert(col.name.clone(), body.get(&col.name).cloned().unwrap_or(Value::String(String::new())));
+                 if col.encrypt {
+                    doc_map.insert(col.name.clone(), serde_json::json!(value));
+                 }
+             }
+        }
     }
-    patch.insert("updated_at".into(), Value::String(Utc::now().to_rfc3339()));
-    // updated_by_id if exists in schema and actor_id provided
-    let col_opt = schema.columns.iter().find(|c| c.name == "updated_by_id");
-    let actor_opt = body.get("__actor_id__").and_then(|v| v.as_str()).map(|s| s.to_string());
-    if let (Some(col), Some(actor)) = (col_opt, actor_opt) {
-        if col.type_data.contains("int") {
-            if let Ok(n) = actor.parse::<i64>() { patch.insert("updated_by_id".into(), Value::Number(n.into())); }
-            else { patch.insert("updated_by_id".into(), Value::String(actor)); }
-        } else if col.type_data.contains("float") || col.type_data.contains("double") || col.type_data.contains("decimal") || col.type_data.contains("money") {
-            if let Ok(f) = actor.parse::<f64>() { patch.insert("updated_by_id".into(), serde_json::json!(f)); }
-            else { patch.insert("updated_by_id".into(), Value::String(actor)); }
-        } else {
-            patch.insert("updated_by_id".into(), Value::String(actor));
+
+    doc_map.insert("updated_at".into(), Value::String(Utc::now().to_rfc3339()));
+    
+    // updated_by_id if exists
+    if schema.columns.iter().any(|c| c.name == "updated_by_id") {
+        let actor_opt = body.get("__actor_id__").and_then(|v| v.as_str()).map(|s| s.to_string());
+        if let Some(actor) = actor_opt {
+             if let Some(col) = schema.columns.iter().find(|c| c.name == "updated_by_id") {
+                if col.type_data.contains("int") {
+                    if let Ok(n) = actor.parse::<i64>() { doc_map.insert("updated_by_id".into(), Value::Number(n.into())); }
+                    else { doc_map.insert("updated_by_id".into(), Value::String(actor)); }
+                } else if col.type_data.contains("float") || col.type_data.contains("double") {
+                    if let Ok(f) = actor.parse::<f64>() { doc_map.insert("updated_by_id".into(), serde_json::json!(f)); }
+                    else { doc_map.insert("updated_by_id".into(), Value::String(actor)); }
+                } else {
+                    doc_map.insert("updated_by_id".into(), Value::String(actor));
+                }
+             }
         }
     }
 
@@ -286,7 +414,7 @@ async fn exec_put(state: Data<AppState>, route: String, schemas_map: Arc<HashMap
     let filt_val = if let Ok(n) = id_for_filter.parse::<i64>() { QV::I64(n) } else { QV::Str(id_for_filter) };
     let filter = Some(QF::Eq("id".into(), filt_val));
 
-    match state.store.update(&schema.table, filter, Value::Object(patch)).await {
+    match state.store.update(&schema.table, filter, Value::Object(doc_map)).await {
         Ok(_) => {
             let cache_prefix = crate::database::redis::build_key_prefix("public", &route);
             let _ = crate::database::redis::redis_delete_by_prefix(&cache_prefix).await;
