@@ -33,7 +33,7 @@ use nocode::{
 };
 use nocode::consumer::{start_consumer};
 mod core;
-use core::{generate_users, login, register};
+use core::{generate_users, get_roles, login, register};
 mod model;
 use model::TableSchema;
 
@@ -673,6 +673,27 @@ async fn main() -> anyhow::Result<()> {
                         false,
                     );
                 }
+                }
+
+                // end point for get roles
+                cfg.service(web::resource("/roles").route(web::get().to(
+                    move |state: web::Data<AppState>| {
+                        get_roles(state)
+                    },
+                )));
+                if do_log {
+                    log_output(
+                        "CORE ENDPOINT",
+                        "METHOD",
+                        "GET",
+                        format!(
+                            "http://{}:{}/{}",
+                            host.red(),
+                            port.clone().to_string().green(),
+                            "roles".purple()
+                        ),
+                        false,
+                    );
                 }
 
                 // health check endpoint (public)

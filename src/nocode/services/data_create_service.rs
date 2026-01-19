@@ -253,6 +253,13 @@ pub async fn process_insert_request(
     // 7. Audit Log Preparation (before execution?) No, logic usually logs after success.
     // We execute now.
     
+    // Extract Authorization header to forward to API validation
+    let auth_token = req
+        .headers()
+        .get("Authorization")
+        .and_then(|h| h.to_str().ok())
+        .map(|s| s.to_string());
+
     // Call Repo
     match data_create_repo::perform_insert(
         state,
@@ -264,7 +271,8 @@ pub async fn process_insert_request(
         doc_map,
         fk_checks,
         function_id_split,
-        route
+        route,
+        auth_token
     ).await {
          Ok((msg, _count)) => {
              // Audit Log

@@ -1,5 +1,5 @@
 {
-        "routes" : [
+        "routes": [
                 "flx_users",
                 "flx_roles",
                 "banks",

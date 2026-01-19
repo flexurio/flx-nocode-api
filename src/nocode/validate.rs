@@ -2,12 +2,9 @@ use actix_web::{web::Data, HttpResponse, Responder};
 use serde_json::{json, Value};
 
 use crate::{
-    auth::{check_access, get_user_info_from_token},
-
-    model::{
+    AppState, auth::{check_access, get_user_info_from_token}, log::log_output, model::{
         TableSchema, WebResponse,
-    },
-    AppState,
+    }
 };
 use std::sync::Arc;
 
@@ -149,5 +146,122 @@ pub fn validate_table_design(design: &TableSchema) -> Result<(), Vec<String>> {
         Ok(())
     } else {
         Err(errors)
+    }
+}
+
+pub async fn validate_api_formula(formula: &str, body: &Value, auth_token: Option<&str>) -> Result<(), String> {
+    if !formula.starts_with("API:") {
+        return Ok(());
+    }
+
+    // Check for suffix |operator:response_path:request_variable
+    // Operator can be: eq, neq, in (formerly EXISTS)
+    let (base_formula, validation_rule) = match formula.find('|') {
+        Some(idx) => {
+            let rule = &formula[idx + 1..];
+            (&formula[..idx], Some(rule))
+        },
+        None => (formula, None),
+    };
+
+    let parts: Vec<&str> = base_formula.splitn(3, ':').collect();
+    // API:METHOD:URL
+    if parts.len() < 3 {
+        return Ok(()); 
+    }
+
+    let method = parts[1].to_uppercase();
+    let url_formula = parts[2];
+
+    match crate::database::state::build_url_from_formula(url_formula, body) {
+        Ok(url) => {
+            // log_output untuk debug
+            log_output("DEBUG", "API VALIDATION","URL", url.to_string(), true);
+            let client = reqwest::Client::new();
+            let mut builder = match method.as_str() {
+                "GET" => client.get(&url),
+                "POST" => client.post(&url).json(body),
+                "PUT" => client.put(&url).json(body),
+                "DELETE" => client.delete(&url),
+                _ => client.get(&url),
+            };
+
+            if let Some(token) = auth_token {
+                builder = builder.header("Authorization", token);
+            }
+
+            match builder.send().await {
+                Ok(res) => {
+                    if !res.status().is_success() {
+                        let status = res.status();
+                        let msg = res.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+                        return Err(format!("Validation failed (API {}): {}", status, msg));
+                    }
+                    
+                    // Operator Check Logic
+                    if let Some(rule_str) = validation_rule {
+                        let rule_parts: Vec<&str> = rule_str.splitn(3, ':').collect();
+                        if rule_parts.len() == 3 {
+                            let operator = rule_parts[0];
+                            let resp_path = rule_parts[1];
+                            let req_path = rule_parts[2];
+
+                            let resp_json: Value = res.json().await.map_err(|e| format!("Failed to parse response JSON: {}", e))?;
+                            
+                            // Get value from response path
+                            let resp_val_opt = crate::database::state::get_by_path_value(&resp_json, resp_path);
+
+                            // Get value from request body to check
+                            let req_key = req_path.strip_prefix("request.").unwrap_or(req_path);
+                            let req_val_opt = crate::database::state::get_by_path_value(body, req_key);
+
+                            // Handle unwrapping based on operator requirements
+                            // 'eq', 'neq' need single values. 'in' needs array from response.
+
+                            match operator {
+                                "eq" => {
+                                     let resp_val = resp_val_opt.ok_or_else(|| format!("Validation failed: Response path '{}' not found", resp_path))?;
+                                     let req_val = req_val_opt.ok_or_else(|| format!("Validation failed: Request variable '{}' not found", req_path))?;
+                                     if resp_val != req_val {
+                                         return Err(format!("Validation failed: Response '{:?}' != Request '{:?}'", resp_val, req_val));
+                                     }
+                                },
+                                "neq" => {
+                                     let resp_val = resp_val_opt.ok_or_else(|| format!("Validation failed: Response path '{}' not found", resp_path))?;
+                                     let req_val = req_val_opt.ok_or_else(|| format!("Validation failed: Request variable '{}' not found", req_path))?;
+                                     if resp_val == req_val {
+                                         return Err(format!("Validation failed: Response '{:?}' == Request '{:?}'", resp_val, req_val));
+                                     }
+                                },
+                                "in" => {
+                                    // Response must be array
+                                    let target_array = match resp_val_opt {
+                                        Some(Value::Array(arr)) => arr,
+                                        _ => return Err(format!("Validation failed: Response path '{}' is not an array for 'in' operator", resp_path)),
+                                    };
+                                    let req_val = req_val_opt.ok_or_else(|| format!("Validation failed: Request variable '{}' not found", req_path))?;
+                                    
+                                    let found = target_array.iter().any(|item| item == req_val);
+                                    if !found {
+                                        return Err(format!("Validation failed: Value '{:?}' not found in allowed list", req_val));
+                                    }
+                                },
+                                _ => {
+                                    return Err(format!("Unknown validation operator: {}", operator));
+                                }
+                            }
+                        }
+                    }
+
+                    Ok(())
+                },
+                Err(e) => {
+                    Err(format!("Error calling validation API: {}", e))
+                }
+            }
+        },
+        Err(e) => {
+            Err(format!("Error building validation URL: {}", e))
+        }
     }
 }

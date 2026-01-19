@@ -223,6 +223,7 @@ pub async fn perform_insert(
     fk_checks: Vec<(String, String, String, String)>,
     function_id_split: Vec<String>,
     route: &str,
+    auth_token: Option<String>,
 ) -> Result<(String, i64), String> {
 
     // Batch validate all foreign keys in one query
@@ -325,6 +326,14 @@ pub async fn perform_insert(
         
         let mut tx = tx_opt.unwrap();
         
+        // Execute VALIDATE_DATA (API based) if exists
+        if table_schema.post.validate_data.starts_with("API:") {
+             if let Err(e) = crate::nocode::validate::validate_api_formula(&table_schema.post.validate_data, body, auth_token.as_deref()).await {
+                 let _ = tx.rollback().await;
+                 return Err(e);
+             }
+        }
+
         // Execute VALIDATE_DATA (SQL based) if exists
         if table_schema.post.validate_data.contains("SQL:") {
              match crate::database::state::build_sql_and_params_from_formula(

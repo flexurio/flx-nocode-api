@@ -248,6 +248,7 @@ pub async fn perform_update(
     fk_checks: Vec<(String, String, String, String)>,
     password_override: Option<String>,
     body: &Value,
+    auth_token: Option<String>,
 ) -> Result<(String, i32), String> {
     // Handling password-only update for flx_users
     if route == "flx_users" && password_override.is_some() && table_schema.put.columns.len() == 1 {
@@ -332,6 +333,14 @@ pub async fn perform_update(
                      return Err(msg);
                 }
             }
+        }
+
+        // Validate Data Formula (API based)
+        if table_schema.put.validate_data.starts_with("API:") {
+             if let Err(e) = crate::nocode::validate::validate_api_formula(&table_schema.put.validate_data, body, auth_token.as_deref()).await {
+                 let _ = tx.rollback().await;
+                 return Err(e);
+             }
         }
 
         // Validate Data Formula

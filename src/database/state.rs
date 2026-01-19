@@ -208,6 +208,25 @@ static RE_REQ: Lazy<Regex> = Lazy::new(|| Regex::new(r"\{request\.([^}]+)\}").un
 static RE_LEFTOVER: Lazy<Regex> = Lazy::new(|| Regex::new(r"\{[^}]+\}").unwrap());
 static RE_IDENT: Lazy<Regex> = Lazy::new(|| Regex::new(r"^[A-Za-z_][A-Za-z0-9_]*$").unwrap());
 
+// Helper: get nested value by dotted path, e.g. "user.id" or "items.0.price"
+pub fn get_by_path_value<'a>(root: &'a serde_json::Value, path: &str) -> Option<&'a serde_json::Value> {
+    let mut cur = root;
+    for part in path.split('.') {
+        if let Ok(idx) = part.parse::<usize>() {
+            match cur {
+                serde_json::Value::Array(arr) => cur = arr.get(idx)?,
+                _ => return None,
+            }
+        } else {
+            match cur {
+                serde_json::Value::Object(map) => cur = map.get(part)?,
+                _ => return None,
+            }
+        }
+    }
+    Some(cur)
+}
+
 /// Build parameterized SQL and params from a "SQL:" formula string.
 /// Supported placeholders:
 /// - {request.field} -> bound as a parameter
@@ -227,25 +246,8 @@ pub fn build_sql_and_params_from_formula(
     log_output("QUERY", "BEFORE/AFTER", "build_sql_and_params_from_formula", sql.clone(), true);
     let mut params: Vec<DbParam> = Vec::new();
 
-    // Helper: get nested value by dotted path, e.g. "user.id" or "items.0.price"
-    fn get_by_path<'a>(root: &'a serde_json::Value, path: &str) -> Option<&'a serde_json::Value> {
-        let mut cur = root;
-        for part in path.split('.') {
-            if let Ok(idx) = part.parse::<usize>() {
-                match cur {
-                    serde_json::Value::Array(arr) => cur = arr.get(idx)?,
-                    _ => return None,
-                }
-            } else {
-                match cur {
-                    serde_json::Value::Object(map) => cur = map.get(part)?,
-                    _ => return None,
-                }
-            }
-        }
-        Some(cur)
-    }
-    
+
+
 
     // 1) Resolve nested subselects that include an inner {request.*}, deterministically.
     // Example: {products[{request.product_id}].price}
@@ -271,7 +273,7 @@ pub fn build_sql_and_params_from_formula(
         // resolve inner value from body with dotted path support
         let key: &str = inner.strip_prefix("request.").unwrap_or(inner);
         // Prefer numeric id, fallback to NULL
-        let id_param = match get_by_path(body, key) {
+        let id_param = match get_by_path_value(body, key) {
             Some(serde_json::Value::Number(n)) => {
                 if let Some(i) = n.as_i64() {
                     DbParam::I64(i)
@@ -290,8 +292,8 @@ pub fn build_sql_and_params_from_formula(
                     DbParam::Null
                 }
             }
-            Some(serde_json::Value::Bool(b)) => {
-                if *b {
+            Some(&serde_json::Value::Bool(b)) => {
+                if b {
                     DbParam::I64(1)
                 } else {
                     DbParam::I64(0)
@@ -377,9 +379,9 @@ pub fn build_sql_and_params_from_formula(
             last = full.end();
 
             // Infer type directly from JSON value (with dotted path)
-            match get_by_path(body, key) {
+            match get_by_path_value(body, key) {
                 Some(serde_json::Value::Null) | None => params.push(DbParam::Null),
-                Some(serde_json::Value::Bool(b)) => params.push(DbParam::Bool(*b)),
+                Some(&serde_json::Value::Bool(b)) => params.push(DbParam::Bool(b)),
                 Some(serde_json::Value::Number(n)) => {
                     if let Some(i) = n.as_i64() {
                         params.push(DbParam::I64(i));
@@ -415,5 +417,79 @@ pub fn build_sql_and_params_from_formula(
         ));
     }
 
+
     Ok((sql, params))
+}
+
+/// Build a URL string from an "API:" formula string by interpolating {request.*} variables.
+pub fn build_url_from_formula(
+    url_formula: &str,
+    body: &serde_json::Value,
+) -> Result<String> {
+    // Basic interpolation for {request.field}
+    // We only support simple string replacement for now.
+    
+    let mut final_url = url_formula.to_string();
+    
+    // Helper to get nested value by dotted path
+    fn get_by_path_str(root: &serde_json::Value, path: &str) -> String {
+        let mut cur = root;
+        for part in path.split('.') {
+            if let Ok(idx) = part.parse::<usize>() {
+                match cur {
+                    serde_json::Value::Array(arr) => {
+                        if let Some(val) = arr.get(idx) {
+                             cur = val;
+                        } else {
+                            return "".to_string();
+                        }
+                    },
+                    _ => return "".to_string(),
+                }
+            } else {
+                match cur {
+                    serde_json::Value::Object(map) => {
+                        if let Some(val) = map.get(part) {
+                            cur = val;
+                        } else {
+                            return "".to_string();
+                        }
+                    },
+                    _ => return "".to_string(),
+                }
+            }
+        }
+        match cur {
+             serde_json::Value::String(s) => s.clone(),
+             serde_json::Value::Number(n) => n.to_string(),
+             serde_json::Value::Bool(b) => b.to_string(),
+             serde_json::Value::Null => "".to_string(),
+             _ => cur.to_string(),
+        }
+    }
+
+    if RE_REQ.is_match(&final_url) {
+        // Find all matches and replace them
+        // We do this by creating a new string to handle potential length changes
+        let mut new_url = String::with_capacity(final_url.len());
+        let mut last = 0usize;
+        for cap in RE_REQ.captures_iter(url_formula) { // Iterate on original string
+             let full = cap.get(0).unwrap();
+             let key = cap.get(1).unwrap().as_str();
+             
+             new_url.push_str(&url_formula[last..full.start()]);
+             
+             let val = get_by_path_str(body, key);
+             // URL Encoding could be added here if needed, 
+             // but for now we assume simple values or that the user handles it.
+             // Ideally we should use urlencoding::encode(&val)
+             new_url.push_str(&urlencoding::encode(&val)); 
+             
+             last = full.end();
+        }
+        new_url.push_str(&url_formula[last..]);
+        final_url = new_url;
+    }
+
+    Ok(final_url)
 }

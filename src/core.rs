@@ -325,6 +325,45 @@ pub async fn register(state: Data<AppState>, multipart: Multipart) -> impl Respo
     }
 }
 
+// Handler to get all roles from config/roles.json
+pub async fn get_roles(_state: Data<AppState>) -> impl Responder {
+    let config_location = std::env::var("LOC_CONFIG").unwrap_or_else(|_| "config".to_string());
+    let file_path = format!("{}/roles.json", config_location);
+
+    log_output("INFO", "GET", "get_roles", format!("File path: {}", file_path), true);
+
+    let content = match std::fs::read_to_string(&file_path) {
+        Ok(c) => c,
+        Err(e) => {
+            return HttpResponse::InternalServerError().json(WebResponse {
+                success: false,
+                message: format!("Failed to read roles.json: {}", e),
+                total_data: 0,
+                data: Value::Null,
+            });
+        }
+    };
+
+    let roles: Vec<String> = match serde_json::from_str(&content) {
+        Ok(r) => r,
+        Err(e) => {
+            return HttpResponse::InternalServerError().json(WebResponse {
+                success: false,
+                message: format!("Failed to parse roles.json: {}", e),
+                total_data: 0,
+                data: Value::Null,
+            });
+        }
+    };
+
+    HttpResponse::Ok().json(WebResponse {
+        success: true,
+        message: "Roles retrieved successfully".to_string(),
+        total_data: roles.len() as i32,
+        data: json!(roles),
+    })
+}
+
 // NCO-POST
 pub async fn generate_users(state: Data<AppState>) -> String {
     // MongoDB: no DDL. Seed collections and default data using DataStore.
@@ -797,7 +836,7 @@ pub(crate) async fn create_core_config_if_not_exists(conf: &str) -> Result<(), B
     // If db directory already exists, skip
     if Path::new(conf).exists() {
         // check if flx_roles.json and flx_users.json exist
-        if Path::new(&format!("{}/flx_roles.json", conf)).exists() && Path::new(&format!("{}/flx_users.json", conf)).exists() {
+        if Path::new(&format!("{}/entity/flx_roles.json", conf)).exists() && Path::new(&format!("{}/entity/flx_users.json", conf)).exists() {
             return Ok(());
         }
     } else {

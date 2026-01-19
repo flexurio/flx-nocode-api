@@ -221,6 +221,13 @@ pub async fn process_update_request(
          patch_fields.insert("updated_by_id".to_string(), serde_json::json!(claims.id.clone()));
     }
 
+    // Extract Authorization header to forward to API validation
+    let auth_token = req
+        .headers()
+        .get("Authorization")
+        .and_then(|h| h.to_str().ok())
+        .map(|s| s.to_string());
+
     // Call Repository
     match data_update_repo::perform_update(
         state,
@@ -231,7 +238,8 @@ pub async fn process_update_request(
         patch_fields,
         fk_checks,
         password_override,
-        &body
+        &body,
+        auth_token
     ).await {
         Ok((msg, count)) => {
             // Audit

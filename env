@@ -28,6 +28,8 @@ WRITE_CONCURRENCY=20
 # POOL_IDLE_TIMEOUT_SECS=600   # 10 minutes
 # MYSQL_URL=mysql://user:pass@host:port/db
 # MYSQL_URL=mysql://user:pass@host:port/db
+# DEFAULT_COLLATE=utf8mb4_bin
+       
 # DB_TYPE=postgres
 # POSTGRES_URL=postgres://user:pass@host:port/db
 # MONGODB_URL=mongodb://user:pass@host:port/db
@@ -42,6 +44,7 @@ LOGGING=True
 BASE_URL=http://localhost:8080
 SECRET_KEY=your_secret_key_here
 ENCRYPT_KEY=your_encrypt_key_here
+REQUIRE_AUTH=True
 CUSTOME_JWT_QUERY="SELECT email FROM flx_users WHERE id = {:?}"
 
 LOC_CONFIG=config

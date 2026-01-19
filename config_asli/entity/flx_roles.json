@@ -1,123 +1,135 @@
-
 {
-        "table":"flx_roles",
-        "primary_key":
-        {
-                "columns":["id"],
-                "auto_increment":true
-        },
-        "foreign_keys":[],
-        "columns":[
-                {
-                        "name":"id",
-                        "auto_increment":true,
-                        "nullable":false,
-                        "function":"",
-                        "type_data":"bigint",
-                        "encrypt":false
-                },
-                {
-                        "name":"id_users",
-                        "auto_increment":false,
-                        "nullable":false,
-                        "function":"",
-                        "type_data":"bigint",
-                        "encrypt":false
-                },
-                {
-                        "name":"endpoint",
-                        "auto_increment":false,
-                        "nullable":false,
-                        "function":"",
-                        "type_data":"varchar(100)",
-                        "encrypt":false
-                },
-                {
-                        "name":"role",
-                        "auto_increment":false,
-                        "nullable":false,
-                        "function":"",
-                        "type_data":"tinyint",
-                        "encrypt":false
-                },
-
-                {
-                        "name":"created_at",
-                        "auto_increment":false,
-                        "nullable":true,
-                        "function":"",
-                        "type_data":"datetime",
-                        "encrypt":false
-                },
-                {
-                        "name":"updated_at",
-                        "auto_increment":false,
-                        "nullable":true,
-                        "function":"",
-                        "type_data":"datetime",
-                        "encrypt":false
-                }
-        ],
-        "indexes":[
-                {
-                        "name":"idx_role_name",
-                        "columns":["id_users", "endpoint"],
-                        "unique":true
-                }
-        ],
-        "redis":{
-                "keys":["id_users", "endpoint"],
-                "ttl":3600
-        },
-        "get":{
-                "columns":["id", "id_users", "endpoint", "role"],
-                "parameters":[
-                        "id_users.eq",
-                        "endpoint.eq"
+        "table": "flx_roles",
+        "primary_key": {
+                "columns": [
+                        "id"
                 ],
-                "join_tables":[],
-                "column_groups":[],
+                "auto_increment": true
+        },
+        "foreign_keys": [],
+        "columns": [
+                {
+                        "name": "id",
+                        "auto_increment": true,
+                        "nullable": false,
+                        "function": "",
+                        "type_data": "bigint",
+                        "encrypt": false
+                },
+                {
+                        "name": "id_users",
+                        "auto_increment": false,
+                        "nullable": false,
+                        "function": "",
+                        "type_data": "bigint",
+                        "encrypt": false
+                },
+                {
+                        "name": "role",
+                        "auto_increment": false,
+                        "nullable": false,
+                        "function": "",
+                        "type_data": "tinyint",
+                        "encrypt": false
+                },
+                {
+                        "name": "created_at",
+                        "auto_increment": false,
+                        "nullable": true,
+                        "function": "",
+                        "type_data": "datetime",
+                        "encrypt": false
+                },
+                {
+                        "name": "updated_at",
+                        "auto_increment": false,
+                        "nullable": true,
+                        "function": "",
+                        "type_data": "datetime",
+                        "encrypt": false
+                }
+        ],
+        "indexes": [
+                {
+                        "name": "idx_role_name",
+                        "columns": [
+                                "id_users",
+                                "role"
+                        ],
+                        "unique": true
+                }
+        ],
+        "redis": {
+                "keys": [
+                        "id_users",
+                        "role"
+                ],
+                "ttl": 3600
+        },
+        "get": {
+                "columns": [
+                        "id",
+                        "id_users"
+                ],
+                "parameters": [
+                        "id_users.eq"
+                ],
+                "join_tables": [],
+                "column_groups": [],
                 "having": [],
-                "order_by":["id"]
+                "order_by": [
+                        "id"
+                ]
         },
-        "post":{
-                "validate_data":"",
-                "pre_process":"",
-                "post_process":"",
-                "columns":["id_users", "endpoint", "role"]
+        "post": {
+                "enable_method": true,
+                "validate_data": "API:GET:http://127.0.0.1:8080/roles|in:data:request.role",
+                "pre_process": "",
+                "post_process": "",
+                "columns": [
+                        "id_users",
+                        "role"
+                ]
         },
-        "put":{
-                "validate_data":"",
-                "pre_process":"",
-                "post_process":"",
-                "columns":["id_users", "endpoint", "role"]
+        "put": {
+                "enable_method": true,
+                "validate_data": "",
+                "pre_process": "",
+                "post_process": "",
+                "columns": [
+                        "id_users",
+                        "role"
+                ]
         },
-        "del":{
-                "pre_process":"",
-                "post_process":"",
-                "columns":["id"],
-                "type_delete":"hard"
+        "del": {
+                "enable_method": true,
+                "pre_process": "",
+                "post_process": "",
+                "columns": [
+                        "id"
+                ],
+                "type_delete": "hard"
         },
-        "patch":{
-                "pre_process_sp":"",
-                "parameters":[]
+        "patch": {
+                "enable_method": false,
+                "pre_process_sp": "",
+                "parameters": []
         },
-        "trace":{
-                "insert_into":"",
-                "column_inserts":[],
-                "column_selects":[],
-                "parameters":[],
-                "join_tables":[
+        "trace": {
+                "enable_method": false,
+                "insert_into": "",
+                "column_inserts": [],
+                "column_selects": [],
+                "parameters": [],
+                "join_tables": [
                         {
-                                "table":"",
-                                "columns":[],
-                                "logical":"",
-                                "type_join":""
+                                "table": "",
+                                "columns": [],
+                                "logical": "",
+                                "type_join": ""
                         }
                 ],
-                "column_groups":[],
-                "column_conflicts":[]
-
+                "column_groups": [],
+                "column_conflicts": []
         }
 }
-
