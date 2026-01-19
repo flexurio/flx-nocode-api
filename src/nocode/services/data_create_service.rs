@@ -28,7 +28,7 @@ pub async fn process_insert_request(
     let mut actor_id_opt: Option<String> = None;
 
     if state.require_auth && !state.route_publics.contains(&route.to_string()) {
-        let claims = match get_user_info_from_token(req.clone(), state.clone()) {
+        let claims = match get_user_info_from_token(req, state.clone()) {
              Ok(c) => c,
              Err(_) => {
                 return Err(WebResponse {
@@ -40,10 +40,10 @@ pub async fn process_insert_request(
              }
         };
 
-        if !check_access(&claims, route, "write") {
+        if let Err(e) = check_access(&claims, req) {
              return Err(WebResponse {
                 success: false,
-                message: "Unauthorized".to_string(),
+                message: format!("Unauthorized: {}", e),
                 total_data: 0,
                 data: Value::Null,
             });

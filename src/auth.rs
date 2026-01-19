@@ -215,7 +215,7 @@ fn is_ip_whitelisted(req: &actix_web::HttpRequest, whitelist: &[String]) -> bool
 
 // Contoh penggunaan
 pub fn get_user_info_from_token(
-    req: actix_web::HttpRequest,
+    req: &actix_web::HttpRequest,
     state: web::Data<AppState>,
 ) -> Result<Claims, bool> {
     if is_ip_whitelisted(&req, &state.whitelist_ips) {
@@ -247,61 +247,248 @@ pub fn get_user_info_from_token(
     Err(false)
 }
 
-fn get_permissions(value: i8) -> Vec<&'static str> {
-    // 1 = DELETE / DELETE
-    // 2 = WRITE / ADD
-    // 4 = READ / SHOW
-    // 8 = EXECUTE
-    // 16 = OPEN/CLOSE
-    // 32 = EXPORT
-    // 64 = APPROVE/REJECT
-
-    let mut permissions = Vec::new();
-
-    if value & 1 != 0 {
-        permissions.push("delete");
-    }
-    if value & 2 != 0 {
-        permissions.push("write");
-    }
-    if value & 4 != 0 {
-        permissions.push("read");
-    }
-    if value & 8 != 0 {
-        permissions.push("execute");
-    }
-    if value & 16 != 0 {
-        permissions.push("open/close");
-    }
-    if value & 32 != 0 {
-        permissions.push("export");
-    }
-    if value & 64 != 0 {
-        permissions.push("approve/reject");
-    }
-
-    permissions
+#[derive(Deserialize, Debug, Clone)]
+pub struct Rule {
+    #[serde(rename = "match")]
+    pub endpoint: String,
+    pub allows: Vec<AllowDef>,
 }
 
-pub fn check_access(claims: &Claims, route: &str, permission: &str) -> bool {
+#[derive(Deserialize, Debug, Clone)]
+pub struct AllowDef {
+    pub method: String,
+    pub permission_id: String,
+    #[serde(rename = "if")]
+    pub condition: Option<Conditions>,
+    #[serde(default)]
+    pub allowed_fields: Vec<String>,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+#[serde(untagged)]
+pub enum Conditions {
+    Or { or: Vec<Conditions> },
+    And { and: Vec<Conditions> },
+    Eq { eq: (String, String) },
+}
+
+fn load_rules() -> Vec<Rule> {
+    let path = "config_asli/rules.json";
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+
+    // Try parsing as list first
+    if let Ok(rules) = serde_json::from_str::<Vec<Rule>>(&content) {
+        return rules;
+    }
+    // Try parsing as single object
+    if let Ok(rule) = serde_json::from_str::<Rule>(&content) {
+        return vec![rule];
+    }
+    
+    Vec::new()
+}
+
+fn evaluate_condition(condition: &Conditions, claims: &Claims) -> bool {
+    match condition {
+        Conditions::Or { or } => or.iter().any(|c| evaluate_condition(c, claims)),
+        Conditions::And { and } => and.iter().all(|c| evaluate_condition(c, claims)),
+        Conditions::Eq { eq } => {
+            let (field, value) = eq;
+            if field == "$user.role" {
+                 // Check if any of the user's roles match the value
+                 // claims.get_roles() returns Vec<String> like ["admin", "user/1"]
+                 // We need to match precise role or basic role
+                 return claims.get_roles().iter().any(|r| {
+                     let parts: Vec<&str> = r.split('/').collect();
+                     parts[0] == value
+                 });
+            }
+            // Add other field checks if needed, e.g., $user.id
+            if field == "$user.id" {
+                return &claims.id == value;
+            }
+            false
+        }
+    }
+}
+
+pub fn evaluate_access(rules: &[Rule], claims: &Claims, current_path: &str, current_method: &str) -> Result<(), String> {
+    // Find matching rule
+    // Simple matching for now: exact match or parameter match {id}
+    let matched_rule = rules.iter().find(|r| {
+        let route_parts: Vec<&str> = r.endpoint.split('/').filter(|s| !s.is_empty()).collect();
+        let path_parts: Vec<&str> = current_path.split('/').filter(|s| !s.is_empty()).collect();
+
+        if route_parts.len() != path_parts.len() {
+            return false;
+        }
+
+        route_parts.iter().zip(path_parts.iter()).all(|(r_part, p_part)| {
+            r_part.starts_with('{') && r_part.ends_with('}') || r_part == p_part
+        })
+    });
+
+    match matched_rule {
+        Some(rule) => {
+            // Check method
+            let allow = rule.allows.iter().find(|a| a.method.eq_ignore_ascii_case(current_method));
+            
+            match allow {
+                Some(a) => {
+                    // Check condition
+                    if let Some(cond) = &a.condition {
+                        if evaluate_condition(cond, claims) {
+                            Ok(())
+                        } else {
+                            Err("Access denied by rule condition".to_string())
+                        }
+                    } else {
+                        Ok(())
+                    }
+                },
+                None => Err(format!("Method {} not allowed for this rule", current_method)),
+            }
+        },
+        None => Err(format!("Rule not defined for endpoint: {}", current_path)),
+    }
+}
+
+pub fn check_access(claims: &Claims, req: &actix_web::HttpRequest) -> Result<(), String> {
     if claims.cs == "converter_token" {
-        return true;
-    }
-    // from claims.roles get rl where ep = route
-    let mut role = 0_i8;
-    for r in claims.get_roles().iter() {
-        // split r by "/"
-        let route_rol = r.split("/").collect::<Vec<&str>>();
-
-        // Cek route spesifik atau wildcard
-        if !(route_rol[0] == route || route_rol[0] == "*") {
-            continue;
-        }
-        if let Some(val) = route_rol.get(1).and_then(|s| s.parse::<i8>().ok()) {
-            role = val;
-        }
+        return Ok(());
     }
 
-    let access = get_permissions(role);
-    access.contains(&permission.to_lowercase().as_str())
+    let rules = load_rules();
+    let current_path = req.path();
+    let current_method = req.method().as_str();
+
+    evaluate_access(&rules, claims, current_path, current_method)
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_test_rules() -> Vec<Rule> {
+        vec![
+            Rule {
+                endpoint: "/api/test".to_string(),
+                allows: vec![
+                    AllowDef {
+                        method: "GET".to_string(),
+                        permission_id: "perm1".to_string(),
+                        condition: None,
+                        allowed_fields: vec![],
+                    },
+                    AllowDef {
+                        method: "POST".to_string(),
+                         permission_id: "perm2".to_string(),
+                        condition: Some(Conditions::Eq { eq: ("$user.role".to_string(), "admin".to_string()) }),
+                        allowed_fields: vec![],
+                    }
+                ],
+            },
+            Rule {
+                endpoint: "/api/items/{id}".to_string(),
+                allows: vec![
+                    AllowDef {
+                        method: "DELETE".to_string(),
+                         permission_id: "perm3".to_string(),
+                        condition: Some(Conditions::Or { or: vec![
+                            Conditions::Eq { eq: ("$user.role".to_string(), "admin".to_string()) },
+                            Conditions::Eq { eq: ("$user.id".to_string(), "123".to_string()) }
+                        ]}),
+                        allowed_fields: vec![],
+                    }
+                ]
+            }
+        ]
+    }
+
+    fn create_claims(role: &str, id: &str) -> Claims {
+        let mut claims = Claims::default();
+        claims.id = id.to_string();
+        // Assuming format "role/permission"
+        // If role doesn't contain '/', append dummy permission
+        if role.contains('/') {
+            claims.rl = role.to_string();
+        } else {
+            claims.rl = format!("{}/1", role);
+        }
+        claims
+    }
+
+    #[test]
+    fn test_access_allowed_no_condition() {
+        let rules = create_test_rules();
+        let claims = create_claims("user", "1");
+        
+        let result = evaluate_access(&rules, &claims, "/api/test", "GET");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_access_denied_condition_fail() {
+        let rules = create_test_rules();
+        let claims = create_claims("user", "1");
+        
+        let result = evaluate_access(&rules, &claims, "/api/test", "POST");
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "Access denied by rule condition");
+    }
+
+    #[test]
+    fn test_access_allowed_condition_pass() {
+        let rules = create_test_rules();
+        let claims = create_claims("admin", "1");
+        
+        let result = evaluate_access(&rules, &claims, "/api/test", "POST");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_access_undefined_endpoint() {
+        let rules = create_test_rules();
+        let claims = create_claims("admin", "1");
+        
+        let result = evaluate_access(&rules, &claims, "/api/undefined", "GET");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Rule not defined"));
+    }
+
+    #[test]
+    fn test_access_method_not_allowed() {
+        let rules = create_test_rules();
+        let claims = create_claims("admin", "1");
+        
+        let result = evaluate_access(&rules, &claims, "/api/test", "DELETE");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Method DELETE not allowed"));
+    }
+
+    #[test]
+    fn test_access_parameter_matching() {
+        let rules = create_test_rules();
+        let claims = create_claims("admin", "1");
+        
+        let result = evaluate_access(&rules, &claims, "/api/items/999", "DELETE");
+        assert!(result.is_ok(), "Admin should be able to delete item 999");
+    }
+
+    #[test]
+    fn test_access_complex_condition() {
+        let rules = create_test_rules();
+        let claims = create_claims("user", "123");
+        
+        let result = evaluate_access(&rules, &claims, "/api/items/888", "DELETE");
+        assert!(result.is_ok(), "User 123 should be able to delete via OR condition");
+
+        let claims_fail = create_claims("user", "999");
+        let result_fail = evaluate_access(&rules, &claims_fail, "/api/items/888", "DELETE");
+        assert!(result_fail.is_err());
+    }
 }

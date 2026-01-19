@@ -28,11 +28,11 @@ pub async fn process_delete_request(
     // 1. Auth Check
     let mut claims = Claims::default();
     if state.require_auth && !state.route_publics.contains(&route) {
-        claims = get_user_info_from_token(req.clone(), state.clone())
+        claims = get_user_info_from_token(&req, state.clone())
             .map_err(|_| "Invalid token".to_string())?;
 
-        if !check_access(&claims, &route, "delete") {
-            return Err("Unauthorized".to_string());
+        if let Err(e) = check_access(&claims, &req) {
+            return Err(format!("Unauthorized: {}", e));
         }
     }
 
@@ -72,7 +72,7 @@ pub async fn process_delete_request(
                 message: "Enqueued".to_string(),
                 total_data: 0,
                 data: Value::Null,
-            });
+            }.into()); 
         } else {
              crate::nocode::consumer::enqueue_job(&job).await.map_err(|e| format!("Queue error: {}", e))?;
              log_output("QUEUE", "DELETE-HANDLER", &route, format!("queued in {} ms", t0.elapsed().as_millis()), true);

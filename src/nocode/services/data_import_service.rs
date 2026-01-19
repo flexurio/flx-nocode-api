@@ -136,7 +136,7 @@ pub async fn process_import_request(
     // 1. Auth Check
     let mut claims = Claims::default();
     if state.require_auth && !state.route_publics.contains(&route) {
-        claims = get_user_info_from_token(req.clone(), state.clone())
+        claims = get_user_info_from_token(&req, state.clone())
             .map_err(|_| WebResponse {
                 success: false,
                 message: "Invalid token".to_string(),
@@ -144,10 +144,10 @@ pub async fn process_import_request(
                 data: Value::Null,
             })?;
 
-        if !check_access(&claims, &route, "write") {
+        if let Err(e) = check_access(&claims, &req) {
             return Err(WebResponse {
                 success: false,
-                message: "Unauthorized".to_string(),
+                message: format!("Unauthorized: {}", e),
                 total_data: 0,
                 data: Value::Null,
             });

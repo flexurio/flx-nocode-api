@@ -16,7 +16,7 @@ pub async fn check_table_design(
     req: actix_web::HttpRequest,
 ) -> impl Responder {
     if state.require_auth && !state.route_publics.contains(&route){
-        let claims = match get_user_info_from_token(req, state.clone()) {
+        let claims = match get_user_info_from_token(&req, state.clone()) {
             Ok(c) => c,
             Err(_) => {
                 return HttpResponse::Unauthorized().json(WebResponse {
@@ -28,10 +28,10 @@ pub async fn check_table_design(
             }
         };
 
-        if !check_access(&claims, &route, "execute") {
+        if let Err(e) = check_access(&claims, &req) {
             return HttpResponse::Unauthorized().json(WebResponse {
                 success: false,
-                message: "Unauthorized".to_string(),
+                message: format!("Unauthorized: {}", e),
                 total_data: 0,
                 data: Value::Null,
             });

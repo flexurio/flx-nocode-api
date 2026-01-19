@@ -29,7 +29,7 @@
                         "auto_increment": false,
                         "nullable": false,
                         "function": "",
-                        "type_data": "tinyint",
+                        "type_data": "varchar(100)",
                         "encrypt": false
                 },
                 {
@@ -67,12 +67,15 @@
                 "ttl": 3600
         },
         "get": {
+                "enable_method": true,
                 "columns": [
                         "id",
-                        "id_users"
+                        "id_users",
+                        "role"
                 ],
                 "parameters": [
-                        "id_users.eq"
+                        "id_users.eq",
+                        "role.eq"
                 ],
                 "join_tables": [],
                 "column_groups": [],
