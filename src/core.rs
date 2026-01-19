@@ -197,10 +197,14 @@ pub async fn login(state: web::Data<AppState>, req: actix_web::HttpRequest) -> i
     // Build roles query using id_users type that matches id_user_str (numeric vs string)
     let id_roles_filter = if let Ok(n) = id_user_str.parse::<i64>() { QV::I64(n) } else { QV::Str(id_user_str.clone()) };
     let q_roles = QQ::from("flx_roles")
-        .select(["endpoint", "role"]) 
+        .select(["role"]) 
         .r#where(QF::Eq("id_users".into(), id_roles_filter.clone()));
     log_output("QUERY", "core.rs/login", "flx_roles", format!("AST id_users=? ~ {}", match id_roles_filter { QV::I64(n) => n.to_string(), QV::Str(s) => s, _ => String::new() }), true);
     let roles_rows = state.store.query(&q_roles).await.unwrap_or_default();
+
+    if *crate::ISDEBUG {
+        log_output("DEBUG", "core.rs/login", "roles_rows data ", format!("{:?}", roles_rows), true);
+    }
     
     // Optimized: reduce string allocations by pre-allocating and avoiding multiple clones
     let roles_data = {
@@ -209,16 +213,12 @@ pub async fn login(state: web::Data<AppState>, req: actix_web::HttpRequest) -> i
         
         for v in roles_rows {
             if let Some(obj) = v.as_object() {
-                let ep_opt = obj.get("endpoint").and_then(|v| v.as_str());
                 let rl_opt = obj.get("role");
-                if let (Some(ep), Some(rl)) = (ep_opt, rl_opt) {
+                if let Some(rl) = rl_opt {
                     if !first { 
                         result.push(','); 
                     }
                     first = false;
-                    
-                    result.push_str(ep);
-                    result.push('/');
                     
                     match rl {
                         serde_json::Value::Number(n) if n.is_i64() => {
@@ -595,32 +595,30 @@ pub async fn generate_users(state: Data<AppState>, schemas: &std::collections::H
 
 
 // create function generate flx_roles
-pub async fn generate_role_admin(state: &AppState, ds: SqlStore, id_user: i64, routes: Vec<String>) -> Result<(), Box<dyn Error + Send + Sync>> {
+pub async fn generate_role_admin(state: &AppState, ds: SqlStore, id_user: i64, _routes: Vec<String>) -> Result<(), Box<dyn Error + Send + Sync>> {
     let now_fn = state.query_converter.datetime_now.clone();
     if state.db_type != crate::model::DbType::Mongodb {
         // Insert default roles (two rows) with AST bulk insert
         use crate::storage::sql_store::InsertValue as IV;
-        let cols = vec!["id_users".into(), "endpoint".into(), "role".into(), "created_at".into()];
-        // loop every route
-        for route in routes.iter() {
-            let rows = vec![
-                vec![IV::Param(crate::database::state::DbParam::I64(id_user)), IV::Param(crate::database::state::DbParam::Str(route.into())), IV::Param(crate::database::state::DbParam::I64(127)), IV::Raw(now_fn.clone())],
-            ];
-            if let Ok((sql_roles_ins, params_roles_ins)) = ds.preview_insert_bulk("flx_roles", &cols, &rows) {
-                let built_roles = crate::database::state::rehydrate_placeholders(&sql_roles_ins, state.db_type.as_str());
-                // Properly await the async query and handle errors
-                match state.db.query_with_params(&built_roles, params_roles_ins).await {
-                    Ok(_) => {
-                        log_output("INSERT", "generate_role_admin", "flx_roles", format!("Role inserted for user {} endpoint {}", id_user, route), true);
-                    }
-                    Err(err) => {
-                        log_output("ERROR", "generate_role_admin", "flx_roles", format!("Failed to insert role for user {} endpoint {}: {}", id_user, route, err), true);
-                        return Err(err.into());
-                    }
+        let cols = vec!["id_users".into(), "role".into(), "created_at".into()];
+        // Insert single role for admin (127)
+        let rows = vec![
+            vec![IV::Param(crate::database::state::DbParam::I64(id_user)), IV::Param(crate::database::state::DbParam::I64(127)), IV::Raw(now_fn.clone())],
+        ];
+        if let Ok((sql_roles_ins, params_roles_ins)) = ds.preview_insert_bulk("flx_roles", &cols, &rows) {
+            let built_roles = crate::database::state::rehydrate_placeholders(&sql_roles_ins, state.db_type.as_str());
+            // Properly await the async query and handle errors
+            match state.db.query_with_params(&built_roles, params_roles_ins).await {
+                Ok(_) => {
+                    log_output("INSERT", "generate_role_admin", "flx_roles", format!("Role inserted for user {}", id_user), true);
                 }
-            } else {
-                log_output("ERROR", "generate_role_admin", "flx_roles", format!("Failed to generate SQL for user {} endpoint {}", id_user, route), true);
+                Err(err) => {
+                    log_output("ERROR", "generate_role_admin", "flx_roles", format!("Failed to insert role for user {}: {}", id_user, err), true);
+                    return Err(err.into());
+                }
             }
+        } else {
+            log_output("ERROR", "generate_role_admin", "flx_roles", format!("Failed to generate SQL for user {}", id_user), true);
         }        
     }
     Ok(())
