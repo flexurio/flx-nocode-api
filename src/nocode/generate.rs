@@ -114,21 +114,55 @@ pub async fn create_table(
         });
     }
 
-    // MongoDB: No DDL needed. Consider this a success to match behavior.
+    // MongoDB: Generate indexes
     if state.db_type == crate::model::DbType::Mongodb {
         log_output(
             "INFO",
             "GENERATE TABLE",
             route.as_str(),
-            format!("MongoDB backend: skipping DDL for collection '{}'.", table_schema.table),
+            format!("MongoDB backend: generating indexes for collection '{}'.", table_schema.table),
             true,
         );
-        return HttpResponse::Ok().json(WebResponse {
-            success: true,
-            message: "Table created (MongoDB - no DDL)".to_string(),
-            total_data: 1,
-            data: Value::Null,
-        });
+        
+        let mongo_cmds = generate_mongo_indexes(&table_schema);
+        let mut err_message = String::new();
+        
+        // Reuse generic logic below but bypass SQL generation
+        // Or handle explicitly here
+        
+        let mut tx = match state.store.begin_tx().await {
+            Ok(t) => t,
+            Err(err) => return HttpResponse::InternalServerError().json(WebResponse { success: false, message: format!("Error starting tx: {}", err), total_data: 0, data: Value::Null }),
+        };
+
+        for cmd in mongo_cmds {
+            if let Err(e) = tx.raw_sql(&cmd, vec![]).await {
+                 let err_str = e.to_string();
+                 if err_str.contains("Index with name") && err_str.contains("already exists") {
+                      // ignore
+                 } else {
+                     err_message = format!("{}\nFailed to create index: {}", err_message, e);
+                 }
+            }
+        }
+        
+        if err_message.is_empty() {
+            let _ = tx.commit().await;
+            return HttpResponse::Ok().json(WebResponse {
+                success: true,
+                message: "Table (Indexes) created (MongoDB)".to_string(),
+                total_data: 1,
+                data: Value::Null,
+            });
+        } else {
+             let _ = tx.rollback().await;
+             return HttpResponse::InternalServerError().json(WebResponse {
+                success: false,
+                message: err_message,
+                total_data: 0,
+                data: Value::Null,
+            });
+        }
     }
 
     let ds = SqlStore::new(state.db.clone(), state.db_type.as_str().to_string());
@@ -464,4 +498,59 @@ pub fn generate_table(ds: &SqlStore, data: &TableSchema) -> (String, Vec<String>
 
     // Compile using SqlStore
     ds.preview_ddl_separate(&ddl)
+}
+
+fn generate_mongo_indexes(data: &TableSchema) -> Vec<String> {
+    let mut cmds = Vec::new();
+    
+    // Convert table schema indexes to MongoDB `createIndexes` commands
+    // Command format: { createIndexes: <collection>, indexes: [ { key: { <col>: 1, ... }, name: <name>, unique: <bool> } ] }
+    
+    // 1. Unique Constraints & Indexes
+    for ix in &data.indexes {
+        if ix.columns.is_empty() { continue; }
+        
+        let mut key_doc = serde_json::Map::new();
+        for col in &ix.columns {
+            key_doc.insert(col.clone(), serde_json::json!(1));
+        }
+        
+        let idx_name = if ix.name.contains(&data.table) { ix.name.clone() } else { format!("{}_{}", data.table, ix.name) };
+        
+        let index_spec = serde_json::json!({
+            "key": key_doc,
+            "name": idx_name,
+            "unique": ix.unique
+        });
+        
+        let cmd = serde_json::json!({
+            "createIndexes": data.table,
+            "indexes": [ index_spec ]
+        });
+        
+        cmds.push(cmd.to_string());
+    }
+    
+    // 2. Foreign Keys (Index on foreign key column for performance, though checking is manual)
+    for fk in &data.foreign_keys {
+        let idx_name = format!("idx_fk_{}_{}", data.table, fk.column);
+        
+        // check if this column is already indexed by explicit indexes (simple check)
+        let already_indexed = data.indexes.iter().any(|ix| ix.columns.len() == 1 && ix.columns[0] == fk.column);
+        if already_indexed { continue; }
+        
+        let index_spec = serde_json::json!({
+            "key": { fk.column.clone(): 1 },
+            "name": idx_name,
+            "unique": false
+        });
+        
+        let cmd = serde_json::json!({
+            "createIndexes": data.table,
+            "indexes": [ index_spec ]
+        });
+        cmds.push(cmd.to_string());
+    }
+    
+    cmds
 }

@@ -19,6 +19,31 @@ async fn validate_foreign_keys_batch(
 ) -> Result<(), String> {
     if fk_checks.is_empty() { return Ok(()); }
     
+    // MongoDB Implementation
+    if state.db_type == DbType::Mongodb {
+        for (col, table, ref_col, val) in fk_checks {
+             // For each FK, perform a query to check existence
+             // This is N queries, but unavoidable without relational joins or stored procedures in Mongo
+             // Optimization: Could use $in if multiple rows checked same table/col, but here checks might be diverse
+             
+             // Naive type inference for query (assuming string for now, or simple parsing)
+             let val_qv = if let Ok(n) = val.parse::<i64>() { crate::storage::ast::Val::I64(n) } 
+                          else if let Ok(f) = val.parse::<f64>() { crate::storage::ast::Val::F64(f) }
+                          else { crate::storage::ast::Val::Str(val.clone()) };
+             
+             let q = Q::from(table.clone())
+                .select(vec![ref_col.clone()])
+                .r#where(F::Eq(ref_col.clone(), val_qv))
+                .limit(1);
+                
+             let rows = state.store.query(&q).await.map_err(|e| format!("Error validating FK (mongo): {}", e))?;
+             if rows.is_empty() {
+                 return Err(format!("Invalid foreign key value for column '{}' referencing table '{}'", col, table));
+             }
+        }
+        return Ok(());
+    }
+
     log_output("OPTIMIZATION", "FK BATCH CHECK", "POST", format!("Validating {} foreign keys in batch", fk_checks.len()), true);
     
     // Use SqlStore to build the query safely
@@ -28,10 +53,6 @@ async fn validate_foreign_keys_batch(
     
     log_output("QUERY", "FK BATCH", "POST", union_sql.clone(), true);
     log_output("PARAMS", "FK BATCH", "POST", format!("{:?}", params), true);
-    
-    log_output("QUERY", "FK BATCH", "POST", union_sql.clone(), true);
-    log_output("PARAMS", "FK BATCH", "POST", format!("{:?}", params), true);
-
     
     let results = state.db.query_with_params(&union_sql, params).await
         .map_err(|e| format!("FK batch validation failed: {}", e))?;
@@ -130,16 +151,42 @@ async fn validate_unique_constraints_batch(
 
     if unique_checks.is_empty() { return Ok(()); }
 
+    // MongoDB Implementation
+    if state.db_type == DbType::Mongodb {
+        for check in unique_checks {
+            let mut filters = Vec::new();
+            for (col, param) in check.columns {
+                 let val = match param {
+                     DbParam::Str(s) => crate::storage::ast::Val::Str(s),
+                     DbParam::I64(i) => crate::storage::ast::Val::I64(i),
+                     DbParam::F64(f) => crate::storage::ast::Val::F64(f),
+                     DbParam::Bool(b) => crate::storage::ast::Val::Bool(b),
+                     DbParam::Null => crate::storage::ast::Val::Null,
+                     // _ => crate::storage::ast::Val::Null, // binary etc not supported in simple unique ck yet
+                 };
+                 filters.push(F::Eq(col, val));
+            }
+            if filters.is_empty() { continue; }
+            
+            let q = Q::from(table.to_string())
+                .select(vec!["_id".to_string()])
+                .r#where(F::And(filters))
+                .limit(1);
+            
+            let rows = state.store.query(&q).await.map_err(|e| format!("Error validating Unique (mongo): {}", e))?;
+            if !rows.is_empty() {
+                 return Err(format!("Unique constraint violation on index: {}", check.index_name));
+            }
+        }
+        return Ok(());
+    }
+
     let ds = SqlStore::new(state.db.clone(), state.db_type.as_str().to_string());
     let (union_sql, params) = ds.preview_validate_unique_batch(table, &unique_checks, None)
         .map_err(|e| format!("Error building unique check query: {}", e))?;
 
     log_output("QUERY", "UNIQUE BATCH", "POST", union_sql.clone(), true);
     log_output("PARAMS", "UNIQUE BATCH", "POST", format!("{:?}", params), true);
-
-    log_output("QUERY", "UNIQUE BATCH", "POST", union_sql.clone(), true);
-    log_output("PARAMS", "UNIQUE BATCH", "POST", format!("{:?}", params), true);
-
 
     let rows = state.db.query_with_params(&union_sql, params).await
         .map_err(|e| format!("Unique batch validation failed: {}", e))?;
@@ -182,9 +229,8 @@ pub async fn perform_insert(
     validate_foreign_keys_batch(state, &fk_checks).await?;
 
     // Batch validate unique constraints when all indexed columns are present
-    if state.db_type != DbType::Mongodb {
-         validate_unique_constraints_batch(state, &table_schema.table, &table_schema.indexes, &table_schema.columns, body).await?;
-    }
+    // For MongoDB, we must call this explicitly as well
+     validate_unique_constraints_batch(state, &table_schema.table, &table_schema.indexes, &table_schema.columns, body).await?;
 
     // Begin transaction early for SQL backends so ID generation runs in the same TX
     let mut tx_opt: Option<Box<dyn crate::storage::traits::TxStore>> = None;

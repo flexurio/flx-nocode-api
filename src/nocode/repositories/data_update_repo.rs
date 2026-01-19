@@ -70,13 +70,41 @@ pub fn dbparam_from_value_and_type(val: &Value, meta: Option<&Column>) -> DbPara
     }
 }
 
-pub async fn validate_foreign_keys_batch_put(
+async fn validate_foreign_keys_batch_put(
     state: &web::Data<AppState>, 
     tx: &mut dyn crate::storage::traits::TxStore,
     fk_checks: &[(String, String, String, String)],
 ) -> Result<(), String> {
     if fk_checks.is_empty() { return Ok(()); }
     
+    // MongoDB Implementation
+    if state.db_type == crate::model::DbType::Mongodb {
+         for (col, table, ref_col, val) in fk_checks {
+             // Naive type inference
+             let val_qv = if let Ok(n) = val.parse::<i64>() { crate::storage::ast::Val::I64(n) } 
+                          else if let Ok(f) = val.parse::<f64>() { crate::storage::ast::Val::F64(f) }
+                          else { crate::storage::ast::Val::Str(val.clone()) };
+             
+             let q = crate::storage::ast::Query::from(table.clone())
+                .select(vec![ref_col.clone()])
+                .r#where(QF::Eq(ref_col.clone(), val_qv))
+                .limit(1);
+                
+             // Note: tx is not used for Mongo read here, but we use state.store to query
+             // This assumes state.store is available and consistent with what we need.
+             // Wait, `tx` is passed but for Mongo we don't have real TX. 
+             // We can use state.store.query. However, this function signature expects `tx`.
+             // For Mongo, `MongoTxStore` just wraps `MongoStore`, so `tx` should work if it implements `TxStore`.
+             // But `TxStore` trait has `query`. So `tx.query(&q)` should work!
+             
+             let rows = tx.query(&q).await.map_err(|e| format!("Error validating FK (mongo): {}", e))?;
+             if rows.is_empty() {
+                 return Err(format!("Invalid foreign key value for column '{}' referencing table '{}'", col, table));
+             }
+        }
+        return Ok(());
+    }
+
     // Use SqlStore to build query safely
     let ds = SqlStore::new(state.db.clone(), state.db_type.as_str().to_string());
     let (union_sql, params) = ds.preview_validate_fk_batch(fk_checks)
@@ -114,7 +142,7 @@ pub async fn validate_unique_constraints_batch_put(
     effective_values: &serde_json::Map<String, Value>,
     pk_info: (&str, DbParam),
 ) -> Result<(), String> {
-    let (pk_name, pk_param) = pk_info;
+    let (pk_name, ref pk_param) = pk_info;
     
     let mut unique_checks: Vec<UniqueCheck> = Vec::new();
      for ix in indexes.iter().filter(|ix| ix.unique) {
@@ -141,11 +169,52 @@ pub async fn validate_unique_constraints_batch_put(
 
     if unique_checks.is_empty() { return Ok(()); }
 
+    // MongoDB Implementation
+    if state.db_type == crate::model::DbType::Mongodb {
+        for check in unique_checks {
+            let mut filters = Vec::new();
+            for (col, param) in check.columns {
+                 let val = match param {
+                     DbParam::Str(s) => QV::Str(s),
+                     DbParam::I64(i) => QV::I64(i),
+                     DbParam::F64(f) => QV::F64(f),
+                     DbParam::Bool(b) => QV::Bool(b),
+                     DbParam::Null => QV::Null,
+                     // _ => QV::Null, // Unreachable
+                 };
+                 filters.push(QF::Eq(col, val));
+            }
+            if filters.is_empty() { continue; }
+            
+            // Exclude self (PK)
+            let (pk_col, pk_param) = pk_info.clone();
+            let pk_val = match pk_param {
+                 DbParam::Str(s) => QV::Str(s),
+                 DbParam::I64(i) => QV::I64(i),
+                 DbParam::F64(f) => QV::F64(f),
+                 DbParam::Bool(b) => QV::Bool(b),
+                 _ => QV::Null,
+            };
+            filters.push(QF::Ne(pk_col.to_string(), pk_val));
+            
+            let q = crate::storage::ast::Query::from(table.to_string())
+                .select(vec!["_id".to_string()])
+                .r#where(QF::And(filters))
+                .limit(1);
+            
+            let rows = tx.query(&q).await.map_err(|e| format!("Error validating Unique (mongo): {}", e))?;
+            if !rows.is_empty() {
+                 return Err(format!("Unique constraint violation on index: {}", check.index_name));
+            }
+        }
+        return Ok(());
+    }
+
     let ds = SqlStore::new(state.db.clone(), state.db_type.as_str().to_string());
     let (union_sql, params) = ds.preview_validate_unique_batch(
         table,
         &unique_checks,
-        Some((pk_name, pk_param))
+        Some((pk_name, pk_param.clone()))
     ).map_err(|e| format!("Error building unique check query: {}", e))?;
 
     if *crate::ISDEBUG { log_output("QUERY", "UNIQUE BATCH", "PUT", union_sql.clone(), true); }
@@ -322,7 +391,66 @@ pub async fn perform_update(
 
 
     } else {
-        // Mongo Path
+        // Mongo Path with Validation
+        // 1. Transaction (MongoTxStore)
+        // Since we enabled validation, we should try to reuse the same "transaction" abstraction for consistency
+        // although MongoTxStore operations might not be atomic without replicaset.
+        let mut tx = state.store.begin_tx().await.map_err(|e| format!("Error starting transaction: {}", e))?;
+
+        // 2. FK Validation
+        if !fk_checks.is_empty() {
+             if let Err(e) = validate_foreign_keys_batch_put(state, &mut *tx, &fk_checks).await {
+                 let _ = tx.rollback().await;
+                 return Err(e);
+             }
+        }
+        
+        // 3. Unique Validation
+        if !table_schema.indexes.is_empty() {
+             let pk_cols = &table_schema.primary_key.columns;
+             let pk_col_first = pk_cols.first().cloned().unwrap_or_else(|| "id".to_string());
+             let pk_meta = table_schema.columns.iter().find(|c| c.name == pk_col_first);
+             let pk_param = if let Some(m) = pk_meta { dbparam_from_value_and_type(&serde_json::json!(id_raw), Some(m)) } else { DbParam::Str(id_raw.to_string()) };
+
+             // Similar logic to SQL path to populate effective values
+            let affected: Vec<&Index> = table_schema.indexes.iter().filter(|ix| ix.unique && ix.columns.iter().any(|c| patch_fields.contains_key(c))).collect();
+            if !affected.is_empty() {
+                use std::collections::HashSet;
+                let mut needed: HashSet<String> = HashSet::new();
+                for ix in &affected {
+                     for c in &ix.columns {
+                         if !patch_fields.contains_key(c) { needed.insert(c.clone()); }
+                     }
+                }
+                
+                let mut effective_values = patch_fields.clone();
+                if !needed.is_empty() {
+                     // We need to fetch current document to fill missing values
+                     let pk_vals = parse_pk_values(id_raw);
+                     let filter_fetch = build_pk_filter(&table_schema.primary_key.columns, &pk_vals)?;
+                     
+                     let q_fetch = crate::storage::ast::Query::from(table_schema.table.clone())
+                        .select(needed.iter().cloned().collect::<Vec<String>>())
+                        .r#where(filter_fetch)
+                        .limit(1);
+                        
+                     let rows = tx.query(&q_fetch).await.map_err(|e| format!("Error preloading values: {}", e))?;
+                     if let Some(row) = rows.first() {
+                         if let Some(obj) = row.as_object() {
+                             for (k, v) in obj {
+                                 effective_values.insert(k.clone(), v.clone());
+                             }
+                         }
+                     }
+                }
+                
+                if let Err(msg) = validate_unique_constraints_batch_put(state, &mut *tx, &table_schema.table, &table_schema.indexes, &table_schema.columns, &effective_values, (&pk_col_first, pk_param)).await {
+                     let _ = tx.rollback().await;
+                     return Err(msg);
+                }
+            }
+        }
+
         let pk_values = parse_pk_values(id_raw);
         let mut filter = build_pk_filter(&table_schema.primary_key.columns, &pk_values)?;
         
@@ -337,9 +465,15 @@ pub async fn perform_update(
             log_output("QUERY", "PUT(MONGO)", route, "Mongo update".to_string(), true);
         }
         
-        match state.store.update(&table_schema.table, Some(filter), doc_json).await {
-            Ok(_) => Ok(("Data updated successfully".to_string(), 1)),
-            Err(e) => Err(format!("Error NCO-PUT (mongo): {}", e))
+        match tx.update(&table_schema.table, Some(filter), doc_json).await {
+            Ok(modified) => {
+                 let _ = tx.commit().await;
+                 Ok(("Data updated successfully".to_string(), modified as i32))
+            },
+            Err(e) => {
+                 let _ = tx.rollback().await;
+                 Err(format!("Error NCO-PUT (mongo): {}", e))
+            }
         }
     }
 }

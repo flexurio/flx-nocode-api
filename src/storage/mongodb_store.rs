@@ -498,11 +498,26 @@ impl DataStore for MongoStore {
     async fn execute_plan(&self, plan: &LogicalPlan) -> Result<Vec<JsonValue>> {
         let (collection, pipeline) = plan_to_pipeline(plan)?;
         let coll = self.coll(&collection);
-    let mut cursor = coll.aggregate(pipeline).await?;
+        let mut cursor = coll.aggregate(pipeline).await?;
         let mut out = Vec::new();
         use futures_util::StreamExt;
         while let Some(doc) = cursor.next().await { let d = doc?; out.push(serde_json::to_value(d)?); }
         Ok(out)
+    }
+
+    async fn raw_sql(&self, sql: &str, _params: Vec<crate::database::state::DbParam>) -> Result<Vec<JsonValue>> {
+        // Interpret "raw sql" as a raw MongoDB command if it looks like JSON
+        let trimmed = sql.trim();
+        if trimmed.starts_with('{') {
+             let doc: Document = serde_json::from_str(trimmed)
+                .map_err(|e| anyhow!("Invalid JSON for Mongo command: {}", e))
+                .and_then(|v: JsonValue| mongodb::bson::to_document(&v).map_err(|e| anyhow!("BSON conversion error: {}", e)))?;
+             
+             let res = self.db.run_command(doc).await?;
+             Ok(vec![serde_json::to_value(res)?])
+        } else {
+             Err(anyhow!("MongoStore raw_sql expects a JSON command object starting with '{{', got: {}", trimmed))
+        }
     }
 }
 
@@ -518,6 +533,7 @@ impl TxStore for MongoTxStore {
     async fn update(&mut self, collection: &str, filter: Option<Filter>, patch: JsonValue) -> Result<u64> { self.store.update(collection, filter, patch).await }
     async fn delete(&mut self, collection: &str, filter: Option<Filter>) -> Result<u64> { self.store.delete(collection, filter).await }
     async fn execute_plan(&mut self, plan: &LogicalPlan) -> Result<Vec<JsonValue>> { self.store.execute_plan(plan).await }
+    async fn raw_sql(&mut self, sql: &str, params: Vec<crate::database::state::DbParam>) -> Result<Vec<JsonValue>> { self.store.raw_sql(sql, params).await }
     async fn commit(self: Box<Self>) -> Result<()> { Ok(()) }
     async fn rollback(self: Box<Self>) -> Result<()> { Ok(()) }
 }
