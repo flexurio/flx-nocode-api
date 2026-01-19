@@ -90,6 +90,28 @@ pub fn validate_table_design(design: &TableSchema) -> Result<(), Vec<String>> {
     // Check columns
     if design.columns.is_empty() {
         errors.push("Columns cannot be empty".to_string());
+    } else {
+        // Validasi type_data
+        let allowed_types = [
+            "char", "varchar", "text", "longtext", "mediumtext", "tinytext",
+            "int", "tinyint", "smallint", "mediumint", "bigint",
+            "float", "double", "decimal",
+            "date", "datetime", "timestamp", "time", "year",
+            "blob", "longblob", "mediumblob", "tinyblob",
+            "json", "boolean", "bool", "enum"
+        ];
+
+        for col in &design.columns {
+            let lower_type = col.type_data.to_lowercase();
+            let is_valid = allowed_types.iter().any(|&t| lower_type.starts_with(t));
+            
+            if !is_valid {
+                 errors.push(format!(
+                    "Column '{}' has invalid type_data '{}'. Allowed types are: {:?}", 
+                    col.name, col.type_data, allowed_types
+                ));
+            }
+        }
     }
 
     // Check indexes
