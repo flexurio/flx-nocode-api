@@ -408,6 +408,13 @@ async fn main() -> anyhow::Result<()> {
         write_queue_enabled,
         write_queue_fast_ack,
         default_collate: env::var("DEFAULT_COLLATE").unwrap_or_else(|_| "utf8mb4_bin".to_string()),
+        rules: {
+            let rules_path = format!("{}/rules.json", CONFIG_LOCATION.as_str());
+            match std::fs::read_to_string(&rules_path) {
+                Ok(c) => serde_json::from_str(&c).unwrap_or(serde_json::json!({})),
+                Err(_) => serde_json::json!({}),
+            }
+        },
     });
 
     let id_user_str: String = if require_auth {

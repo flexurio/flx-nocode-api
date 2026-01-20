@@ -325,36 +325,9 @@ pub async fn register(state: Data<AppState>, multipart: Multipart) -> impl Respo
     }
 }
 
-// Handler to get all roles from config/roles.json
-pub async fn get_roles(_state: Data<AppState>) -> impl Responder {
-    let config_location = std::env::var("LOC_CONFIG").unwrap_or_else(|_| "config".to_string());
-    let file_path = format!("{}/roles.json", config_location);
-
-    log_output("INFO", "GET", "get_roles", format!("File path: {}", file_path), true);
-
-    let content = match std::fs::read_to_string(&file_path) {
-        Ok(c) => c,
-        Err(e) => {
-            return HttpResponse::InternalServerError().json(WebResponse {
-                success: false,
-                message: format!("Failed to read roles.json: {}", e),
-                total_data: 0,
-                data: Value::Null,
-            });
-        }
-    };
-
-    let roles: Vec<String> = match serde_json::from_str(&content) {
-        Ok(r) => r,
-        Err(e) => {
-            return HttpResponse::InternalServerError().json(WebResponse {
-                success: false,
-                message: format!("Failed to parse roles.json: {}", e),
-                total_data: 0,
-                data: Value::Null,
-            });
-        }
-    };
+// Handler to get all roles from state.rules
+pub async fn get_roles(state: Data<AppState>) -> impl Responder {
+    let roles = state.rules["role"].as_array().unwrap_or(&vec![]).clone();
 
     HttpResponse::Ok().json(WebResponse {
         success: true,
