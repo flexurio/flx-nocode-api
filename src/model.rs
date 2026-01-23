@@ -181,6 +181,8 @@ pub struct Column {
     pub encrypt: bool,
     #[serde(default)]
     pub collate: String,
+    #[serde(default)]
+    pub default: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

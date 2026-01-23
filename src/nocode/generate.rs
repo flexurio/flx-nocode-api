@@ -10,7 +10,7 @@ use crate::{
 
     log::log_output,
     model::{TableSchema, WebResponse},
-    storage::prelude::{CreateTable as DdlCreateTable, TableConstraint, ColumnDef, ColumnType, ForeignAction, Ddl},
+    storage::prelude::{CreateTable as DdlCreateTable, TableConstraint, ColumnDef, ColumnType, ForeignAction, Ddl, DefaultExpr},
     storage::sql_store::SqlStore,
 };
 use std::sync::Arc;
@@ -437,7 +437,7 @@ pub fn generate_table(ds: &SqlStore, data: &TableSchema) -> (String, Vec<String>
             name: c.name.clone(),
             col_type: ColumnType::Raw(ty),
             nullable: c.nullable,
-            default: None,
+            default: c.default.clone().map(DefaultExpr::Raw),
             auto_increment,
             primary_key_inline,
             collate: if c.collate.trim().is_empty() { None } else { Some(c.collate.trim().to_string()) },
@@ -554,3 +554,76 @@ fn generate_mongo_indexes(data: &TableSchema) -> Vec<String> {
     
     cmds
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::database::state::{DbRepository, DbTransaction, DbParam};
+    use serde_json::Value;
+    use anyhow::Result;
+    use std::sync::Arc;
+    use crate::model::{Column, PrimaryKey, TableSchema};
+
+    struct MockDbRepo;
+    struct MockDbTx;
+
+    #[async_trait::async_trait]
+    impl DbTransaction for MockDbTx {
+         async fn query_with_params(
+            &mut self,
+            _sql: &str,
+            _params: Vec<DbParam>,
+        ) -> Result<Vec<Value>, anyhow::Error> {
+            Ok(vec![])
+        }
+        async fn commit(self: Box<Self>) -> Result<(), anyhow::Error> { Ok(()) }
+        async fn rollback(self: Box<Self>) -> Result<(), anyhow::Error> { Ok(()) }
+    }
+
+    #[async_trait::async_trait]
+    impl DbRepository for MockDbRepo {
+        async fn query(&self, _sql: &str) -> Result<Vec<Value>, anyhow::Error> {
+             Ok(vec![])
+        }
+
+        async fn query_with_params(
+            &self,
+            _sql: &str,
+            _params: Vec<DbParam>,
+        ) -> Result<Vec<Value>, anyhow::Error> {
+            Ok(vec![])
+        }
+        
+        async fn begin_transaction(&self) -> Result<Box<dyn DbTransaction>, anyhow::Error> {
+            Ok(Box::new(MockDbTx))
+        }
+    }
+
+    #[test]
+    fn test_generate_table_with_default() {
+        let repo = Arc::new(MockDbRepo);
+        // Use "mysql" dialect for testing as it was the context of the issue
+        let store = SqlStore::new(repo, "mysql".to_string());
+
+        let mut schema = TableSchema::default();
+        schema.table = "test_table".to_string();
+        schema.columns.push(Column {
+            name: "col_default".to_string(),
+            type_data: "tinyint".to_string(),
+            nullable: false,
+            default: Some("0".to_string()),
+            auto_increment: false,
+            function: "".to_string(),
+            encrypt: false,
+            collate: "".to_string(),
+        });
+        schema.primary_key = PrimaryKey { columns: vec![] }; // No PK for simple test
+
+        let (sql, _) = generate_table(&store, &schema);
+        
+        println!("Generated SQL: {}", sql);
+        assert!(sql.contains("DEFAULT 0"), "SQL should contain DEFAULT 0");
+    }
+}
+

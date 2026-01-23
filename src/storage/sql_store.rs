@@ -68,6 +68,7 @@ impl SqlStore {
         }
     }
 
+    #[allow(dead_code)]
     fn compile_create_table(&self, ct: &CreateTable) -> String {
         // Fallback to combined statements using the separate builder
         let (table_sql, index_sqls) = self.compile_create_table_separate(ct);
@@ -234,6 +235,7 @@ impl SqlStore {
         (sql, index_sqls)
     }
 
+    #[allow(dead_code)]
     pub fn preview_ddl(&self, d: &Ddl) -> String {
         match d {
             Ddl::CreateTable(ct) => self.compile_create_table(ct),

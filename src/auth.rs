@@ -218,7 +218,7 @@ pub fn get_user_info_from_token(
     req: &actix_web::HttpRequest,
     state: web::Data<AppState>,
 ) -> Result<Claims, bool> {
-    if is_ip_whitelisted(&req, &state.whitelist_ips) {
+    if is_ip_whitelisted(req, &state.whitelist_ips) {
         println!("IP is whitelisted, returning default claims.");
         // Anda bisa sesuaikan isi Claims berikut sesuai kebutuhan
         return Ok(Claims::default());
@@ -257,10 +257,12 @@ pub struct Rule {
 #[derive(Deserialize, Debug, Clone)]
 pub struct AllowDef {
     pub method: String,
+    #[allow(dead_code)]
     pub permission_id: String,
     #[serde(rename = "if")]
     pub condition: Option<Conditions>,
     #[serde(default)]
+    #[allow(dead_code)]
     pub allowed_fields: Vec<String>,
 }
 
@@ -410,8 +412,10 @@ mod tests {
     }
 
     fn create_claims(role: &str, id: &str) -> Claims {
-        let mut claims = Claims::default();
-        claims.id = id.to_string();
+        let mut claims = Claims {
+            id: id.to_string(),
+            ..Claims::default()
+        };
         // Assuming format "role/permission"
         // If role doesn't contain '/', append dummy permission
         if role.contains('/') {

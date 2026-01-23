@@ -540,20 +540,21 @@ pub async fn generate_users(state: Data<AppState>, schemas: &std::collections::H
             // For MSSQL identity column, allow explicit ID insertion by toggling IDENTITY_INSERT
             let result = if state.db_type == crate::model::DbType::Mssql {
                 let _ = state.db.query("SET IDENTITY_INSERT flx_users ON").await;
-                let r = state.db.query_with_params(&built, params_insert_admin).await;
+                let r = state.db.query_with_params(&built, params_insert_admin.clone()).await;
                 let _ = state.db.query("SET IDENTITY_INSERT flx_users OFF").await;
                 r
             } else {
-                state.db.query_with_params(&built, params_insert_admin).await
+                state.db.query_with_params(&built, params_insert_admin.clone()).await
             };
             if let Err(err) = &result {
                 log_output(
-                    "ERROR QUERY",
-                    "POST",
+                    "ERROR",
+                    "QUERY",
                     "generate/table/insert-flx_users-admin",
-                    format!(" ~ ERROR : {}", err),
+                    format!(" ~ ERROR : {}, QUERY : {}", err, built),
                     true,
                 );
+                log_output("PARAM", "QUERY", "generate/table/insert-flx_users-admin", format!(" ~ PARAM INSERT : {:?}", params_insert_admin), true);
             }
 
             // Insert default roles (two rows) with AST bulk insert

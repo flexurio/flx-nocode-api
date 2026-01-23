@@ -72,7 +72,7 @@ pub async fn process_delete_request(
                 message: "Enqueued".to_string(),
                 total_data: 0,
                 data: Value::Null,
-            }.into()); 
+            }); 
         } else {
              crate::nocode::consumer::enqueue_job(&job).await.map_err(|e| format!("Queue error: {}", e))?;
              log_output("QUEUE", "DELETE-HANDLER", &route, format!("queued in {} ms", t0.elapsed().as_millis()), true);

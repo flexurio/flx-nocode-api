@@ -270,10 +270,8 @@ async fn exec_post(state: Data<AppState>, route: String, schemas_map: Arc<HashMa
                 .unwrap_or_default();
 
              // Encrypt
-             if col.encrypt {
-                 if !is_encrypted_string(&value) {
-                     value = encrypt(state.encrypt_key.clone(), value);
-                 }
+             if col.encrypt && !is_encrypted_string(&value) {
+                 value = encrypt(state.encrypt_key.clone(), value);
              }
 
              // Bind with type conversion
@@ -301,8 +299,8 @@ async fn exec_post(state: Data<AppState>, route: String, schemas_map: Arc<HashMa
     // ensure created_by_id if column exists
     if schema.columns.iter().any(|c| c.name == "created_by_id") && !doc_map.contains_key("created_by_id") {
         let actor_opt = actor_id.or_else(|| body.get("__actor_id__").and_then(|v| v.as_str()).map(|s| s.to_string()));
-         if let Some(actor) = actor_opt {
-              if let Some(col) = schema.columns.iter().find(|c| c.name == "created_by_id") {
+         if let Some(actor) = actor_opt 
+              && let Some(col) = schema.columns.iter().find(|c| c.name == "created_by_id") {
                    if col.type_data.contains("int") {
                         if let Ok(n) = actor.parse::<i64>() { doc_map.insert("created_by_id".into(), serde_json::json!(n)); }
                    } else if col.type_data.contains("float") || col.type_data.contains("double") {
@@ -311,7 +309,6 @@ async fn exec_post(state: Data<AppState>, route: String, schemas_map: Arc<HashMa
                         doc_map.insert("created_by_id".into(), Value::String(actor));
                    }
               }
-         }
     }
 
     match state.store.insert(&schema.table, Value::Object(doc_map)).await {
@@ -366,10 +363,8 @@ async fn exec_put(state: Data<AppState>, route: String, schemas_map: Arc<HashMap
                 .unwrap_or_default();
 
              // Encrypt
-             if col.encrypt {
-                 if !is_encrypted_string(&value) {
-                     value = encrypt(state.encrypt_key.clone(), value);
-                 }
+             if col.encrypt && !is_encrypted_string(&value) {
+                 value = encrypt(state.encrypt_key.clone(), value);
              }
 
              // Bind with type conversion
@@ -395,8 +390,8 @@ async fn exec_put(state: Data<AppState>, route: String, schemas_map: Arc<HashMap
     // updated_by_id if exists
     if schema.columns.iter().any(|c| c.name == "updated_by_id") {
         let actor_opt = body.get("__actor_id__").and_then(|v| v.as_str()).map(|s| s.to_string());
-        if let Some(actor) = actor_opt {
-             if let Some(col) = schema.columns.iter().find(|c| c.name == "updated_by_id") {
+        if let Some(actor) = actor_opt 
+             && let Some(col) = schema.columns.iter().find(|c| c.name == "updated_by_id") {
                 if col.type_data.contains("int") {
                     if let Ok(n) = actor.parse::<i64>() { doc_map.insert("updated_by_id".into(), Value::Number(n.into())); }
                     else { doc_map.insert("updated_by_id".into(), Value::String(actor)); }
@@ -406,7 +401,6 @@ async fn exec_put(state: Data<AppState>, route: String, schemas_map: Arc<HashMap
                 } else {
                     doc_map.insert("updated_by_id".into(), Value::String(actor));
                 }
-             }
         }
     }
 
