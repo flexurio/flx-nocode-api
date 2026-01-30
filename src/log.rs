@@ -23,7 +23,7 @@ pub fn log_output(tipe: &str, title: &str, ssubtitle: &str, body: String, print_
             "ERROR" => Color::Red,
             "WARN" => Color::Yellow,
             "DEBUG" => Color::Blue,
-            "QUERY" => Color::Cyan,
+            "QUERY" => Color::Magenta,
             _ => Color::White,
         };
 
