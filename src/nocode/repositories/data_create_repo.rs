@@ -224,7 +224,7 @@ pub async fn perform_insert(
     function_id_split: Vec<String>,
     route: &str,
     auth_token: Option<String>,
-) -> Result<(String, i64), String> {
+) -> Result<(String, i64, Value), String> {
 
     // Batch validate all foreign keys in one query
     validate_foreign_keys_batch(state, &fk_checks).await?;
@@ -316,7 +316,12 @@ pub async fn perform_insert(
     if state.db_type == DbType::Mongodb {
         let doc_json = Value::Object(doc_map);
         match state.store.insert(&table_schema.table, doc_json).await {
-            Ok(_) => Ok(("Data inserted successfully".to_string(), 1)),
+            Ok(returned_val) => {
+                 // Mongo insert returns the inserted document or at least the ID in some drivers, 
+                 // but traits::DataStore::insert returns Value. Assuming it returns the ID or Doc.
+                 // Ideally we want just the ID.
+                 Ok(("Data inserted successfully".to_string(), 1, returned_val))
+            },
             Err(e) => Err(format!("Error NCO-POST (mongo): {}", e))
         }
     } else {
@@ -339,7 +344,7 @@ pub async fn perform_insert(
              match crate::database::state::build_sql_and_params_from_formula(
                 &table_schema.post.validate_data,
                 body,
-            ) {
+             ) {
                 Ok((built_sql, params)) => {
 
                      match tx.raw_sql(&built_sql, params).await {
@@ -384,14 +389,9 @@ pub async fn perform_insert(
                     log_output("PARAMS", "POST(AST)", route, format!("{:?}", params), true);
                 }
                 
-                if *crate::ISDEBUG {
-                    log_output("QUERY", "POST(AST)", route, sql.clone(), true);
-                    log_output("PARAMS", "POST(AST)", route, format!("{:?}", params), true);
-                }
-                
                 match tx.raw_sql(&sql, params).await {
 
-                    Ok(_) => {
+                    Ok(rows_returned) => {
                          // POST-PROCESS (SQL based)
                         if table_schema.post.post_process.contains("SQL:") {
                              if let Err(err) = crate::database::state::execute_sql_formula_with_txstore(&mut tx, table_schema.post.post_process.clone(), body, route).await {
@@ -403,7 +403,19 @@ pub async fn perform_insert(
                         if let Err(e) = tx.commit().await {
                              return Err(format!("Error committing transaction: {}", e));
                         }
-                        Ok(("Data inserted successfully".to_string(), 1))
+                        
+                        // Extract ID from returned rows (RETURNING id) or from doc_map
+                        let inserted_id = if !rows_returned.is_empty() {
+                            // Try to get "id" column
+                             rows_returned[0].get("id").cloned()
+                                .or_else(|| rows_returned[0].get(0).cloned()) // Or first column
+                                .unwrap_or(Value::Null)
+                        } else {
+                             // Fallback to what we generated/passed
+                             doc_map.get("id").cloned().unwrap_or(Value::Null)
+                        };
+
+                        Ok(("Data inserted successfully".to_string(), 1, inserted_id))
                     },
                     Err(e) => {
                          let _ = tx.rollback().await;

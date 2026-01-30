@@ -533,6 +533,7 @@ pub async fn generate_users(state: Data<AppState>, schemas: &std::collections::H
                         ("created_at".into(), crate::storage::sql_store::InsertValue::Raw(now_fn.clone())),
                         ("updated_at".into(), crate::storage::sql_store::InsertValue::Raw(now_fn.clone())),
                         ("enabled".into(), crate::storage::sql_store::InsertValue::Param(crate::database::state::DbParam::Bool(true))),
+                        ("email_verified".into(), crate::storage::sql_store::InsertValue::Param(crate::database::state::DbParam::I64(1))),
                     ],
                 )
                 .unwrap();
@@ -574,11 +575,22 @@ pub async fn generate_role_admin(state: &AppState, ds: SqlStore, id_user: i64, _
     if state.db_type != crate::model::DbType::Mongodb {
         // Insert default roles (two rows) with AST bulk insert
         use crate::storage::sql_store::InsertValue as IV;
-        let cols = vec!["id_users".into(), "role".into(), "created_at".into()];
-        // Insert single role for admin (127)
-        let rows = vec![
-            vec![IV::Param(crate::database::state::DbParam::I64(id_user)), IV::Param(crate::database::state::DbParam::I64(127)), IV::Raw(now_fn.clone())],
-        ];
+        let cols = vec!["id_users".into(), "endpoint".into(), "role".into(), "created_at".into()];
+        
+        let mut rows = Vec::new();
+        // Just insert for every route provided in '_routes'
+        if _routes.is_empty() {
+             // Fallback if empty? Or just do nothing?
+             // But usually it's flx_users and flx_roles at least.
+        }
+        for r in _routes {
+            rows.push(vec![
+                IV::Param(crate::database::state::DbParam::I64(id_user)), 
+                IV::Param(crate::database::state::DbParam::Str(r)),
+                IV::Param(crate::database::state::DbParam::I64(127)), 
+                IV::Raw(now_fn.clone())
+            ]);
+        }
         if let Ok((sql_roles_ins, params_roles_ins)) = ds.preview_insert_bulk("flx_roles", &cols, &rows) {
             let built_roles = crate::database::state::rehydrate_placeholders(&sql_roles_ins, state.db_type.as_str());
             // Properly await the async query and handle errors

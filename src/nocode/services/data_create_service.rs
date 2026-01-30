@@ -274,7 +274,7 @@ pub async fn process_insert_request(
         route,
         auth_token
     ).await {
-         Ok((msg, _count)) => {
+         Ok((msg, _count, inserted_id)) => {
              // Audit Log
              if let Some(actor) = &actor_id_opt {
                   // Audit Log
@@ -294,7 +294,7 @@ pub async fn process_insert_request(
                  success: true,
                  message: msg,
                  total_data: 1,
-                 data: Value::Null, // Or return the inserted ID if we can? `post.rs` returned success msg.
+                 data: inserted_id, 
              })
          },
          Err(e) => Err(WebResponse {
