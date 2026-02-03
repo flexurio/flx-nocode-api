@@ -116,10 +116,19 @@ pub async fn process_get_request(
     let mut use_cache = false;
     let mut cache_key: Option<String> = None;
 
-    if state.is_cachedb && params_map_awal.contains_key("redis") {
-        isredis = params_map_awal.get("redis").unwrap() == &Value::Bool(true) || params_map_awal.get("redis").unwrap() == &Value::String("true".to_string());            
-        params_map.remove("redis");
-    }
+    if state.is_cachedb
+        && let Some(redis_val) = params_map_awal.get("redis") {
+            isredis = match redis_val {
+                Value::Bool(b) => *b,
+                Value::String(s) => {
+                    let s_lower = s.to_ascii_lowercase();
+                    s_lower == "true" || s_lower == "1" || s_lower == "yes"
+                }
+                Value::Number(n) => n.as_i64().unwrap_or(0) != 0,
+                _ => false,
+            };
+            params_map.remove("redis");
+        }
 
     // log isredis 
     log_output("DEBUG", "ISREDIS", route, format!("isredis: {}", isredis), true);

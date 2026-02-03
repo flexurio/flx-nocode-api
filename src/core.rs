@@ -222,8 +222,10 @@ pub async fn login(state: web::Data<AppState>, req: actix_web::HttpRequest) -> i
                     
                     match rl {
                         serde_json::Value::Number(n) if n.is_i64() => {
-                            use std::fmt::Write;
-                            let _ = write!(result, "{}", n.as_i64().unwrap());
+                            if let Some(i) = n.as_i64() {
+                                use std::fmt::Write;
+                                let _ = write!(result, "{}", i);
+                            }
                         }
                         serde_json::Value::String(s) => result.push_str(s),
                         _ => continue,
@@ -521,22 +523,30 @@ pub async fn generate_users(state: Data<AppState>, schemas: &std::collections::H
         // Insert admin using AST insert_with for cross-db NOW()
             let ds = SqlStore::new(state.db.clone(), state.db_type.as_str().to_string());
             let now_fn = state.query_converter.datetime_now.clone();
-            let (sql_insert_admin, params_insert_admin) = ds
-                .preview_insert_with(
-                    "flx_users",
-                    &[
-                        ("id".into(), crate::storage::sql_store::InsertValue::Param(crate::database::state::DbParam::I64(1))),
-                        ("email".into(), crate::storage::sql_store::InsertValue::Param(crate::database::state::DbParam::Str("admin".into()))),
-                        ("phone".into(), crate::storage::sql_store::InsertValue::Param(crate::database::state::DbParam::Str("5758".into()))),
-                        ("password".into(), crate::storage::sql_store::InsertValue::Param(crate::database::state::DbParam::Str(encrypt_password))),
-                        ("name".into(), crate::storage::sql_store::InsertValue::Param(crate::database::state::DbParam::Str("Admin Flexurio".into()))),
-                        ("created_at".into(), crate::storage::sql_store::InsertValue::Raw(now_fn.clone())),
-                        ("updated_at".into(), crate::storage::sql_store::InsertValue::Raw(now_fn.clone())),
-                        ("enabled".into(), crate::storage::sql_store::InsertValue::Param(crate::database::state::DbParam::Bool(true))),
-                        ("email_verified".into(), crate::storage::sql_store::InsertValue::Param(crate::database::state::DbParam::I64(1))),
-                    ],
-                )
-                .unwrap();
+            let insert_fields = [
+                ("id".into(), crate::storage::sql_store::InsertValue::Param(crate::database::state::DbParam::I64(1))),
+                ("email".into(), crate::storage::sql_store::InsertValue::Param(crate::database::state::DbParam::Str("admin".into()))),
+                ("phone".into(), crate::storage::sql_store::InsertValue::Param(crate::database::state::DbParam::Str("5758".into()))),
+                ("password".into(), crate::storage::sql_store::InsertValue::Param(crate::database::state::DbParam::Str(encrypt_password))),
+                ("name".into(), crate::storage::sql_store::InsertValue::Param(crate::database::state::DbParam::Str("Admin Flexurio".into()))),
+                ("created_at".into(), crate::storage::sql_store::InsertValue::Raw(now_fn.clone())),
+                ("updated_at".into(), crate::storage::sql_store::InsertValue::Raw(now_fn.clone())),
+                ("enabled".into(), crate::storage::sql_store::InsertValue::Param(crate::database::state::DbParam::Bool(true))),
+                ("email_verified".into(), crate::storage::sql_store::InsertValue::Param(crate::database::state::DbParam::I64(1))),
+            ];
+            let (sql_insert_admin, params_insert_admin) = match ds.preview_insert_with("flx_users", &insert_fields) {
+                Ok(v) => v,
+                Err(err) => {
+                    log_output(
+                        "ERROR",
+                        "QUERY",
+                        "generate/table/insert-flx_users-admin",
+                        format!("Failed to build insert for admin user: {}", err),
+                        true,
+                    );
+                    return id_user.to_string();
+                }
+            };
             let built = crate::database::state::rehydrate_placeholders(&sql_insert_admin, state.db_type.as_str());
             // For MSSQL identity column, allow explicit ID insertion by toggling IDENTITY_INSERT
             let result = if state.db_type == crate::model::DbType::Mssql {

@@ -272,7 +272,10 @@ pub async fn perform_insert(
                         _ => "0".to_string(),
                     }
                 } else {
-                    match tx_opt.as_mut().unwrap().query(&q_max).await {
+                    let tx = tx_opt
+                        .as_mut()
+                        .ok_or_else(|| "Transaction not available for ID generation".to_string())?;
+                    match tx.query(&q_max).await {
                         Ok(rows) if !rows.is_empty() => rows[0].get("id").and_then(|v| v.as_str().map(|s| s.to_string())).unwrap_or_else(|| "0".to_string()),
                         _ => "0".to_string(),
                     }
@@ -329,7 +332,10 @@ pub async fn perform_insert(
         let returning_cols: Vec<&str> = vec!["id"]; // core id fetch
         let attempt = ds.preview_insert_with_returning(&table_schema.table, &insert_fields, &returning_cols);
         
-        let mut tx = tx_opt.unwrap();
+        let mut tx = match tx_opt {
+            Some(t) => t,
+            None => return Err("Transaction not available for insert".to_string()),
+        };
         
         // Execute VALIDATE_DATA (API based) if exists
         if table_schema.post.validate_data.starts_with("API:") {

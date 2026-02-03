@@ -291,9 +291,25 @@ pub async fn process_export_request(
     });
 
     let filename = format!("{}-{}.{}", filename_base, ts, file_ext);
+    let content_type_header = match header::HeaderValue::from_str(&content_type) {
+        Ok(v) => v,
+        Err(e) => {
+            log_output("WARN", "EXPORT", route, format!("Invalid content-type header: {} ({})", content_type, e), true);
+            header::HeaderValue::from_static("application/octet-stream")
+        }
+    };
+    let disposition_value = format!("attachment; filename=\"{}\"", filename);
+    let content_disp_header = match header::HeaderValue::from_str(&disposition_value) {
+        Ok(v) => v,
+        Err(e) => {
+            log_output("WARN", "EXPORT", route, format!("Invalid content-disposition header: {} ({})", disposition_value, e), true);
+            header::HeaderValue::from_static("attachment")
+        }
+    };
+
     HttpResponse::Ok()
-        .insert_header((header::CONTENT_TYPE, header::HeaderValue::from_str(&content_type).unwrap()))
-        .insert_header((header::CONTENT_DISPOSITION, header::HeaderValue::from_str(&format!("attachment; filename=\"{}\"", filename)).unwrap()))
+        .insert_header((header::CONTENT_TYPE, content_type_header))
+        .insert_header((header::CONTENT_DISPOSITION, content_disp_header))
         .body(bytes)
 
 }
