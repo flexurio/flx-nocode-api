@@ -108,7 +108,7 @@ pub fn mysqlrows_to_json(rows: Vec<MySqlRow>) -> Vec<Value> {
             } else if type_info_debug.contains("DATETIME") {
                 // Handle DATETIME regardless of BINARY flag - put this BEFORE general BINARY check
                 match row.try_get::<Option<chrono::NaiveDateTime>, _>(name) {
-                    Ok(Some(dt)) => Value::String(dt.to_string()),
+                    Ok(Some(dt)) => Value::String(dt.format("%Y-%m-%dT%H:%M:%SZ").to_string()),
                     Ok(None) => Value::Null,
                     Err(e) => {
                         eprintln!("DATETIME Failed to get {} as Option<chrono::NaiveDateTime>: {:?}, {} \n", name, e, type_info_debug);
@@ -120,7 +120,7 @@ pub fn mysqlrows_to_json(rows: Vec<MySqlRow>) -> Vec<Value> {
                     Ok(Some(dt)) => Value::String(dt.to_rfc3339()),
                     Ok(None) => Value::Null,
                     Err(_) => match row.try_get::<Option<chrono::NaiveDateTime>, _>(name) {
-                        Ok(Some(dt)) => Value::String(dt.to_string()),
+                        Ok(Some(dt)) => Value::String(dt.format("%Y-%m-%dT%H:%M:%SZ").to_string()),
                         Ok(None) => Value::Null,
                         Err(e) => {
                             eprintln!(

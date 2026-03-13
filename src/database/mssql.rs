@@ -155,7 +155,7 @@ fn mssql_row_to_json(row: &Row) -> Value {
         } else if let Ok(v) = row.try_get::<bool, _>(name) {
             v.map(Value::Bool).unwrap_or(Value::Null)
         } else if let Ok(v) = row.try_get::<chrono::NaiveDateTime, _>(name) {
-            v.map(|dt| Value::String(dt.to_string())).unwrap_or(Value::Null)
+            v.map(|dt| Value::String(dt.format("%Y-%m-%dT%H:%M:%SZ").to_string())).unwrap_or(Value::Null)
         } else if let Ok(v) = row.try_get::<&str, _>(name) {
             v.map(|s| Value::String(s.to_string())).unwrap_or(Value::Null)
         } else if let Ok(v) = row.try_get::<&[u8], _>(name) {

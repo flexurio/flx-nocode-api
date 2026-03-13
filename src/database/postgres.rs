@@ -99,7 +99,7 @@ pub fn pgrows_to_json(rows: Vec<PgRow>) -> Vec<Value> {
             {
                 row.try_get::<Option<chrono::NaiveDateTime>, _>(name)
                     .map(|opt| {
-                        opt.map(|dt| Value::String(dt.to_string()))
+                        opt.map(|dt| Value::String(dt.format("%Y-%m-%dT%H:%M:%SZ").to_string()))
                             .unwrap_or(Value::Null)
                     })
                     .unwrap_or(Value::Null)
