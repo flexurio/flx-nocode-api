@@ -137,18 +137,31 @@ pub async fn process_insert_request(
     }
 
     // 5. Validate Required Fields
-     for post_col in &table_schema.post.columns {
-        let Some(col_def) = table_schema.columns.iter().find(|c| c.name == *post_col) else { continue };
-        if !col_def.nullable && !col_def.auto_increment {
+    for post_col in &table_schema.post.columns {
+        // Check if column is marked as required with *
+        let is_required_marker = post_col.ends_with('*');
+        let clean_col_name = if is_required_marker {
+            post_col.trim_end_matches('*')
+        } else {
+            post_col.as_str()
+        };
+
+        let Some(col_def) = table_schema.columns.iter().find(|c| c.name == clean_col_name) else { continue };
+
+        // Check if field is mandatory: either marked with * or column is not nullable and not auto_increment
+        let is_mandatory = is_required_marker || (!col_def.nullable && !col_def.auto_increment);
+
+        if is_mandatory {
             let present = body
-                .get(post_col)
+                .get(clean_col_name)
                 .map(|v| v.to_string().replace('"', ""))
                 .map(|s| !s.trim().is_empty())
                 .unwrap_or(false);
+
             if !present {
                 return Err(WebResponse {
                     success: false,
-                    message: format!("Missing required field: {}", post_col),
+                    message: format!("Missing required field: {}", clean_col_name),
                     total_data: 0,
                     data: Value::Null,
                 });
@@ -161,19 +174,27 @@ pub async fn process_insert_request(
         "created_at", "created_by_id", "updated_at", "updated_by_id", "deleted_at", "deleted_by_id",
     ].iter().cloned().collect();
 
+    // Helper to check if column is in post.columns (strips *)
+    let col_in_post_columns = |col_name: &str| -> bool {
+        table_schema.post.columns.iter().any(|post_col| {
+            let clean_name = post_col.trim_end_matches('*');
+            clean_name == col_name
+        })
+    };
+
     let mut filtered_columns: Vec<&Column> = Vec::with_capacity(table_schema.post.columns.len());
     filtered_columns.extend(
         table_schema
             .columns
             .iter()
-            .filter(|col| !col.auto_increment && !skip_columns.contains(col.name.as_str()) && table_schema.post.columns.contains(&col.name))
+            .filter(|col| !col.auto_increment && !skip_columns.contains(col.name.as_str()) && col_in_post_columns(&col.name))
     );
 
     let mut insert_columns: Vec<&str> = Vec::with_capacity(filtered_columns.len() + 2);
     insert_columns.extend(
         filtered_columns
             .iter()
-            .filter(|col| table_schema.post.columns.contains(&col.name))
+            .filter(|col| col_in_post_columns(&col.name))
             .map(|col| col.name.as_str())
     );
      // explicit id check
@@ -193,7 +214,10 @@ pub async fn process_insert_request(
         if col.auto_increment { continue; }
 
         let mut isformula = false;
-        let post_columns: Vec<&str> = table_schema.post.columns.iter().map(|s| s.as_str()).collect();
+        // Strip * marker from post.columns for comparison
+        let post_columns: Vec<&str> = table_schema.post.columns.iter()
+            .map(|s| s.trim_end_matches('*'))
+            .collect();
         let (exists, matched_string) = find_column_match(&post_columns, &col.name);
 
         if exists && col.name != "id" {
