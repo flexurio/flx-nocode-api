@@ -143,24 +143,47 @@ pub async fn process_update_request(
 
     if let Some(body_obj) = body.as_object() {
         for column in table_schema.put.columns.iter() {
-            if let Some(value) = body_obj.get(column) {
+            let is_required_marker = column.ends_with('*');
+            let clean_column = if is_required_marker {
+                column.trim_end_matches('*')
+            } else {
+                column.as_str()
+            };
+
+            // Validate required fields marked with *
+            if is_required_marker {
+                let present = body_obj.get(clean_column)
+                    .map(|v| v.to_string().replace('"', ""))
+                    .map(|s| !s.trim().is_empty())
+                    .unwrap_or(false);
+                if !present {
+                    return HttpResponse::BadRequest().json(WebResponse {
+                        success: false,
+                        message: format!("Missing required field: {}", clean_column),
+                        total_data: 0,
+                        data: Value::Null,
+                    });
+                }
+            }
+
+            if let Some(value) = body_obj.get(clean_column) {
                 let mut value_x = format!("{}", value).replace("\"", "").replace("null", "");
                 
                 if !value_x.is_empty() {
                     // Collect FK Checks
                     for fk in table_schema.foreign_keys.iter() {
-                        if fk.column == *column {
-                             fk_checks.push((column.clone(), fk.reference_table.clone(), fk.reference_column.clone(), value_x.clone()));
+                        if fk.column == clean_column {
+                             fk_checks.push((clean_column.to_string(), fk.reference_table.clone(), fk.reference_column.clone(), value_x.clone()));
                         }
                     }
 
                     // Metadata Check
-                    let col = match table_schema.columns.iter().find(|c| c.name == *column) {
+                    let col = match table_schema.columns.iter().find(|c| c.name == clean_column) {
                          Some(c) => c,
                          None => {
                              return HttpResponse::BadRequest().json(WebResponse {
                                 success: false,
-                                message: format!("Unknown column '{}' for route '{}'", column, route),
+                                message: format!("Unknown column '{}' for route '{}'", clean_column, route),
                                 total_data: 0,
                                 data: Value::Null,
                             });
@@ -173,7 +196,7 @@ pub async fn process_update_request(
                         if !is_encrypted {
                             value_x = encrypt(state.encrypt_key.clone(), value_x.clone());
                         }
-                        if route == "flx_users" && column == "password" {
+                        if route == "flx_users" && clean_column == "password" {
                             password_override = Some(value_x.clone());
                         }
                     }
@@ -181,18 +204,18 @@ pub async fn process_update_request(
                     // Type Conversion
                     if col.type_data.contains("int") || col.type_data.contains("float") || col.type_data.contains("double") || col.type_data.contains("decimal") || col.type_data.contains("money") {
                          if let Ok(n) = value_x.parse::<i64>() {
-                            update_fields.push((column.clone(), InsertValue::Param(DbParam::I64(n))));
-                            patch_fields.insert(column.clone(), serde_json::json!(n));
+                            update_fields.push((clean_column.to_string(), InsertValue::Param(DbParam::I64(n))));
+                            patch_fields.insert(clean_column.to_string(), serde_json::json!(n));
                          } else if let Ok(f) = value_x.parse::<f64>() {
-                            update_fields.push((column.clone(), InsertValue::Param(DbParam::F64(f))));
-                            patch_fields.insert(column.clone(), serde_json::json!(f));
+                            update_fields.push((clean_column.to_string(), InsertValue::Param(DbParam::F64(f))));
+                            patch_fields.insert(clean_column.to_string(), serde_json::json!(f));
                          } else {
-                            update_fields.push((column.clone(), InsertValue::Param(DbParam::Str(value_x.clone()))));
-                            patch_fields.insert(column.clone(), serde_json::json!(value_x));
+                            update_fields.push((clean_column.to_string(), InsertValue::Param(DbParam::Str(value_x.clone()))));
+                            patch_fields.insert(clean_column.to_string(), serde_json::json!(value_x));
                          }
                     } else {
-                        update_fields.push((column.clone(), InsertValue::Param(DbParam::Str(value_x.clone()))));
-                        patch_fields.insert(column.clone(), serde_json::json!(value_x));
+                        update_fields.push((clean_column.to_string(), InsertValue::Param(DbParam::Str(value_x.clone()))));
+                        patch_fields.insert(clean_column.to_string(), serde_json::json!(value_x));
                     }
                 }
             }
