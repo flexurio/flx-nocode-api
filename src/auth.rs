@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde_json::Value;
 
-use crate::{helpers::get_client_ip, AppState};
+use crate::{database::state::DbParam, helpers::get_client_ip, AppState};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Claims {
@@ -126,10 +126,13 @@ pub async fn create_token(
         sql_query = sql_query.to_lowercase();
 
         if !sql_query.is_empty() {
-            sql_query = sql_query.replace("{:?}", &id_user);
+            // Replace the placeholder with `?` so query_with_params can bind it safely.
+            // This prevents SQL injection: the value is passed as a bound parameter,
+            // never interpolated into the query string.
+            sql_query = sql_query.replace("{:?}", "?");
 
             // Optimize: Add timeout to prevent hanging on slow queries
-            let query_future = state.db.query(&sql_query);
+            let query_future = state.db.query_with_params(&sql_query, vec![DbParam::Str(id_user.clone())]);
             addjwt = match tokio::time::timeout(std::time::Duration::from_millis(500), query_future).await {
                 Ok(Ok(results)) => results
                     .first()
