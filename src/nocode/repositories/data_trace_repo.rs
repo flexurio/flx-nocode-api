@@ -39,6 +39,7 @@ pub async fn perform_trace_execution(
             if key.contains("deleted_at") { is_deleted_at = false; }
             if param == key {
                 let val_str = value.as_str().unwrap_or("");
+                if val_str.is_empty() { continue; }
                 let (column, operator, v_raw) = split_column_operator(param, &table_schema.table, val_str);
                 
                 if param.contains('|') {

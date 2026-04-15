@@ -178,6 +178,7 @@ pub async fn process_export_request(
                       }
                  }
                  p if p.contains('|') => {
+                      if value_str.is_empty() { continue; }
                       let mut ors: Vec<QF> = Vec::new();
                       for part in p.split('|') {
                            let (column, operator, val) = split_column_operator(part, &table_schema.table, &value_str);
@@ -188,6 +189,7 @@ pub async fn process_export_request(
                       if !ors.is_empty() { filters.push(QF::Or(ors)); }
                  }
                  _ => {
+                      if value_str.is_empty() { continue; }
                       let (column, operator, val) = split_column_operator(param, &table_schema.table, &value_str);
                       if operator == "is" {
                            if value_str.eq_ignore_ascii_case("NULL") { filters.push(QF::IsNull(column)); }

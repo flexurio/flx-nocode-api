@@ -119,6 +119,7 @@ pub async fn fetch_dynamic_data(
                     }
                 }
                 p if p.contains('|') => {
+                    if value_str.is_empty() { continue; }
                     // OR across multiple columns
                     let parts_count = p.matches('|').count() + 1;
                     let mut ors: Vec<QF> = Vec::with_capacity(parts_count); 
@@ -193,6 +194,7 @@ pub async fn fetch_dynamic_data(
                     if !ors.is_empty() { filters.push(QF::Or(ors)); }
                 }
                 _ => {
+                    if value_str.is_empty() { continue; }
                     let (column, operator, val) = split_column_operator(clean_param, &table_schema.table, &value_str);
                     if operator == "is" {
                         if value_str.eq_ignore_ascii_case("NULL") {
