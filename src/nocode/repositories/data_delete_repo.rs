@@ -114,8 +114,28 @@ pub async fn perform_delete_sql(
     };
     log_output("QUERY", "DELETE(AST)", route, exec_sql.clone(), true);
 
+    // Build a body for SQL formula interpolation in pre/post process
+    let body: Value = {
+        let mut m = serde_json::Map::new();
+        for (col, val) in table_schema.primary_key.columns.iter().zip(pk_values.iter()) {
+            m.insert(col.clone(), Value::String(val.clone()));
+        }
+        if !m.contains_key("id") {
+            m.insert("id".to_string(), Value::String(id_raw.to_string()));
+        }
+        Value::Object(m)
+    };
+
     // Transaction
     let mut tx = state.store.begin_tx().await.map_err(|e| format!("Error starting transaction: {}", e))?;
+
+    // PRE-PROCESS
+    if table_schema.del.pre_process.contains("SQL:") {
+        if let Err(err) = crate::database::state::execute_sql_formula_with_txstore(&mut tx, table_schema.del.pre_process.clone(), &body, route).await {
+            let _ = tx.rollback().await;
+            return Err(format!("Error in pre-process: {}", err));
+        }
+    }
 
     match tx.raw_sql(&exec_sql, exec_params).await {
         Ok(_) => {
@@ -131,6 +151,13 @@ pub async fn perform_delete_sql(
             ).await;
 
             if is_fk_ok {
+                // POST-PROCESS
+                if table_schema.del.post_process.contains("SQL:") {
+                    if let Err(err) = crate::database::state::execute_sql_formula_with_txstore(&mut tx, table_schema.del.post_process.clone(), &body, route).await {
+                        let _ = tx.rollback().await;
+                        return Err(format!("Error in post-process: {}", err));
+                    }
+                }
                 tx.commit().await.map_err(|e| format!("Error committing transaction: {}", e))?;
                 Ok(())
             } else {

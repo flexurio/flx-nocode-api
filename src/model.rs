@@ -276,9 +276,13 @@ pub struct OperationPut {
 pub struct OperationDelete {
     #[serde(default)]
     pub enable_method: bool,
+    #[serde(default)]
     pub pre_process: String,
+    #[serde(default)]
     pub columns: Vec<String>,
+    #[serde(default)]
     pub type_delete: String,
+    #[serde(default)]
     pub post_process: String,
 }
 
