@@ -68,10 +68,9 @@ pub fn validate_token(
     req: &actix_web::HttpRequest,
     state: &web::Data<AppState>,
 ) -> Result<(), HttpResponse> {
-    // Fast path: check IP whitelist first to avoid expensive token operations
-    if is_ip_whitelisted(req, &state.whitelist_ips) || 
-        state.route_publics.contains(&req.path().to_string()) ||
-        state.converter_token != ClaimsConverter::default() {
+    // Fast path: check IP whitelist and public routes first
+    if is_ip_whitelisted(req, &state.whitelist_ips) ||
+        state.route_publics.contains(&req.path().to_string()) {
         return Ok(());
     }
 
@@ -89,6 +88,19 @@ pub fn validate_token(
         },
         None => return Err(HttpResponse::Unauthorized().json("Missing Authorization header")),
     };
+
+    // When converter_token is set (external/third-party JWT), skip signature validation
+    // because we do not hold the signing key — but the token must still be present and
+    // structurally valid (3-part base64 JWT). Signature validation is the responsibility
+    // of the upstream identity provider in this mode.
+    if state.converter_token != ClaimsConverter::default() {
+        let token = auth_header.trim_start_matches("Bearer ");
+        let parts: Vec<&str> = token.split('.').collect();
+        if parts.len() != 3 {
+            return Err(HttpResponse::Unauthorized().json("Invalid token structure"));
+        }
+        return Ok(());
+    }
 
     // Create validation config once
     let mut validation = Validation::new(Algorithm::HS256);
