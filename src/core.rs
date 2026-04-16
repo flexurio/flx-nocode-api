@@ -6,7 +6,7 @@ use actix_web::{
     HttpResponse, Responder,
 };
 use base64::{self, Engine};
-use rand::Rng;
+use rand::RngExt;
 use reqwest::Client;
 use serde_json::{json, Value};
 use zip::ZipArchive;

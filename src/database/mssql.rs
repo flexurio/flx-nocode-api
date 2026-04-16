@@ -104,19 +104,25 @@ impl MssqlConnectionManager {
 }
 
 #[cfg(feature = "bb8")]
-#[async_trait::async_trait]
 impl ManageConnection for MssqlConnectionManager {
     type Connection = TiberiusClient;
     type Error = anyhow::Error;
 
-    async fn connect(&self) -> Result<Self::Connection, Self::Error> {
-        connect_mssql(&self.connection_string, self.timeout_secs).await
+    fn connect(&self) -> impl std::future::Future<Output = Result<Self::Connection, Self::Error>> + Send {
+        let connection_string = self.connection_string.clone();
+        let timeout_secs = self.timeout_secs;
+        async move { connect_mssql(&connection_string, timeout_secs).await }
     }
 
-    async fn is_valid(&self, conn: &mut Self::Connection) -> Result<(), Self::Error> {
-        // Ping check to verify connection is alive
-        conn.simple_query("SELECT 1").await?;
-        Ok(())
+    fn is_valid(
+        &self,
+        conn: &mut Self::Connection,
+    ) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send {
+        async move {
+            // Ping check to verify connection is alive
+            conn.simple_query("SELECT 1").await?;
+            Ok(())
+        }
     }
 
     fn has_broken(&self, _conn: &mut Self::Connection) -> bool {

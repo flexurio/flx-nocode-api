@@ -3,7 +3,7 @@ use aes_gcm::{
     Aes256Gcm, Key, Nonce,
 };
 use base64::Engine;
-use rand::Rng;
+use rand::RngExt;
 use sha2::{Digest, Sha256};
 
 /// Fungsi untuk mengenkripsi data dengan AES-256-GCM
