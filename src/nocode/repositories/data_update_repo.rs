@@ -6,39 +6,7 @@ use crate::storage::ast::{Filter as QF, Val as QV};
 use crate::storage::sql_store::{SqlStore, InsertValue, UniqueCheck};
 use crate::database::state::DbParam;
 use crate::log::log_output;
-
-/// Parse composite PK values from path parameter using ~ as delimiter
-pub fn parse_pk_values(id_raw: &str) -> Vec<String> {
-    id_raw
-        .split('~')
-        .map(|s| s.to_string())
-        .collect()
-}
-
-/// Build a composite primary key filter
-pub fn build_pk_filter(pk_columns: &[String], pk_values: &[String]) -> Result<QF, String> {
-    if pk_columns.is_empty() {
-        return Err("No primary key columns defined".to_string());
-    }
-    if pk_columns.len() != pk_values.len() {
-        return Err(format!(
-            "Primary key mismatch: expected {} values for {} columns",
-            pk_columns.len(),
-            pk_values.len()
-        ));
-    }
-
-    if pk_columns.len() == 1 {
-        Ok(QF::Eq(pk_columns[0].clone(), QV::Str(pk_values[0].clone())))
-    } else {
-        let filters = pk_columns
-            .iter()
-            .zip(pk_values.iter())
-            .map(|(col, val)| QF::Eq(col.clone(), QV::Str(val.clone())))
-            .collect();
-        Ok(QF::And(filters))
-    }
-}
+use crate::nocode::pk_utils::{build_pk_filter, parse_pk_values};
 
 pub fn dbparam_from_value_and_type(val: &Value, meta: Option<&Column>) -> DbParam {
     if let Some(m) = meta {
@@ -490,10 +458,11 @@ pub async fn perform_update(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::ast::{Filter as QF, Val as QV};
+    use crate::storage::ast::Val as QV;
+    use crate::nocode::pk_utils::{build_pk_filter, parse_pk_values};
 
     #[test]
-    fn test_parse_pk_values() {
+    fn test_parse_pk_values_repo_uses_shared_util() {
         assert_eq!(parse_pk_values("123"), vec!["123"]);
         assert_eq!(parse_pk_values("123~456"), vec!["123", "456"]);
         assert_eq!(parse_pk_values("abc~def~ghi"), vec!["abc", "def", "ghi"]);

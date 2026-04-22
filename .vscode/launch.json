@@ -4,8 +4,8 @@
     {
       "type": "lldb",
       "request": "launch",
-      "name": "Debug: flexurio-api-nocode-v2",
-      "program": "${workspaceFolder}/target/debug/flexurio-api-nocode-v2",
+      "name": "Debug: flexurio-api-nocode",
+      "program": "${workspaceFolder}/target/debug/flexurio-api-nocode",
       "args": [],
       "cwd": "${workspaceFolder}",
       "envFile": "${workspaceFolder}/.env",

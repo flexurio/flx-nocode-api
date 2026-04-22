@@ -9,11 +9,8 @@ use crate::auth::{check_access, get_user_info_from_token, Claims};
 use crate::log::log_output;
 use crate::helpers::get_client_ip;
 use crate::audit::{write_audit, AuditEntry};
+use crate::nocode::pk_utils::parse_pk_values;
 use crate::nocode::repositories::data_delete_repo::{perform_delete_sql, perform_delete_mongo};
-
-fn parse_pk_values(id_raw: &str) -> Vec<String> {
-    id_raw.split('~').map(|s| s.to_string()).collect()
-}
 
 pub async fn process_delete_request(
     state: web::Data<AppState>,

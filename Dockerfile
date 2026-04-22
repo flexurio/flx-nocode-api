@@ -16,4 +16,4 @@ RUN cargo build --release
 
 EXPOSE 8080
 # Set the startup command
-CMD ["./target/release/flexurio-api-nocode-v2"]
+CMD ["./target/release/flexurio-api-nocode"]

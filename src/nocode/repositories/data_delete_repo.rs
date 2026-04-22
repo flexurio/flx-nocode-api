@@ -5,33 +5,9 @@ use crate::storage::ast::{Filter as QF, Val as QV};
 use crate::storage::sql_store::{SqlStore, InsertValue};
 use crate::log::log_output;
 use crate::nocode::foreign_key::process_foreign_keys_delete_update_txstore;
+use crate::nocode::pk_utils::build_pk_filter;
 use chrono::Local;
 use serde_json::Value;
-
-/// Build a composite primary key filter
-fn build_pk_filter(pk_columns: &[String], pk_values: &[String]) -> Result<QF, String> {
-    if pk_columns.is_empty() {
-        return Err("No primary key columns defined".to_string());
-    }
-    if pk_columns.len() != pk_values.len() {
-        return Err(format!(
-            "Primary key mismatch: expected {} values for {} columns",
-            pk_columns.len(),
-            pk_values.len()
-        ));
-    }
-
-    if pk_columns.len() == 1 {
-        Ok(QF::Eq(pk_columns[0].clone(), QV::Str(pk_values[0].clone())))
-    } else {
-        let filters = pk_columns
-            .iter()
-            .zip(pk_values.iter())
-            .map(|(col, val)| QF::Eq(col.clone(), QV::Str(val.clone())))
-            .collect();
-        Ok(QF::And(filters))
-    }
-}
 
 #[allow(clippy::too_many_arguments)]
 pub async fn perform_delete_sql(
@@ -231,6 +207,7 @@ pub async fn perform_delete_mongo(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::nocode::pk_utils::build_pk_filter;
     // Add tests for build_pk_filter
     #[test]
     fn test_build_pk_filter() {
