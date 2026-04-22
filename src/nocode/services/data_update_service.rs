@@ -95,9 +95,7 @@ pub async fn process_update_request(
          };
          
          if state.write_queue_fast_ack {
-             tokio::spawn(async move {
-                 let _ = crate::nocode::consumer::enqueue_job(&job).await;
-             });
+             crate::nocode::consumer::enqueue_job_background(job, "UPDATE-HANDLER");
               return HttpResponse::Accepted().json(WebResponse {
                     success: true,
                     message: "Enqueued (async)".to_string(),

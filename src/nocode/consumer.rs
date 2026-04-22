@@ -3,6 +3,7 @@ use std::sync::Arc;
 use actix_web::web::Data;
 use anyhow::{anyhow, Result};
 use chrono::Utc;
+use rand::RngExt;
 use redis::AsyncCommands;
 use redis::aio::MultiplexedConnection;
 use serde::{Deserialize, Serialize};
@@ -35,15 +36,169 @@ pub struct WriteJob {
 
 impl WriteJob {
     pub fn queue_key() -> String { "flx:wq:default".into() }
+    pub fn dlq_key() -> String { "flx:wq:dlq".into() }
+}
+
+fn op_name(op: &WriteOpKind) -> &'static str {
+    match op {
+        WriteOpKind::Post => "POST",
+        WriteOpKind::Put { .. } => "PUT",
+        WriteOpKind::Delete { .. } => "DELETE",
+    }
 }
 
 /// Push a job to the Redis list (LPUSH) and return queue length.
 pub async fn enqueue_job(job: &WriteJob) -> Result<i64> {
+    let max_len: i64 = std::env::var("WRITE_QUEUE_MAX_LEN")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    let retry_count: usize = std::env::var("WRITE_QUEUE_ENQUEUE_RETRY")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(2);
+
     let payload = serde_json::to_string(job)?;
     let client = crate::database::redis::get_manager().await?;
     let mut conn = client.get_multiplexed_async_connection().await?;
-    let len: i64 = conn.lpush(WriteJob::queue_key(), payload).await?;
+    for attempt in 0..=retry_count {
+        if max_len > 0 {
+            let cur_len: i64 = conn.llen(WriteJob::queue_key()).await?;
+            if cur_len >= max_len {
+                return Err(anyhow!(
+                    "Queue backpressure: len={} reached max={}",
+                    cur_len,
+                    max_len
+                ));
+            }
+        }
+
+        match conn.lpush(WriteJob::queue_key(), payload.clone()).await {
+            Ok(len) => return Ok(len),
+            Err(e) => {
+                if attempt >= retry_count {
+                    return Err(anyhow!(e));
+                }
+                let jitter_ms: u64 = rand::rng().random_range(0..=60);
+                let sleep_ms = ((attempt as u64) + 1) * 120 + jitter_ms;
+                tokio::time::sleep(std::time::Duration::from_millis(sleep_ms)).await;
+            }
+        }
+    }
+
+    Err(anyhow!("enqueue failed unexpectedly"))
+}
+
+#[derive(Debug, Serialize)]
+struct FailedJobRecord {
+    failed_at: String,
+    worker: String,
+    error: String,
+    route: String,
+    op: String,
+    job: WriteJob,
+}
+
+async fn push_dlq(job: WriteJob, worker: &str, error: &str) -> Result<i64> {
+    let record = FailedJobRecord {
+        failed_at: Utc::now().to_rfc3339(),
+        worker: worker.to_string(),
+        error: error.to_string(),
+        route: job.route.clone(),
+        op: op_name(&job.op).to_string(),
+        job,
+    };
+    let payload = serde_json::to_string(&record)?;
+    let client = crate::database::redis::get_manager().await?;
+    let mut conn = client.get_multiplexed_async_connection().await?;
+    let len: i64 = conn.lpush(WriteJob::dlq_key(), payload).await?;
     Ok(len)
+}
+
+async fn execute_with_retry(
+    state: Data<AppState>,
+    schemas_map: Arc<HashMap<String, Arc<TableSchema>>>,
+    job: WriteJob,
+    retry_max: usize,
+) -> Result<()> {
+    let mut last_err: Option<anyhow::Error> = None;
+    for attempt in 0..=retry_max {
+        match execute_job(state.clone(), schemas_map.clone(), job.clone()).await {
+            Ok(_) => return Ok(()),
+            Err(e) => {
+                last_err = Some(e);
+                if attempt < retry_max {
+                    let jitter_ms: u64 = rand::rng().random_range(0..=80);
+                    let sleep_ms = ((attempt as u64) + 1) * 200 + jitter_ms;
+                    tokio::time::sleep(std::time::Duration::from_millis(sleep_ms)).await;
+                }
+            }
+        }
+    }
+    Err(last_err.unwrap_or_else(|| anyhow!("execution failed")))
+}
+
+/// Fire-and-forget enqueue with explicit success/error observability.
+pub fn enqueue_job_background(job: WriteJob, source: &str) {
+    let source = source.to_string();
+    tokio::spawn(async move {
+        let op = op_name(&job.op);
+        let route = job.route.clone();
+        match enqueue_job(&job).await {
+            Ok(queue_len) => {
+                log_output(
+                    "QUEUE",
+                    "ENQUEUE-OK",
+                    source.as_str(),
+                    format!("{} {} queued (len={})", op, route, queue_len),
+                    true,
+                );
+            }
+            Err(e) => {
+                log_output(
+                    "QUEUE",
+                    "ENQUEUE-ERR",
+                    source.as_str(),
+                    format!("{} {} failed: {}", op, route, e),
+                    false,
+                );
+            }
+        }
+    });
+}
+
+/// Batch variant for fast-ack flows to preserve visibility and reduce log spam.
+pub fn enqueue_jobs_background(jobs: Vec<WriteJob>, source: &str) {
+    let source = source.to_string();
+    tokio::spawn(async move {
+        let total = jobs.len();
+        let mut ok_count = 0usize;
+        let mut err_count = 0usize;
+        for job in jobs {
+            if enqueue_job(&job).await.is_ok() {
+                ok_count += 1;
+            } else {
+                err_count += 1;
+            }
+        }
+        if err_count == 0 {
+            log_output(
+                "QUEUE",
+                "ENQUEUE-BATCH-OK",
+                source.as_str(),
+                format!("queued {} jobs", ok_count),
+                true,
+            );
+        } else {
+            log_output(
+                "QUEUE",
+                "ENQUEUE-BATCH-ERR",
+                source.as_str(),
+                format!("queued={}, failed={}, total={}", ok_count, err_count, total),
+                false,
+            );
+        }
+    });
 }
 
 
@@ -129,8 +284,18 @@ pub async fn start_consumer(state: Data<AppState>, schemas_map: Arc<HashMap<Stri
                         consecutive_errors = 0;
                         backoff_ms = 250;
                         
-                        if let Err(e) = execute_job(state_cl.clone(), schemas_map_cl.clone(), job).await {
-                            log_output("QUEUE", "EXEC-ERR", format!("worker-{}", idx).as_str(), format!("{}", e), false);
+                        let worker_name = format!("worker-{}", idx);
+                        let retry_max: usize = std::env::var("WRITE_EXEC_RETRY_MAX")
+                            .ok()
+                            .and_then(|s| s.parse().ok())
+                            .unwrap_or(2);
+                        let job_for_dlq = job.clone();
+                        if let Err(e) = execute_with_retry(state_cl.clone(), schemas_map_cl.clone(), job, retry_max).await {
+                            log_output("QUEUE", "EXEC-ERR", worker_name.as_str(), format!("{}", e), false);
+                            match push_dlq(job_for_dlq, worker_name.as_str(), &e.to_string()).await {
+                                Ok(dlq_len) => log_output("QUEUE", "DLQ-PUSH", worker_name.as_str(), format!("len={}", dlq_len), false),
+                                Err(dlq_err) => log_output("QUEUE", "DLQ-ERR", worker_name.as_str(), format!("{}", dlq_err), false),
+                            }
                         }
                     }
                     Ok(None) => {
@@ -192,8 +357,15 @@ pub async fn start_consumer(state: Data<AppState>, schemas_map: Arc<HashMap<Stri
 
     // detach in background
     tokio::spawn(async move {
-        while let Some(_res) = set.join_next().await {
-            // workers are endless; this shouldn't happen, but if it does, spawn a replacement
+        while let Some(res) = set.join_next().await {
+            match res {
+                Ok(_) => {
+                    log_output("QUEUE", "WORKER-EXIT", "consumer-supervisor", "worker exited unexpectedly".to_string(), false);
+                }
+                Err(e) => {
+                    log_output("QUEUE", "WORKER-PANIC", "consumer-supervisor", format!("worker join error: {}", e), false);
+                }
+            }
         }
     });
 }

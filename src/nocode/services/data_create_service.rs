@@ -99,9 +99,7 @@ pub async fn process_insert_request(
          };
 
          if state.write_queue_fast_ack {
-             tokio::spawn(async move {
-                 let _ = crate::nocode::consumer::enqueue_job(&job).await;
-             });
+             crate::nocode::consumer::enqueue_job_background(job, "CREATE-HANDLER");
              return Ok(WebResponse {
                  success: true,
                  message: "Enqueued".to_string(),

@@ -60,9 +60,7 @@ pub async fn process_delete_request(
         };
 
         if state.write_queue_fast_ack {
-            tokio::spawn(async move {
-                let _ = crate::nocode::consumer::enqueue_job(&job).await;
-            });
+            crate::nocode::consumer::enqueue_job_background(job, "DELETE-HANDLER");
             log_output("QUEUE", "DELETE-HANDLER", &route, format!("queued (async) in {} ms", t0.elapsed().as_millis()), true);
             return Ok(WebResponse {
                 success: true,

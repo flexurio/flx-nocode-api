@@ -477,8 +477,14 @@ async fn main() -> anyhow::Result<()> {
     if app_state.db_type != crate::model::DbType::Mongodb {
         // convert id_user_string to i64
         let id_user: i64 = id_user_str.parse().unwrap_or(1);
-        let fut = generate_role_admin(&app_state, ds, id_user, CONFIG.routes.clone());
-        std::mem::drop(fut); // fire-and-forget as before
+        let app_state_cl = app_state.clone();
+        let routes_cl = CONFIG.routes.clone();
+        tokio::spawn(async move {
+            match generate_role_admin(&app_state_cl, ds, id_user, routes_cl).await {
+                Ok(_) => log_output("BOOT", "ROLE-SEED", "generate_role_admin", "completed".to_string(), true),
+                Err(e) => log_output("ERROR", "ROLE-SEED", "generate_role_admin", format!("{}", e), false),
+            }
+        });
     }
 
     let _ = &*ISDEBUG;
