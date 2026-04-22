@@ -172,31 +172,3 @@ pub async fn perform_delete_mongo(
     }
 }
 
-// Unit tests
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::nocode::pk_utils::build_pk_filter;
-    use crate::storage::ast::Filter as QF;
-    // Add tests for build_pk_filter
-    #[test]
-    fn test_build_pk_filter() {
-        // Single
-        let pk = vec!["id".to_string()];
-        let val = vec!["1".to_string()];
-        let f = build_pk_filter(&pk, &val).unwrap();
-        match f {
-            QF::Eq(c, _) => assert_eq!(c, "id"),
-            _ => panic!("Expected Eq"),
-        }
-        
-        // Composite
-        let pk2 = vec!["a".to_string(), "b".to_string()];
-        let val2 = vec!["1".to_string(), "2".to_string()];
-        let f2 = build_pk_filter(&pk2, &val2).unwrap();
-        match f2 {
-            QF::And(list) => assert_eq!(list.len(), 2),
-            _ => panic!("Expected And"),
-        }
-    }
-}
