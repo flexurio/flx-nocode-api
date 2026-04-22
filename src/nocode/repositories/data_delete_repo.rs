@@ -5,7 +5,7 @@ use crate::storage::ast::{Filter as QF, Val as QV};
 use crate::storage::sql_store::{SqlStore, InsertValue};
 use crate::log::log_output;
 use crate::nocode::foreign_key::process_foreign_keys_delete_update_txstore;
-use crate::nocode::pk_utils::build_pk_filter;
+use crate::nocode::pk_utils::{build_pk_filter, dbparam_from_str_and_type, json_value_from_str_and_type};
 use chrono::Local;
 use serde_json::Value;
 
@@ -37,25 +37,10 @@ pub async fn perform_delete_sql(
         ];
         
         // Typed deleted_by_id
-        if deleted_by_type.contains("int") {
-            if let Ok(n) = actor_id.parse::<i64>() {
-                fields.push(("deleted_by_id".into(), InsertValue::Param(crate::database::state::DbParam::I64(n))));
-            } else {
-                fields.push(("deleted_by_id".into(), InsertValue::Param(crate::database::state::DbParam::Str(actor_id.to_string()))));
-            }
-        } else if deleted_by_type.contains("float")
-            || deleted_by_type.contains("double")
-            || deleted_by_type.contains("decimal")
-            || deleted_by_type.contains("money")
-        {
-            if let Ok(n) = actor_id.parse::<f64>() {
-                fields.push(("deleted_by_id".into(), InsertValue::Param(crate::database::state::DbParam::F64(n))));
-            } else {
-                fields.push(("deleted_by_id".into(), InsertValue::Param(crate::database::state::DbParam::Str(actor_id.to_string()))));
-            }
-        } else {
-            fields.push(("deleted_by_id".into(), InsertValue::Param(crate::database::state::DbParam::Str(actor_id.to_string()))));
-        }
+        fields.push((
+            "deleted_by_id".into(),
+            InsertValue::Param(dbparam_from_str_and_type(actor_id, &deleted_by_type)),
+        ));
 
         let filter = build_pk_filter(&table_schema.primary_key.columns, pk_values)
             .map_err(|e| format!("Error building PK filter: {}", e))?;
@@ -173,25 +158,10 @@ pub async fn perform_delete_mongo(
             .map(|c| c.type_data.clone())
             .unwrap_or("int".to_string());
             
-        if deleted_by_type.contains("int") {
-            if let Ok(n) = actor_id.parse::<i64>() {
-                patch.insert("deleted_by_id".into(), serde_json::json!(n));
-            } else {
-                patch.insert("deleted_by_id".into(), serde_json::json!(actor_id));
-            }
-        } else if deleted_by_type.contains("float")
-            || deleted_by_type.contains("double")
-            || deleted_by_type.contains("decimal")
-            || deleted_by_type.contains("money")
-        {
-            if let Ok(n) = actor_id.parse::<f64>() {
-                patch.insert("deleted_by_id".into(), serde_json::json!(n));
-            } else {
-                patch.insert("deleted_by_id".into(), serde_json::json!(actor_id));
-            }
-        } else {
-            patch.insert("deleted_by_id".into(), serde_json::json!(actor_id));
-        }
+        patch.insert(
+            "deleted_by_id".into(),
+            json_value_from_str_and_type(actor_id, &deleted_by_type),
+        );
         
         state.store.update(&table_schema.table, filter, Value::Object(patch)).await
             .map(|_| ())

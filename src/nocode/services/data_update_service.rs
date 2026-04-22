@@ -12,6 +12,7 @@ use crate::crypt::{encrypt, is_encrypted_string};
 use crate::storage::sql_store::InsertValue;
 use crate::database::state::DbParam;
 use crate::nocode::repositories::data_update_repo;
+use crate::nocode::pk_utils::{dbparam_from_str_and_type, json_value_from_str_and_type};
 use crate::audit::{AuditEntry, write_audit};
 
 #[allow(clippy::too_many_arguments, clippy::collapsible_if)]
@@ -230,19 +231,20 @@ pub async fn process_update_request(
          // for SQL, inserted via Raw, but also good to have in patch_fields if we used it for Mongo logic
     }
 
-    let created_by_type = table_schema.columns.iter().find(|c| c.name == "updated_by_id").map(|c| c.type_data.clone()).unwrap_or("int".to_string());
-    if created_by_type.contains("int") {
-        if let Ok(n) = claims.id.parse::<i64>() {
-             update_fields.push(("updated_by_id".to_string(), InsertValue::Param(DbParam::I64(n))));
-             patch_fields.insert("updated_by_id".to_string(), serde_json::json!(n));
-        } else {
-             update_fields.push(("updated_by_id".to_string(), InsertValue::Param(DbParam::Str(claims.id.clone()))));
-             patch_fields.insert("updated_by_id".to_string(), serde_json::json!(claims.id.clone()));
-        }
-    } else {
-         update_fields.push(("updated_by_id".to_string(), InsertValue::Param(DbParam::Str(claims.id.clone()))));
-         patch_fields.insert("updated_by_id".to_string(), serde_json::json!(claims.id.clone()));
-    }
+    let created_by_type = table_schema
+        .columns
+        .iter()
+        .find(|c| c.name == "updated_by_id")
+        .map(|c| c.type_data.clone())
+        .unwrap_or("int".to_string());
+    update_fields.push((
+        "updated_by_id".to_string(),
+        InsertValue::Param(dbparam_from_str_and_type(&claims.id, &created_by_type)),
+    ));
+    patch_fields.insert(
+        "updated_by_id".to_string(),
+        json_value_from_str_and_type(&claims.id, &created_by_type),
+    );
 
     // Extract Authorization header to forward to API validation
     let auth_token = req
