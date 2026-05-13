@@ -510,4 +510,149 @@ mod tests {
         let result_fail = evaluate_access(&rules, &claims_fail, "/api/items/888", "DELETE");
         assert!(result_fail.is_err());
     }
+
+    // --- Claims ---
+
+    #[test]
+    fn test_claims_get_roles_single() {
+        let claims = Claims {
+            rl: "admin/1".to_string(),
+            ..Claims::default()
+        };
+        let roles = claims.get_roles();
+        assert_eq!(roles, vec!["admin/1"]);
+    }
+
+    #[test]
+    fn test_claims_get_roles_multiple() {
+        let claims = Claims {
+            rl: "admin/1,editor/2,viewer/3".to_string(),
+            ..Claims::default()
+        };
+        let roles = claims.get_roles();
+        assert_eq!(roles, vec!["admin/1", "editor/2", "viewer/3"]);
+    }
+
+    #[test]
+    fn test_claims_get_roles_empty() {
+        let claims = Claims {
+            rl: "".to_string(),
+            ..Claims::default()
+        };
+        let roles = claims.get_roles();
+        assert_eq!(roles, vec![""], "Empty string should produce one empty role");
+    }
+
+    #[test]
+    fn test_claims_default_values() {
+        let claims = Claims::default();
+        assert_eq!(claims.id, "");
+        assert_eq!(claims.nm, "route_publics");
+        assert_eq!(claims.exp, 0);
+        assert_eq!(claims.at, 0);
+        assert_eq!(claims.rl, "*/127");
+        assert_eq!(claims.cs, "");
+    }
+
+    #[test]
+    fn test_claims_converter_default_values() {
+        let conv = ClaimsConverter::default();
+        assert_eq!(conv.id, "id");
+        assert_eq!(conv.nm, "nm");
+        assert_eq!(conv.exp, "exp");
+        assert_eq!(conv.at, "at");
+        assert_eq!(conv.rl, "rl");
+        assert_eq!(conv.cs, "cs");
+    }
+
+    #[test]
+    fn test_claims_converter_equality() {
+        let c1 = ClaimsConverter::default();
+        let c2 = ClaimsConverter::default();
+        assert_eq!(c1, c2);
+    }
+
+    #[test]
+    fn test_claims_converter_inequality_when_different() {
+        let mut c = ClaimsConverter::default();
+        c.id = "user_id".to_string();
+        assert_ne!(c, ClaimsConverter::default());
+    }
+
+    // --- evaluate_condition ---
+
+    #[test]
+    fn test_condition_eq_user_role_matches() {
+        let claims = create_claims("admin", "1");
+        let cond = Conditions::Eq {
+            eq: ("$user.role".to_string(), "admin".to_string()),
+        };
+        assert!(evaluate_condition(&cond, &claims));
+    }
+
+    #[test]
+    fn test_condition_eq_user_role_no_match() {
+        let claims = create_claims("user", "1");
+        let cond = Conditions::Eq {
+            eq: ("$user.role".to_string(), "admin".to_string()),
+        };
+        assert!(!evaluate_condition(&cond, &claims));
+    }
+
+    #[test]
+    fn test_condition_eq_user_id_matches() {
+        let claims = create_claims("user", "42");
+        let cond = Conditions::Eq {
+            eq: ("$user.id".to_string(), "42".to_string()),
+        };
+        assert!(evaluate_condition(&cond, &claims));
+    }
+
+    #[test]
+    fn test_condition_and_all_true() {
+        let claims = create_claims("admin", "42");
+        let cond = Conditions::And {
+            and: vec![
+                Conditions::Eq { eq: ("$user.role".to_string(), "admin".to_string()) },
+                Conditions::Eq { eq: ("$user.id".to_string(), "42".to_string()) },
+            ],
+        };
+        assert!(evaluate_condition(&cond, &claims));
+    }
+
+    #[test]
+    fn test_condition_and_one_false() {
+        let claims = create_claims("user", "42");
+        let cond = Conditions::And {
+            and: vec![
+                Conditions::Eq { eq: ("$user.role".to_string(), "admin".to_string()) },
+                Conditions::Eq { eq: ("$user.id".to_string(), "42".to_string()) },
+            ],
+        };
+        assert!(!evaluate_condition(&cond, &claims));
+    }
+
+    #[test]
+    fn test_condition_or_one_true() {
+        let claims = create_claims("user", "42");
+        let cond = Conditions::Or {
+            or: vec![
+                Conditions::Eq { eq: ("$user.role".to_string(), "admin".to_string()) },
+                Conditions::Eq { eq: ("$user.id".to_string(), "42".to_string()) },
+            ],
+        };
+        assert!(evaluate_condition(&cond, &claims));
+    }
+
+    #[test]
+    fn test_condition_or_all_false() {
+        let claims = create_claims("user", "99");
+        let cond = Conditions::Or {
+            or: vec![
+                Conditions::Eq { eq: ("$user.role".to_string(), "admin".to_string()) },
+                Conditions::Eq { eq: ("$user.id".to_string(), "42".to_string()) },
+            ],
+        };
+        assert!(!evaluate_condition(&cond, &claims));
+    }
 }

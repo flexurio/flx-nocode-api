@@ -90,11 +90,9 @@ pub async fn perform_delete_sql(
     let mut tx = state.store.begin_tx().await.map_err(|e| format!("Error starting transaction: {}", e))?;
 
     // PRE-PROCESS
-    if table_schema.del.pre_process.contains("SQL:") {
-        if let Err(err) = crate::database::state::execute_sql_formula_with_txstore(&mut tx, table_schema.del.pre_process.clone(), &body, route).await {
-            let _ = tx.rollback().await;
-            return Err(format!("Error in pre-process: {}", err));
-        }
+    if table_schema.del.pre_process.contains("SQL:") && let Err(err) = crate::database::state::execute_sql_formula_with_txstore(&mut tx, table_schema.del.pre_process.clone(), &body, route).await {
+        let _ = tx.rollback().await;
+        return Err(format!("Error in pre-process: {}", err));
     }
 
     match tx.raw_sql(&exec_sql, exec_params).await {
@@ -112,11 +110,9 @@ pub async fn perform_delete_sql(
 
             if is_fk_ok {
                 // POST-PROCESS
-                if table_schema.del.post_process.contains("SQL:") {
-                    if let Err(err) = crate::database::state::execute_sql_formula_with_txstore(&mut tx, table_schema.del.post_process.clone(), &body, route).await {
-                        let _ = tx.rollback().await;
-                        return Err(format!("Error in post-process: {}", err));
-                    }
+                if table_schema.del.post_process.contains("SQL:") && let Err(err) = crate::database::state::execute_sql_formula_with_txstore(&mut tx, table_schema.del.post_process.clone(), &body, route).await {
+                    let _ = tx.rollback().await;
+                    return Err(format!("Error in post-process: {}", err));
                 }
                 tx.commit().await.map_err(|e| format!("Error committing transaction: {}", e))?;
                 Ok(())

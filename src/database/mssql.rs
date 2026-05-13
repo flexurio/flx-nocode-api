@@ -114,15 +114,13 @@ impl ManageConnection for MssqlConnectionManager {
         async move { connect_mssql(&connection_string, timeout_secs).await }
     }
 
-    fn is_valid(
+    async fn is_valid(
         &self,
         conn: &mut Self::Connection,
-    ) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send {
-        async move {
-            // Ping check to verify connection is alive
-            conn.simple_query("SELECT 1").await?;
-            Ok(())
-        }
+    ) -> Result<(), Self::Error> {
+        // Ping check to verify connection is alive
+        conn.simple_query("SELECT 1").await?;
+        Ok(())
     }
 
     fn has_broken(&self, _conn: &mut Self::Connection) -> bool {

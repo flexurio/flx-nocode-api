@@ -80,3 +80,111 @@ pub fn is_encrypted_string(s: &str) -> bool {
         .decode(s.as_bytes())
         .is_ok()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_encrypt_decrypt_roundtrip() {
+        let key = "my_secret_key".to_string();
+        let plaintext = "Hello, World!".to_string();
+        let encrypted = encrypt(key.clone(), plaintext.clone());
+        assert!(!encrypted.is_empty());
+        let decrypted = decrypt(key, encrypted);
+        assert_eq!(decrypted, plaintext);
+    }
+
+    #[test]
+    fn test_encrypt_empty_string_roundtrip() {
+        let key = "test_key".to_string();
+        let plaintext = "".to_string();
+        let encrypted = encrypt(key.clone(), plaintext.clone());
+        let decrypted = decrypt(key, encrypted);
+        assert_eq!(decrypted, plaintext);
+    }
+
+    #[test]
+    fn test_encrypt_different_keys_produce_different_ciphertext() {
+        let plaintext = "same plaintext".to_string();
+        let enc1 = encrypt("key1".to_string(), plaintext.clone());
+        let enc2 = encrypt("key2".to_string(), plaintext.clone());
+        assert_ne!(enc1, enc2);
+    }
+
+    #[test]
+    fn test_decrypt_wrong_key_does_not_match_original() {
+        let plaintext = "secret data".to_string();
+        let encrypted = encrypt("correct_key".to_string(), plaintext.clone());
+        let result = decrypt("wrong_key".to_string(), encrypted);
+        assert_ne!(result, plaintext);
+    }
+
+    #[test]
+    fn test_encrypt_produces_valid_base64_output() {
+        let encrypted = encrypt("key".to_string(), "value".to_string());
+        use base64::Engine;
+        assert!(base64::engine::general_purpose::STANDARD
+            .decode(encrypted.as_bytes())
+            .is_ok());
+    }
+
+    #[test]
+    fn test_encrypt_same_plaintext_random_nonce_different_output() {
+        // Random nonce means the same plaintext should produce different ciphertext each call
+        let enc1 = encrypt("key".to_string(), "data".to_string());
+        let enc2 = encrypt("key".to_string(), "data".to_string());
+        assert_ne!(enc1, enc2, "Two encryptions should differ due to random nonce");
+    }
+
+    #[test]
+    fn test_encrypt_decrypt_unicode_content() {
+        let key = "unicode_key".to_string();
+        let plaintext = "Indonesian: selamat pagi 🌅".to_string();
+        let encrypted = encrypt(key.clone(), plaintext.clone());
+        let decrypted = decrypt(key, encrypted);
+        assert_eq!(decrypted, plaintext);
+    }
+
+    #[test]
+    fn test_decrypt_invalid_base64_returns_error_message() {
+        let result = decrypt("key".to_string(), "not_valid_base64!!!".to_string());
+        assert!(result.contains("Gagal"), "Expected Indonesian error message, got: {}", result);
+    }
+
+    #[test]
+    fn test_decrypt_too_short_data_returns_error_message() {
+        // Base64 of something shorter than 12 bytes
+        use base64::Engine;
+        let short = base64::engine::general_purpose::STANDARD.encode(b"short");
+        let result = decrypt("key".to_string(), short);
+        assert!(!result.is_empty());
+    }
+
+    #[test]
+    fn test_is_encrypted_string_valid_encrypted_value() {
+        let encrypted = encrypt("key".to_string(), "data".to_string());
+        assert!(is_encrypted_string(&encrypted));
+    }
+
+    #[test]
+    fn test_is_encrypted_string_too_short() {
+        assert!(!is_encrypted_string("short"));
+        assert!(!is_encrypted_string(""));
+    }
+
+    #[test]
+    fn test_is_encrypted_string_invalid_chars() {
+        // Contains characters outside base64 alphabet
+        assert!(!is_encrypted_string("not!@#$%^&*()encrypted"));
+    }
+
+    #[test]
+    fn test_encrypt_large_payload() {
+        let key = "big_key".to_string();
+        let plaintext = "A".repeat(10_000);
+        let encrypted = encrypt(key.clone(), plaintext.clone());
+        let decrypted = decrypt(key, encrypted);
+        assert_eq!(decrypted, plaintext);
+    }
+}

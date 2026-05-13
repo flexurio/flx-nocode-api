@@ -246,4 +246,195 @@ mod tests {
             _ => panic!("expected limit"),
         }
     }
+
+    // --- Query builder ---
+
+    #[test]
+    fn test_query_from_sets_collection() {
+        let q = Query::from("orders");
+        assert_eq!(q.collection, "orders");
+        assert!(q.projection.is_empty());
+        assert!(q.filter.is_none());
+        assert!(q.sort.is_empty());
+        assert!(q.limit.is_none());
+        assert!(q.offset.is_none());
+    }
+
+    #[test]
+    fn test_query_select_sets_projection() {
+        let q = Query::from("t").select(["id", "name", "email"]);
+        assert_eq!(q.projection, vec!["id", "name", "email"]);
+    }
+
+    #[test]
+    fn test_query_limit_and_offset() {
+        let q = Query::from("t").limit(50).offset(100);
+        assert_eq!(q.limit, Some(50));
+        assert_eq!(q.offset, Some(100));
+    }
+
+    #[test]
+    fn test_query_order_by_asc_and_desc() {
+        let q = Query::from("t")
+            .order_by("created_at", false)
+            .order_by("id", true);
+        assert_eq!(q.sort.len(), 2);
+        assert_eq!(q.sort[0].field, "created_at");
+        assert!(!q.sort[0].asc);
+        assert_eq!(q.sort[1].field, "id");
+        assert!(q.sort[1].asc);
+    }
+
+    #[test]
+    fn test_query_where_filter() {
+        let q = Query::from("t").r#where(Filter::Gt("age".into(), Val::I64(18)));
+        assert!(q.filter.is_some());
+        match q.filter.unwrap() {
+            Filter::Gt(col, Val::I64(v)) => {
+                assert_eq!(col, "age");
+                assert_eq!(v, 18);
+            }
+            _ => panic!("Expected Filter::Gt"),
+        }
+    }
+
+    #[test]
+    fn test_query_group_by() {
+        let q = Query::from("t").group_by(["department", "status"]);
+        assert_eq!(q.group_by, vec!["department", "status"]);
+    }
+
+    #[test]
+    fn test_query_join_inner_expr() {
+        let q = Query::from("users u")
+            .join_inner_expr("roles r", Expr::ColEq("u.role_id".into(), "r.id".into()));
+        assert_eq!(q.joins.len(), 1);
+        assert!(matches!(q.joins[0].kind, JoinKind::Inner));
+        assert_eq!(q.joins[0].table, "roles r");
+    }
+
+    #[test]
+    fn test_query_join_left_expr() {
+        let q = Query::from("orders o")
+            .join_left_expr("customers c", Expr::ColEq("o.customer_id".into(), "c.id".into()));
+        assert_eq!(q.joins.len(), 1);
+        assert!(matches!(q.joins[0].kind, JoinKind::Left));
+    }
+
+    #[test]
+    fn test_query_agg_count_all() {
+        let q = Query::from("t").agg_count_all("total");
+        assert_eq!(q.aggs.len(), 1);
+        assert_eq!(q.aggs[0].alias, "total");
+        assert!(matches!(q.aggs[0].func, AggFunc::CountAll));
+    }
+
+    #[test]
+    fn test_query_agg_sum() {
+        let q = Query::from("t").agg_sum("revenue", "amount");
+        assert!(matches!(&q.aggs[0].func, AggFunc::Sum(f) if f == "amount"));
+    }
+
+    #[test]
+    fn test_query_agg_avg() {
+        let q = Query::from("t").agg_avg("avg_score", "score");
+        assert!(matches!(&q.aggs[0].func, AggFunc::Avg(f) if f == "score"));
+    }
+
+    #[test]
+    fn test_query_agg_min_max() {
+        let q = Query::from("t")
+            .agg_min("min_val", "value")
+            .agg_max("max_val", "value");
+        assert_eq!(q.aggs.len(), 2);
+        assert!(matches!(&q.aggs[0].func, AggFunc::Min(_)));
+        assert!(matches!(&q.aggs[1].func, AggFunc::Max(_)));
+    }
+
+    #[test]
+    fn test_query_having_expr() {
+        let q = Query::from("t")
+            .group_by(["category"])
+            .having_expr([Expr::Gte("COUNT(*)".into(), Val::I64(5))]);
+        assert_eq!(q.having_exprs.len(), 1);
+    }
+
+    // --- Filter ---
+
+    #[test]
+    fn test_filter_variants_are_cloneable() {
+        let filters = vec![
+            Filter::Eq("a".into(), Val::I64(1)),
+            Filter::Ne("b".into(), Val::Str("x".into())),
+            Filter::Gt("c".into(), Val::F64(1.5)),
+            Filter::Gte("d".into(), Val::I64(0)),
+            Filter::Lt("e".into(), Val::I64(100)),
+            Filter::Lte("f".into(), Val::Bool(false)),
+            Filter::Like("g".into(), "%foo%".into()),
+            Filter::IsNull("h".into()),
+            Filter::IsNotNull("i".into()),
+            Filter::Between("j".into(), Val::I64(1), Val::I64(10)),
+            Filter::In("k".into(), vec![Val::I64(1), Val::I64(2)]),
+            Filter::NotIn("l".into(), vec![Val::Str("x".into())]),
+        ];
+        for f in filters {
+            let _ = f.clone(); // Should not panic
+        }
+    }
+
+    #[test]
+    fn test_filter_and_or_composition() {
+        let and_filter = Filter::And(vec![
+            Filter::Eq("a".into(), Val::I64(1)),
+            Filter::Eq("b".into(), Val::I64(2)),
+        ]);
+        let or_filter = Filter::Or(vec![
+            Filter::IsNull("x".into()),
+            Filter::IsNotNull("y".into()),
+        ]);
+        let _combined = Filter::And(vec![and_filter, or_filter]);
+    }
+
+    // --- Val ---
+
+    #[test]
+    fn test_val_variants_debug() {
+        let vals = vec![
+            Val::I64(42),
+            Val::F64(3.14),
+            Val::Bool(true),
+            Val::Str("hello".into()),
+            Val::Null,
+        ];
+        for v in vals {
+            let _ = format!("{:?}", v);
+        }
+    }
+
+    // --- Scan-only logical plan ---
+
+    #[test]
+    fn test_scan_only_logical_plan() {
+        let q = Query::from("products");
+        let plan = q.to_logical_plan();
+        match plan {
+            LogicalPlan::Scan { collection } => assert_eq!(collection, "products"),
+            _ => panic!("Expected a bare Scan plan, got {:?}", plan),
+        }
+    }
+
+    #[test]
+    fn test_logical_plan_with_aggregate() {
+        let q = Query::from("sales")
+            .group_by(["region"])
+            .agg_sum("total", "amount");
+        let plan = q.to_logical_plan();
+        match plan {
+            LogicalPlan::Aggregate { group_by, aggs, .. } => {
+                assert_eq!(group_by, vec!["region"]);
+                assert_eq!(aggs.len(), 1);
+            }
+            _ => panic!("Expected Aggregate plan"),
+        }
+    }
 }

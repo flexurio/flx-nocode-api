@@ -336,3 +336,103 @@ pub struct Log {
     #[serde(default)]
     pub timestamp: String,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- DbType ---
+
+    #[test]
+    fn test_db_type_as_str() {
+        assert_eq!(DbType::Mysql.as_str(), "mysql");
+        assert_eq!(DbType::Postgres.as_str(), "postgres");
+        assert_eq!(DbType::Sqlite.as_str(), "sqlite");
+        assert_eq!(DbType::Mssql.as_str(), "mssql");
+        assert_eq!(DbType::Mongodb.as_str(), "mongodb");
+    }
+
+    #[test]
+    fn test_db_type_is_sql_returns_false_for_mongodb() {
+        assert!(DbType::Mysql.is_sql());
+        assert!(DbType::Postgres.is_sql());
+        assert!(DbType::Sqlite.is_sql());
+        assert!(DbType::Mssql.is_sql());
+        assert!(!DbType::Mongodb.is_sql(), "MongoDB should not be SQL");
+    }
+
+    #[test]
+    fn test_db_type_display() {
+        assert_eq!(format!("{}", DbType::Mysql), "mysql");
+        assert_eq!(format!("{}", DbType::Postgres), "postgres");
+        assert_eq!(format!("{}", DbType::Mongodb), "mongodb");
+    }
+
+    #[test]
+    fn test_db_type_serde_roundtrip() {
+        for (variant, expected) in [
+            (DbType::Mysql, "\"mysql\""),
+            (DbType::Postgres, "\"postgres\""),
+            (DbType::Sqlite, "\"sqlite\""),
+            (DbType::Mssql, "\"mssql\""),
+            (DbType::Mongodb, "\"mongodb\""),
+        ] {
+            let serialized = serde_json::to_string(&variant).unwrap();
+            assert_eq!(serialized, expected);
+            let deserialized: DbType = serde_json::from_str(&serialized).unwrap();
+            assert_eq!(deserialized, variant);
+        }
+    }
+
+    #[test]
+    fn test_db_type_equality() {
+        assert_eq!(DbType::Mysql, DbType::Mysql);
+        assert_ne!(DbType::Mysql, DbType::Postgres);
+        assert_ne!(DbType::Sqlite, DbType::Mongodb);
+    }
+
+    // --- TableSchema default ---
+
+    #[test]
+    fn test_table_schema_default_values() {
+        let schema = TableSchema::default();
+        assert!(schema.table.is_empty(), "Default table name should be empty");
+        assert!(schema.columns.is_empty(), "Default columns should be empty");
+        assert!(schema.primary_key.columns.is_empty(), "Default PK should be empty");
+        assert!(schema.foreign_keys.is_empty());
+        assert!(schema.indexes.is_empty());
+        assert!(!schema.auto_generate);
+        assert!(!schema.get.enable_method);
+        assert!(!schema.post.enable_method);
+        assert!(!schema.put.enable_method);
+        assert!(!schema.del.enable_method);
+    }
+
+    // --- Column default ---
+
+    #[test]
+    fn test_column_default_values() {
+        let col = Column::default();
+        assert!(col.name.is_empty());
+        assert!(!col.auto_increment);
+        assert!(!col.nullable);
+        assert!(col.type_data.is_empty());
+        assert!(!col.encrypt);
+    }
+
+    // --- WebResponse ---
+
+    #[test]
+    fn test_web_response_serialization() {
+        let resp = WebResponse {
+            success: true,
+            message: "OK".to_string(),
+            total_data: 1,
+            data: serde_json::json!({"id": 1}),
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["success"], true);
+        assert_eq!(json["message"], "OK");
+        assert_eq!(json["total_data"], 1);
+    }
+}

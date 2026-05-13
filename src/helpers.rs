@@ -368,6 +368,121 @@ pub async fn multipart_to_json(mut multipart: Multipart) -> Result<Value, actix_
 
 // (removed duplicate is_safe_mime_type; using the public version defined earlier)
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- operator_query ---
+
+    #[test]
+    fn test_operator_query_all_known_operators() {
+        assert_eq!(operator_query("eq"), "=");
+        assert_eq!(operator_query("like"), "like");
+        assert_eq!(operator_query("lt"), "<");
+        assert_eq!(operator_query("lte"), "<=");
+        assert_eq!(operator_query("gt"), ">");
+        assert_eq!(operator_query("gte"), ">=");
+        assert_eq!(operator_query("is"), "is");
+        assert_eq!(operator_query("nin"), "nin");
+        assert_eq!(operator_query("between"), "between");
+    }
+
+    #[test]
+    fn test_operator_query_unknown_returns_empty() {
+        assert_eq!(operator_query("unknown"), "");
+        assert_eq!(operator_query(""), "");
+        assert_eq!(operator_query("EQ"), "", "Operator lookup is case-sensitive");
+    }
+
+    // --- split_column_operator ---
+
+    #[test]
+    fn test_split_column_operator_eq() {
+        let (col, op, val) = split_column_operator("name.eq", "users", "John");
+        assert_eq!(col, "users.name");
+        assert_eq!(op, "=");
+        assert_eq!(val, "John");
+    }
+
+    #[test]
+    fn test_split_column_operator_like_wraps_value() {
+        let (col, op, val) = split_column_operator("name.like", "users", "John");
+        assert_eq!(col, "users.name");
+        assert_eq!(op, "like");
+        assert_eq!(val, "%John%", "LIKE value should be wrapped with %");
+    }
+
+    #[test]
+    fn test_split_column_operator_no_dot_falls_back_to_eq() {
+        let (col, op, val) = split_column_operator("status", "orders", "active");
+        assert_eq!(col, "orders.status");
+        assert_eq!(op, "=");
+        assert_eq!(val, "active");
+    }
+
+    #[test]
+    fn test_split_column_operator_with_table_prefix() {
+        let (col, op, val) = split_column_operator("orders.amount.gt", "users", "100");
+        assert_eq!(col, "orders.amount");
+        assert_eq!(op, ">");
+        assert_eq!(val, "100");
+    }
+
+    #[test]
+    fn test_split_column_operator_lte() {
+        let (col, op, val) = split_column_operator("age.lte", "employees", "65");
+        assert_eq!(col, "employees.age");
+        assert_eq!(op, "<=");
+        assert_eq!(val, "65");
+    }
+
+    #[test]
+    fn test_split_column_operator_unknown_op_defaults_to_eq() {
+        let (col, op, val) = split_column_operator("name.foobar", "users", "Alice");
+        assert_eq!(col, "users.name");
+        assert_eq!(op, "=", "Unknown operator should fall back to =");
+        assert_eq!(val, "Alice");
+    }
+
+    // --- is_safe_mime_type ---
+
+    #[test]
+    fn test_is_safe_mime_type_images() {
+        assert!(is_safe_mime_type("image/png"));
+        assert!(is_safe_mime_type("image/jpeg"));
+        assert!(is_safe_mime_type("image/gif"));
+        assert!(is_safe_mime_type("image/webp"));
+        assert!(is_safe_mime_type("image/svg+xml"));
+    }
+
+    #[test]
+    fn test_is_safe_mime_type_allowed_document_types() {
+        assert!(is_safe_mime_type("application/pdf"));
+        assert!(is_safe_mime_type("text/plain"));
+        assert!(is_safe_mime_type("application/json"));
+        assert!(is_safe_mime_type("text/csv"));
+        assert!(is_safe_mime_type(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        ));
+        assert!(is_safe_mime_type("application/zip"));
+    }
+
+    #[test]
+    fn test_is_safe_mime_type_blocked_dangerous_types() {
+        assert!(!is_safe_mime_type("application/octet-stream"));
+        assert!(!is_safe_mime_type("text/html"));
+        assert!(!is_safe_mime_type("application/javascript"));
+        assert!(!is_safe_mime_type("application/x-executable"));
+        assert!(!is_safe_mime_type("application/x-sh"));
+        assert!(!is_safe_mime_type("text/x-python"));
+    }
+
+    #[test]
+    fn test_is_safe_mime_type_empty_string() {
+        assert!(!is_safe_mime_type(""));
+    }
+}
+
 // Static compiled regex for performance - compiled only once instead of every call
 use once_cell::sync::Lazy;
 static EXPR_REGEX: Lazy<Regex> = Lazy::new(|| {

@@ -287,3 +287,219 @@ pub async fn validate_api_formula(formula: &str, body: &Value, auth_token: Optio
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{Column, ForeignKey, Index, JoinTable, OperationGet, PrimaryKey, TableSchema};
+
+    fn make_valid_schema() -> TableSchema {
+        TableSchema {
+            table: "test_table".to_string(),
+            primary_key: PrimaryKey {
+                columns: vec!["id".to_string()],
+            },
+            columns: vec![
+                Column {
+                    name: "id".to_string(),
+                    type_data: "bigint".to_string(),
+                    ..Default::default()
+                },
+                Column {
+                    name: "name".to_string(),
+                    type_data: "varchar(255)".to_string(),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_valid_schema_passes_validation() {
+        let schema = make_valid_schema();
+        assert!(validate_table_design(&schema).is_ok());
+    }
+
+    #[test]
+    fn test_empty_table_name_fails() {
+        let mut schema = make_valid_schema();
+        schema.table = "".to_string();
+        let result = validate_table_design(&schema);
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert!(errors.iter().any(|e| e.contains("Table name cannot be empty")));
+    }
+
+    #[test]
+    fn test_empty_primary_key_fails() {
+        let mut schema = make_valid_schema();
+        schema.primary_key.columns = vec![];
+        let result = validate_table_design(&schema);
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert!(errors.iter().any(|e| e.contains("Primary key columns cannot be empty")));
+    }
+
+    #[test]
+    fn test_pk_column_not_in_columns_list_fails() {
+        let mut schema = make_valid_schema();
+        schema.primary_key.columns = vec!["nonexistent_col".to_string()];
+        let result = validate_table_design(&schema);
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert!(
+            errors.iter().any(|e| e.contains("does not exist in columns")),
+            "Expected error about missing PK column, got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn test_empty_columns_list_fails() {
+        let schema = TableSchema {
+            table: "t".to_string(),
+            primary_key: PrimaryKey { columns: vec![] },
+            columns: vec![],
+            ..Default::default()
+        };
+        let result = validate_table_design(&schema);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_invalid_column_type_fails() {
+        let mut schema = make_valid_schema();
+        schema.columns.push(Column {
+            name: "bad_col".to_string(),
+            type_data: "totally_fake_type".to_string(),
+            ..Default::default()
+        });
+        let result = validate_table_design(&schema);
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert!(
+            errors.iter().any(|e| e.contains("invalid type_data")),
+            "Expected type validation error, got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn test_all_allowed_column_types_pass() {
+        let base_types = [
+            "varchar(255)",
+            "int",
+            "bigint",
+            "tinyint",
+            "smallint",
+            "mediumint",
+            "text",
+            "longtext",
+            "datetime",
+            "date",
+            "timestamp",
+            "boolean",
+            "bool",
+            "decimal(10,2)",
+            "float",
+            "double",
+            "json",
+            "blob",
+            "enum",
+        ];
+        for t in &base_types {
+            let mut schema = make_valid_schema();
+            schema.columns.push(Column {
+                name: "test_col".to_string(),
+                type_data: t.to_string(),
+                ..Default::default()
+            });
+            let result = validate_table_design(&schema);
+            assert!(
+                result.is_ok(),
+                "Type '{}' should be valid but got errors: {:?}",
+                t,
+                result.err()
+            );
+        }
+    }
+
+    #[test]
+    fn test_index_on_nonexistent_column_fails() {
+        let mut schema = make_valid_schema();
+        schema.indexes = vec![Index {
+            name: "idx_missing".to_string(),
+            columns: vec!["missing_col".to_string()],
+            unique: false,
+        }];
+        let result = validate_table_design(&schema);
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert!(
+            errors.iter().any(|e| e.contains("does not exist in columns")),
+            "Expected index column error, got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn test_index_on_pk_column_should_error() {
+        let mut schema = make_valid_schema();
+        // Index on the primary key column — should produce a warning/error
+        schema.indexes = vec![Index {
+            name: "idx_id".to_string(),
+            columns: vec!["id".to_string()],
+            unique: false,
+        }];
+        let result = validate_table_design(&schema);
+        assert!(result.is_err(), "PK column should not be explicitly indexed");
+    }
+
+    #[test]
+    fn test_multiple_errors_accumulated() {
+        let schema = TableSchema {
+            table: "".to_string(),
+            primary_key: PrimaryKey { columns: vec![] },
+            columns: vec![],
+            ..Default::default()
+        };
+        let result = validate_table_design(&schema);
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert!(errors.len() >= 2, "Expected multiple accumulated errors, got: {:?}", errors);
+    }
+
+    #[test]
+    fn test_composite_primary_key_valid() {
+        let schema = TableSchema {
+            table: "order_items".to_string(),
+            primary_key: PrimaryKey {
+                columns: vec!["order_id".to_string(), "product_id".to_string()],
+            },
+            columns: vec![
+                Column {
+                    name: "order_id".to_string(),
+                    type_data: "bigint".to_string(),
+                    ..Default::default()
+                },
+                Column {
+                    name: "product_id".to_string(),
+                    type_data: "bigint".to_string(),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        assert!(validate_table_design(&schema).is_ok());
+    }
+
+    #[test]
+    fn test_get_disabled_skip_parameter_checks() {
+        // When GET is not enabled, parameter checks should be skipped
+        let mut schema = make_valid_schema();
+        schema.get.enable_method = false;
+        schema.get.parameters = vec![]; // no standard params
+        assert!(validate_table_design(&schema).is_ok());
+    }
+}
