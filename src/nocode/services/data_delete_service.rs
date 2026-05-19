@@ -9,7 +9,7 @@ use crate::auth::{check_access, get_user_info_from_token, Claims};
 use crate::log::log_output;
 use crate::helpers::get_client_ip;
 use crate::audit::{write_audit, AuditEntry};
-use crate::nocode::pk_utils::parse_pk_values;
+use crate::nocode::pk_utils::{parse_pk_values, validate_pk_path};
 use crate::nocode::repositories::data_delete_repo::{perform_delete_sql, perform_delete_mongo};
 
 pub async fn process_delete_request(
@@ -87,7 +87,13 @@ pub async fn process_delete_request(
 
     let type_delete = table_schema.del.type_delete.clone();
     let is_soft = type_delete == "soft";
-    let pk_values = parse_pk_values(&id_raw);
+
+    // Validate composite PK shape against schema when defined.
+    let pk_values = if !table_schema.primary_key.columns.is_empty() {
+        validate_pk_path(&id_raw, table_schema.primary_key.columns.len())?
+    } else {
+        parse_pk_values(&id_raw)
+    };
 
     // 4. Perform Delete
     if state.db_type == DbType::Mongodb {

@@ -99,6 +99,19 @@ pub fn validate_token(
         if parts.len() != 3 {
             return Err(HttpResponse::Unauthorized().json("Invalid token structure"));
         }
+        // Best-effort exp check: signature is delegated to the upstream IDP,
+        // but we still reject expired tokens by inspecting the payload claim.
+        let exp_field = &state.converter_token.exp;
+        if let Ok(decoded) = URL_SAFE_NO_PAD.decode(parts[1])
+            && let Ok(json) = serde_json::from_slice::<Value>(&decoded)
+            && let Some(exp) = json.get(exp_field).and_then(|v| v.as_u64())
+            && exp > 0
+        {
+            let now = Utc::now().timestamp() as u64;
+            if now > exp + 30 {
+                return Err(HttpResponse::Unauthorized().json("Token expired"));
+            }
+        }
         return Ok(());
     }
 
@@ -132,7 +145,9 @@ pub async fn create_token(
         .expect("valid timestamp")
         .timestamp() as usize;
 
-    let query = env::var("CUSTOME_JWT_QUERY");
+    // Prefer the correctly-spelled env var, fall back to the legacy typo for
+    // backward compatibility with existing deployments.
+    let query = env::var("CUSTOM_JWT_QUERY").or_else(|_| env::var("CUSTOME_JWT_QUERY"));
     let mut addjwt = String::new();
     if let Ok(mut sql_query) = query {
         sql_query = sql_query.to_lowercase();
@@ -289,23 +304,38 @@ pub enum Conditions {
     Eq { eq: (String, String) },
 }
 
-fn load_rules() -> Vec<Rule> {
-    let path = "config_asli/rules.json";
-    let content = match std::fs::read_to_string(path) {
-        Ok(c) => c,
-        Err(_) => return Vec::new(),
-    };
+#[derive(Deserialize)]
+struct RulesFile {
+    #[serde(default)]
+    rule: Vec<Rule>,
+}
 
-    // Try parsing as list first
-    if let Ok(rules) = serde_json::from_str::<Vec<Rule>>(&content) {
-        return rules;
-    }
-    // Try parsing as single object
-    if let Ok(rule) = serde_json::from_str::<Rule>(&content) {
-        return vec![rule];
-    }
-    
-    Vec::new()
+fn load_rules() -> &'static [Rule] {
+    use once_cell::sync::Lazy;
+    // Cache rules at first access; the file is read once for the process lifetime.
+    // Supports three on-disk shapes (most-current first):
+    //   1) `{ "role": [...], "rule": [Rule, ...] }`  (current schema)
+    //   2) `[Rule, ...]`                              (legacy flat list)
+    //   3) `Rule`                                     (legacy single rule)
+    static RULES: Lazy<Vec<Rule>> = Lazy::new(|| {
+        let loc = std::env::var("LOC_CONFIG").unwrap_or_else(|_| "config".to_string());
+        let path = format!("{}/rules.json", loc);
+        let content = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => return Vec::new(),
+        };
+        if let Ok(file) = serde_json::from_str::<RulesFile>(&content) {
+            return file.rule;
+        }
+        if let Ok(rules) = serde_json::from_str::<Vec<Rule>>(&content) {
+            return rules;
+        }
+        if let Ok(rule) = serde_json::from_str::<Rule>(&content) {
+            return vec![rule];
+        }
+        Vec::new()
+    });
+    &RULES
 }
 
 fn evaluate_condition(condition: &Conditions, claims: &Claims) -> bool {
@@ -382,7 +412,7 @@ pub fn check_access(claims: &Claims, req: &actix_web::HttpRequest) -> Result<(),
     let current_path = req.path();
     let current_method = req.method().as_str();
 
-    evaluate_access(&rules, claims, current_path, current_method)
+    evaluate_access(rules, claims, current_path, current_method)
 }
 
 

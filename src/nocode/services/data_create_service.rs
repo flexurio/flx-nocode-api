@@ -11,17 +11,9 @@ use crate::crypt::{encrypt, is_encrypted_string};
 use crate::storage::sql_store::InsertValue;
 use crate::database::state::DbParam;
 use crate::nocode::repositories::data_create_repo;
+use super::web_err as err;
 use std::collections::HashSet;
 use chrono::Local;
-
-fn err(msg: impl Into<String>) -> WebResponse {
-    WebResponse {
-        success: false,
-        message: msg.into(),
-        total_data: 0,
-        data: Value::Null,
-    }
-}
 
 // Build (InsertValue, json) pair for the actor id, respecting the audit column type.
 fn audit_actor_value(col: &Column, actor_id: &str) -> (InsertValue, Value) {

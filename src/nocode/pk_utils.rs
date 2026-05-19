@@ -7,6 +7,32 @@ pub fn parse_pk_values(id_raw: &str) -> Vec<String> {
     id_raw.split('~').map(|s| s.to_string()).collect()
 }
 
+/// Validate that a composite-PK path segment is well-formed: no empty parts,
+/// and every part is non-empty after trimming. Returns an error message suitable
+/// for a 400 response when the input is malformed.
+///
+/// Note: because `~` is the delimiter, callers must encode `~` in literal PK
+/// values (it is reserved). This function does not attempt to decode escapes.
+pub fn validate_pk_path(id_raw: &str, expected_parts: usize) -> Result<Vec<String>, String> {
+    if id_raw.is_empty() {
+        return Err("Primary key path is empty".to_string());
+    }
+    let parts = parse_pk_values(id_raw);
+    if parts.len() != expected_parts {
+        return Err(format!(
+            "Expected {} primary key parts (delimited by '~'), got {}",
+            expected_parts,
+            parts.len()
+        ));
+    }
+    for (i, p) in parts.iter().enumerate() {
+        if p.trim().is_empty() {
+            return Err(format!("Primary key part #{} is empty", i + 1));
+        }
+    }
+    Ok(parts)
+}
+
 /// Build a primary key filter, including composite PK support.
 pub fn build_pk_filter(pk_columns: &[String], pk_values: &[String]) -> Result<QF, String> {
     if pk_columns.is_empty() {

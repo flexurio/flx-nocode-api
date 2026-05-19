@@ -391,8 +391,19 @@ async fn execute_job(state: Data<AppState>, schemas_map: Arc<HashMap<String, Arc
 // Internal execution helpers built from existing code paths without HTTP types
 use crate::crypt::{encrypt, is_encrypted_string};
 use crate::helpers::find_column_match;
+use crate::nocode::pk_utils::json_value_from_str_and_type;
 // use crate::database::state::DbParam;
 use std::collections::HashSet;
+
+/// Extract a column value from JSON body as a trimmed string, returning empty
+/// for `null`/missing values without leaking the literal string `"null"`.
+fn body_value_as_str(body: &Value, col: &str) -> String {
+    match body.get(col) {
+        None | Some(Value::Null) => String::new(),
+        Some(Value::String(s)) => s.trim().to_string(),
+        Some(v) => v.to_string().trim().to_string(),
+    }
+}
 
 async fn exec_post(state: Data<AppState>, route: String, schemas_map: Arc<HashMap<String, Arc<TableSchema>>>, body: Value, actor_id: Option<String>) -> Result<()> {
     let schema = schemas_map.get(&route).ok_or_else(|| anyhow!("Schema not found for {}", route))?;
@@ -436,32 +447,16 @@ async fn exec_post(state: Data<AppState>, route: String, schemas_map: Arc<HashMa
         }
         
         if !isformula && (col.name != "id" || col.function.is_empty()) {
-             let mut value = body
-                .get(&col.name)
-                .map(|v| v.to_string().replace('"', "").replace("null", ""))
-                .unwrap_or_default();
-
-             // Encrypt
-             if col.encrypt && !is_encrypted_string(&value) {
-                 value = encrypt(state.encrypt_key.clone(), value);
-             }
-
-             // Bind with type conversion
-             if col.type_data.contains("int") || col.type_data.contains("float") {
-                 if let Ok(n) = value.parse::<i64>() {
-                     doc_map.insert(col.name.clone(), serde_json::json!(n));
-                 } else if let Ok(f) = value.parse::<f64>() {
-                     doc_map.insert(col.name.clone(), serde_json::json!(f));
-                 } else {
-                     doc_map.insert(col.name.clone(), body.get(&col.name).cloned().unwrap_or(Value::String(String::new())));
-                 }
-             } else {
-                 doc_map.insert(col.name.clone(), body.get(&col.name).cloned().unwrap_or(Value::String(String::new())));
-                 // Update value with encrypted version if needed
-                 if col.encrypt {
-                    doc_map.insert(col.name.clone(), serde_json::json!(value));
-                 }
-             }
+            let raw_str = body_value_as_str(&body, &col.name);
+            if raw_str.is_empty() {
+                continue;
+            }
+            let value = if col.encrypt && !is_encrypted_string(&raw_str) {
+                encrypt(state.encrypt_key.clone(), raw_str)
+            } else {
+                raw_str
+            };
+            doc_map.insert(col.name.clone(), json_value_from_str_and_type(&value, &col.type_data));
         }
     }
 
@@ -469,18 +464,20 @@ async fn exec_post(state: Data<AppState>, route: String, schemas_map: Arc<HashMa
     doc_map.insert("created_at".into(), Value::String(Utc::now().to_rfc3339()));
     
     // ensure created_by_id if column exists
-    if schema.columns.iter().any(|c| c.name == "created_by_id") && !doc_map.contains_key("created_by_id") {
-        let actor_opt = actor_id.or_else(|| body.get("__actor_id__").and_then(|v| v.as_str()).map(|s| s.to_string()));
-         if let Some(actor) = actor_opt 
-              && let Some(col) = schema.columns.iter().find(|c| c.name == "created_by_id") {
-                   if col.type_data.contains("int") {
-                        if let Ok(n) = actor.parse::<i64>() { doc_map.insert("created_by_id".into(), serde_json::json!(n)); }
-                   } else if col.type_data.contains("float") || col.type_data.contains("double") {
-                        if let Ok(f) = actor.parse::<f64>() { doc_map.insert("created_by_id".into(), serde_json::json!(f)); }
-                   } else {
-                        doc_map.insert("created_by_id".into(), Value::String(actor));
-                   }
-              }
+    if !doc_map.contains_key("created_by_id")
+        && let Some(col) = schema.columns.iter().find(|c| c.name == "created_by_id")
+    {
+        let actor_opt = actor_id.or_else(|| {
+            body.get("__actor_id__")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+        });
+        if let Some(actor) = actor_opt {
+            doc_map.insert(
+                "created_by_id".into(),
+                json_value_from_str_and_type(&actor, &col.type_data),
+            );
+        }
     }
 
     match state.store.insert(&schema.table, Value::Object(doc_map)).await {
@@ -529,51 +526,32 @@ async fn exec_put(state: Data<AppState>, route: String, schemas_map: Arc<HashMap
         }
 
         if !isformula {
-             let mut value = body
-                .get(&col.name)
-                .map(|v| v.to_string().replace('"', "").replace("null", ""))
-                .unwrap_or_default();
-
-             // Encrypt
-             if col.encrypt && !is_encrypted_string(&value) {
-                 value = encrypt(state.encrypt_key.clone(), value);
-             }
-
-             // Bind with type conversion
-             if col.type_data.contains("int") || col.type_data.contains("float") {
-                 if let Ok(n) = value.parse::<i64>() {
-                     doc_map.insert(col.name.clone(), serde_json::json!(n));
-                 } else if let Ok(f) = value.parse::<f64>() {
-                     doc_map.insert(col.name.clone(), serde_json::json!(f));
-                 } else {
-                     doc_map.insert(col.name.clone(), body.get(&col.name).cloned().unwrap_or(Value::String(String::new())));
-                 }
-             } else {
-                 doc_map.insert(col.name.clone(), body.get(&col.name).cloned().unwrap_or(Value::String(String::new())));
-                 if col.encrypt {
-                    doc_map.insert(col.name.clone(), serde_json::json!(value));
-                 }
-             }
+            let raw_str = body_value_as_str(&body, &col.name);
+            if raw_str.is_empty() {
+                continue;
+            }
+            let value = if col.encrypt && !is_encrypted_string(&raw_str) {
+                encrypt(state.encrypt_key.clone(), raw_str)
+            } else {
+                raw_str
+            };
+            doc_map.insert(col.name.clone(), json_value_from_str_and_type(&value, &col.type_data));
         }
     }
 
     doc_map.insert("updated_at".into(), Value::String(Utc::now().to_rfc3339()));
-    
+
     // updated_by_id if exists
-    if schema.columns.iter().any(|c| c.name == "updated_by_id") {
-        let actor_opt = body.get("__actor_id__").and_then(|v| v.as_str()).map(|s| s.to_string());
-        if let Some(actor) = actor_opt 
-             && let Some(col) = schema.columns.iter().find(|c| c.name == "updated_by_id") {
-                if col.type_data.contains("int") {
-                    if let Ok(n) = actor.parse::<i64>() { doc_map.insert("updated_by_id".into(), Value::Number(n.into())); }
-                    else { doc_map.insert("updated_by_id".into(), Value::String(actor)); }
-                } else if col.type_data.contains("float") || col.type_data.contains("double") {
-                    if let Ok(f) = actor.parse::<f64>() { doc_map.insert("updated_by_id".into(), serde_json::json!(f)); }
-                    else { doc_map.insert("updated_by_id".into(), Value::String(actor)); }
-                } else {
-                    doc_map.insert("updated_by_id".into(), Value::String(actor));
-                }
-        }
+    if let Some(col) = schema.columns.iter().find(|c| c.name == "updated_by_id")
+        && let Some(actor) = body
+            .get("__actor_id__")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+    {
+        doc_map.insert(
+            "updated_by_id".into(),
+            json_value_from_str_and_type(&actor, &col.type_data),
+        );
     }
 
     let id_for_filter = id.clone();

@@ -90,25 +90,13 @@ pub async fn process_get_request(
     let mut table_schema_get_params = table_schema.get.parameters.clone();
 
     // Required Param Validation
-    {
-        let mut missing_required: Vec<String> = Vec::new();
-        for param in &mut table_schema_get_params {
-            if param.starts_with('*') {
-                let param_name = param.trim_start_matches('*');
-                if !params_map.contains_key(param_name) || 
-                   params_map.get(param_name).map(|v| v.as_str().unwrap_or("").is_empty()).unwrap_or(true) {
-                    missing_required.push(param_name.to_string());
-                }
-            }
-        }
-        if !missing_required.is_empty() {
-            return HttpResponse::BadRequest().json(WebResponse {
-                success: false,
-                message: format!("Required parameters missing: {}", missing_required.join(", ")),
-                total_data: 0,
-                data: Value::Null,
-            });
-        }
+    let missing_required =
+        super::collect_missing_required_params(&mut table_schema_get_params, &params_map);
+    if !missing_required.is_empty() {
+        return HttpResponse::BadRequest().json(super::web_err(format!(
+            "Required parameters missing: {}",
+            missing_required.join(", ")
+        )));
     }
 
     // Cache Logic

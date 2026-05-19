@@ -95,17 +95,17 @@ pub async fn process_patch_request(
     // Call Repo
     match data_patch_repo::execute_procedure(state, table_schema, route, bind_params, param_count).await {
         Ok((rows, count)) => {
-            // Audit
-            // Note: Patch operations often don't have a specific record ID they operate on in a RESTful sense
-            // unless returned or passed. We use None for ID here as per original logic.
-             write_audit(&AuditEntry {
-                at: Local::now().to_rfc3339(),
-                actor_id: actor_id_opt.unwrap_or_default(),
-                action: "PATCH",
-                route,
-                id: None,
-                ip: Some(crate::helpers::get_client_ip(req)).as_deref(),
-            });
+            if let Some(actor) = &actor_id_opt {
+                let ip = crate::helpers::get_client_ip(req);
+                write_audit(&AuditEntry {
+                    at: Local::now().to_rfc3339(),
+                    actor_id: actor.clone(),
+                    action: "PATCH",
+                    route,
+                    id: None,
+                    ip: Some(ip.as_str()),
+                });
+            }
 
             // Return Mode Logic
             let mode = table_schema.patch.return_mode.to_ascii_lowercase();
