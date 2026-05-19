@@ -14,6 +14,33 @@ use crate::nocode::repositories::data_create_repo;
 use std::collections::HashSet;
 use chrono::Local;
 
+fn err(msg: impl Into<String>) -> WebResponse {
+    WebResponse {
+        success: false,
+        message: msg.into(),
+        total_data: 0,
+        data: Value::Null,
+    }
+}
+
+// Build (InsertValue, json) pair for the actor id, respecting the audit column type.
+fn audit_actor_value(col: &Column, actor_id: &str) -> (InsertValue, Value) {
+    let t = col.type_data.to_lowercase();
+    if t.contains("int") {
+        if let Ok(n) = actor_id.parse::<i64>() {
+            return (InsertValue::Param(DbParam::I64(n)), serde_json::json!(n));
+        }
+    } else if (t.contains("float") || t.contains("decimal"))
+        && let Ok(f) = actor_id.parse::<f64>()
+    {
+        return (InsertValue::Param(DbParam::F64(f)), serde_json::json!(f));
+    }
+    (
+        InsertValue::Param(DbParam::Str(actor_id.to_string())),
+        Value::String(actor_id.to_string()),
+    )
+}
+
 #[allow(clippy::collapsible_if)]
 pub async fn process_insert_request(
     state: &web::Data<AppState>,
@@ -28,41 +55,16 @@ pub async fn process_insert_request(
     let mut actor_id_opt: Option<String> = None;
 
     if state.require_auth && !state.route_publics.contains(&route.to_string()) {
-        let claims = match get_user_info_from_token(req, state.clone()) {
-             Ok(c) => c,
-             Err(_) => {
-                return Err(WebResponse {
-                    success: false,
-                    message: "Invalid token".to_string(),
-                    total_data: 0,
-                     data: Value::Null,
-                });
-             }
-        };
-
-        if let Err(e) = check_access(&claims, req) {
-             return Err(WebResponse {
-                success: false,
-                message: format!("Unauthorized: {}", e),
-                total_data: 0,
-                data: Value::Null,
-            });
-        }
+        let claims = get_user_info_from_token(req, state.clone())
+            .map_err(|_| err("Invalid token"))?;
+        check_access(&claims, req)
+            .map_err(|e| err(format!("Unauthorized: {}", e)))?;
         actor_id_opt = Some(claims.id.clone());
     }
 
     // 2. Parse Multipart
-    let mut body = match multipart_to_json(multipart).await {
-         Ok(json) => json,
-         Err(e) => {
-             return Err(WebResponse {
-                 success: false,
-                 message: format!("Failed to parse multipart data: {}", e),
-                 total_data: 0,
-                 data: Value::Null,
-             });
-         }
-    };
+    let mut body = multipart_to_json(multipart).await
+        .map_err(|e| err(format!("Failed to parse multipart data: {}", e)))?;
 
     // 3. Handle Write Queue
     let isqueue = parameters
@@ -72,67 +74,56 @@ pub async fn process_insert_request(
         .unwrap_or(false);
 
     if state.write_queue_enabled && isqueue {
-         // Add created_by_id if needed for queue
-         if let Some(actor_id) = &actor_id_opt {
-             if let Some(col) = table_schema.columns.iter().find(|c| c.name == "created_by_id") {
-                  if col.type_data.contains("int") {
-                     if let Ok(n) = actor_id.parse::<i64>() {
-                         if let Some(map) = body.as_object_mut() { map.insert("created_by_id".into(), serde_json::json!(n)); }
-                     }
-                  } else if col.type_data.contains("float") || col.type_data.contains("decimal") {
-                        if let Ok(f) = actor_id.parse::<f64>() {
-                             if let Some(map) = body.as_object_mut() { map.insert("created_by_id".into(), serde_json::json!(f)); }
-                        }
-                  } else if let Some(map) = body.as_object_mut() { 
-                       map.insert("created_by_id".into(), serde_json::json!(actor_id.clone())); 
-                  }
-             }
-         }
+        // Add created_by_id if needed for queue
+        if let Some(actor_id) = &actor_id_opt {
+            if let Some(col) = table_schema.columns.iter().find(|c| c.name == "created_by_id") {
+                if let Some(map) = body.as_object_mut() {
+                    let (_, json_val) = audit_actor_value(col, actor_id);
+                    map.insert("created_by_id".into(), json_val);
+                }
+            }
+        }
 
-         let job = crate::nocode::consumer::WriteJob {
-             route: route.to_string(),
-             op: crate::nocode::consumer::WriteOpKind::Post,
-             body,
-             headers: vec![],
-             enqueued_at: chrono::Utc::now().to_rfc3339(),
-             actor_id: actor_id_opt.clone(), // Use already validated actor_id
-         };
+        let job = crate::nocode::consumer::WriteJob {
+            route: route.to_string(),
+            op: crate::nocode::consumer::WriteOpKind::Post,
+            body,
+            headers: vec![],
+            enqueued_at: chrono::Utc::now().to_rfc3339(),
+            actor_id: actor_id_opt.clone(),
+        };
 
-         if state.write_queue_fast_ack {
-             crate::nocode::consumer::enqueue_job_background(job, "CREATE-HANDLER");
-             return Ok(WebResponse {
-                 success: true,
-                 message: "Enqueued".to_string(),
-                 total_data: 0,
-                 data: Value::Null,
-             });
-         } else {
-             match crate::nocode::consumer::enqueue_job(&job).await {
-                 Ok(_) => return Ok(WebResponse {
-                     success: true,
-                     message: "Enqueued".to_string(),
-                     total_data: 0,
-                     data: Value::Null,
-                 }),
-                 Err(e) => return Err(WebResponse {
-                     success: false,
-                     message: format!("Queue error: {}", e),
-                     total_data: 0,
-                     data: Value::Null,
-                 }),
-             }
-         }
+        if state.write_queue_fast_ack {
+            crate::nocode::consumer::enqueue_job_background(job, "CREATE-HANDLER");
+            return Ok(WebResponse {
+                success: true,
+                message: "Enqueued".to_string(),
+                total_data: 0,
+                data: Value::Null,
+            });
+        } else {
+            return match crate::nocode::consumer::enqueue_job(&job).await {
+                Ok(_) => Ok(WebResponse {
+                    success: true,
+                    message: "Enqueued".to_string(),
+                    total_data: 0,
+                    data: Value::Null,
+                }),
+                Err(e) => Err(err(format!("Queue error: {}", e))),
+            };
+        }
     }
-    
+
     // 4. Validate Table Existence
     if table_schema.table.is_empty() {
-        return Err(WebResponse {
-            success: false,
-            message: format!("Entity {} on folder config/{}.json not found", route, route),
-            total_data: 0,
-            data: Value::Null,
-        });
+        return Err(err(format!("Entity {} on folder config/{}.json not found", route, route)));
     }
+
+    // Pre-compute the cleaned post.columns names once (strip trailing '*').
+    let post_column_names: HashSet<&str> = table_schema.post.columns.iter()
+        .map(|s| s.trim_end_matches('*'))
+        .collect();
+    let post_columns_vec: Vec<&str> = post_column_names.iter().copied().collect();
 
     // 5. Validate Required Fields
     for post_col in &table_schema.post.columns {
@@ -154,18 +145,15 @@ pub async fn process_insert_request(
 
             // get data type
             let data_type = format!("{:?}", col_def.type_data).to_lowercase();
+            let is_datetime = data_type.contains("datetime")
+                || data_type.contains("timestamp")
+                || data_type.contains("date");
 
             // convert empty datetime -> nulll
-            if let Some(value) = body.get_mut(clean_col_name) {
-
-                if data_type.contains("datetime")
-                    || data_type.contains("timestamp")
-                    || data_type.contains("date")
-                {
+            if is_datetime {
+                if let Some(value) = body.get_mut(clean_col_name) {
                     if let Some(s) = value.as_str() {
-                        if s.trim().is_empty()
-                            || s.trim().eq_ignore_ascii_case("null")
-                        {
+                        if s.trim().is_empty() || s.trim().eq_ignore_ascii_case("null") {
                             *value = Value::Null;
                         }
                     }
@@ -175,19 +163,17 @@ pub async fn process_insert_request(
         let is_mandatory = is_required_marker || (!col_def.nullable && !col_def.auto_increment);
 
         if is_mandatory {
-            let present = body
-                .get(clean_col_name)
-                .map(|v| v.to_string().replace('"', ""))
-                .map(|s| !s.trim().is_empty())
-                .unwrap_or(false);
+            let present = match body.get(clean_col_name) {
+                None | Some(Value::Null) => false,
+                Some(Value::String(s)) => {
+                    let t = s.trim();
+                    !t.is_empty() && !t.eq_ignore_ascii_case("null")
+                }
+                Some(_) => true,
+            };
 
             if !present {
-                return Err(WebResponse {
-                    success: false,
-                    message: format!("Missing required field: {}", clean_col_name),
-                    total_data: 0,
-                    data: Value::Null,
-                });
+                return Err(err(format!("Missing required field: {}", clean_col_name)));
             }
         }
     }
@@ -195,126 +181,142 @@ pub async fn process_insert_request(
     // 6. Prepare Logic (Filter Columns, Encrypt, Build Insert Lists)
     let skip_columns: HashSet<&str> = [
         "created_at", "created_by_id", "updated_at", "updated_by_id", "deleted_at", "deleted_by_id",
-    ].iter().cloned().collect();
+    ].iter().copied().collect();
 
-    // Helper to check if column is in post.columns (strips *)
-    let col_in_post_columns = |col_name: &str| -> bool {
-        table_schema.post.columns.iter().any(|post_col| {
-            let clean_name = post_col.trim_end_matches('*');
-            clean_name == col_name
-        })
-    };
+    let mut filtered_columns: Vec<&Column> = table_schema.columns.iter()
+        .filter(|col| !col.auto_increment
+            && !skip_columns.contains(col.name.as_str())
+            && post_column_names.contains(col.name.as_str()))
+        .collect();
 
-    let mut filtered_columns: Vec<&Column> = Vec::with_capacity(table_schema.post.columns.len());
-    filtered_columns.extend(
-        table_schema
-            .columns
-            .iter()
-            .filter(|col| !col.auto_increment && !skip_columns.contains(col.name.as_str()) && col_in_post_columns(&col.name))
-    );
+    let mut insert_columns: Vec<&str> = filtered_columns.iter()
+        .map(|c| c.name.as_str())
+        .collect();
 
-    let mut insert_columns: Vec<&str> = Vec::with_capacity(filtered_columns.len() + 2);
-    insert_columns.extend(
-        filtered_columns
-            .iter()
-            .filter(|col| col_in_post_columns(&col.name))
-            .map(|col| col.name.as_str())
-    );
-     // explicit id check
+    // explicit id check
     if let Some(col) = table_schema.columns.iter().find(|c| c.name == "id" && !c.auto_increment) {
-        insert_columns.push("id");
-        filtered_columns.push(col);
+        if !post_column_names.contains("id") {
+            insert_columns.push("id");
+            filtered_columns.push(col);
+        }
     }
-    
+
+    // Custom id generation tokens (hoisted out of the per-column loop).
+    let function_id_split: Vec<String> = table_schema.columns.iter()
+        .find(|c| c.name == "id" && !c.function.is_empty())
+        .map(|c| c.function.split('/').map(|s| s.to_string()).collect())
+        .unwrap_or_default();
+
     // Params collecting
     let mut fk_checks: Vec<(String, String, String, String)> = Vec::with_capacity(filtered_columns.len());
     let mut insert_fields: Vec<(String, InsertValue)> = Vec::with_capacity(filtered_columns.len() + 3);
     let mut doc_map = serde_json::Map::with_capacity(filtered_columns.len() + 3);
-    let mut function_id_split: Vec<String> = Vec::new();
 
     // Loop through filtered columns to prepare data
-     for col in filtered_columns.iter() {
-        if col.auto_increment { continue; }
-
+    for col in filtered_columns.iter() {
         let mut isformula = false;
-        // Strip * marker from post.columns for comparison
-        let post_columns: Vec<&str> = table_schema.post.columns.iter()
-            .map(|s| s.trim_end_matches('*'))
-            .collect();
-        let (exists, matched_string) = find_column_match(&post_columns, &col.name);
+        let (exists, matched_string) = find_column_match(&post_columns_vec, &col.name);
 
         if exists && col.name != "id" {
-             let string_formula = matched_string.unwrap_or("").to_string();
-             if string_formula.contains('=') {
-                 isformula = true;
-                  let rhs = string_formula.replace(&format!("{}=", col.name), "");
-                 let (frag, params) = build_formula_value_service(&rhs, &body);
-                 insert_fields.push((col.name.clone(), InsertValue::RawWithParams { sql: frag, params }));
-             }
-        }
-        
-        if col.name == "id" && !col.function.is_empty() {
-             function_id_split = col.function.split("/").map(|s| s.to_string()).collect();
-        }
-
-        if !isformula && (col.name != "id" || col.function.is_empty()) {
-            let mut value = body
-            .get(&col.name)
-            .map(|v| v.to_string().replace('"', "").trim().to_string())
-            .unwrap_or_default();
-        
-            let is_datetime = col.type_data.contains("datetime")
-                || col.type_data.contains("timestamp")
-                || col.type_data.contains("date");
-            
-            if is_datetime && value.eq_ignore_ascii_case("null") {
-                doc_map.insert(col.name.clone(), Value::Null);
-            
-                insert_fields.push((
-                    col.name.clone(),
-                    InsertValue::Param(DbParam::Null),
-                ));
-            
-                continue;
+            let string_formula = matched_string.unwrap_or("").to_string();
+            if string_formula.contains('=') {
+                isformula = true;
+                let rhs = string_formula.replace(&format!("{}=", col.name), "");
+                let (frag, params) = build_formula_value_service(&rhs, &body);
+                insert_fields.push((col.name.clone(), InsertValue::RawWithParams { sql: frag, params }));
             }
-
-             // FK Checks
-             for fk in table_schema.foreign_keys.iter() {
-                if fk.column == col.name && !value.is_empty() {
-                    fk_checks.push((col.name.clone(), fk.reference_table.clone(), fk.reference_column.clone(), value.clone()));
-                }
-             }
-
-             // Encrypt
-             if col.encrypt {
-                 if !is_encrypted_string(&value) {
-                     value = encrypt(state.encrypt_key.clone(), value);
-                 }
-             }
-
-             // Bind
-             if col.type_data.contains("int") || col.type_data.contains("float") {
-                 if let Ok(n) = value.parse::<i64>() {
-                     doc_map.insert(col.name.clone(), serde_json::json!(n));
-                     insert_fields.push((col.name.clone(), InsertValue::Param(DbParam::I64(n))));
-                 } else if let Ok(f) = value.parse::<f64>() {
-                     doc_map.insert(col.name.clone(), serde_json::json!(f));
-                     insert_fields.push((col.name.clone(), InsertValue::Param(DbParam::F64(f))));
-                 } else {
-                     doc_map.insert(col.name.clone(), serde_json::json!(body.get(&col.name).cloned().unwrap_or(Value::String(String::new()))));
-                     insert_fields.push((col.name.clone(), InsertValue::Param(DbParam::Str(value))));
-                 }
-             } else {
-                 doc_map.insert(col.name.clone(), body.get(&col.name).cloned().unwrap_or(Value::String(String::new())));
-                 insert_fields.push((col.name.clone(), InsertValue::Param(DbParam::Str(value))));
-             }
         }
-     }
+
+        // Skip if handled as formula, or if id is generated via function (handled in repo).
+        if isformula || (col.name == "id" && !col.function.is_empty()) {
+            continue;
+        }
+
+        let raw_value = body.get(&col.name);
+        let type_lower = col.type_data.to_lowercase();
+        let is_datetime = type_lower.contains("datetime")
+            || type_lower.contains("timestamp")
+            || type_lower.contains("date");
+        let is_int = type_lower.contains("int");
+        let is_float = type_lower.contains("float") || type_lower.contains("decimal");
+
+        // Typed string extraction (avoids "null" leaking from Value::Null via to_string()).
+        let str_value: String = match raw_value {
+            None | Some(Value::Null) => String::new(),
+            Some(Value::String(s)) => s.trim().to_string(),
+            Some(v) => v.to_string().trim().to_string(),
+        };
+
+        // Datetime null/empty -> bind NULL.
+        if is_datetime && (str_value.is_empty() || str_value.eq_ignore_ascii_case("null")) {
+            doc_map.insert(col.name.clone(), Value::Null);
+            insert_fields.push((col.name.clone(), InsertValue::Param(DbParam::Null)));
+            continue;
+        }
+
+        // FK Checks (only when we have a real value).
+        if !str_value.is_empty() {
+            for fk in table_schema.foreign_keys.iter() {
+                if fk.column == col.name {
+                    fk_checks.push((col.name.clone(), fk.reference_table.clone(), fk.reference_column.clone(), str_value.clone()));
+                }
+            }
+        }
+
+        // Encrypt (after FK check uses plaintext).
+        let value_for_db = if col.encrypt && !str_value.is_empty() && !is_encrypted_string(&str_value) {
+            encrypt(state.encrypt_key.clone(), str_value.clone())
+        } else {
+            str_value.clone()
+        };
+
+        // Bind based on column type.
+        if is_int {
+            if let Ok(n) = value_for_db.parse::<i64>() {
+                doc_map.insert(col.name.clone(), serde_json::json!(n));
+                insert_fields.push((col.name.clone(), InsertValue::Param(DbParam::I64(n))));
+            } else if value_for_db.is_empty() && col.nullable {
+                doc_map.insert(col.name.clone(), Value::Null);
+                insert_fields.push((col.name.clone(), InsertValue::Param(DbParam::Null)));
+            } else {
+                doc_map.insert(col.name.clone(), raw_value.cloned().unwrap_or(Value::String(String::new())));
+                insert_fields.push((col.name.clone(), InsertValue::Param(DbParam::Str(value_for_db))));
+            }
+        } else if is_float {
+            if let Ok(f) = value_for_db.parse::<f64>() {
+                doc_map.insert(col.name.clone(), serde_json::json!(f));
+                insert_fields.push((col.name.clone(), InsertValue::Param(DbParam::F64(f))));
+            } else if value_for_db.is_empty() && col.nullable {
+                doc_map.insert(col.name.clone(), Value::Null);
+                insert_fields.push((col.name.clone(), InsertValue::Param(DbParam::Null)));
+            } else {
+                doc_map.insert(col.name.clone(), raw_value.cloned().unwrap_or(Value::String(String::new())));
+                insert_fields.push((col.name.clone(), InsertValue::Param(DbParam::Str(value_for_db))));
+            }
+        } else {
+            doc_map.insert(col.name.clone(), raw_value.cloned().unwrap_or(Value::String(String::new())));
+            insert_fields.push((col.name.clone(), InsertValue::Param(DbParam::Str(value_for_db))));
+        }
+    }
+
+    // Inject created_by_id when actor is known and the column exists on the table.
+    if let Some(actor_id) = &actor_id_opt {
+        if let Some(col) = table_schema.columns.iter().find(|c| c.name == "created_by_id") {
+            if !doc_map.contains_key("created_by_id") {
+                let (insert_val, json_val) = audit_actor_value(col, actor_id);
+                doc_map.insert("created_by_id".into(), json_val);
+                insert_fields.push(("created_by_id".into(), insert_val));
+                if !insert_columns.contains(&"created_by_id") {
+                    insert_columns.push("created_by_id");
+                }
+            }
+        }
+    }
 
 
     // 7. Audit Log Preparation (before execution?) No, logic usually logs after success.
     // We execute now.
-    
+
     // Extract Authorization header to forward to API validation
     let auth_token = req
         .headers()
@@ -347,24 +349,19 @@ pub async fn process_insert_request(
                         actor_id: actor.clone(),
                         action: "POST",
                         route,
-                        id: None, 
+                        id: None,
                         ip: Some(ip_opt.as_str()),
                   });
              }
-             
+
              Ok(WebResponse {
                  success: true,
                  message: msg,
                  total_data: 1,
-                 data: inserted_id, 
+                 data: inserted_id,
              })
          },
-         Err(e) => Err(WebResponse {
-             success: false,
-             message: e,
-             total_data: 0,
-             data: Value::Null,
-         })
+         Err(e) => Err(err(e)),
     }
 }
 

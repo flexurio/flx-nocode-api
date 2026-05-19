@@ -291,7 +291,7 @@ pub async fn validate_api_formula(formula: &str, body: &Value, auth_token: Optio
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Column, ForeignKey, Index, JoinTable, OperationGet, PrimaryKey, TableSchema};
+    use crate::model::{Column, Index, PrimaryKey, TableSchema};
 
     fn make_valid_schema() -> TableSchema {
         TableSchema {
