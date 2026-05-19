@@ -137,15 +137,40 @@ pub async fn process_insert_request(
     // 5. Validate Required Fields
     for post_col in &table_schema.post.columns {
         // Check if column is marked as required with *
-        let is_required_marker = post_col.ends_with('*');
-        let clean_col_name = if is_required_marker {
-            post_col.trim_end_matches('*')
-        } else {
-            post_col.as_str()
-        };
+            let is_required_marker = post_col.ends_with('*');
+            let clean_col_name = if is_required_marker {
+                post_col.trim_end_matches('*')
+            } else {
+                post_col.as_str()
+            };
 
-        let Some(col_def) = table_schema.columns.iter().find(|c| c.name == clean_col_name) else { continue };
+            let Some(col_def) = table_schema
+                .columns
+                .iter()
+                .find(|c| c.name == clean_col_name)
+            else {
+                continue;
+            };
 
+            // get data type
+            let data_type = format!("{:?}", col_def.type_data).to_lowercase();
+
+            // convert empty datetime -> nulll
+            if let Some(value) = body.get_mut(clean_col_name) {
+
+                if data_type.contains("datetime")
+                    || data_type.contains("timestamp")
+                    || data_type.contains("date")
+                {
+                    if let Some(s) = value.as_str() {
+                        if s.trim().is_empty()
+                            || s.trim().eq_ignore_ascii_case("null")
+                        {
+                            *value = Value::Null;
+                        }
+                    }
+                }
+            }
         // Check if field is mandatory: either marked with * or column is not nullable and not auto_increment
         let is_mandatory = is_required_marker || (!col_def.nullable && !col_def.auto_increment);
 
@@ -233,10 +258,25 @@ pub async fn process_insert_request(
         }
 
         if !isformula && (col.name != "id" || col.function.is_empty()) {
-             let mut value = body
-                .get(&col.name)
-                .map(|v| v.to_string().replace('"', "").replace("null", ""))
-                .unwrap_or_default();
+            let mut value = body
+            .get(&col.name)
+            .map(|v| v.to_string().replace('"', "").trim().to_string())
+            .unwrap_or_default();
+        
+            let is_datetime = col.type_data.contains("datetime")
+                || col.type_data.contains("timestamp")
+                || col.type_data.contains("date");
+            
+            if is_datetime && value.eq_ignore_ascii_case("null") {
+                doc_map.insert(col.name.clone(), Value::Null);
+            
+                insert_fields.push((
+                    col.name.clone(),
+                    InsertValue::Param(DbParam::Null),
+                ));
+            
+                continue;
+            }
 
              // FK Checks
              for fk in table_schema.foreign_keys.iter() {
