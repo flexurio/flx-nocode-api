@@ -1,8 +1,10 @@
-use std::{env};
+use std::env;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use actix_web::{web, HttpResponse};
 use chrono::{Duration, Utc};
 use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
+use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde_json::Value;
@@ -89,30 +91,13 @@ pub fn validate_token(
         None => return Err(HttpResponse::Unauthorized().json("Missing Authorization header")),
     };
 
-    // When converter_token is set (external/third-party JWT), skip signature validation
-    // because we do not hold the signing key — but the token must still be present and
-    // structurally valid (3-part base64 JWT). Signature validation is the responsibility
-    // of the upstream identity provider in this mode.
+    // When converter_token is set, the token is issued by an external/third-party
+    // identity provider. We cryptographically verify it using an operator-provided
+    // key (CONVERTER_JWT_SECRET or CONVERTER_JWT_PUBLIC_KEY). Verification is
+    // mandatory: if no key is configured the request is rejected (fail closed),
+    // unless the operator explicitly opts out via CONVERTER_JWT_INSECURE_SKIP_VERIFY.
     if state.converter_token != ClaimsConverter::default() {
-        let token = auth_header.trim_start_matches("Bearer ");
-        let parts: Vec<&str> = token.split('.').collect();
-        if parts.len() != 3 {
-            return Err(HttpResponse::Unauthorized().json("Invalid token structure"));
-        }
-        // Best-effort exp check: signature is delegated to the upstream IDP,
-        // but we still reject expired tokens by inspecting the payload claim.
-        let exp_field = &state.converter_token.exp;
-        if let Ok(decoded) = URL_SAFE_NO_PAD.decode(parts[1])
-            && let Ok(json) = serde_json::from_slice::<Value>(&decoded)
-            && let Some(exp) = json.get(exp_field).and_then(|v| v.as_u64())
-            && exp > 0
-        {
-            let now = Utc::now().timestamp() as u64;
-            if now > exp + 30 {
-                return Err(HttpResponse::Unauthorized().json("Token expired"));
-            }
-        }
-        return Ok(());
+        return validate_converter_token(auth_header, &state.converter_token.exp);
     }
 
     // Create validation config once
@@ -131,6 +116,183 @@ pub fn validate_token(
             Err(HttpResponse::Unauthorized().json("Invalid or expired token"))
         }
     }
+}
+
+// ---------------- Converter (external IDP) JWT verification ----------------
+
+/// Verification configuration for externally-issued (converter_token) JWTs,
+/// loaded once from environment variables.
+struct ConverterVerifyConfig {
+    /// Key used to verify the signature; `None` means no key was configured.
+    decoding_key: Option<DecodingKey>,
+    /// Allowed signing algorithms (non-empty when `decoding_key` is set).
+    algorithms: Vec<Algorithm>,
+    /// Expected `iss` values, if enforcement is desired.
+    issuer: Option<Vec<String>>,
+    /// Expected `aud` values, if enforcement is desired.
+    audience: Option<Vec<String>>,
+    /// Operator explicitly accepts unverified tokens (signature delegated to an
+    /// upstream gateway). Only honored when no `decoding_key` is configured.
+    insecure_skip_verify: bool,
+}
+
+static CONVERTER_VERIFY: Lazy<ConverterVerifyConfig> = Lazy::new(load_converter_verify_config);
+static CONVERTER_INSECURE_WARNED: AtomicBool = AtomicBool::new(false);
+static CONVERTER_MISCONFIG_WARNED: AtomicBool = AtomicBool::new(false);
+
+fn parse_jwt_alg(s: &str) -> Option<Algorithm> {
+    match s.trim().to_ascii_uppercase().as_str() {
+        "HS256" => Some(Algorithm::HS256),
+        "HS384" => Some(Algorithm::HS384),
+        "HS512" => Some(Algorithm::HS512),
+        "RS256" => Some(Algorithm::RS256),
+        "RS384" => Some(Algorithm::RS384),
+        "RS512" => Some(Algorithm::RS512),
+        "ES256" => Some(Algorithm::ES256),
+        "ES384" => Some(Algorithm::ES384),
+        "PS256" => Some(Algorithm::PS256),
+        "PS384" => Some(Algorithm::PS384),
+        "PS512" => Some(Algorithm::PS512),
+        "EDDSA" => Some(Algorithm::EdDSA),
+        _ => None,
+    }
+}
+
+fn split_csv_env(name: &str) -> Option<Vec<String>> {
+    let raw = env::var(name).ok()?;
+    let items: Vec<String> = raw
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if items.is_empty() { None } else { Some(items) }
+}
+
+fn load_converter_verify_config() -> ConverterVerifyConfig {
+    let issuer = split_csv_env("CONVERTER_JWT_ISSUER");
+    let audience = split_csv_env("CONVERTER_JWT_AUDIENCE");
+    let insecure_skip_verify = env::var("CONVERTER_JWT_INSECURE_SKIP_VERIFY")
+        .map(|v| matches!(v.to_lowercase().as_str(), "1" | "true" | "yes"))
+        .unwrap_or(false);
+    let explicit_alg = env::var("CONVERTER_JWT_ALG").ok().and_then(|s| parse_jwt_alg(&s));
+
+    // Symmetric secret (HS*) takes precedence if provided.
+    if let Ok(secret) = env::var("CONVERTER_JWT_SECRET") {
+        if !secret.is_empty() {
+            let alg = explicit_alg.unwrap_or(Algorithm::HS256);
+            return ConverterVerifyConfig {
+                decoding_key: Some(DecodingKey::from_secret(secret.as_bytes())),
+                algorithms: vec![alg],
+                issuer,
+                audience,
+                insecure_skip_verify,
+            };
+        }
+    }
+
+    // Asymmetric public key (PEM). Allow `\n`-escaped single-line env values.
+    if let Ok(pem_raw) = env::var("CONVERTER_JWT_PUBLIC_KEY") {
+        if !pem_raw.trim().is_empty() {
+            let pem = pem_raw.replace("\\n", "\n");
+            let alg = explicit_alg.unwrap_or(Algorithm::RS256);
+            let key_res = match alg {
+                Algorithm::ES256 | Algorithm::ES384 => DecodingKey::from_ec_pem(pem.as_bytes()),
+                Algorithm::EdDSA => DecodingKey::from_ed_pem(pem.as_bytes()),
+                _ => DecodingKey::from_rsa_pem(pem.as_bytes()),
+            };
+            match key_res {
+                Ok(key) => {
+                    return ConverterVerifyConfig {
+                        decoding_key: Some(key),
+                        algorithms: vec![alg],
+                        issuer,
+                        audience,
+                        insecure_skip_verify,
+                    };
+                }
+                Err(e) => {
+                    // Configured but invalid: fail closed (no usable key).
+                    eprintln!("ERROR: CONVERTER_JWT_PUBLIC_KEY could not be parsed as {:?} PEM: {}", alg, e);
+                }
+            }
+        }
+    }
+
+    ConverterVerifyConfig {
+        decoding_key: None,
+        algorithms: vec![],
+        issuer,
+        audience,
+        insecure_skip_verify,
+    }
+}
+
+/// Verify an externally-issued JWT (converter_token mode).
+/// `auth_header` is the raw `Authorization` value (may include the `Bearer ` prefix).
+fn validate_converter_token(auth_header: &str, exp_field: &str) -> Result<(), HttpResponse> {
+    let token = auth_header.trim_start_matches("Bearer ").trim();
+    let parts: Vec<&str> = token.split('.').collect();
+    if parts.len() != 3 {
+        return Err(HttpResponse::Unauthorized().json("Invalid token structure"));
+    }
+
+    let cfg = &*CONVERTER_VERIFY;
+
+    // Preferred path: cryptographically verify the signature.
+    if let Some(key) = &cfg.decoding_key {
+        let mut validation = Validation::new(cfg.algorithms[0]);
+        validation.algorithms = cfg.algorithms.clone();
+        validation.validate_exp = true;
+        validation.leeway = 30;
+        if let Some(iss) = &cfg.issuer {
+            validation.set_issuer(iss.as_slice());
+        }
+        match &cfg.audience {
+            Some(aud) => validation.set_audience(aud.as_slice()),
+            None => validation.validate_aud = false,
+        }
+        return match decode::<Value>(token, key, &validation) {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                eprintln!("Converter JWT verification failed: {}", e);
+                Err(HttpResponse::Unauthorized().json("Invalid or expired token"))
+            }
+        };
+    }
+
+    // Explicit opt-out: operator delegates signature checks to an upstream gateway.
+    if cfg.insecure_skip_verify {
+        if !CONVERTER_INSECURE_WARNED.swap(true, Ordering::Relaxed) {
+            eprintln!(
+                "WARNING: converter_token signature verification is DISABLED \
+                 (CONVERTER_JWT_INSECURE_SKIP_VERIFY=true). Tokens are accepted without \
+                 cryptographic verification — ensure an upstream gateway validates them."
+            );
+        }
+        // Best-effort expiry check from the unverified payload.
+        if let Ok(decoded) = URL_SAFE_NO_PAD.decode(parts[1])
+            && let Ok(json) = serde_json::from_slice::<Value>(&decoded)
+            && let Some(exp) = json.get(exp_field).and_then(|v| v.as_u64())
+            && exp > 0
+        {
+            let now = Utc::now().timestamp() as u64;
+            if now > exp + 30 {
+                return Err(HttpResponse::Unauthorized().json("Token expired"));
+            }
+        }
+        return Ok(());
+    }
+
+    // Fail closed: converter mode active but no verification key and no explicit opt-out.
+    if !CONVERTER_MISCONFIG_WARNED.swap(true, Ordering::Relaxed) {
+        eprintln!(
+            "ERROR: converter_token mode is active but no verification key is configured. \
+             Set CONVERTER_JWT_SECRET (HS*) or CONVERTER_JWT_PUBLIC_KEY (RS*/ES*/EdDSA PEM), \
+             or set CONVERTER_JWT_INSECURE_SKIP_VERIFY=true to accept unverified tokens. \
+             Rejecting all converter_token requests until configured."
+        );
+    }
+    Err(HttpResponse::Unauthorized().json("Token verification not configured"))
 }
 
 // Handler untuk login dan generate token

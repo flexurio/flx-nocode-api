@@ -2,6 +2,10 @@ use aes_gcm::{
     aead::{Aead, KeyInit},
     Aes256Gcm, Key, Nonce,
 };
+use argon2::{
+    password_hash::{rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
+    Argon2,
+};
 use base64::Engine;
 use rand::RngExt;
 use sha2::{Digest, Sha256};
@@ -66,6 +70,43 @@ pub fn decrypt(key: String, encrypted_string: String) -> String {
         },
         Err(_) => "Gagal dekripsi".to_string(),
     }
+}
+
+/// Hash sebuah password plaintext dengan Argon2id (one-way, salt acak per-hash).
+///
+/// Gunakan ini untuk kredensial autentikasi (mis. kolom `flx_users.password`).
+/// Berbeda dengan [`encrypt`] yang reversible (untuk kolom PII yang harus bisa
+/// dibaca kembali), hash password TIDAK dapat didekripsi — verifikasi dilakukan
+/// dengan [`verify_password`]. Mengembalikan string PHC (`$argon2id$...`).
+/// String kosong dikembalikan bila hashing gagal (caller harus memperlakukan
+/// nilai kosong sebagai kegagalan, bukan sebagai hash valid).
+pub fn hash_password(plaintext: &str) -> String {
+    let salt = SaltString::generate(&mut OsRng);
+    match Argon2::default().hash_password(plaintext.as_bytes(), &salt) {
+        Ok(hash) => hash.to_string(),
+        Err(e) => {
+            eprintln!("Password hashing failed: {}", e);
+            String::new()
+        }
+    }
+}
+
+/// Verifikasi password plaintext terhadap hash PHC Argon2 (constant-time).
+/// Mengembalikan `false` bila hash tidak valid/tidak cocok.
+pub fn verify_password(plaintext: &str, phc_hash: &str) -> bool {
+    match PasswordHash::new(phc_hash) {
+        Ok(parsed) => Argon2::default()
+            .verify_password(plaintext.as_bytes(), &parsed)
+            .is_ok(),
+        Err(_) => false,
+    }
+}
+
+/// True bila string tampak sebagai hash Argon2 PHC (mis. `$argon2id$...`).
+/// Dipakai untuk membedakan kredensial yang sudah di-hash dari format lama
+/// (AES terenkripsi) demi migrasi mulus saat login.
+pub fn is_argon2_hash(s: &str) -> bool {
+    s.starts_with("$argon2")
 }
 
 /// Fungsi untuk check apakah string sudah di enkripsi atau belum
@@ -186,5 +227,38 @@ mod tests {
         let encrypted = encrypt(key.clone(), plaintext.clone());
         let decrypted = decrypt(key, encrypted);
         assert_eq!(decrypted, plaintext);
+    }
+
+    // --- password hashing (Argon2) ---
+
+    #[test]
+    fn test_hash_password_verifies() {
+        let hash = hash_password("s3cr3t-pass");
+        assert!(is_argon2_hash(&hash), "hash should be PHC argon2 format");
+        assert!(verify_password("s3cr3t-pass", &hash));
+        assert!(!verify_password("wrong-pass", &hash));
+    }
+
+    #[test]
+    fn test_hash_password_uses_random_salt() {
+        let h1 = hash_password("same");
+        let h2 = hash_password("same");
+        assert_ne!(h1, h2, "random salt should yield different hashes");
+        assert!(verify_password("same", &h1));
+        assert!(verify_password("same", &h2));
+    }
+
+    #[test]
+    fn test_verify_password_rejects_non_hash() {
+        // Legacy AES ciphertext / arbitrary string must not be accepted as a valid hash.
+        assert!(!verify_password("anything", "not-a-phc-hash"));
+        assert!(!verify_password("anything", ""));
+    }
+
+    #[test]
+    fn test_is_argon2_hash_discriminates_from_aes() {
+        let aes = encrypt("k".to_string(), "data".to_string());
+        assert!(!is_argon2_hash(&aes), "AES base64 must not look like an argon2 hash");
+        assert!(is_argon2_hash(&hash_password("x")));
     }
 }

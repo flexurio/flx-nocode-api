@@ -1,5 +1,41 @@
+# ============================================================================
+# Converter token (external/third-party JWT) verification
+# ----------------------------------------------------------------------------
+# These only apply when "converter_token" mode is active (i.e. routes.json
+# defines a non-default converter_token mapping). In that mode the JWT is issued
+# by an external Identity Provider, and the server now VERIFIES its signature.
+#
+# Behaviour (fail-closed by default):
+#   - Set CONVERTER_JWT_SECRET (HS*) OR CONVERTER_JWT_PUBLIC_KEY (RS*/ES*/EdDSA)
+#     -> tokens are cryptographically verified.
+#   - Set CONVERTER_JWT_INSECURE_SKIP_VERIFY=true
+#     -> skip verification (only if an upstream gateway already validates them).
+#   - Set none of the above
+#     -> ALL converter_token requests are rejected.
+#
+# Pick ONE of the two verification methods below.
+
+# --- Option A: symmetric secret (HS256/HS384/HS512) ---
+# CONVERTER_JWT_SECRET=your-shared-hmac-secret-from-the-idp
+# CONVERTER_JWT_ALG=HS256
+
+# --- Option B: asymmetric public key (RS256/ES256/EdDSA, PEM) ---
+# Use literal \n for newlines when putting the PEM on a single line.
+# CONVERTER_JWT_PUBLIC_KEY="-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqh...\n-----END PUBLIC KEY-----"
+# CONVERTER_JWT_ALG=RS256
+
+# --- Optional claim checks (comma-separated for multiple values) ---
+# CONVERTER_JWT_ISSUER=https://idp.example.com/
+# CONVERTER_JWT_AUDIENCE=flexurio-api
+
+# --- Escape hatch: accept tokens WITHOUT signature verification (NOT recommended) ---
+# CONVERTER_JWT_INSECURE_SKIP_VERIFY=false
+
+
 SECRET_KEY=kljasdf0823hlk0123j_879123$kasdjy_12387jkhgasLIUjhbqwILUjklj
 ENCRYPT_KEY=sdf90kj234y<YUG7YJg278jhkjhui*gjOYU5jhjkkjkl0uj2738123jhbm
+CONVERTER_JWT_SECRET=your-shared-hmac-secret-from-the-idp
+CONVERTER_JWT_ALG=HS256
 
 
 PORT=8080

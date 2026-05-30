@@ -14,7 +14,7 @@ use zip::ZipArchive;
 use crate::rate_limit::{RL_WINDOW_LOGIN, RL_WINDOW_LOGIN_FAIL};
 use crate::{
     auth::create_token,
-    crypt::{decrypt, encrypt},
+    crypt::{decrypt, hash_password, is_argon2_hash, verify_password},
     helpers::{get_client_ip, multipart_to_json},
     log::log_output,
     model::WebResponse,
@@ -24,6 +24,11 @@ use crate::storage::ast::{Filter as QF, Query as QQ, Val as QV};
 use crate::storage::sql_store::SqlStore;
 // removed unused import: DataStore trait not needed in scope for method calls on trait objects
 // removed unused import: DataStore trait not needed in scope for method calls on trait objects
+
+// Precomputed Argon2 hash used for a constant-time dummy verification when a
+// user is not found, to reduce login user-enumeration via timing differences.
+static DUMMY_PASSWORD_HASH: once_cell::sync::Lazy<String> =
+    once_cell::sync::Lazy::new(|| hash_password("flx-dummy-credential-for-timing"));
 
 pub async fn login(state: web::Data<AppState>, req: actix_web::HttpRequest) -> impl Responder {
     // Rate limit by IP (fixed window) — allow disabling with 0 or -1
@@ -143,9 +148,24 @@ pub async fn login(state: web::Data<AppState>, req: actix_web::HttpRequest) -> i
         ("".to_string(), String::new(), "".to_string())
     };
 
-    let decrypt_password = decrypt(state.encrypt_key.clone(), password_db);
+    // Verify credentials. New credentials are stored as one-way Argon2 hashes.
+    // Legacy deployments may still hold AES-encrypted (reversible) passwords, so
+    // we transparently verify those and opportunistically re-hash on success.
+    let user_found = !id_user_str.is_empty();
+    let stored_is_legacy = !password_db.is_empty() && !is_argon2_hash(&password_db);
+    let password_ok = if is_argon2_hash(&password_db) {
+        verify_password(pass_in, &password_db)
+    } else if stored_is_legacy {
+        // Legacy reversible format: compare against the decrypted value.
+        pass_in == decrypt(state.encrypt_key.clone(), password_db.clone())
+    } else {
+        // No stored credential (user absent/disabled). Run a dummy verify so the
+        // response time is comparable to the valid-user path.
+        let _ = verify_password(pass_in, &DUMMY_PASSWORD_HASH);
+        false
+    };
 
-    if pass_in != decrypt_password {
+    if !password_ok {
         // Apply per-user and per-IP failure rate limits within a 5-minute window.
         // Any of these env values <= 0 disables that specific limiter.
         let base_per_min_i64: i64 = std::env::var("RATE_LIMIT_LOGIN_PER_MIN")
@@ -191,6 +211,37 @@ pub async fn login(state: web::Data<AppState>, req: actix_web::HttpRequest) -> i
             total_data: 0,
             data: Value::Null,
         });
+    }
+
+    // Opportunistic migration: now that we have a verified plaintext, replace a
+    // legacy reversible credential with an Argon2 hash. Best-effort; failures are
+    // logged but never block login. Skipped for MongoDB (uses the document store
+    // path rather than the SQL helpers below).
+    if user_found && stored_is_legacy && state.db_type != crate::model::DbType::Mongodb {
+        let new_hash = hash_password(pass_in);
+        if !new_hash.is_empty() {
+            let id_val = if let Ok(n) = id_user_str.parse::<i64>() { QV::I64(n) } else { QV::Str(id_user_str.clone()) };
+            let filter = QF::Eq("id".into(), id_val);
+            let fields = [(
+                "password".to_string(),
+                crate::storage::sql_store::InsertValue::Param(
+                    crate::database::state::DbParam::Str(new_hash),
+                ),
+            )];
+            match ds.preview_update_with("flx_users", Some(&filter), &fields) {
+                Ok((sql, params)) => {
+                    let built = crate::database::state::rehydrate_placeholders(&sql, state.db_type.as_str());
+                    if let Err(e) = state.db.query_with_params(&built, params).await {
+                        log_output("ERROR", "core.rs/login", "password-rehash", format!("Failed to migrate password hash for user {}: {}", id_user_str, e), true);
+                    } else {
+                        log_output("INFO", "core.rs/login", "password-rehash", format!("Migrated legacy password to Argon2 for user {}", id_user_str), true);
+                    }
+                }
+                Err(e) => {
+                    log_output("ERROR", "core.rs/login", "password-rehash", format!("Failed to build rehash update for user {}: {}", id_user_str, e), true);
+                }
+            }
+        }
     }
 
     // Cross-DB: fetch endpoint & role and join in Rust via DataStore
@@ -275,7 +326,7 @@ pub async fn register(state: Data<AppState>, multipart: Multipart) -> impl Respo
         password_value.to_string()
     };
 
-    let encrypt_password = encrypt(state.encrypt_key.clone(), password);
+    let encrypt_password = hash_password(&password);
 
     // Use DataStore insert with app-side timestamps for cross-DB compatibility
     let ds = SqlStore::new(state.db.clone(), state.db_type.as_str().to_string());
@@ -365,7 +416,7 @@ pub async fn generate_users(state: Data<AppState>, schemas: &std::collections::H
         if id_user_str.is_empty() {
             // create random password, encrypt, then insert admin
             let random_pass = rand::rng().random_range(1000..9999).to_string();
-            let encrypt_password = encrypt(state.encrypt_key.clone(), random_pass.clone());
+            let encrypt_password = hash_password(&random_pass);
 
             println!("==========================================");
             println!("Your admin Password: {:?}", random_pass);
@@ -514,7 +565,7 @@ pub async fn generate_users(state: Data<AppState>, schemas: &std::collections::H
             id_user = 1;
             // create string number
             let random_pass = rand::rng().random_range(1000..9999).to_string();
-            let encrypt_password = encrypt(state.encrypt_key.clone(), random_pass.clone());
+            let encrypt_password = hash_password(&random_pass);
 
             println!("==========================================");
             println!("Your admin Password: {:?}", random_pass);
