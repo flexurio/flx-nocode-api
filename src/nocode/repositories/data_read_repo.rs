@@ -314,16 +314,14 @@ pub async fn fetch_dynamic_data(
         q = q.r#where(QF::And(filters));
     }
 
-    // Apply where_clause from schema (raw conditions)
+    // Apply where_clause from schema (raw, trusted conditions) to the WHERE clause.
+    // Previously these were (incorrectly) emitted as HAVING and silently overwritten
+    // by the schema `having` block below.
     if !table_schema.get.where_clause.is_empty() {
-        let mut where_exprs: Vec<QE> = Vec::new();
         for wc in &table_schema.get.where_clause {
             if !wc.trim().is_empty() {
-                where_exprs.push(QE::Raw(wc.clone()));
+                q.where_raw.push(wc.clone());
             }
-        }
-        if !where_exprs.is_empty() {
-            q = q.having_expr(where_exprs);
         }
     }
 
@@ -446,15 +444,58 @@ pub async fn fetch_dynamic_data(
         q = q.having_expr(hv);
     }
 
+    // Total count is opt-in (`?count=true`). By default we skip the extra COUNT(*)
+    // query for performance and report the number of rows returned in this page.
+    let want_count = params_map.get("count").map(|v| match v {
+        Value::Bool(b) => *b,
+        Value::String(s) => matches!(s.trim().to_ascii_lowercase().as_str(), "true" | "1" | "yes"),
+        Value::Number(n) => n.as_i64().map(|x| x != 0).unwrap_or(false),
+        _ => false,
+    }).unwrap_or(false);
+
+    // Build the COUNT query from the same filters/joins/where_raw BEFORE pagination.
+    // GROUP BY queries are skipped (counting groups needs a subquery the AST can't
+    // express yet); for those we fall back to the page row count.
+    let count_query = if want_count && q.group_by.is_empty() {
+        let mut cq = q.clone();
+        cq.projection.clear();
+        cq.sort.clear();
+        cq.having_exprs.clear();
+        cq.aggs.clear();
+        cq.limit = None;
+        cq.offset = None;
+        Some(cq.agg_count_all("cnt"))
+    } else {
+        None
+    };
+
     // pagination
     let offset_ast = (i_page_ast - 1) * i_limit_ast;
     q = q.limit(i_limit_ast as u32).offset(offset_ast.max(0) as u32);
 
     // log query
     log_output("DEBUG", "DATA READ", route, format!("Query: {:?}", q), true);
-    
-    match state.store.query(&q).await {
-        Ok(rs) => Ok((rs, 9999)), // TODO: Implement count query if needed, currently 9999 placeholder to match existing
-        Err(e) => Err(format!("Error NCO-GET(AST) route {}: {}. Query : {:?}", route, e, q)),
-    }
+
+    let rows = match state.store.query(&q).await {
+        Ok(rs) => rs,
+        Err(e) => return Err(format!("Error NCO-GET(AST) route {}: {}. Query : {:?}", route, e, q)),
+    };
+
+    let total = match count_query {
+        Some(cq) => match state.store.query(&cq).await {
+            Ok(crows) => crows
+                .first()
+                .and_then(|r| r.get("cnt"))
+                .and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse::<i64>().ok())))
+                .unwrap_or(0)
+                .max(0) as usize,
+            Err(e) => {
+                log_output("ERROR", "DATA READ COUNT", route, format!("count failed: {}", e), false);
+                rows.len()
+            }
+        },
+        None => rows.len(),
+    };
+
+    Ok((rows, total))
 }

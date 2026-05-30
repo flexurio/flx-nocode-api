@@ -54,6 +54,7 @@ pub struct Query {
     pub collection: String,          // table/collection
     pub projection: Vec<String>,     // select fields
     pub filter: Option<Filter>,
+    pub where_raw: Vec<String>,      // raw, trusted WHERE conditions (from config); AND-combined with `filter`
     pub sort: Vec<Sort>,
     pub limit: Option<u32>,
     pub offset: Option<u32>,
@@ -68,6 +69,9 @@ impl Query {
     pub fn from<S: Into<String>>(collection: S) -> Self { Self { collection: collection.into(), ..Default::default() } }
     pub fn select<I, S2>(mut self, fields: I) -> Self where I: IntoIterator<Item = S2>, S2: Into<String> { self.projection = fields.into_iter().map(Into::into).collect(); self }
     pub fn r#where(mut self, f: Filter) -> Self { self.filter = Some(f); self }
+    /// Append a raw, trusted WHERE condition (AND-combined). Source must be config,
+    /// never user input — it is emitted verbatim into the SQL.
+    pub fn where_raw<S: Into<String>>(mut self, cond: S) -> Self { self.where_raw.push(cond.into()); self }
     pub fn order_by<S: Into<String>>(mut self, field: S, asc: bool) -> Self { self.sort.push(Sort { field: field.into(), asc }); self }
     pub fn limit(mut self, n: u32) -> Self { self.limit = Some(n); self }
     pub fn offset(mut self, n: u32) -> Self { self.offset = Some(n); self }

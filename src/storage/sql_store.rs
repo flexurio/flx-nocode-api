@@ -1039,9 +1039,22 @@ fn compile_query_with_dialect(db_type: &str, q: &Query) -> (String, Vec<DbParam>
         }
     }
 
-    if let Some(f) = &q.filter {
-        let clause = compile_filter_for(db_type, f, &mut params, &mut idx);
-        if !clause.is_empty() { sql.push_str(" WHERE "); sql.push_str(&clause); }
+    {
+        let mut where_parts: Vec<String> = Vec::new();
+        if let Some(f) = &q.filter {
+            let clause = compile_filter_for(db_type, f, &mut params, &mut idx);
+            if !clause.is_empty() { where_parts.push(clause); }
+        }
+        // Raw, trusted conditions from config (no bound params). Wrapped in parens
+        // so OR-conditions inside a single entry don't bleed into sibling clauses.
+        for raw in &q.where_raw {
+            let t = raw.trim();
+            if !t.is_empty() { where_parts.push(format!("({})", t)); }
+        }
+        if !where_parts.is_empty() {
+            sql.push_str(" WHERE ");
+            sql.push_str(&where_parts.join(" AND "));
+        }
     }
 
     if !q.group_by.is_empty() {
@@ -1235,5 +1248,31 @@ mod tests {
         assert!(sql.contains("SELECT AVG(total) AS avg_total,MAX(total) AS max_total FROM orders"));
         // No GROUP BY expected
         assert!(!sql.contains("GROUP BY"));
+    }
+
+    #[tokio::test]
+    async fn where_raw_combines_with_filter_via_and() {
+        let repo: Arc<dyn DbRepository> = Arc::new(MockRepo);
+        let store = SqlStore::new(repo, "mysql".to_string());
+        use crate::storage::ast::{Filter as F, Query as Q, Val as V};
+        let q = Q::from("t")
+            .r#where(F::Eq("a".into(), V::I64(1)))
+            .where_raw("b > 2");
+        let rows = store.query(&q).await.unwrap();
+        let sql = rows.first().unwrap().get("sql").and_then(|v| v.as_str()).unwrap();
+        // raw condition must land in WHERE (not HAVING), AND-combined and parenthesized
+        assert!(sql.contains("WHERE a = ? AND (b > 2)"), "got: {}", sql);
+        assert!(!sql.contains("HAVING"), "raw where must not become HAVING: {}", sql);
+    }
+
+    #[tokio::test]
+    async fn where_raw_only_emits_where() {
+        let repo: Arc<dyn DbRepository> = Arc::new(MockRepo);
+        let store = SqlStore::new(repo, "postgres".to_string());
+        use crate::storage::ast::Query as Q;
+        let q = Q::from("t").where_raw("deleted_at IS NULL");
+        let rows = store.query(&q).await.unwrap();
+        let sql = rows.first().unwrap().get("sql").and_then(|v| v.as_str()).unwrap();
+        assert!(sql.contains("WHERE (deleted_at IS NULL)"), "got: {}", sql);
     }
 }
