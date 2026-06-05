@@ -1,24 +1,14 @@
 use actix_cors::Cors;
-use actix_files::Files;
-use actix_multipart::Multipart;
-// removed unused dev imports after migrating to dedicated middleware modules
-use actix_web::middleware::Compress;
-use actix_web::middleware::Condition;
-use actix_web::web::Path;
-use actix_web::{App, HttpResponse, HttpServer, web};
-// validate_token now invoked inside AuthMiddleware; no direct import needed here
+use actix_web::middleware::{Compress, Condition};
+use actix_web::{App, HttpServer, web};
 use colored::Colorize;
 use dotenv::dotenv;
 use helpers::cetak_label;
 use log::log_output;
-use once_cell::sync::Lazy;
-use serde_json::Value;
 use std::collections::HashSet;
-use std::fs;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-
 use std::env;
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 mod auth;
@@ -28,272 +18,59 @@ use database::state::{AppState, QueryConverter};
 mod error;
 mod nocode;
 use nocode::consumer::start_consumer;
-use nocode::{generate::create_table, validate::check_table_design};
 mod core;
-use core::{generate_users, get_roles, login, register};
-mod model;
-use model::TableSchema;
-
-use crate::auth::ClaimsConverter;
-use crate::core::generate_role_admin;
-use crate::model::{ReferenceForeignKey, ReferenceForeignKeyAction};
-use crate::nocode::generate::{execute_generate_table, generate_table};
-use crate::storage::sql_store::SqlStore;
+use core::generate_users;
 mod audit;
 mod helpers;
 mod log;
 mod metrics;
 mod middleware;
+mod model;
 mod rate_limit;
-mod storage; // new optional storage abstraction (not used yet)
+mod storage;
 #[cfg(feature = "mongodb")]
 use crate::storage::mongodb_store::MongoStore;
-use metrics::METRICS;
 use middleware::{AuthMiddleware, GlobalRateLimit, StatusLogger};
 
-// Consolidate config location to avoid repeated env::var reads
-static CONFIG_LOCATION: Lazy<String> = Lazy::new(|| {
-    std::env::var("LOC_CONFIG").unwrap_or_else(|_| {
-        eprintln!("Warning: LOC_CONFIG not set, using default 'config'");
-        "config".to_string()
-    })
-});
+mod config;
+use config::{CONFIG, CONFIG_LOCATION, ENDPOINT_LOG_ONCE, ISDEBUG, SCHEMAS};
 
-// Load routes.json once and expose via CONFIG
-static CONFIG: Lazy<crate::model::Config> = Lazy::new(|| {
-    let file_path = format!("{}/routes.json", CONFIG_LOCATION.as_str());
-
-    let mut content = match std::fs::read_to_string(&file_path) {
-        Ok(content) => content,
-        Err(e) => {
-            eprintln!(
-                "ERROR 9081231287 : Can't read file {} - {}",
-                file_path.on_bright_red(),
-                e
-            );
-            return crate::model::Config {
-                routes: vec![],
-                route_publics: vec![],
-                converter_token: ClaimsConverter::default(),
-            };
-        }
-    };
-
-    if !content.contains("converter_token") {
-        content = content.replace(
-            "}",
-            ", \"converter_token\": {\"id\":\"id\",\"nm\":\"nm\",\"exp\":\"exp\",\"at\":\"at\",\"rl\":\"rl\",\"cs\":\"cs\"} }",
-        );
-    }
-
-    match serde_json::from_str(&content) {
-        Ok(config) => config,
-        Err(e) => {
-            eprintln!(
-                "ERROR main 75 : Sorry, content of /{}/routes.json is not valid JSON, with ERROR Message : {}",
-                CONFIG_LOCATION.as_str(),
-                e
-            );
-            panic!("Invalid routes.json");
-        }
-    }
-});
-
-// Whitelist handled inside AuthMiddleware
-
-pub(crate) static ISDEBUG: Lazy<bool> = Lazy::new(|| match env::var("DEBUG") {
-    Ok(val) => matches!(val.to_lowercase().as_str(), "1" | "true" | "yes"),
-    Err(_) => false,
-});
-
-// Ensure endpoint logging happens only once even if server factory runs multiple times
-static ENDPOINT_LOG_ONCE: Lazy<AtomicBool> = Lazy::new(|| AtomicBool::new(false));
-
-// Static Routes for once initialization
-static FOREIGNKEY_ACTION: [&str; 4] = ["cascade", "set null", "restrict", "no action"];
-
-#[allow(clippy::type_complexity)]
-static SCHEMAS: Lazy<(
-    Arc<std::collections::HashMap<String, Arc<TableSchema>>>,
-    Arc<Vec<ReferenceForeignKey>>,
-)> = Lazy::new(|| {
-    let config_dir = format!("{}/entity", CONFIG_LOCATION.as_str());
-    let mut schemas_map = std::collections::HashMap::new();
-    let mut ref_foreign_keys: Vec<ReferenceForeignKey> = Vec::with_capacity(CONFIG.routes.len());
-
-    for route in CONFIG.routes.iter() {
-        let file_path = format!("{}/{}.json", config_dir, route);
-
-        let content = match fs::read_to_string(&file_path) {
-            Ok(content) => content,
-            Err(e) => {
-                eprintln!(
-                    "ERROR 908ihu76 : Can't read file {} - {}",
-                    file_path.on_bright_red(),
-                    e
-                );
-                panic!("Cannot read entity file");
-            }
-        };
-        let schema: TableSchema = match serde_json::from_str(&content) {
-            Ok(schema) => schema,
-            Err(e) => {
-                eprintln!(
-                    "Sorry, content of /{}/entity/{}.json is not valid JSON, with ERROR Message : {}",
-                    CONFIG_LOCATION.as_str(),
-                    route,
-                    e
-                );
-                panic!("Invalid entity JSON");
-            }
-        };
-
-        // Early validation for TRACE upsert/merge requirements based on backend
-        // Determine db type from env (same as later runtime config) - compute lowercase once
-        let dbt_raw = env::var("DB_TYPE").unwrap_or_else(|_| "mysql".to_string());
-        let dbt = dbt_raw.to_ascii_lowercase(); // Use ascii_lowercase which is faster than to_lowercase
-        let trace_active =
-            !schema.trace.insert_into.is_empty() || !schema.trace.column_selects.is_empty();
-        if trace_active && (dbt == "postgres" || dbt == "mssql") {
-            // Resolve conflict keys: allow special entry "index:NAME" to reference an index by name
-            let mut resolved_conflict_cols: Vec<String> = vec![];
-            if !schema.trace.column_conflicts.is_empty() {
-                if let Some(idx_spec) = schema
-                    .trace
-                    .column_conflicts
-                    .iter()
-                    .find(|s| s.to_lowercase().starts_with("index:"))
-                {
-                    let name = idx_spec
-                        .split_once(':')
-                        .map(|(_, n)| n.trim())
-                        .unwrap_or("");
-                    if let Some(ix) = schema
-                        .indexes
-                        .iter()
-                        .find(|ix| ix.name.eq_ignore_ascii_case(name))
-                    {
-                        resolved_conflict_cols = ix.columns.clone();
-                    } else {
-                        eprintln!(
-                            "TRACE config error for table '{}': referenced index '{}' not found in indexes",
-                            schema.table, name
-                        );
-                        panic!("Trace config error: index not found");
-                    }
-                } else {
-                    resolved_conflict_cols = schema.trace.column_conflicts.clone();
-                }
-            }
-
-            if dbt == "postgres" {
-                if resolved_conflict_cols.is_empty() {
-                    eprintln!(
-                        "TRACE config error for table '{}': Postgres requires 'column_conflicts' (or index:<name>) for upsert",
-                        schema.table
-                    );
-                    panic!("Trace config error: Postgres requires column_conflicts");
-                }
-            } else if dbt == "mssql" && resolved_conflict_cols.is_empty() {
-                // Allow fallback to a single unique index if present unambiguously
-                let unique_indexes: Vec<_> = schema.indexes.iter().filter(|ix| ix.unique).collect();
-                if unique_indexes.len() == 1 {
-                    // ok: will use this unique index at runtime
-                } else {
-                    eprintln!(
-                        "TRACE config error for table '{}': MSSQL requires 'column_conflicts' (or index:<name>); no unambiguous unique index found",
-                        schema.table
-                    );
-                    panic!("Trace config error: MSSQL ambiguous unique index");
-                }
-            }
-        }
-
-        // check if schema.foreign_keys is not empty
-        if !schema.foreign_keys.is_empty() {
-            // loop througt all schema.foreign_keys
-            for fk in schema.foreign_keys.iter() {
-                // check if fk.on_delete not in FOREIGNKEY_ACTION
-                if !FOREIGNKEY_ACTION.contains(&fk.on_delete.as_str()) {
-                    eprintln!(
-                        "ERROR FK_Check Delete : Foreign key on_delete action '{}' is not supported",
-                        fk.on_delete
-                    );
-                    panic!("Unsupported FK on_delete action");
-                }
-                if !FOREIGNKEY_ACTION.contains(&fk.on_update.as_str()) {
-                    eprintln!(
-                        "ERROR FK_Check Update : Foreign key on_update action '{}' is not supported",
-                        fk.on_update
-                    );
-                    panic!("Unsupported FK on_update action");
-                }
-                ref_foreign_keys.push(ReferenceForeignKey {
-                    table: fk.reference_table.clone(),
-                    column: fk.reference_column.clone(),
-                    on_delete_action: ReferenceForeignKeyAction {
-                        table: schema.table.clone(),
-                        column: fk.column.clone(),
-                        action: fk.on_delete.clone(),
-                        type_delete: schema.del.type_delete.clone(), // soft or hard
-                    },
-                    on_update_action: ReferenceForeignKeyAction {
-                        table: schema.table.clone(),
-                        column: fk.column.clone(),
-                        action: fk.on_update.clone(),
-                        type_delete: "soft".to_string(), // on_update always soft
-                    },
-                });
-            }
-        }
-
-        schemas_map.insert(route.clone(), Arc::new(schema));
-    }
-
-    log_output(
-        "INFO",
-        "FOREIGN KEY",
-        "ref_foreign_keys",
-        format!("{:?}", ref_foreign_keys),
-        true,
-    );
-    // Shrink to fit to reduce memory overhead
-    schemas_map.shrink_to_fit();
-    (Arc::new(schemas_map), Arc::new(ref_foreign_keys))
-});
+mod routes;
+mod startup;
 
 #[actix_web::main]
 async fn main() -> anyhow::Result<()> {
-    // Load .env early so DEBUG/LOG_* are visible before any Lazy env reads
+    // Load .env early so DEBUG / LOG_* are visible before any Lazy env reads.
     dotenv().ok();
-    // Initialize async, non-blocking logger (no-op if DEBUG is off)
-    // Early CLI handling: print version and exit
-    {
-        if matches!(
-            env::args().nth(1).as_deref(),
-            Some("--version") | Some("-V") | Some("version")
-        ) {
-            println!("flx-nocode-api {}", env!("CARGO_PKG_VERSION"));
-            return Ok(());
-        }
+
+    // ── CLI: --version ────────────────────────────────────────────────────────
+    if matches!(
+        env::args().nth(1).as_deref(),
+        Some("--version") | Some("-V") | Some("version")
+    ) {
+        println!("flx-nocode-api {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
     }
 
-    // check .env exit or not
+    // ── Ensure .env exists ────────────────────────────────────────────────────
     if !std::path::Path::new(".env").exists() {
-        if let Err(e) = core::download_env_file().await {
-            eprintln!("Failed to download .env file: {}", e);
-            return Err(anyhow::anyhow!("Failed to download .env file: {}", e));
-        } else {
-            println!(".env file downloaded successfully.");
-            println!("Please configure your .env file with the required settings.");
-            return Err(anyhow::anyhow!("Please configure your .env file"));
+        match core::download_env_file().await {
+            Err(e) => {
+                eprintln!("Failed to download .env file: {}", e);
+                return Err(anyhow::anyhow!("Failed to download .env file: {}", e));
+            }
+            Ok(_) => {
+                println!(".env file downloaded successfully.");
+                println!("Please configure your .env file with the required settings.");
+                return Err(anyhow::anyhow!("Please configure your .env file"));
+            }
         }
     }
 
     let secret_key = env::var("SECRET_KEY").expect("SECRET_KEY must be set");
     let encrypt_key = env::var("ENCRYPT_KEY").expect("ENCRYPT_KEY must be set");
 
-    // Check config folder - use consolidated CONFIG_LOCATION to avoid re-reading env
+    // ── Ensure config directory ───────────────────────────────────────────────
     let config_location = CONFIG_LOCATION.as_str();
     if !std::path::Path::new(config_location).exists() {
         if let Err(e) = core::create_dir_and_get_config(config_location).await {
@@ -303,28 +80,22 @@ async fn main() -> anyhow::Result<()> {
         let _ = core::create_core_config_if_not_exists(config_location).await;
     }
 
-    // Ensure static directory
-    let static_storage = std::env::var("LOC_STATIC").unwrap_or_else(|_| "static".to_string());
-    // check if directory exists
+    // ── Ensure static & image directories ────────────────────────────────────
+    let static_storage = env::var("LOC_STATIC").unwrap_or_else(|_| "static".to_string());
     if !std::path::Path::new(&static_storage).exists() {
         std::fs::create_dir_all(&static_storage)?;
     }
-
-    // Ensure static directory
-    let image_storage = std::env::var("LOC_IMAGE").unwrap_or("DB".to_string());
-
+    let image_storage = env::var("LOC_IMAGE").unwrap_or_else(|_| "DB".to_string());
     println!("image_storage: {}", image_storage);
-
     if image_storage != "DB" {
         let path_image = format!("{}/{}", static_storage, image_storage);
-        // check if directory exists
         if !std::path::Path::new(&path_image).exists() {
             std::fs::create_dir_all(&path_image)?;
         }
         println!("path image: {}", path_image);
     }
 
-    // Determine CPU to scale defaults for database pooling and Actix workers
+    // ── Database initialisation ───────────────────────────────────────────────
     let cpu = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(1);
@@ -335,7 +106,6 @@ async fn main() -> anyhow::Result<()> {
         ..
     } = database::connection::initialize_database(cpu).await?;
 
-    // Inline per-dialect datetime SQL function
     let datetime_now: String = match db_type {
         crate::model::DbType::Mysql => "NOW()".to_string(),
         crate::model::DbType::Postgres => "NOW()".to_string(),
@@ -347,56 +117,42 @@ async fn main() -> anyhow::Result<()> {
     let query_converter = QueryConverter { datetime_now };
 
     let whitelist_ips: Vec<String> = env::var("WHITE_LIST_IP")
-        .unwrap_or_else(|_| "".to_string())
+        .unwrap_or_default()
         .split(',')
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .collect();
 
-    // Build generic DataStore adapter: SQL by default, MongoDB when selected
+    // ── DataStore adapter ─────────────────────────────────────────────────────
     let store_adapter: Arc<dyn crate::storage::traits::DataStore> = {
         match db_type {
             #[cfg(feature = "mongodb")]
             crate::model::DbType::Mongodb => {
-                let uri = match env::var("MONGODB_URI") {
-                    Ok(v) => v,
-                    Err(_) => {
-                        eprintln!("Please set MONGODB_URI in .env for DB_TYPE=mongodb");
-                        return Err(anyhow::anyhow!("MONGODB_URI not set"));
-                    }
-                };
-                let dbname = match env::var("MONGODB_DB") {
-                    Ok(v) => v,
-                    Err(_) => {
-                        eprintln!("Please set MONGODB_DB in .env for DB_TYPE=mongodb");
-                        return Err(anyhow::anyhow!("MONGODB_DB not set"));
-                    }
-                };
+                let uri = env::var("MONGODB_URI").map_err(|_| {
+                    eprintln!("Please set MONGODB_URI in .env for DB_TYPE=mongodb");
+                    anyhow::anyhow!("MONGODB_URI not set")
+                })?;
+                let dbname = env::var("MONGODB_DB").map_err(|_| {
+                    eprintln!("Please set MONGODB_DB in .env for DB_TYPE=mongodb");
+                    anyhow::anyhow!("MONGODB_DB not set")
+                })?;
                 let mongo = MongoStore::connect(&uri, &dbname).await.map_err(|e| {
                     eprintln!("Failed to connect to MongoDB: {}", e);
                     std::io::Error::new(std::io::ErrorKind::ConnectionRefused, e)
                 })?;
                 Arc::new(mongo)
             }
-            _ => {
-                let sql = crate::storage::sql_store::SqlStore::new(
-                    db_repo.clone(),
-                    db_type.as_str().to_string(),
-                );
-                Arc::new(sql)
-            }
+            _ => Arc::new(crate::storage::sql_store::SqlStore::new(
+                db_repo.clone(),
+                db_type.as_str().to_string(),
+            )),
         }
     };
 
+    // ── Redis / write-queue setup ─────────────────────────────────────────────
     let mut is_cachedb = env::var("REDIS_HOST")
         .map(|v| !v.is_empty())
         .unwrap_or(false);
-    let mut write_queue_enabled = false;
-    let mut write_queue_fast_ack = true; // default true: handlers return immediately
-    // check if REDIS_HOST is configured in .env (already used to initialize is_cachedb above)
-    // Proactively verify Redis connectivity once at startup for read-cache usage.
-    // If unreachable, disable caching to avoid expensive per-request connection attempts
-    // when clients pass `?redis=true`.
     if is_cachedb {
         match tokio::time::timeout(
             Duration::from_millis(1000),
@@ -404,18 +160,18 @@ async fn main() -> anyhow::Result<()> {
         )
         .await
         {
-            Ok(Ok(_)) => {
-                // Redis is reachable; keep caching enabled
-            }
+            Ok(Ok(_)) => {} // reachable — keep enabled
             _ => {
                 is_cachedb = false;
                 eprintln!(
-                    "Redis not reachable at startup. Disabling read-cache. Remove ?redis=true or fix REDIS_HOST to re-enable."
+                    "Redis not reachable at startup. Disabling read-cache. \
+                     Remove ?redis=true or fix REDIS_HOST to re-enable."
                 );
             }
         }
     }
-    // enable write queue if configured (default false)
+    let mut write_queue_enabled = false;
+    let mut write_queue_fast_ack = true;
     if let Ok(val) = env::var("WRITE_QUEUE_ENABLED") {
         write_queue_enabled = matches!(val.to_lowercase().as_str(), "1" | "true" | "yes");
     }
@@ -426,6 +182,7 @@ async fn main() -> anyhow::Result<()> {
         .map(|v| matches!(v.to_lowercase().as_str(), "1" | "true" | "yes"))
         .unwrap_or(true);
 
+    // ── AppState ──────────────────────────────────────────────────────────────
     let app_state = web::Data::new(AppState {
         db: db_repo,
         require_auth,
@@ -444,116 +201,44 @@ async fn main() -> anyhow::Result<()> {
         rules: {
             let rules_path = format!("{}/rules.json", CONFIG_LOCATION.as_str());
             match std::fs::read_to_string(&rules_path) {
-                Ok(c) => serde_json::from_str(&c).unwrap_or(serde_json::json!({})),
+                Ok(c) => serde_json::from_str(&c).unwrap_or_else(|_| serde_json::json!({})),
                 Err(_) => serde_json::json!({}),
             }
         },
     });
 
-    let id_user_str: String = if require_auth {
-        generate_users(app_state.clone(), &SCHEMAS.0).await
-    } else {
-        "1".to_string()
-    };
-
-    // Initialize Routes only once, using Lazy
+    // ── Generate default users ────────────────────────────────────────────────
+    if require_auth {
+        let _ = generate_users(app_state.clone(), &SCHEMAS.0);
+    }
+    // Force lazy statics to initialise now (avoids first-request latency).
     let _ = &*CONFIG;
     let _ = &*SCHEMAS;
 
-    // Start Redis consumer if write queue enabled
+    // ── Write-queue consumer ──────────────────────────────────────────────────
     if app_state.write_queue_enabled {
-        // verify Redis connectivity early
-        if let Err(e) = crate::database::redis::get_manager().await {
-            eprintln!("WRITE QUEUE enabled but Redis not available: {}", e);
-        } else {
-            start_consumer(app_state.clone(), Arc::clone(&SCHEMAS.0)).await;
-            log_output(
-                "QUEUE",
-                "BOOT",
-                "consumer",
-                "Write consumer started".to_string(),
-                true,
-            );
-        }
-    }
-
-    // loop every config.routes and check if table is exist in database
-    let state = web::Data::new(app_state.clone());
-    let ds = SqlStore::new(state.db.clone(), state.db_type.as_str().to_string());
-    for route in CONFIG.routes.iter() {
-        let schema_arc = match SCHEMAS.0.get(route) {
-            Some(s) => s.clone(),
-            None => {
-                eprintln!("No schema found for route '{}'", route);
-                return Err(anyhow::anyhow!("No schema found for route '{}'", route));
-            }
-        };
-        let schema = schema_arc.as_ref();
-        let should_generate = if schema.table == "flx_users" || schema.table == "flx_roles" {
-            require_auth
-        } else {
-            schema.auto_generate
-        };
-
-        if should_generate {
-            // Apply default collate if not set in schema
-            let mut schema_with_collate = schema.clone();
-            if schema_with_collate.collate.trim().is_empty()
-                && state.db_type == crate::model::DbType::Mysql
-            {
-                schema_with_collate.collate = app_state.default_collate.clone();
-            }
-
-            let (sql_create_table, sql_create_index) = generate_table(&ds, &schema_with_collate);
-            let (is_valid, msg) = execute_generate_table(
-                route.to_string(),
-                &app_state,
-                sql_create_table,
-                sql_create_index,
-            )
-            .await;
-            if !is_valid {
-                log_output("ERROR", "TABLE DESIGN CHECK", "FAILED", msg.clone(), true);
-                return Err(anyhow::anyhow!(
-                    "Table design check failed for route '{}': {}",
-                    route,
-                    msg
-                ));
-            } else {
+        match crate::database::redis::get_manager().await {
+            Err(e) => eprintln!("WRITE QUEUE enabled but Redis not available: {}", e),
+            Ok(_) => {
+                start_consumer(app_state.clone(), Arc::clone(&SCHEMAS.0)).await;
                 log_output(
-                    "INFO",
-                    "TABLE DESIGN CHECK",
-                    "SUCCESS",
-                    route.to_string(),
-                    false,
+                    "QUEUE",
+                    "BOOT",
+                    "consumer",
+                    "Write consumer started".to_string(),
+                    true,
                 );
             }
         }
     }
-    if app_state.db_type != crate::model::DbType::Mongodb {
-        // convert id_user_string to i64
-        let id_user: i64 = id_user_str.parse().unwrap_or(1);
-        let app_state_cl = app_state.clone();
-        let routes_cl = CONFIG.routes.clone();
-        tokio::spawn(async move {
-            match generate_role_admin(&app_state_cl, ds, id_user, routes_cl).await {
-                Ok(_) => log_output(
-                    "BOOT",
-                    "ROLE-SEED",
-                    "generate_role_admin",
-                    "completed".to_string(),
-                    true,
-                ),
-                Err(e) => log_output(
-                    "ERROR",
-                    "ROLE-SEED",
-                    "generate_role_admin",
-                    format!("{}", e),
-                    false,
-                ),
-            }
-        });
-    }
+
+    // ── Table generation (blocks until done; fatal on error) ─────────────────
+    startup::run_table_generation(&app_state).await?;
+
+    // // ── Role seeding (background task) ────────────────────────────────────────
+    // if app_state.db_type != crate::model::DbType::Mongodb {
+    //     startup::run_role_seeding(app_state.clone(), &id_user_str).await;
+    // }
 
     let _ = &*ISDEBUG;
 
@@ -565,6 +250,7 @@ async fn main() -> anyhow::Result<()> {
         false,
     );
 
+    // ── Guard: empty routes ───────────────────────────────────────────────────
     if CONFIG.routes.is_empty() {
         println!("--------------------------------------");
         println!("{}", "ROUTES NOT VALID ! ".on_red());
@@ -572,29 +258,23 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // check if any table name in SCHEMAS is double
+    // ── Guard: duplicate table names ──────────────────────────────────────────
     let mut table_names: HashSet<String> = HashSet::new();
     for (_route, schema) in SCHEMAS.0.iter() {
         if !table_names.insert(schema.table.clone()) {
-            println!("--------------------------------------");
-            println!(
-                "{}",
-                format!(
-                    "ERROR 9081231287 : Table name '{}' is duplicated in config entity.",
-                    schema.table
-                )
-                .on_red()
-            );
-            println!("--------------------------------------");
-            println!("--------------------------------------");
-            return Err(anyhow::anyhow!(
+            let msg = format!(
                 "ERROR 9081231287 : Table name '{}' is duplicated in config entity.",
                 schema.table
-            ));
+            );
+            println!("--------------------------------------");
+            println!("{}", msg.on_red());
+            println!("--------------------------------------");
+            return Err(anyhow::anyhow!("{}", msg));
         }
     }
 
-    let host: &str = "0.0.0.0";
+    // ── HTTP server ───────────────────────────────────────────────────────────
+    let host: &'static str = "0.0.0.0";
     let port: u16 = env::var("PORT")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -602,8 +282,6 @@ async fn main() -> anyhow::Result<()> {
 
     cetak_label(host.to_string(), port);
 
-    // HTTP server tunables (with sensible defaults)
-    // HTTP server defaults tuned for higher concurrency; override via env for fine control
     let keepalive_secs: u64 = env::var("HTTP_KEEPALIVE_SECS")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -632,13 +310,13 @@ async fn main() -> anyhow::Result<()> {
             max_conn_rate,
             env::var("HTTP_MAX_CONNECTIONS")
                 .ok()
-                .unwrap_or_else(|| "25000".to_string())
+                .unwrap_or_else(|| "25000".to_string()),
         ),
         false,
     );
 
     HttpServer::new(move || {
-        // Build CORS policy from env
+        // CORS policy from env
         let cors = match env::var("CORS_ALLOW_ORIGINS") {
             Ok(val) if !val.trim().is_empty() => {
                 let mut c = Cors::default()
@@ -658,7 +336,7 @@ async fn main() -> anyhow::Result<()> {
                 .max_age(3600),
         };
 
-        // Only log endpoint URLs once per process; always register routes regardless
+        // Log endpoints only on the first worker invocation.
         let do_log = !ENDPOINT_LOG_ONCE.swap(true, Ordering::SeqCst);
 
         App::new()
@@ -676,9 +354,8 @@ async fn main() -> anyhow::Result<()> {
                     .and_then(|s| s.parse().ok())
                     .map(|n: usize| n.clamp(1, 1024 * 16))
                     .unwrap_or(4096);
-                let bytes = kb * 1024; // convert KB to bytes as required by Actix limit()
                 web::JsonConfig::default()
-                    .limit(bytes)
+                    .limit(kb * 1024)
                     .error_handler(|err, _req| {
                         actix_web::error::InternalError::from_response(
                             format!("JSON error: {}", err),
@@ -687,9 +364,7 @@ async fn main() -> anyhow::Result<()> {
                         .into()
                     })
             })
-            // Global rate limit middleware (per-IP & method class)
             .wrap(GlobalRateLimit)
-            // Authentication middleware (uses whitelist & public routes)
             .wrap(AuthMiddleware)
             .wrap(Condition::new(
                 env::var("ALLOW_ANY_ORIGINS")
@@ -697,574 +372,10 @@ async fn main() -> anyhow::Result<()> {
                     .unwrap_or(false),
                 cors,
             ))
-            // Enable response compression to reduce memory/bandwidth
             .wrap(Compress::default())
-            // Log 404 / 405 responses for easier debugging (e.g. POST 405)
             .wrap(StatusLogger)
-            .configure(|cfg: &mut web::ServiceConfig| {
-                let static_loc =
-                    std::env::var("LOC_STATIC").unwrap_or_else(|_| "static".to_string());
-                // end point for static files (disable directory listing in prod)
-                let static_files = Files::new("/static", static_loc);
-                if *ISDEBUG {
-                    cfg.service(static_files.show_files_listing());
-                } else {
-                    cfg.service(static_files);
-                }
-                if do_log {
-                    log_output(
-                        "CORE ENDPOINT",
-                        "METHOD",
-                        "GET",
-                        format!(
-                            "http://{}:{}/{}",
-                            host.red(),
-                            port.clone().to_string().green(),
-                            "static".purple()
-                        ),
-                        false,
-                    );
-                }
-
-                // end point for login (only if REQUIRE_AUTH is enabled)
-                if require_auth {
-                    cfg.service(web::resource("/login").route(web::post().to(
-                        move |state: web::Data<AppState>, req: actix_web::HttpRequest| {
-                            login(state, req)
-                        },
-                    )));
-                    if do_log {
-                        log_output(
-                            "CORE ENDPOINT",
-                            "METHOD",
-                            "POST",
-                            format!(
-                                "http://{}:{}/{}",
-                                host.red(),
-                                port.clone().to_string().green(),
-                                "login".purple()
-                            ),
-                            false,
-                        );
-                    }
-                }
-
-                // end point for register (only if REQUIRE_AUTH is enabled)
-                if require_auth {
-                    cfg.service(web::resource("/register").route(web::post().to(
-                        move |state: web::Data<AppState>, multipart: Multipart| {
-                            register(state, multipart)
-                        },
-                    )));
-                    if do_log {
-                        log_output(
-                            "CORE ENDPOINT",
-                            "METHOD",
-                            "POST",
-                            format!(
-                                "http://{}:{}/{}",
-                                host.red(),
-                                port.clone().to_string().green(),
-                                "register".purple()
-                            ),
-                            false,
-                        );
-                    }
-                }
-
-                // end point for get roles
-                cfg.service(
-                    web::resource("/roles")
-                        .route(web::get().to(move |state: web::Data<AppState>| get_roles(state))),
-                );
-                if do_log {
-                    log_output(
-                        "CORE ENDPOINT",
-                        "METHOD",
-                        "GET",
-                        format!(
-                            "http://{}:{}/{}",
-                            host.red(),
-                            port.clone().to_string().green(),
-                            "roles".purple()
-                        ),
-                        false,
-                    );
-                }
-
-                // health check endpoint (public)
-                cfg.service(web::resource("/healthz").route(web::get().to({
-                    let state = app_state.clone();
-                    move || {
-                        let state = state.clone();
-                        async move {
-                            let probe_sql = "SELECT 1";
-                            let db_ok = state.db.query(probe_sql).await.is_ok();
-                            let body = serde_json::json!({
-                                "status": "ok",
-                                "db": if db_ok { "up" } else { "down" },
-                                "db_type": state.db_type,
-                            });
-                            if db_ok {
-                                HttpResponse::Ok().json(body)
-                            } else {
-                                HttpResponse::ServiceUnavailable().json(body)
-                            }
-                        }
-                    }
-                })));
-                if do_log {
-                    log_output(
-                        "CORE ENDPOINT",
-                        "METHOD",
-                        "GET",
-                        format!(
-                            "http://{}:{}/{}",
-                            host.red(),
-                            port.clone().to_string().green(),
-                            "healthz".purple()
-                        ),
-                        false,
-                    );
-                }
-
-                // metrics endpoint for Prometheus monitoring
-                cfg.service(web::resource("/metrics").route(web::get().to(|| async {
-                    let metrics_output = METRICS.to_prometheus_format();
-                    HttpResponse::Ok()
-                        .content_type("text/plain; charset=utf-8")
-                        .body(metrics_output)
-                })));
-                if do_log {
-                    log_output(
-                        "CORE ENDPOINT",
-                        "METHOD",
-                        "GET",
-                        format!(
-                            "http://{}:{}/{}",
-                            host.red(),
-                            port.clone().to_string().green(),
-                            "metrics".purple()
-                        ),
-                        false,
-                    );
-                }
-
-                // setup endpoint for each route
-                // Cache Arc clone of SCHEMAS to avoid cloning per route (Arc clone is cheap but compound overhead)
-                // Cache Arc clone of SCHEMAS to avoid cloning per route (Arc clone is cheap but compound overhead)
-                // let schemas_arc = Arc::clone(&SCHEMAS); // NO LONGER NEEDED
-                for route in CONFIG.routes.iter() {
-                    let route_arc: Arc<str> = Arc::from(route.as_str());
-                    let route_ra = Arc::clone(&route_arc);
-                    if !require_auth
-                        && (route_ra.as_ref() == "flx_users" || route_ra.as_ref() == "flx_roles")
-                    {
-                        continue;
-                    }
-
-                    // Get the schema for this route to check column availability
-                    let schema_arc = match SCHEMAS.0.get(route) {
-                        Some(s) => s.clone(),
-                        None => continue,
-                    };
-                    let schema = schema_arc.as_ref();
-
-                    // Use Arc<str> for efficient shared ownership - cheap to clone, reduces heap allocations
-                    let port_str = port.to_string(); // Cache port string conversion
-
-                    // Clone Arc only when needed
-                    let route_get = Arc::clone(&route_arc);
-                    let route_trace = Arc::clone(&route_arc);
-                    let route_patch = Arc::clone(&route_arc);
-                    let route_post = Arc::clone(&route_arc);
-                    let route_delete = Arc::clone(&route_arc);
-                    let route_import = Arc::clone(&route_arc);
-                    let route_export = Arc::clone(&route_arc);
-                    let route_put = Arc::clone(&route_arc);
-                    let route_validate = Arc::clone(&route_arc);
-                    let route_generate_table = Arc::clone(&route_arc);
-
-                    let schema_get = schema_arc.clone();
-                    let schema_post = schema_arc.clone();
-                    let schema_trace = schema_arc.clone();
-                    let schema_patch = schema_arc.clone();
-                    let schema_delete = schema_arc.clone();
-                    let schema_import = schema_arc.clone();
-                    let schema_export = schema_arc.clone();
-                    let schema_put = schema_arc.clone();
-                    let schema_validate = schema_arc.clone();
-                    let schema_generate = schema_arc.clone();
-
-                    let ref_fks = SCHEMAS.1.clone();
-                    let ref_fks_put = ref_fks.clone();
-                    let ref_fks_delete = ref_fks.clone();
-
-                    // Build a single base resource for this route and attach all enabled methods
-                    let mut base_res = web::resource(route_arc.as_ref());
-                    let mut has_base_route = false;
-
-                    // Log and register GET endpoint (if columns are defined)
-                    if schema.get.enable_method {
-                        if do_log {
-                            log_output(
-                                "ENDPOINT",
-                                "METHOD",
-                                "GET",
-                                format!(
-                                    "http://{}:{}/{}",
-                                    host.red(),
-                                    port_str.green(),
-                                    route_get.as_ref().purple()
-                                ),
-                                false,
-                            );
-                        }
-
-                        base_res = base_res.route(web::get().to(
-                            move |state: web::Data<AppState>,
-                                  req: actix_web::HttpRequest,
-                                  parameters: web::Query<Value>| {
-                                crate::nocode::handlers::get_handler::select(
-                                    state,
-                                    parameters,
-                                    route_get.to_string(),
-                                    schema_get.clone(),
-                                    req,
-                                )
-                            },
-                        ));
-                        has_base_route = true;
-                    }
-
-                    // Log and register POST endpoint (if columns are defined)
-                    if schema.post.enable_method {
-                        if do_log {
-                            log_output(
-                                "ENDPOINT",
-                                "METHOD",
-                                "POST",
-                                format!(
-                                    "http://{}:{}/{}",
-                                    host.red(),
-                                    port_str.green(),
-                                    route_post.as_ref().purple()
-                                ),
-                                false,
-                            );
-                        }
-
-                        base_res = base_res.route(web::post().to(
-                            move |state: web::Data<AppState>,
-                                  parameters: web::Query<Value>,
-                                  multipart: Multipart,
-                                  req: actix_web::HttpRequest| {
-                                crate::nocode::handlers::post_handler::insert(
-                                    state,
-                                    parameters,
-                                    route_post.to_string(),
-                                    schema_post.clone(),
-                                    multipart,
-                                    req,
-                                )
-                            },
-                        ));
-                        has_base_route = true;
-                    }
-
-                    // Log and register TRACE endpoint (always available if get columns exist, since it's read-only)
-                    if schema.trace.enable_method {
-                        if do_log {
-                            log_output(
-                                "ENDPOINT",
-                                "METHOD",
-                                "TRACE",
-                                format!(
-                                    "http://{}:{}/{}",
-                                    host.red(),
-                                    port_str.green(),
-                                    route_trace.as_ref().purple()
-                                ),
-                                false,
-                            );
-                        }
-
-                        base_res = base_res.route(web::trace().to(
-                            move |state: web::Data<AppState>,
-                                  parameters: web::Query<Value>,
-                                  req: actix_web::HttpRequest| {
-                                crate::nocode::handlers::trace_handler::process(
-                                    state,
-                                    parameters,
-                                    route_trace.to_string(),
-                                    schema_trace.clone(),
-                                    req,
-                                )
-                            },
-                        ));
-                        has_base_route = true;
-                    }
-
-                    // Log and register PATCH endpoint (if parameters are defined)
-                    if schema.patch.enable_method {
-                        if do_log {
-                            log_output(
-                                "ENDPOINT",
-                                "METHOD",
-                                "PATCH",
-                                format!(
-                                    "http://{}:{}/{}",
-                                    host.red(),
-                                    port_str.green(),
-                                    route_patch.as_ref().purple()
-                                ),
-                                false,
-                            );
-                        }
-
-                        base_res = base_res.route(web::patch().to(
-                            move |state: web::Data<AppState>,
-                                  parameters: web::Query<Value>,
-                                  req: actix_web::HttpRequest| {
-                                crate::nocode::handlers::patch_handler::process_sp(
-                                    state,
-                                    parameters,
-                                    route_patch.to_string(),
-                                    schema_patch.clone(),
-                                    req,
-                                )
-                            },
-                        ));
-                        has_base_route = true;
-                    }
-
-                    // Only register the base resource if at least one method is attached
-                    if has_base_route {
-                        cfg.service(base_res);
-                    }
-
-                    // Shared resource for /{id} endpoints (DELETE, PUT)
-                    let mut base_id_res = web::resource(format!("{}/{{id}}", route_arc.as_ref()));
-                    let mut has_id_route = false;
-
-                    // Log and register DELETE endpoint (if columns are defined)
-                    if schema.del.enable_method {
-                        if do_log {
-                            log_output(
-                                "ENDPOINT",
-                                "METHOD",
-                                "DELETE",
-                                format!(
-                                    "http://{}:{}/{}",
-                                    host.red(),
-                                    port_str.green(),
-                                    route_delete.as_ref().purple()
-                                ),
-                                false,
-                            );
-                        }
-
-                        base_id_res = base_id_res.route(web::delete().to(
-                            move |state: web::Data<AppState>,
-                                  parameters: web::Query<Value>,
-                                  path: Path<String>,
-                                  req: actix_web::HttpRequest| {
-                                crate::nocode::handlers::delete_handler::delete(
-                                    state,
-                                    parameters,
-                                    route_delete.to_string(),
-                                    schema_delete.clone(),
-                                    ref_fks_delete.clone(),
-                                    path,
-                                    req,
-                                )
-                            },
-                        ));
-                        has_id_route = true;
-                    }
-
-                    // Log and register PUT endpoint (if columns are defined)
-                    if schema.put.enable_method {
-                        if do_log {
-                            log_output(
-                                "ENDPOINT",
-                                "METHOD",
-                                "PUT",
-                                format!(
-                                    "http://{}:{}/{}",
-                                    host.red(),
-                                    port_str.green(),
-                                    route_put.as_ref().purple()
-                                ),
-                                false,
-                            );
-                        }
-
-                        base_id_res = base_id_res.route(web::put().to(
-                            move |state: web::Data<AppState>,
-                                  parameters: web::Query<Value>,
-                                  multipart: Multipart,
-                                  path: Path<String>,
-                                  req: actix_web::HttpRequest| {
-                                crate::nocode::handlers::put_handler::update(
-                                    state,
-                                    parameters,
-                                    route_put.to_string(),
-                                    schema_put.clone(),
-                                    ref_fks_put.clone(),
-                                    multipart,
-                                    path,
-                                    req,
-                                )
-                            },
-                        ));
-                        has_id_route = true;
-                    }
-
-                    if has_id_route {
-                        cfg.service(base_id_res);
-                    }
-
-                    // register import BEFORE the dynamic {id} route to avoid conflicts
-                    if schema.post.enable_method {
-                        if do_log {
-                            log_output(
-                                "ENDPOINT",
-                                "METHOD",
-                                "POST",
-                                format!(
-                                    "http://{}:{}/import/{}",
-                                    host.red(),
-                                    port_str.green(),
-                                    route_import.as_ref().purple()
-                                ),
-                                false,
-                            );
-                        }
-                        cfg.service(
-                            web::resource(format!("/import/{}", route_import.as_ref()))
-                                .route(web::post().to(
-                                move |state: web::Data<AppState>,
-                                      parameters: web::Query<Value>,
-                                      multipart: Multipart,
-                                      req: actix_web::HttpRequest| {
-                                    crate::nocode::handlers::import_handler::import(
-                                        state,
-                                        parameters,
-                                        route_import.to_string(),
-                                        schema_import.clone(),
-                                        multipart,
-                                        req,
-                                    )
-                                },
-                            )),
-                        );
-                    }
-
-                    // register export endpoint
-                    if schema.get.enable_method {
-                        if do_log {
-                            log_output(
-                                "ENDPOINT",
-                                "METHOD",
-                                "GET",
-                                format!(
-                                    "http://{}:{}/export/{}",
-                                    host.red(),
-                                    port_str.green(),
-                                    route_export.as_ref().purple()
-                                ),
-                                false,
-                            );
-                        }
-                        cfg.service(
-                            web::resource(format!("/export/{}", route_export.as_ref()))
-                                .route(web::get().to(
-                                move |state: web::Data<AppState>,
-                                      multipart: Multipart,
-                                      req: actix_web::HttpRequest| {
-                                    crate::nocode::handlers::export_handler::export(
-                                        state,
-                                        route_export.to_string(),
-                                        schema_export.clone(),
-                                        multipart,
-                                        req,
-                                    )
-                                },
-                            )),
-                        );
-                    }
-
-                    if do_log {
-                        log_output(
-                            "ENDPOINT",
-                            "METHOD",
-                            "GET",
-                            format!(
-                                "http://{}:{}/{}/{}",
-                                host.red(),
-                                port_str.green(),
-                                "validate".yellow(),
-                                route_validate.as_ref().purple()
-                            ),
-                            false,
-                        );
-                    }
-                    cfg.service(
-                        web::resource(format!("validate/{}", route_validate.as_ref())).route(
-                            web::get().to(
-                                move |state: web::Data<AppState>, req: actix_web::HttpRequest| {
-                                    check_table_design(
-                                        state,
-                                        route_validate.to_string(),
-                                        schema_validate.clone(),
-                                        req,
-                                    )
-                                },
-                            ),
-                        ),
-                    );
-
-                    if schema.auto_generate
-                        && route_generate_table.as_ref() != "flx_users"
-                        && route_generate_table.as_ref() != "flx_roles"
-                    {
-                        if do_log {
-                            log_output(
-                                "ENDPOINT",
-                                "METHOD",
-                                "POST",
-                                format!(
-                                    "http://{}:{}/{}/{}",
-                                    host.red(),
-                                    port_str.green(),
-                                    "generate/table".yellow(),
-                                    route_generate_table.as_ref().purple()
-                                ),
-                                false,
-                            );
-                        }
-                        cfg.service(
-                            web::resource(format!(
-                                "generate/table/{}",
-                                route_generate_table.as_ref()
-                            ))
-                            .route(web::post().to(
-                                move |state: web::Data<AppState>, req: actix_web::HttpRequest| {
-                                    create_table(
-                                        state,
-                                        route_generate_table.to_string(),
-                                        schema_generate.clone(),
-                                        req,
-                                    )
-                                },
-                            )),
-                        );
-                    }
-                    if do_log {
-                        println!("\n");
-                    }
-                }
+            .configure(|cfg| {
+                routes::configure_routes(cfg, require_auth, do_log, host, port, app_state.clone())
             })
     })
     .workers(
@@ -1282,8 +393,8 @@ async fn main() -> anyhow::Result<()> {
     .max_connection_rate(max_conn_rate)
     .keep_alive(Duration::from_secs(keepalive_secs))
     .backlog(http_backlog)
-    .client_request_timeout(std::time::Duration::from_secs(30)) // 30s request timeout
-    .client_disconnect_timeout(std::time::Duration::from_secs(5)) // 5s disconnect timeout
+    .client_request_timeout(std::time::Duration::from_secs(30))
+    .client_disconnect_timeout(std::time::Duration::from_secs(5))
     .bind((host, port))
     .map_err(|e| {
         eprintln!("Failed to bind to {}:{} - {}", host, port, e);
