@@ -177,6 +177,16 @@ pub struct Column {
     pub type_data: String,
     #[serde(default)]
     pub function: String,
+    /// Optional endpoint to generate the numeric running-number for the `ID` token in `function`.
+    /// When non-empty, the `000ID`-style token fetches the number from this endpoint instead of
+    /// querying MAX(id)+1. Supports `{request.field}` interpolation in the URL.
+    /// Empty string (the default, also used when the key is absent in JSON) disables it.
+    #[serde(default)]
+    pub function_endpoint: String,
+    /// Dotted JSON path inside the endpoint response that holds the number.
+    /// Empty (the default) is treated as "data". Ignored when `function_endpoint` is empty.
+    #[serde(default)]
+    pub function_endpoint_path: String,
     #[serde(default)]
     pub encrypt: bool,
     #[serde(default)]

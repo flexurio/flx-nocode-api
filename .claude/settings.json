@@ -1,7 +1,10 @@
 {
   "permissions": {
     "allow": [
-      "Bash(cargo check *)"
+      "Bash(cargo check *)",
+      "Bash(xargs cat)",
+      "Bash(awk -F: '{s+=$2} END {print \"unwrap\\(\\):\", s}')",
+      "Bash(grep -iE \"\\\\.env$|\\\\.env\\\\.|^env$|data\\\\.db|\\\\.db$|secret\")"
     ]
   }
 }

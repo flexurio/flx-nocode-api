@@ -615,6 +615,8 @@ mod tests {
             default: Some("0".to_string()),
             auto_increment: false,
             function: "".to_string(),
+            function_endpoint: "".to_string(),
+            function_endpoint_path: "".to_string(),
             encrypt: false,
             collate: "".to_string(),
         });

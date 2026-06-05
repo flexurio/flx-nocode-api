@@ -209,6 +209,115 @@ async fn validate_unique_constraints_batch(
 
 
 
+/// Fetch the next running-number for a custom-ID `ID` token from an external endpoint.
+///
+/// The endpoint URL supports `{request.field}` interpolation against the request `body`.
+/// The already-built ID prefix (e.g. `SO/2026/01`) is appended as a `prefix` query param so
+/// the endpoint can compute the sequence per-prefix. The response is expected to be JSON; the
+/// number is read from `resp_path` (dotted path, e.g. `data`) and coerced to an integer.
+///
+/// There is no fallback: any failure (network, non-success status, missing/invalid field)
+/// returns an `Err` so the insert is aborted.
+async fn fetch_next_number_from_endpoint(
+    endpoint: &str,
+    resp_path: &str,
+    id_prefix: &str,
+    body: &Value,
+    auth_token: Option<&str>,
+) -> Result<i64, String> {
+    // Interpolate {request.field} placeholders in the configured URL.
+    let mut url = crate::database::state::build_url_from_formula(endpoint, body)
+        .map_err(|e| format!("ID endpoint URL build failed: {}", e))?;
+
+    // Append the built prefix so the endpoint can scope the sequence.
+    let sep = if url.contains('?') { '&' } else { '?' };
+    url.push_str(&format!("{}prefix={}", sep, urlencoding::encode(id_prefix)));
+
+    log_output("DEBUG", "ID ENDPOINT", "GET", url.clone(), true);
+
+    let client = reqwest::Client::new();
+    let mut builder = client.get(&url);
+    if let Some(token) = auth_token {
+        builder = builder.header("Authorization", token);
+    }
+
+    let res = builder
+        .send()
+        .await
+        .map_err(|e| format!("ID endpoint request failed: {}", e))?;
+
+    if !res.status().is_success() {
+        let status = res.status();
+        let msg = res.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+        return Err(format!("ID endpoint returned {}: {}", status, msg));
+    }
+
+    let json: Value = res
+        .json()
+        .await
+        .map_err(|e| format!("ID endpoint response is not valid JSON: {}", e))?;
+
+    let val = crate::database::state::get_by_path_value(&json, resp_path)
+        .ok_or_else(|| format!("ID endpoint response missing field '{}'", resp_path))?;
+
+    match val {
+        Value::Number(n) => n
+            .as_i64()
+            .ok_or_else(|| format!("ID endpoint field '{}' is not an integer: {}", resp_path, n)),
+        Value::String(s) => s
+            .trim()
+            .parse::<i64>()
+            .map_err(|_| format!("ID endpoint field '{}' is not a number: {}", resp_path, s)),
+        other => Err(format!(
+            "ID endpoint field '{}' has unsupported type: {}",
+            resp_path, other
+        )),
+    }
+}
+
+/// Compute the next running-number for a custom-ID `ID` token by reading the highest existing id
+/// that shares the given prefix and incrementing its numeric suffix (`MAX(id)+1`).
+///
+/// `len_id` is the width of the numeric suffix (e.g. `000ID` -> 3). For SQL backends the lookup
+/// runs inside the open transaction (`tx_opt`) so concurrent inserts stay consistent.
+async fn query_next_number_from_max(
+    state: &web::Data<AppState>,
+    tx_opt: &mut Option<Box<dyn crate::storage::traits::TxStore>>,
+    table: &str,
+    id_prefix: &str,
+    len_id: usize,
+) -> Result<i64, String> {
+    // Find latest id by prefix.
+    let like_pat = if id_prefix.is_empty() { "%".to_string() } else { format!("{}%", id_prefix) };
+
+    let q_max = Q::from(table.to_string())
+        .select(["id"]).r#where(F::ILike("id".into(), like_pat))
+        .order_by("id", false).limit(1);
+
+    let max_id: String = if state.db_type == DbType::Mongodb {
+        match state.store.query(&q_max).await {
+            Ok(rows) if !rows.is_empty() => rows[0].get("id").and_then(|v| v.as_str().map(|s| s.to_string())).unwrap_or_else(|| "0".to_string()),
+            _ => "0".to_string(),
+        }
+    } else {
+        let tx = tx_opt
+            .as_mut()
+            .ok_or_else(|| "Transaction not available for ID generation".to_string())?;
+        match tx.query(&q_max).await {
+            Ok(rows) if !rows.is_empty() => rows[0].get("id").and_then(|v| v.as_str().map(|s| s.to_string())).unwrap_or_else(|| "0".to_string()),
+            _ => "0".to_string(),
+        }
+    };
+
+    // Extract numeric suffix (width = len_id) and increment
+    let mut current_num: i64 = 0;
+    if max_id.len() >= len_id {
+        let suffix = &max_id[max_id.len() - len_id..];
+        current_num = suffix.parse::<i64>().unwrap_or(0);
+    }
+    Ok(current_num + 1)
+}
+
 // Suppress too_many_arguments as refactoring this signature affects many calls
 // Suppress too_many_arguments as refactoring this signature affects many calls
 #[allow(clippy::too_many_arguments, clippy::collapsible_if)]
@@ -244,6 +353,17 @@ pub async fn perform_insert(
 
     // Handle Custom ID Generation if needed
     if !function_id_split.is_empty() {
+        // Resolve optional sequence endpoint configured on the id column. When set, the
+        // numeric `ID` token is fetched from this endpoint instead of MAX(id)+1.
+        let id_col = table_schema.columns.iter().find(|c| c.name == "id");
+        let seq_endpoint = id_col
+            .map(|c| c.function_endpoint.clone())
+            .filter(|s| !s.trim().is_empty());
+        let seq_path = id_col
+            .map(|c| c.function_endpoint_path.clone())
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| "data".to_string());
+
         // Build parts without leading slash; join with '/'
         let mut parts: Vec<String> = Vec::new();
         for token in function_id_split.iter() {
@@ -259,35 +379,28 @@ pub async fn perform_insert(
                 let len_id = s_append.len();
                 let id_prefix = parts.join("/");
 
-                // Find latest id by prefix.
-                let like_pat = if id_prefix.is_empty() { "%".to_string() } else { format!("{}%", id_prefix) };
-                
-                let q_max = Q::from(table_schema.table.clone())
-                    .select(["id"]).r#where(F::ILike("id".into(), like_pat))
-                    .order_by("id", false).limit(1);
-                
-                let max_id: String = if state.db_type == DbType::Mongodb {
-                    match state.store.query(&q_max).await {
-                        Ok(rows) if !rows.is_empty() => rows[0].get("id").and_then(|v| v.as_str().map(|s| s.to_string())).unwrap_or_else(|| "0".to_string()),
-                        _ => "0".to_string(),
-                    }
+                let next_num: i64 = if let Some(endpoint) = &seq_endpoint {
+                    // Get the running number from the configured endpoint (no fallback).
+                    fetch_next_number_from_endpoint(
+                        endpoint,
+                        &seq_path,
+                        &id_prefix,
+                        body,
+                        auth_token.as_deref(),
+                    )
+                    .await?
                 } else {
-                    let tx = tx_opt
-                        .as_mut()
-                        .ok_or_else(|| "Transaction not available for ID generation".to_string())?;
-                    match tx.query(&q_max).await {
-                        Ok(rows) if !rows.is_empty() => rows[0].get("id").and_then(|v| v.as_str().map(|s| s.to_string())).unwrap_or_else(|| "0".to_string()),
-                        _ => "0".to_string(),
-                    }
+                    // No endpoint configured: derive the number from MAX(id)+1.
+                    query_next_number_from_max(
+                        state,
+                        &mut tx_opt,
+                        &table_schema.table,
+                        &id_prefix,
+                        len_id,
+                    )
+                    .await?
                 };
-
-                // Extract numeric suffix (width = len_id) and increment
-                let mut current_num: i64 = 0;
-                if max_id.len() >= len_id {
-                    let suffix = &max_id[max_id.len() - len_id..];
-                    current_num = suffix.parse::<i64>().unwrap_or(0);
-                }
-                let next_num = current_num + 1;
+                
                 let next_str = format!("{:0width$}", next_num, width = len_id);
                 parts.push(next_str);
             } else if token.starts_with('{') && token.ends_with('}') {
