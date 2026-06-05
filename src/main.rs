@@ -311,7 +311,9 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Determine CPU to scale defaults for database pooling and Actix workers
-    let cpu = num_cpus::get().max(1);
+    let cpu = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1);
 
     let database::connection::DbInitialization { db_type, repo: db_repo, .. } =
         database::connection::initialize_database(cpu).await?;

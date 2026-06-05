@@ -177,8 +177,8 @@ fn load_converter_verify_config() -> ConverterVerifyConfig {
     let explicit_alg = env::var("CONVERTER_JWT_ALG").ok().and_then(|s| parse_jwt_alg(&s));
 
     // Symmetric secret (HS*) takes precedence if provided.
-    if let Ok(secret) = env::var("CONVERTER_JWT_SECRET") {
-        if !secret.is_empty() {
+    if let Ok(secret) = env::var("CONVERTER_JWT_SECRET")
+        && !secret.is_empty() {
             let alg = explicit_alg.unwrap_or(Algorithm::HS256);
             return ConverterVerifyConfig {
                 decoding_key: Some(DecodingKey::from_secret(secret.as_bytes())),
@@ -188,11 +188,10 @@ fn load_converter_verify_config() -> ConverterVerifyConfig {
                 insecure_skip_verify,
             };
         }
-    }
 
     // Asymmetric public key (PEM). Allow `\n`-escaped single-line env values.
-    if let Ok(pem_raw) = env::var("CONVERTER_JWT_PUBLIC_KEY") {
-        if !pem_raw.trim().is_empty() {
+    if let Ok(pem_raw) = env::var("CONVERTER_JWT_PUBLIC_KEY")
+        && !pem_raw.trim().is_empty() {
             let pem = pem_raw.replace("\\n", "\n");
             let alg = explicit_alg.unwrap_or(Algorithm::RS256);
             let key_res = match alg {
@@ -216,7 +215,6 @@ fn load_converter_verify_config() -> ConverterVerifyConfig {
                 }
             }
         }
-    }
 
     ConverterVerifyConfig {
         decoding_key: None,
