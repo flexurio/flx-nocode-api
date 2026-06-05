@@ -1,0 +1,6 @@
+{
+    // Tell rust-analyzer to analyze with all Cargo features enabled.
+    // This eliminates false-positive errors in #[cfg(feature = "...")] gated code
+    // such as the MongoStore -> Arc<dyn DataStore> coercion in build_mongo_store().
+    "rust-analyzer.cargo.features": "all"
+}
