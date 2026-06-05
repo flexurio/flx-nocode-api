@@ -331,7 +331,7 @@ Each `entity/<route>.json` deserializes into a `TableSchema` (see [src/model.rs]
 | `indexes[]` | `{ name, columns[], unique }`. Unique indexes are enforced on insert/update. |
 | `redis` | `{ keys[], ttl }` — cache blueprint. |
 | `get` | Read pipeline (see below). |
-| `post` / `put` | Create / update behavior + hooks (see [§9](#9-hooks--validation)). |
+| `post` / `put` | Create / update behavior + hooks (see [§9](#9-hooks--validation)). Suffix a name in `columns` with `*` to make that field required — e.g. `"columns": ["name*", "phone"]`. |
 | `del` | `{ enable_method, columns, type_delete, pre_process, post_process }`; `type_delete` = `soft` or `hard`. |
 | `patch` | Stored‑procedure / parameterized op: `{ enable_method, pre_process_sp, parameters[], return_mode }`. `return_mode` = `""` / `rows` / `affected`. |
 | `trace` | Advanced insert + select / upsert pipeline for journaling & change capture. |
@@ -513,6 +513,36 @@ Example — only allow a `role` that the `/roles` endpoint returns:
 "validate_data": "SQL:SELECT CASE WHEN email NOT LIKE '%@%' THEN FALSE ELSE TRUE END AS is_valid FROM customers WHERE email = {request.email}"
 ```
 
+### Required fields (`*` suffix)
+
+The `post.columns` array lists the fields the **POST** endpoint accepts. To make a
+field **mandatory**, append a `*` to its name. The `*` is only a marker — the engine
+strips it and uses the real column name everywhere.
+
+```json
+"post": {
+  "enable_method": true,
+  "columns": ["name*", "email*", "phone"]
+}
+```
+
+Here `name` and `email` are required; `phone` is optional. A required field is
+rejected when it is **absent, `null`, an empty string, or the literal string
+`"null"`**, returning:
+
+```
+400 Bad Request — Missing required field: name
+```
+
+Notes:
+
+* A field is **also** treated as required (even without `*`) when its `columns[]`
+  definition has `"nullable": false` and `"auto_increment": false`. The `*` suffix
+  is the explicit way to enforce it for any column.
+* Empty datetime/timestamp values (`""` or `"null"`) are coerced to SQL `NULL`
+  before the required check runs.
+* **PUT** (`put.columns`) uses the exact same `*` convention for updates.
+
 ---
 
 ## 10. Formula placeholders
@@ -540,7 +570,7 @@ For a route `<route>` listed in `routes.json` (each method requires `enable_meth
 | Method & path | Schema section | Description |
 |---------------|----------------|-------------|
 | `GET /<route>?col.op=value` | `get` | Filtered read. |
-| `POST /<route>` | `post` | Create (multipart/form‑data; supports file uploads). |
+| `POST /<route>` | `post` | Create (multipart/form‑data; supports file uploads). Required fields are marked with a `*` suffix in `post.columns` — see [§9](#required-fields--suffix). |
 | `PUT /<route>/{id}` | `put` | Update by id. |
 | `DELETE /<route>/{id}` | `del` | Delete (soft or hard per `del.type_delete`). |
 | `PATCH /<route>` | `patch` | Stored‑procedure / parameterized operation. |
