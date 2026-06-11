@@ -38,8 +38,11 @@ impl std::fmt::Display for DbType {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Config {
+    #[serde(default)]
     pub routes: Vec<String>,
+    #[serde(default)]
     pub route_publics: Vec<String>,
+    #[serde(default)]
     pub converter_token: ClaimsConverter,
 }
 
@@ -50,43 +53,68 @@ pub struct ParamJoin {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ForeignKey {
+    #[serde(default)]
     pub column: String,
+    #[serde(default)]
     pub reference_table: String,
+    #[serde(default)]
     pub reference_column: String,
+    #[serde(default)]
     pub on_delete: String, // "cascade", "restrict", "set null", "no action"
+    #[serde(default)]
     pub on_update: String, // "cascade", "restrict", "set null", "no action"
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 // create struct pivot ForeingKey to triger action in reference table
 pub struct ReferenceForeignKey {
+    #[serde(default)]
     pub table: String,
+    #[serde(default)]
     pub column: String,
+    #[serde(default)]
     pub on_delete_action: ReferenceForeignKeyAction,
+    #[serde(default)]
     pub on_update_action: ReferenceForeignKeyAction,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Default, Serialize, Deserialize, Clone)]
 pub struct ReferenceForeignKeyAction {
+    #[serde(default)]
     pub table: String,
+    #[serde(default)]
     pub column: String,
+    #[serde(default)]
     pub action: String,      // "cascade", "restrict", "set null", "no action"
+    #[serde(default)]
     pub type_delete: String, // soft or hard
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct TableSchema {
+    #[serde(default)]
     pub table: String,
+    #[serde(default)]
     pub primary_key: PrimaryKey,
+    #[serde(default)]
     pub columns: Vec<Column>,
+    #[serde(default)]
     pub foreign_keys: Vec<ForeignKey>,
+    #[serde(default)]
     pub indexes: Vec<Index>,
+    #[serde(default)]
     pub redis: Redis,
+    #[serde(default)]
     pub get: OperationGet,
+    #[serde(default)]
     pub post: OperationPost,
+    #[serde(default)]
     pub put: OperationPut,
+    #[serde(default)]
     pub del: OperationDelete,
+    #[serde(default)]
     pub patch: Patch,
+    #[serde(default)]
     pub trace: Trace,
     #[serde(default)]
     pub auto_generate: bool,
@@ -160,8 +188,9 @@ impl Default for TableSchema {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Default, Serialize, Deserialize, Clone)]
 pub struct PrimaryKey {
+    #[serde(default)]
     pub columns: Vec<String>,
 }
 
@@ -205,7 +234,7 @@ pub struct Index {
     pub unique: bool,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Default, Serialize, Deserialize, Clone)]
 pub struct Redis {
     #[serde(default)]
     pub keys: Vec<String>,
@@ -213,7 +242,7 @@ pub struct Redis {
     pub ttl: u32,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Default, Serialize, Deserialize, Clone)]
 pub struct OperationGet {
     
     #[serde(default)]
@@ -253,7 +282,7 @@ pub struct Operation {
     pub columns: Vec<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Default, Serialize, Deserialize, Clone)]
 pub struct OperationPost {
     #[serde(default)]
     pub enable_method: bool,
@@ -267,7 +296,7 @@ pub struct OperationPost {
     pub post_process: String,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Default, Serialize, Deserialize, Clone)]
 pub struct OperationPut {
     #[serde(default)]
     pub enable_method: bool,
@@ -282,7 +311,7 @@ pub struct OperationPut {
 }
 
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Default, Serialize, Deserialize, Clone)]
 pub struct OperationDelete {
     #[serde(default)]
     pub enable_method: bool,
@@ -296,7 +325,7 @@ pub struct OperationDelete {
     pub post_process: String,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Default, Serialize, Deserialize, Clone)]
 pub struct Patch {
     #[serde(default)]
     pub enable_method: bool,
@@ -308,7 +337,7 @@ pub struct Patch {
     pub return_mode: String, // "" | "rows" | "affected"
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Default, Serialize, Deserialize, Clone)]
 pub struct Trace {
     #[serde(default)]
     pub enable_method: bool,
@@ -330,9 +359,13 @@ pub struct Trace {
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct WebResponse {
+    #[serde(default)]
     pub success: bool,
+    #[serde(default)]
     pub message: String,
+    #[serde(default)]
     pub total_data: i32,
+    #[serde(default)]
     pub data: serde_json::Value,
 }
 
