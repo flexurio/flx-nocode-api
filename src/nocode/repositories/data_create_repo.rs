@@ -578,13 +578,14 @@ pub async fn perform_insert(
     let ds = SqlStore::new(state.db.clone(), state.db_type.as_str().to_string());
 
     if state.db_type == DbType::Mongodb {
-        let doc_json = Value::Object(doc_map);
+        let doc_json = Value::Object(doc_map.clone());
         match state.store.insert(&table_schema.table, doc_json).await {
             Ok(returned_val) => {
-                // Mongo insert returns the inserted document or at least the ID in some drivers,
-                // but traits::DataStore::insert returns Value. Assuming it returns the ID or Doc.
-                // Ideally we want just the ID.
-                Ok(("Data inserted successfully".to_string(), 1, returned_val))
+                let mut final_doc = doc_map;
+                if returned_val != Value::Null && !final_doc.contains_key("id") {
+                    final_doc.insert("id".to_string(), returned_val);
+                }
+                Ok(("Data inserted successfully".to_string(), 1, Value::Object(final_doc)))
             }
             Err(e) => Err(format!("Error NCO-POST (mongo): {}", e)),
         }
@@ -689,7 +690,6 @@ pub async fn perform_insert(
                             return Err(format!("Error committing transaction: {}", e));
                         }
 
-                        // Extract ID from returned rows (RETURNING id) or from doc_map
                         let inserted_id = if !rows_returned.is_empty() {
                             // Try to get "id" column
                             rows_returned[0]
@@ -702,7 +702,11 @@ pub async fn perform_insert(
                             doc_map.get("id").cloned().unwrap_or(Value::Null)
                         };
 
-                        Ok(("Data inserted successfully".to_string(), 1, inserted_id))
+                        if inserted_id != Value::Null && !doc_map.contains_key("id") {
+                            doc_map.insert("id".to_string(), inserted_id);
+                        }
+
+                        Ok(("Data inserted successfully".to_string(), 1, Value::Object(doc_map)))
                     }
                     Err(e) => {
                         let _ = tx.rollback().await;

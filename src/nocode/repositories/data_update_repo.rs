@@ -217,7 +217,7 @@ pub async fn perform_update(
     password_override: Option<String>,
     body: &Value,
     auth_token: Option<String>,
-) -> Result<(String, i32), String> {
+) -> Result<(String, i32, Value), String> {
     // Handling password-only update for flx_users
     if route == "flx_users" && password_override.is_some() && table_schema.put.columns.len() == 1 {
         // [Logic for password override specific update]
@@ -355,10 +355,10 @@ pub async fn perform_update(
         // Convert Map to json Value for DB update
         let doc_json = Value::Object(patch_fields); 
         
-        match tx.update(&table_schema.table, Some(filter), doc_json).await {
+        match tx.update(&table_schema.table, Some(filter), doc_json.clone()).await {
              Ok(_) => {
                  let _ = tx.commit().await;
-                 Ok(("Data updated successfully".to_string(), 1))
+                 Ok(("Data updated successfully".to_string(), 1, doc_json))
              }
              Err(e) => {
                  let _ = tx.rollback().await;
@@ -442,10 +442,10 @@ pub async fn perform_update(
             log_output("QUERY", "PUT(MONGO)", route, "Mongo update".to_string(), true);
         }
         
-        match tx.update(&table_schema.table, Some(filter), doc_json).await {
+        match tx.update(&table_schema.table, Some(filter), doc_json.clone()).await {
             Ok(modified) => {
                  let _ = tx.commit().await;
-                 Ok(("Data updated successfully".to_string(), modified as i32))
+                 Ok(("Data updated successfully".to_string(), modified as i32, doc_json))
             },
             Err(e) => {
                  let _ = tx.rollback().await;

@@ -1,19 +1,21 @@
-use actix_web::{web, HttpResponse};
 use actix_multipart::Multipart;
+use actix_web::{HttpResponse, web};
+use chrono::Local;
 use serde_json::Value;
 use std::sync::Arc;
-use chrono::Local;
 
-use crate::AppState;
-use crate::model::{TableSchema, WebResponse, ReferenceForeignKey};
-use crate::auth::{check_access, get_user_info_from_token, Claims};
-use crate::helpers::{multipart_to_json, get_client_ip};
-use crate::crypt::{encrypt, is_encrypted_string};
-use crate::storage::sql_store::InsertValue;
-use crate::nocode::repositories::data_update_repo;
-use crate::nocode::pk_utils::{dbparam_from_str_and_type, json_value_from_str_and_type, validate_pk_path};
-use crate::audit::{AuditEntry, write_audit};
 use super::web_err;
+use crate::AppState;
+use crate::audit::{AuditEntry, write_audit};
+use crate::auth::{Claims, check_access, get_user_info_from_token};
+use crate::crypt::{encrypt, is_encrypted_string};
+use crate::helpers::{get_client_ip, multipart_to_json};
+use crate::model::{ReferenceForeignKey, TableSchema, WebResponse};
+use crate::nocode::pk_utils::{
+    dbparam_from_str_and_type, json_value_from_str_and_type, validate_pk_path,
+};
+use crate::nocode::repositories::data_update_repo;
+use crate::storage::sql_store::InsertValue;
 
 fn unauthorized(msg: impl Into<String>) -> HttpResponse {
     HttpResponse::Unauthorized().json(web_err(msg))
@@ -110,7 +112,8 @@ pub async fn process_update_request(
 
     // Schema Check
     if table_schema.table.is_empty() {
-        return HttpResponse::FailedDependency().json(web_err(format!("Entity {} not found", route)));
+        return HttpResponse::FailedDependency()
+            .json(web_err(format!("Entity {} not found", route)));
     }
 
     // Validate composite PK shape (only meaningful when the schema declares PK columns).
@@ -150,7 +153,9 @@ pub async fn process_update_request(
                 }
             }
 
-            let Some(raw_value) = body_obj.get(clean_column) else { continue };
+            let Some(raw_value) = body_obj.get(clean_column) else {
+                continue;
+            };
 
             // Typed string extraction (avoid "null" leaking from Value::Null).
             let str_value: String = match raw_value {
@@ -177,7 +182,10 @@ pub async fn process_update_request(
 
             // Metadata Check
             let Some(col) = table_schema.columns.iter().find(|c| c.name == clean_column) else {
-                return bad_request(format!("Unknown column '{}' for route '{}'", clean_column, route));
+                return bad_request(format!(
+                    "Unknown column '{}' for route '{}'",
+                    clean_column, route
+                ));
             };
 
             // Encrypt
@@ -203,9 +211,15 @@ pub async fn process_update_request(
     }
 
     // Add updated_at/by
-    update_fields.push(("updated_at".to_string(), InsertValue::Raw(state.query_converter.datetime_now.clone())));
+    update_fields.push((
+        "updated_at".to_string(),
+        InsertValue::Raw(state.query_converter.datetime_now.clone()),
+    ));
     if state.db_type == crate::model::DbType::Mongodb {
-        patch_fields.insert("updated_at".to_string(), serde_json::json!(Local::now().to_rfc3339()));
+        patch_fields.insert(
+            "updated_at".to_string(),
+            serde_json::json!(Local::now().to_rfc3339()),
+        );
     }
 
     let updated_by_type = table_schema
@@ -242,8 +256,10 @@ pub async fn process_update_request(
         password_override,
         &body,
         auth_token,
-    ).await {
-        Ok((msg, count)) => {
+    )
+    .await
+    {
+        Ok((msg, count, mut updated_data)) => {
             if auth_required {
                 let ip_opt = get_client_ip(req);
                 write_audit(&AuditEntry {
@@ -256,11 +272,17 @@ pub async fn process_update_request(
                 });
             }
 
+            if let Some(obj) = updated_data.as_object_mut() {
+                if !obj.contains_key("id") {
+                    obj.insert("id".to_string(), serde_json::Value::String(id_raw.clone()));
+                }
+            }
+
             HttpResponse::Ok().json(WebResponse {
                 success: true,
                 message: msg,
                 total_data: count,
-                data: Value::Null,
+                data: updated_data,
             })
         }
         Err(e) => server_error(e),
