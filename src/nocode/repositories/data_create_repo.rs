@@ -508,13 +508,12 @@ pub async fn perform_insert(
         let mut parts: Vec<String> = Vec::new();
         // lokasi urutan ID ada dimana
         let mut loc_id: usize = 0;
-        let mut i_urut: usize = 0;
         let mut len_id: usize = 0;
 
         // 000ID/CC/2026/06
         // part = ['CC', '2026', '06']
 
-        for token in function_id_split.iter() {
+        for (i_urut, token) in function_id_split.iter().enumerate() {
             if token == "%Y" {
                 parts.push(chrono::Utc::now().format("%Y").to_string());
             } else if token == "%m" {
@@ -542,7 +541,6 @@ pub async fn perform_insert(
                 // literal segment
                 parts.push(token.clone());
             }
-            i_urut += 1;
         }
 
         let id_prefix = parts.join("/");

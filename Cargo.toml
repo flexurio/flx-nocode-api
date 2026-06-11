@@ -64,6 +64,7 @@ mongodb = { version = "3.5", optional = true }
 parking_lot = "0.12"
 ahash = "0.8"
 smallvec = "1.15"
+lettre = { version = "0.11.22", default-features = false, features = ["tokio1", "tokio1-rustls-tls", "smtp-transport", "builder", "pool", "hostname"] }
 
 [features]
 default = ["mysql", "postgres", "sqlite", "mssql", "mongodb"]

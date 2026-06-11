@@ -7,6 +7,7 @@ pub mod pk_utils;
 
 pub mod validate;
 pub mod consumer;
+pub mod email_queue;
 
 pub mod handlers;
 pub mod services;

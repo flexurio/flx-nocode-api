@@ -114,3 +114,33 @@ JSON_LIMIT_KB=512
 DEFAULT_COLLATE=utf8mb4_bin
 
 WHITE_LIST_IP=192.168.0.0/24
+
+
+
+# ============================================================================
+# EMAIL QUEUE + SMTP CONSUMER
+# ============================================================================
+# Producer (enqueue_email / enqueue_email_background) pushes jobs to Redis;
+# the email consumer pops them and delivers via SMTP (lettre).
+
+# Enable the SMTP consumer worker on startup (default: false)
+# EMAIL_CONSUMER_ENABLED=true
+
+# SMTP server (required when consumer enabled)
+# SMTP_HOST=smtp.gmail.com
+# SMTP_PORT=587
+# SMTP_USER=akun@domain.com
+# SMTP_PASS=app-password
+# SMTP_TLS=starttls                 # starttls (587) | tls (465) | none (dev only)
+# EMAIL_FROM=Flexurio <no-reply@domain.com>
+
+# Worker tuning (optional)
+# EMAIL_CONCURRENCY=2               # number of send workers
+# EMAIL_EXEC_RETRY_MAX=2            # SMTP send retries per job
+
+# Queue keys + backpressure (optional)
+# EMAIL_QUEUE_KEY=flx:email:default
+# EMAIL_QUEUE_DLQ_KEY=flx:email:dlq
+# EMAIL_QUEUE_MAX_LEN=0             # 0 = no limit
+# EMAIL_QUEUE_ENQUEUE_RETRY=2
+# ============================================================================

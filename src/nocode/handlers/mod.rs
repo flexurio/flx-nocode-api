@@ -6,3 +6,4 @@ pub mod trace_handler;
 pub mod import_handler;
 pub mod patch_handler;
 pub mod export_handler;
+pub mod email_handler;

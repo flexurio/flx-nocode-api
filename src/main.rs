@@ -18,6 +18,7 @@ use database::state::{AppState, QueryConverter};
 mod error;
 mod nocode;
 use nocode::consumer::start_consumer;
+use nocode::email_queue::start_email_consumer;
 mod core;
 use core::generate_users;
 mod audit;
@@ -209,7 +210,7 @@ async fn main() -> anyhow::Result<()> {
 
     // ── Generate default users ────────────────────────────────────────────────
     if require_auth {
-        let _ = generate_users(app_state.clone(), &SCHEMAS.0);
+        let _ = generate_users(app_state.clone(), &SCHEMAS.0).await;
     }
     // Force lazy statics to initialise now (avoids first-request latency).
     let _ = &*CONFIG;
@@ -226,6 +227,26 @@ async fn main() -> anyhow::Result<()> {
                     "BOOT",
                     "consumer",
                     "Write consumer started".to_string(),
+                    true,
+                );
+            }
+        }
+    }
+
+    // ── Email-queue consumer ──────────────────────────────────────────────────
+    if std::env::var("EMAIL_CONSUMER_ENABLED")
+        .map(|v| matches!(v.to_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false)
+    {
+        match crate::database::redis::get_manager().await {
+            Err(e) => eprintln!("EMAIL CONSUMER enabled but Redis not available: {}", e),
+            Ok(_) => {
+                start_email_consumer().await;
+                log_output(
+                    "EMAIL",
+                    "BOOT",
+                    "email-consumer",
+                    "Email consumer started".to_string(),
                     true,
                 );
             }

@@ -134,6 +134,12 @@ pub fn configure_routes(
     })));
     log_ep(do_log, "CORE ENDPOINT", "GET", host, &port_str, "metrics");
 
+    // ── Email queue: POST /email/send ─────────────────────────────────────────
+    cfg.service(web::resource("/email/send").route(
+        web::post().to(crate::nocode::handlers::email_handler::send),
+    ));
+    log_ep(do_log, "CORE ENDPOINT", "POST", host, &port_str, "email/send");
+
     // ── Dynamic nocode routes ─────────────────────────────────────────────────
     for route in CONFIG.routes.iter() {
         // Build the bundle for this route (skips routes with no schema).
