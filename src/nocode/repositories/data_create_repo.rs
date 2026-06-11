@@ -520,6 +520,24 @@ pub async fn perform_insert(
                 parts.push(chrono::Utc::now().format("%m").to_string());
             } else if token == "%d" {
                 parts.push(chrono::Utc::now().format("%d").to_string());
+            } else if token == "%mROMAWI" {
+                let m = chrono::Utc::now().format("%m").to_string();
+                let roman = match m.as_str() {
+                    "01" => "I",
+                    "02" => "II",
+                    "03" => "III",
+                    "04" => "IV",
+                    "05" => "V",
+                    "06" => "VI",
+                    "07" => "VII",
+                    "08" => "VIII",
+                    "09" => "IX",
+                    "10" => "X",
+                    "11" => "XI",
+                    "12" => "XII",
+                    _ => "",
+                };
+                parts.push(roman.to_string());
             } else if token.contains("ID") {
                 loc_id = i_urut;
                 // Numeric suffix with zero-padding based on token, e.g. 000ID -> width 3
@@ -585,7 +603,11 @@ pub async fn perform_insert(
                 if returned_val != Value::Null && !final_doc.contains_key("id") {
                     final_doc.insert("id".to_string(), returned_val);
                 }
-                Ok(("Data inserted successfully".to_string(), 1, Value::Object(final_doc)))
+                Ok((
+                    "Data inserted successfully".to_string(),
+                    1,
+                    Value::Object(final_doc),
+                ))
             }
             Err(e) => Err(format!("Error NCO-POST (mongo): {}", e)),
         }
@@ -706,7 +728,11 @@ pub async fn perform_insert(
                             doc_map.insert("id".to_string(), inserted_id);
                         }
 
-                        Ok(("Data inserted successfully".to_string(), 1, Value::Object(doc_map)))
+                        Ok((
+                            "Data inserted successfully".to_string(),
+                            1,
+                            Value::Object(doc_map),
+                        ))
                     }
                     Err(e) => {
                         let _ = tx.rollback().await;
