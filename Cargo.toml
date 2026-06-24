@@ -41,7 +41,7 @@ anyhow = "1.0"
 thiserror = "2.0"
 base64 = "0.22"
 colored = "3.1"
-jsonwebtoken = "10.3.0"
+jsonwebtoken = { version = "10.3.0", features = ["rust_crypto"] }
 aes-gcm = "0.10.3"
 argon2 = "0.5"
 rand = "0.10.1"
