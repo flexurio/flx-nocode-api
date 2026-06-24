@@ -36,6 +36,7 @@ use middleware::{AuthMiddleware, GlobalRateLimit, StatusLogger};
 mod config;
 use config::{CONFIG, CONFIG_LOCATION, ENDPOINT_LOG_ONCE, ISDEBUG, SCHEMAS};
 
+mod cli;
 mod routes;
 mod startup;
 
@@ -51,6 +52,14 @@ async fn main() -> anyhow::Result<()> {
     ) {
         println!("flx-nocode-api {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
+    }
+
+    // ── CLI: reset-password ───────────────────────────────────────────────────
+    let args: Vec<String> = env::args().collect();
+    let is_reset_cmd = args.iter().any(|arg| arg == "reset-password");
+
+    if is_reset_cmd {
+        return cli::reset_password(&args).await;
     }
 
     // ── Ensure .env exists ────────────────────────────────────────────────────
