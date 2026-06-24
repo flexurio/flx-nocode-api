@@ -187,6 +187,18 @@ $binDir = Split-Path -Parent $PSCommandPath
 $exe = Join-Path $binDir 'flx-nocode.exe'
 if (-not (Test-Path -LiteralPath $exe)) { Write-Err 'flx-nocode.exe not found next to wrapper'; exit 1 }
 
+if ($Args.Count -gt 0 -and ($Args[0] -eq '--help' -or $Args[0] -eq 'help' -or $Args[0] -eq '-h')) {
+  Write-Host "Flexurio Command-Line Tool"
+  Write-Host ""
+  Write-Host "Usage:"
+  Write-Host "  flexurio                         Start the web server"
+  Write-Host "  flexurio admin reset-password    Reset the password for a user"
+  Write-Host "  flexurio --version | version     Show the version"
+  Write-Host "  flexurio --update | update       Update flexurio to the latest version"
+  Write-Host "  flexurio --help | help           Show this help message"
+  exit 0
+}
+
 if ($Args.Count -gt 0 -and ($Args[0] -eq '--version' -or $Args[0] -eq 'version' -or $Args[0] -eq '-V')) {
   & $exe --version
   exit $LASTEXITCODE
@@ -221,6 +233,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0flexurio.ps1" %*
   Write-Host 'Next steps:'
   Write-Host "  1) Open a new terminal (PowerShell or CMD) to reload PATH"
   Write-Host "  2) Run: flexurio"
+  Write-Host "  3) Reset admin password: flexurio admin reset-password"
 }
 
 # Entry

@@ -186,6 +186,21 @@ fi
 
 EXEC="/usr/local/bin/flx-nocode-api"
 
+# Handle help command
+if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ] || [ "${1:-}" = "help" ]; then
+  cat <<'HELP'
+Flexurio Command-Line Tool
+
+Usage:
+  flexurio                         Start the web server
+  flexurio admin reset-password    Reset the password for a user
+  flexurio --version | version     Show the version
+  flexurio --update | update       Update flexurio to the latest version
+  flexurio --help | help           Show this help message
+HELP
+  exit 0
+fi
+
 # Handle version command
 if [ "${1:-}" = "--version" ] || [ "${1:-}" = "-V" ] || [ "${1:-}" = "version" ]; then
   if [ ! -x "$EXEC" ]; then
@@ -328,6 +343,21 @@ if [ ! -x "$EXEC" ]; then
   EXEC="$(command -v flx-nocode || true)"
 fi
 
+# Handle help command
+if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ] || [ "${1:-}" = "help" ]; then
+  cat <<'HELP'
+Flexurio Command-Line Tool
+
+Usage:
+  flexurio                         Start the web server
+  flexurio admin reset-password    Reset the password for a user
+  flexurio --version | version     Show the version
+  flexurio --update | update       Update flexurio to the latest version
+  flexurio --help | help           Show this help message
+HELP
+  exit 0
+fi
+
 # Handle version command
 if [ "${1:-}" = "--version" ] || [ "${1:-}" = "-V" ] || [ "${1:-}" = "version" ]; then
   if [ -z "$EXEC" ] || [ ! -x "$EXEC" ]; then
@@ -458,3 +488,4 @@ else
   log "  1) Reload your shell: 'source \"$RC_PRIMARY\"'"
 fi
 log "  2) Start the server from anywhere: 'flexurio'"
+log "  3) Reset admin password: 'flexurio admin reset-password'"
