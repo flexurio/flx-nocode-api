@@ -6,7 +6,8 @@
       "Bash(awk -F: '{s+=$2} END {print \"unwrap\\(\\):\", s}')",
       "Bash(grep -iE \"\\\\.env$|\\\\.env\\\\.|^env$|data\\\\.db|\\\\.db$|secret\")",
       "Bash(grep -n '\"post\"\\\\|\"columns\"\\\\|enable_method\\\\|### POST\\\\|#### POST\\\\|POST /<route>\\\\|POST `' README.md)",
-      "Bash(cargo add *)"
+      "Bash(cargo add *)",
+      "Bash(curl -sv --max-time 10 \"http://timestamp.apple.com/ts01\")"
     ]
   }
 }
