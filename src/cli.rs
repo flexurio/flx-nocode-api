@@ -86,20 +86,19 @@ pub async fn reset_password(args: &[String]) -> anyhow::Result<()> {
                 }
                 println!();
 
-                let selected_email = loop {
+                loop {
                     print!("  Select user number (1-{}): ", emails.len());
                     io::stdout().flush()?;
                     let mut input = String::new();
                     io::stdin().read_line(&mut input)?;
                     let trimmed = input.trim();
-                    if let Ok(num) = trimmed.parse::<usize>() {
-                        if num >= 1 && num <= emails.len() {
-                            break emails[num - 1].clone();
-                        }
+                    if let Ok(num) = trimmed.parse::<usize>()
+                        && num >= 1 && num <= emails.len()
+                    {
+                        break emails[num - 1].clone();
                     }
                     println!("  {} Invalid selection, please try again.", "❌".red());
-                };
-                selected_email
+                }
             }
         }
     };
