@@ -81,6 +81,7 @@ pub async fn execute_sql_formula_with_txstore(
     match build_sql_and_params_from_formula(&sql, body) {
         Ok((built_sql, params)) => {
             log_output("QUERY", "build_sql_and_params_from_formula", route, built_sql.clone(), true);
+            log_output("INFO", "FORMULA_PARAMS", route, format!("Params for formula '{}': {:?}", built_sql, params), true);
             log_output("BODY", "build_sql_and_params_from_formula", route, format!("{:?}", body), true);
             // Log params explicitly to verify only placeholders become params
             log_output(
