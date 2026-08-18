@@ -705,21 +705,25 @@ impl SqlStore {
     /// checks: (col_name, ref_table, ref_column, value_to_check)
     pub fn preview_validate_fk_batch(
         &self,
-        checks: &[(String, String, String, String)],
+        // (col_name, ref_table, ref_column, value, type_data) — type_data is the FK column's
+        // own type (mirrors the referenced PK type) so the value binds as the correct DbParam
+        // variant. Binding an int PK check as TEXT unconditionally made valid FK references
+        // fail validation on backends that don't implicitly cast text to int (e.g. Postgres).
+        checks: &[(String, String, String, String, String)],
     ) -> anyhow::Result<(String, Vec<DbParam>)> {
         if checks.is_empty() { return Ok(("".to_string(), vec![])); }
-        
+
         let mut queries = Vec::with_capacity(checks.len());
         let mut params = Vec::with_capacity(checks.len());
-        
-        for (col_name, ref_table, ref_column, value) in checks {
+
+        for (col_name, ref_table, ref_column, value, type_data) in checks {
             // Use CASE WHEN EXISTS(...) THEN 1 ELSE 0 END to ensure compatibility (MSSQL doesn't support raw EXISTS in select list)
             // Functionally returns 1 for valid (exists), 0 for invalid.
             queries.push(format!(
                 "SELECT '{}' as _col, '{}' as _table, CASE WHEN EXISTS(SELECT 1 FROM {} WHERE {} = ?) THEN 1 ELSE 0 END as _valid",
                 col_name, ref_table, ref_table, ref_column
             ));
-            params.push(DbParam::Str(value.clone()));
+            params.push(crate::nocode::pk_utils::dbparam_from_str_and_type(value, type_data));
         }
         let sql = queries.join(" UNION ALL ");
         Ok((sql, params))

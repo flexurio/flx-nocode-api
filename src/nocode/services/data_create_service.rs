@@ -225,7 +225,10 @@ pub async fn process_insert_request(
         .unwrap_or_default();
 
     // Params collecting
-    let mut fk_checks: Vec<(String, String, String, String)> =
+    // fk_checks: (col_name, ref_table, ref_column, value, type_data) — type_data is the FK
+    // column's own type (matches the referenced PK type) so the FK-check query can bind the
+    // value with the correct DbParam variant instead of always TEXT.
+    let mut fk_checks: Vec<(String, String, String, String, String)> =
         Vec::with_capacity(filtered_columns.len());
     let mut insert_fields: Vec<(String, InsertValue)> =
         Vec::with_capacity(filtered_columns.len() + 3);
@@ -285,6 +288,7 @@ pub async fn process_insert_request(
                         fk.reference_table.clone(),
                         fk.reference_column.clone(),
                         str_value.clone(),
+                        col.type_data.clone(),
                     ));
                 }
             }

@@ -126,7 +126,9 @@ pub async fn process_update_request(
     // Prepare Update Fields
     let mut update_fields: Vec<(String, InsertValue)> = Vec::new();
     let mut patch_fields = serde_json::Map::new();
-    let mut fk_checks: Vec<(String, String, String, String)> = Vec::new();
+    // fk_checks: (col_name, ref_table, ref_column, value, type_data) — type_data lets the
+    // FK-check query bind the value with the correct DbParam variant instead of always TEXT.
+    let mut fk_checks: Vec<(String, String, String, String, String)> = Vec::new();
     let mut password_override: Option<String> = None;
 
     if let Some(body_obj) = body.as_object() {
@@ -168,6 +170,14 @@ pub async fn process_update_request(
                 continue;
             }
 
+            // Metadata Check (moved ahead of FK checks so col.type_data is available below)
+            let Some(col) = table_schema.columns.iter().find(|c| c.name == clean_column) else {
+                return bad_request(format!(
+                    "Unknown column '{}' for route '{}'",
+                    clean_column, route
+                ));
+            };
+
             // Collect FK Checks
             for fk in table_schema.foreign_keys.iter() {
                 if fk.column == clean_column {
@@ -176,17 +186,10 @@ pub async fn process_update_request(
                         fk.reference_table.clone(),
                         fk.reference_column.clone(),
                         str_value.clone(),
+                        col.type_data.clone(),
                     ));
                 }
             }
-
-            // Metadata Check
-            let Some(col) = table_schema.columns.iter().find(|c| c.name == clean_column) else {
-                return bad_request(format!(
-                    "Unknown column '{}' for route '{}'",
-                    clean_column, route
-                ));
-            };
 
             // Encrypt
             let value_for_db = if col.encrypt && !is_encrypted_string(&str_value) {

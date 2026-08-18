@@ -15,7 +15,10 @@ use crate::storage::ast::{Filter as F, Query as Q};
 /// This replaces N sequential DB queries with 1 UNION ALL query
 async fn validate_foreign_keys_batch(
     state: &web::Data<AppState>,
-    fk_checks: &[(String, String, String, String)], // (col_name, ref_table, ref_column, value)
+    // (col_name, ref_table, ref_column, value, type_data) — type_data is the FK column's own
+    // type so the value can be bound with the correct DbParam variant (avoids comparing an
+    // int PK against a TEXT-bound value, which silently fails FK validation on some backends).
+    fk_checks: &[(String, String, String, String, String)],
 ) -> Result<(), String> {
     if fk_checks.is_empty() {
         return Ok(());
@@ -23,18 +26,16 @@ async fn validate_foreign_keys_batch(
 
     // MongoDB Implementation
     if state.db_type == DbType::Mongodb {
-        for (col, table, ref_col, val) in fk_checks {
+        for (col, table, ref_col, val, type_data) in fk_checks {
             // For each FK, perform a query to check existence
             // This is N queries, but unavoidable without relational joins or stored procedures in Mongo
-            // Optimization: Could use $in if multiple rows checked same table/col, but here checks might be diverse
 
-            // Naive type inference for query (assuming string for now, or simple parsing)
-            let val_qv = if let Ok(n) = val.parse::<i64>() {
-                crate::storage::ast::Val::I64(n)
-            } else if let Ok(f) = val.parse::<f64>() {
-                crate::storage::ast::Val::F64(f)
-            } else {
-                crate::storage::ast::Val::Str(val.clone())
+            let val_qv = match crate::nocode::pk_utils::dbparam_from_str_and_type(val, type_data) {
+                DbParam::I64(n) => crate::storage::ast::Val::I64(n),
+                DbParam::F64(f) => crate::storage::ast::Val::F64(f),
+                DbParam::Bool(b) => crate::storage::ast::Val::Bool(b),
+                DbParam::Null => crate::storage::ast::Val::Null,
+                DbParam::Str(s) => crate::storage::ast::Val::Str(s),
             };
 
             let q = Q::from(table.clone())
@@ -463,7 +464,7 @@ pub async fn perform_insert(
     _filtered_columns: &[&Column],
     mut insert_fields: Vec<(String, InsertValue)>,
     mut doc_map: serde_json::Map<String, Value>,
-    fk_checks: Vec<(String, String, String, String)>,
+    fk_checks: Vec<(String, String, String, String, String)>,
     function_id_split: Vec<String>,
     route: &str,
     auth_token: Option<String>,

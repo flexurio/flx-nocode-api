@@ -39,20 +39,25 @@ pub fn dbparam_from_value_and_type(val: &Value, meta: Option<&Column>) -> DbPara
 }
 
 async fn validate_foreign_keys_batch_put(
-    state: &web::Data<AppState>, 
+    state: &web::Data<AppState>,
     tx: &mut dyn crate::storage::traits::TxStore,
-    fk_checks: &[(String, String, String, String)],
+    // (col_name, ref_table, ref_column, value, type_data) — type_data is the FK column's own
+    // type so the value binds as the correct DbParam variant instead of always TEXT.
+    fk_checks: &[(String, String, String, String, String)],
 ) -> Result<(), String> {
     if fk_checks.is_empty() { return Ok(()); }
-    
+
     // MongoDB Implementation
     if state.db_type == crate::model::DbType::Mongodb {
-         for (col, table, ref_col, val) in fk_checks {
-             // Naive type inference
-             let val_qv = if let Ok(n) = val.parse::<i64>() { crate::storage::ast::Val::I64(n) } 
-                          else if let Ok(f) = val.parse::<f64>() { crate::storage::ast::Val::F64(f) }
-                          else { crate::storage::ast::Val::Str(val.clone()) };
-             
+         for (col, table, ref_col, val, type_data) in fk_checks {
+             let val_qv = match crate::nocode::pk_utils::dbparam_from_str_and_type(val, type_data) {
+                 DbParam::I64(n) => crate::storage::ast::Val::I64(n),
+                 DbParam::F64(f) => crate::storage::ast::Val::F64(f),
+                 DbParam::Bool(b) => crate::storage::ast::Val::Bool(b),
+                 DbParam::Null => crate::storage::ast::Val::Null,
+                 DbParam::Str(s) => crate::storage::ast::Val::Str(s),
+             };
+
              let q = crate::storage::ast::Query::from(table.clone())
                 .select(vec![ref_col.clone()])
                 .r#where(QF::Eq(ref_col.clone(), val_qv))
@@ -213,7 +218,7 @@ pub async fn perform_update(
     id_raw: &str,
     update_fields: Vec<(String, InsertValue)>,
     patch_fields: serde_json::Map<String, Value>,
-    fk_checks: Vec<(String, String, String, String)>,
+    fk_checks: Vec<(String, String, String, String, String)>,
     password_override: Option<String>,
     body: &Value,
     auth_token: Option<String>,
