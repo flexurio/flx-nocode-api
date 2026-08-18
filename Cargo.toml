@@ -42,7 +42,7 @@ thiserror = "2.0"
 base64 = "0.23"
 colored = "3.1"
 jsonwebtoken = { version = "11.0.0", features = ["rust_crypto"] }
-aes-gcm = "0.10.3"
+aes-gcm = "0.11.0"
 argon2 = "0.5"
 rand = "0.10.2"
 sha2 = "0.11.0"
