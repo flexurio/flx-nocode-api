@@ -276,6 +276,7 @@ pub struct JoinTable {
     pub type_join: String,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Operation {
     #[serde(default)]
@@ -370,6 +371,7 @@ pub struct WebResponse {
 }
 
 // create struct for logging
+#[allow(dead_code)]
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Log {
     #[serde(default)]

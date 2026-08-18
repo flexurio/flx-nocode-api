@@ -692,26 +692,6 @@ pub async fn perform_insert(
 
                 match tx.raw_sql(&sql, params).await {
                     Ok(rows_returned) => {
-                        // POST-PROCESS (SQL based)
-                        if table_schema.post.post_process.contains("SQL:") {
-                            if let Err(err) =
-                                crate::database::state::execute_sql_formula_with_txstore(
-                                    &mut tx,
-                                    table_schema.post.post_process.clone(),
-                                    body,
-                                    route,
-                                )
-                                .await
-                            {
-                                let _ = tx.rollback().await;
-                                return Err(format!("Error in post-process: {}", err));
-                            }
-                        }
-
-                        if let Err(e) = tx.commit().await {
-                            return Err(format!("Error committing transaction: {}", e));
-                        }
-
                         let inserted_id = if !rows_returned.is_empty() {
                             // Try to get "id" column
                             rows_returned[0]
@@ -726,6 +706,44 @@ pub async fn perform_insert(
 
                         if inserted_id != Value::Null && !doc_map.contains_key("id") {
                             doc_map.insert("id".to_string(), inserted_id);
+                        }
+
+                        // Construct merged body containing doc_map (which includes generated id and fields)
+                        let merged_body = {
+                            let mut map = match body {
+                                Value::Object(m) => m.clone(),
+                                _ => serde_json::Map::new(),
+                            };
+                            for (k, v) in &doc_map {
+                                map.insert(k.clone(), v.clone());
+                            }
+                            // Map id_new to id if id_new is not explicitly provided in the request
+                            if !map.contains_key("id_new") {
+                                if let Some(id_val) = map.get("id") {
+                                    map.insert("id_new".to_string(), id_val.clone());
+                                }
+                            }
+                            Value::Object(map)
+                        };
+
+                        // POST-PROCESS (SQL based)
+                        if table_schema.post.post_process.contains("SQL:") {
+                            if let Err(err) =
+                                crate::database::state::execute_sql_formula_with_txstore(
+                                    &mut tx,
+                                    table_schema.post.post_process.clone(),
+                                    &merged_body,
+                                    route,
+                                )
+                                .await
+                            {
+                                let _ = tx.rollback().await;
+                                return Err(format!("Error in post-process: {}", err));
+                            }
+                        }
+
+                        if let Err(e) = tx.commit().await {
+                            return Err(format!("Error committing transaction: {}", e));
                         }
 
                         Ok((
