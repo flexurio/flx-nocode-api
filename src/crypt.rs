@@ -16,15 +16,22 @@ pub fn encrypt(key: String, plaintext: String) -> String {
     let mut hasher = Sha256::default();
     hasher.update(key.as_bytes());
     let key_hash = hasher.finalize();
-    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key_hash));
+    let Ok(gcm_key) = Key::<Aes256Gcm>::try_from(key_hash.as_slice()) else {
+        eprintln!("Encryption failed: invalid key length");
+        return String::new();
+    };
+    let cipher = Aes256Gcm::new(&gcm_key);
 
     // Generate IV (nonce)
     let mut iv = [0u8; 12];
     rand::rng().fill(&mut iv);
-    let nonce = Nonce::from_slice(&iv);
+    let Ok(nonce) = Nonce::try_from(iv.as_slice()) else {
+        eprintln!("Encryption failed: invalid nonce length");
+        return String::new();
+    };
 
     // Enkripsi plaintext
-    let ciphertext = match cipher.encrypt(nonce, plaintext.as_bytes()) {
+    let ciphertext = match cipher.encrypt(&nonce, plaintext.as_bytes()) {
         Ok(encrypted) => encrypted,
         Err(e) => {
             eprintln!("Encryption failed: {}", e);
@@ -46,7 +53,10 @@ pub fn decrypt(key: String, encrypted_string: String) -> String {
     let mut hasher = Sha256::default();
     hasher.update(key.as_bytes());
     let key_hash = hasher.finalize();
-    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key_hash));
+    let Ok(gcm_key) = Key::<Aes256Gcm>::try_from(key_hash.as_slice()) else {
+        return "Gagal dekripsi".to_string();
+    };
+    let cipher = Aes256Gcm::new(&gcm_key);
 
     // Decode dari Base64
     let encrypted_data =
@@ -60,10 +70,12 @@ pub fn decrypt(key: String, encrypted_string: String) -> String {
         return "Data terenkripsi tidak valid".to_string();
     }
     let (iv, ciphertext) = encrypted_data.split_at(12);
-    let nonce = Nonce::from_slice(iv);
+    let Ok(nonce) = Nonce::try_from(iv) else {
+        return "Data terenkripsi tidak valid".to_string();
+    };
 
     // Dekripsi
-    match cipher.decrypt(nonce, ciphertext) {
+    match cipher.decrypt(&nonce, ciphertext) {
         Ok(plaintext) => match String::from_utf8(plaintext) {
             Ok(text) => text,
             Err(_) => "Gagal konversi ke string".to_string(),

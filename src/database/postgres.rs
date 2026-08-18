@@ -137,7 +137,10 @@ pub fn pgrows_to_json(rows: Vec<PgRow>) -> Vec<Value> {
 #[async_trait::async_trait]
 impl DbRepository for PostgresRepo {
     async fn query(&self, sql: &str) -> Result<Vec<Value>, anyhow::Error> {
-        match sqlx::query(sql).fetch_all(&self.pool).await {
+        // SAFETY: `sql` is built by our internal query compiler (storage::sql_store),
+        // not raw-concatenated user input; user-supplied values are always bound
+        // as parameters, never interpolated into the SQL text.
+        match sqlx::query(sqlx::AssertSqlSafe(sql)).fetch_all(&self.pool).await {
             Ok(rows) => {
                 // Jika berhasil, konversi hasilnya ke dalam JSON
                 let rows: Vec<PgRow> = rows.into_iter().collect();
@@ -159,7 +162,9 @@ impl DbRepository for PostgresRepo {
         // Convert '?' placeholders to PostgreSQL-style $1, $2, ...
         let converted = rehydrate_placeholders(sql, "postgres");
 
-        let mut q = sqlx::query(&converted);
+        // SAFETY: see comment on `query` above — `converted` is our own internal
+        // query text with placeholders rewritten; params are always bound.
+        let mut q = sqlx::query(sqlx::AssertSqlSafe(converted));
         for p in params {
             q = match p {
                 DbParam::I64(v) => q.bind(v),
@@ -198,7 +203,9 @@ impl DbTransaction for PostgresTransaction {
         // Convert '?' placeholders to PostgreSQL-style $1, $2, ...
         let converted = rehydrate_placeholders(sql, "postgres");
 
-        let mut q = sqlx::query(&converted);
+        // SAFETY: see comment on `query` above — `converted` is our own internal
+        // query text with placeholders rewritten; params are always bound.
+        let mut q = sqlx::query(sqlx::AssertSqlSafe(converted));
         for p in params {
             q = match p {
                 DbParam::I64(v) => q.bind(v),
