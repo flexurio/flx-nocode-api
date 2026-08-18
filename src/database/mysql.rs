@@ -232,7 +232,10 @@ pub fn mysqlrows_to_json(rows: Vec<MySqlRow>) -> Vec<Value> {
 impl DbRepository for MySqlRepo {
     async fn query(&self, sql: &str) -> Result<Vec<Value>, anyhow::Error> {
         // jalankan query dan ambil hasilnya ke dalam Value
-        match sqlx::query(sql).fetch_all(&self.pool).await {
+        // SAFETY: `sql` is built by our internal query compiler (storage::sql_store),
+        // not raw-concatenated user input; user-supplied values are always bound
+        // as parameters, never interpolated into the SQL text.
+        match sqlx::query(sqlx::AssertSqlSafe(sql)).fetch_all(&self.pool).await {
             Ok(rows) => {
                 // Jika berhasil, konversi hasilnya ke dalam JSON
                 let rows: Vec<MySqlRow> = rows.into_iter().collect();
@@ -251,7 +254,9 @@ impl DbRepository for MySqlRepo {
         sql: &str,
         params: Vec<DbParam>,
     ) -> Result<Vec<Value>, anyhow::Error> {
-        let mut q = sqlx::query(sql);
+        // SAFETY: see comment on `query` above — `sql` comes from our internal
+        // query compiler; `params` are always bound, never interpolated.
+        let mut q = sqlx::query(sqlx::AssertSqlSafe(sql));
         for p in params {
             q = match p {
                 DbParam::I64(v) => q.bind(v),
@@ -288,7 +293,9 @@ impl DbTransaction for MySqlTransaction {
         sql: &str,
         params: Vec<DbParam>,
     ) -> Result<Vec<Value>, anyhow::Error> {
-        let mut q = sqlx::query(sql);
+        // SAFETY: see comment on `query` above — `sql` comes from our internal
+        // query compiler; `params` are always bound, never interpolated.
+        let mut q = sqlx::query(sqlx::AssertSqlSafe(sql));
         for p in params {
             q = match p {
                 DbParam::I64(v) => q.bind(v),
