@@ -451,7 +451,7 @@ pub async fn start_email_consumer() {
                     }
                     Err(e) => {
                         consecutive_errors += 1;
-                        if consecutive_errors == 1 || consecutive_errors % 10 == 0 {
+                        if consecutive_errors == 1 || consecutive_errors.is_multiple_of(10) {
                             log_output(
                                 "EMAIL",
                                 "DEQUEUE-ERR",

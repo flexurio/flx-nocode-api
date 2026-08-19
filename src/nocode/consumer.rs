@@ -306,7 +306,7 @@ pub async fn start_consumer(state: Data<AppState>, schemas_map: Arc<HashMap<Stri
                         consecutive_errors += 1;
                         
                         // Log only first error and every 10th error to avoid spam
-                        if consecutive_errors == 1 || consecutive_errors % 10 == 0 {
+                        if consecutive_errors == 1 || consecutive_errors.is_multiple_of(10) {
                             log_output(
                                 "QUEUE", 
                                 "DEQUEUE-ERR", 

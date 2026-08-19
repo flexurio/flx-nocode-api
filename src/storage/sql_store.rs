@@ -158,7 +158,7 @@ impl SqlStore {
         }
 
         let if_not_exists = match self.db_type.as_str() {
-            "mysql" | "postgres" | "sqlite" => if ct.if_not_exists { " IF NOT EXISTS" } else { "" },
+            "mysql" | "postgres" | "sqlite" if ct.if_not_exists => " IF NOT EXISTS",
             _ => "", // MSSQL handled with IF NOT EXISTS wrapper
         };
         let mut sql = String::new();
