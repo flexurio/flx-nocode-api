@@ -493,6 +493,9 @@ pub async fn process_import_request(
     }
 
     // 8. DB Insert (Mongo vs SQL)
+    let mut validated_fks: std::collections::HashSet<(String, String, String)> =
+        std::collections::HashSet::new();
+
     if state.db_type == DbType::Mongodb {
         let mut inserted: i32 = 0;
         let now_iso = Local::now().to_rfc3339();
@@ -522,24 +525,33 @@ pub async fn process_import_request(
                     }
                 }
 
-                // FK Check
+                // FK Check with in-memory caching
                 if !value_str.is_empty() {
                     for fk in table_schema.foreign_keys.iter() {
-                        if fk.column == col.name
-                            && !check_data_foreign_key(
-                                &state,
+                        if fk.column == col.name {
+                            let fk_key = (
                                 fk.reference_table.clone(),
                                 fk.reference_column.clone(),
                                 value_str.clone(),
-                            )
-                            .await
-                        {
-                            return Err(WebResponse {
-                                success: false,
-                                message: format!("Invalid FK '{}'", value_str),
-                                total_data: inserted,
-                                data: Value::Null,
-                            });
+                            );
+                            if !validated_fks.contains(&fk_key) {
+                                if !check_data_foreign_key(
+                                    &state,
+                                    fk.reference_table.clone(),
+                                    fk.reference_column.clone(),
+                                    value_str.clone(),
+                                )
+                                .await
+                                {
+                                    return Err(WebResponse {
+                                        success: false,
+                                        message: format!("Invalid FK '{}'", value_str),
+                                        total_data: inserted,
+                                        data: Value::Null,
+                                    });
+                                }
+                                validated_fks.insert(fk_key);
+                            }
                         }
                     }
                 }
@@ -633,25 +645,34 @@ pub async fn process_import_request(
                     }
                 }
 
-                // FK Check
+                // FK Check with in-memory caching
                 if !value_str.is_empty() {
                     for fk in table_schema.foreign_keys.iter() {
-                        if fk.column == col.name
-                            && !check_data_foreign_key(
-                                &state,
+                        if fk.column == col.name {
+                            let fk_key = (
                                 fk.reference_table.clone(),
                                 fk.reference_column.clone(),
                                 value_str.clone(),
-                            )
-                            .await
-                        {
-                            let _ = tx.rollback().await;
-                            return Err(WebResponse {
-                                success: false,
-                                message: format!("Invalid FK '{}'", value_str),
-                                total_data: inserted,
-                                data: Value::Null,
-                            });
+                            );
+                            if !validated_fks.contains(&fk_key) {
+                                if !check_data_foreign_key(
+                                    &state,
+                                    fk.reference_table.clone(),
+                                    fk.reference_column.clone(),
+                                    value_str.clone(),
+                                )
+                                .await
+                                {
+                                    let _ = tx.rollback().await;
+                                    return Err(WebResponse {
+                                        success: false,
+                                        message: format!("Invalid FK '{}'", value_str),
+                                        total_data: inserted,
+                                        data: Value::Null,
+                                    });
+                                }
+                                validated_fks.insert(fk_key);
+                            }
                         }
                     }
                 }

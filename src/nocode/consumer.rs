@@ -47,16 +47,33 @@ fn op_name(op: &WriteOpKind) -> &'static str {
     }
 }
 
+use once_cell::sync::Lazy;
+
+static WRITE_QUEUE_MAX_LEN: Lazy<i64> = Lazy::new(|| {
+    std::env::var("WRITE_QUEUE_MAX_LEN")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0)
+});
+
+static WRITE_QUEUE_ENQUEUE_RETRY: Lazy<usize> = Lazy::new(|| {
+    std::env::var("WRITE_QUEUE_ENQUEUE_RETRY")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(2)
+});
+
+static WRITE_EXEC_RETRY_MAX: Lazy<usize> = Lazy::new(|| {
+    std::env::var("WRITE_EXEC_RETRY_MAX")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(2)
+});
+
 /// Push a job to the Redis list (LPUSH) and return queue length.
 pub async fn enqueue_job(job: &WriteJob) -> Result<i64> {
-    let max_len: i64 = std::env::var("WRITE_QUEUE_MAX_LEN")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0);
-    let retry_count: usize = std::env::var("WRITE_QUEUE_ENQUEUE_RETRY")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(2);
+    let max_len: i64 = *WRITE_QUEUE_MAX_LEN;
+    let retry_count: usize = *WRITE_QUEUE_ENQUEUE_RETRY;
 
     let payload = serde_json::to_string(job)?;
     let client = crate::database::redis::get_manager().await?;
@@ -285,10 +302,7 @@ pub async fn start_consumer(state: Data<AppState>, schemas_map: Arc<HashMap<Stri
                         backoff_ms = 250;
                         
                         let worker_name = format!("worker-{}", idx);
-                        let retry_max: usize = std::env::var("WRITE_EXEC_RETRY_MAX")
-                            .ok()
-                            .and_then(|s| s.parse().ok())
-                            .unwrap_or(2);
+                        let retry_max: usize = *WRITE_EXEC_RETRY_MAX;
                         let job_for_dlq = job.clone();
                         if let Err(e) = execute_with_retry(state_cl.clone(), schemas_map_cl.clone(), job, retry_max).await {
                             log_output("QUEUE", "EXEC-ERR", worker_name.as_str(), format!("{}", e), false);

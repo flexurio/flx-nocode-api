@@ -127,10 +127,10 @@ pub fn mysqlrows_to_json(rows: Vec<MySqlRow>) -> Vec<Value> {
                     }
                 },
                 MySqlColType::VarcharBinary => match row.try_get::<Option<Vec<u8>>, _>(idx) {
-                    Ok(Some(v)) => match String::from_utf8(v.clone()) {
+                    Ok(Some(v)) => match String::from_utf8(v) {
                         Ok(s) => Value::String(s),
-                        Err(_) => {
-                            Value::String(base64::engine::general_purpose::STANDARD.encode(v))
+                        Err(e) => {
+                            Value::String(base64::engine::general_purpose::STANDARD.encode(e.into_bytes()))
                         }
                     },
                     Ok(None) => Value::Null,
@@ -146,10 +146,10 @@ pub fn mysqlrows_to_json(rows: Vec<MySqlRow>) -> Vec<Value> {
                     Ok(Some(v)) => Value::String(v),
                     Ok(None) => Value::Null,
                     Err(_) => match row.try_get::<Option<Vec<u8>>, _>(idx) {
-                        Ok(Some(v)) => match String::from_utf8(v.clone()) {
+                        Ok(Some(v)) => match String::from_utf8(v) {
                             Ok(s) => Value::String(s),
-                            Err(_) => {
-                                Value::String(base64::engine::general_purpose::STANDARD.encode(v))
+                            Err(e) => {
+                                Value::String(base64::engine::general_purpose::STANDARD.encode(e.into_bytes()))
                             }
                         },
                         Ok(None) => Value::Null,
@@ -276,7 +276,6 @@ impl DbRepository for MySqlRepo {
         match sqlx::query(sqlx::AssertSqlSafe(sql)).fetch_all(&self.pool).await {
             Ok(rows) => {
                 // Jika berhasil, konversi hasilnya ke dalam JSON
-                let rows: Vec<MySqlRow> = rows.into_iter().collect();
                 let result_val = mysqlrows_to_json(rows);
                 return Ok(result_val);
             }

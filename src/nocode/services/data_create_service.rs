@@ -145,7 +145,7 @@ pub async fn process_insert_request(
         };
 
         // get data type
-        let data_type = format!("{:?}", col_def.type_data).to_lowercase();
+        let data_type = col_def.type_data.to_ascii_lowercase();
         let is_datetime = data_type.contains("datetime")
             || data_type.contains("timestamp")
             || data_type.contains("date");

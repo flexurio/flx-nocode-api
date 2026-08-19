@@ -741,13 +741,15 @@ impl SqlStore {
 
         let mut queries = Vec::with_capacity(checks.len());
         let mut params = Vec::with_capacity(checks.len());
+        let mut idx = 0usize;
 
         for (col_name, ref_table, ref_column, value, type_data) in checks {
             // Use CASE WHEN EXISTS(...) THEN 1 ELSE 0 END to ensure compatibility (MSSQL doesn't support raw EXISTS in select list)
             // Functionally returns 1 for valid (exists), 0 for invalid.
+            idx += 1;
             queries.push(format!(
-                "SELECT '{}' as _col, '{}' as _table, CASE WHEN EXISTS(SELECT 1 FROM {} WHERE {} = ?) THEN 1 ELSE 0 END as _valid",
-                col_name, ref_table, ref_table, ref_column
+                "SELECT '{}' as _col, '{}' as _table, CASE WHEN EXISTS(SELECT 1 FROM {} WHERE {} = {}) THEN 1 ELSE 0 END as _valid",
+                col_name, ref_table, ref_table, ref_column, next_placeholder_for(&self.db_type, idx)
             ));
             params.push(crate::nocode::pk_utils::dbparam_from_str_and_type(value, type_data));
         }

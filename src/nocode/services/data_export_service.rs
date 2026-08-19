@@ -421,7 +421,7 @@ fn apply_order_by(q: &mut QQ, order_col_ast: &str, order_type_ast: &str, table_s
         let unqualified = col_str.rsplit('.').next().unwrap_or(col_str).trim();
         if !allowed_unqualified.contains(unqualified) { continue; }
         let asc = asc_opt.unwrap_or(global_asc);
-        *q = q.clone().order_by(col_str.to_string(), asc);
+        q.sort.push(crate::storage::ast::Sort { field: col_str.to_string(), asc });
         any_order = true;
     }
     if !any_order {
@@ -430,7 +430,7 @@ fn apply_order_by(q: &mut QQ, order_col_ast: &str, order_type_ast: &str, table_s
              if col_trim.is_empty() { continue; }
              let unqualified = col_trim.rsplit('.').next().unwrap_or(col_trim);
              if allowed_unqualified.contains(unqualified) || allowed_unqualified.contains(col_trim) {
-                 *q = q.clone().order_by(col_trim.to_string(), global_asc);
+                 q.sort.push(crate::storage::ast::Sort { field: col_trim.to_string(), asc: global_asc });
              }
          }
     }

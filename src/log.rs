@@ -20,20 +20,57 @@ static RE_REDACT_BEARER: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"(?i)Bearer\s+[A-Za-z0-9\-._~+/]+=*"#).expect("valid redact-bearer regex")
 });
 
-// Intentionally NOT cached in a `Lazy`: unlike the redact regexes, this is a
-// cheap single env lookup, and tests toggle LOG_VERBOSE at runtime expecting
-// it to react immediately.
-fn is_verbose_enabled() -> bool {
-    match std::env::var("LOG_VERBOSE") {
+use std::sync::atomic::{AtomicBool, Ordering};
+
+static VERBOSE_FLAG: Lazy<AtomicBool> = Lazy::new(|| {
+    let enabled = match std::env::var("LOG_VERBOSE") {
         Ok(v) => {
             let v = v.to_ascii_lowercase();
             v == "1" || v == "true" || v == "yes"
         }
         Err(_) => false,
+    };
+    AtomicBool::new(enabled)
+});
+
+fn is_verbose_enabled() -> bool {
+    VERBOSE_FLAG.load(Ordering::Relaxed)
+}
+
+#[cfg(test)]
+fn refresh_verbose_from_env() -> bool {
+    let enabled = match std::env::var("LOG_VERBOSE") {
+        Ok(v) => {
+            let v = v.to_ascii_lowercase();
+            v == "1" || v == "true" || v == "yes"
+        }
+        Err(_) => false,
+    };
+    VERBOSE_FLAG.store(enabled, Ordering::Relaxed);
+    enabled
+}
+
+fn contains_sensitive_keyword(s: &str) -> bool {
+    let s_bytes = s.as_bytes();
+    for window in s_bytes.windows(4) {
+        if window.eq_ignore_ascii_case(b"pass")
+            || window.eq_ignore_ascii_case(b"secr")
+            || window.eq_ignore_ascii_case(b"toke")
+            || window.eq_ignore_ascii_case(b"bear")
+            || window.eq_ignore_ascii_case(b"auth")
+            || window.eq_ignore_ascii_case(b"key")
+        {
+            return true;
+        }
     }
+    false
 }
 
 fn redact_sensitive(body: &str) -> String {
+    // Fast-path: if body contains none of the trigger substrings, avoid regex passes entirely.
+    if !contains_sensitive_keyword(body) {
+        return body.to_string();
+    }
     // Redact common secrets in key/value text and JSON.
     let out = RE_REDACT_QUOTED.replace_all(body, "$1=***");
     let out = RE_REDACT_UNQUOTED.replace_all(&out, "$1=***");
@@ -133,41 +170,41 @@ mod tests {
     fn test_is_verbose_enabled_default_false() {
         // SAFETY: single-threaded test context, no concurrent env mutations
         unsafe { std::env::remove_var("LOG_VERBOSE"); }
-        assert!(!is_verbose_enabled(), "Should be false when env var not set");
+        assert!(!refresh_verbose_from_env(), "Should be false when env var not set");
     }
 
     #[test]
     fn test_is_verbose_enabled_with_one() {
         unsafe { std::env::set_var("LOG_VERBOSE", "1"); }
-        assert!(is_verbose_enabled());
+        assert!(refresh_verbose_from_env());
         unsafe { std::env::remove_var("LOG_VERBOSE"); }
     }
 
     #[test]
     fn test_is_verbose_enabled_with_true() {
         unsafe { std::env::set_var("LOG_VERBOSE", "true"); }
-        assert!(is_verbose_enabled());
+        assert!(refresh_verbose_from_env());
         unsafe { std::env::remove_var("LOG_VERBOSE"); }
     }
 
     #[test]
     fn test_is_verbose_enabled_with_yes() {
         unsafe { std::env::set_var("LOG_VERBOSE", "yes"); }
-        assert!(is_verbose_enabled());
+        assert!(refresh_verbose_from_env());
         unsafe { std::env::remove_var("LOG_VERBOSE"); }
     }
 
     #[test]
     fn test_is_verbose_enabled_case_insensitive() {
         unsafe { std::env::set_var("LOG_VERBOSE", "TRUE"); }
-        assert!(is_verbose_enabled());
+        assert!(refresh_verbose_from_env());
         unsafe { std::env::remove_var("LOG_VERBOSE"); }
     }
 
     #[test]
     fn test_is_verbose_disabled_with_false() {
         unsafe { std::env::set_var("LOG_VERBOSE", "false"); }
-        assert!(!is_verbose_enabled());
+        assert!(!refresh_verbose_from_env());
         unsafe { std::env::remove_var("LOG_VERBOSE"); }
     }
 }
