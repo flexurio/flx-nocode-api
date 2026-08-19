@@ -19,7 +19,7 @@ pub async fn process_get_request(
     let mut cache_tenant = String::from("public");
     
     // Auth Check
-    if state.require_auth && !state.route_publics.contains(&route.to_string()) {
+    if state.require_auth && !state.route_publics.contains(route) {
         let claims = match get_user_info_from_token(req, state.clone()) {
             Ok(c) => c,
             Err(_) => {

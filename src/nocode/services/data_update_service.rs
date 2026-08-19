@@ -45,7 +45,7 @@ pub async fn process_update_request(
     // Auth Check — single mutable `claims` so the id propagates out of the if-block.
     let mut claims = Claims::default();
     let actor_id_opt: Option<String>;
-    let auth_required = state.require_auth && !state.route_publics.contains(&route.to_string());
+    let auth_required = state.require_auth && !state.route_publics.contains(route);
 
     if auth_required {
         claims = match get_user_info_from_token(req, state.clone()) {

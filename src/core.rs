@@ -30,13 +30,33 @@ use crate::{
 static DUMMY_PASSWORD_HASH: once_cell::sync::Lazy<String> =
     once_cell::sync::Lazy::new(|| hash_password("flx-dummy-credential-for-timing"));
 
+// Env vars are loaded once at process start (dotenv in main()) and never change
+// afterward, so resolve login rate-limit settings once instead of on every
+// login attempt. Two distinct defaults (10 vs 3) are preserved for
+// RATE_LIMIT_LOGIN_PER_MIN to match the pre-existing behavior at each call site.
+static RATE_LIMIT_LOGIN_PER_MIN: once_cell::sync::Lazy<i64> = once_cell::sync::Lazy::new(|| {
+    std::env::var("RATE_LIMIT_LOGIN_PER_MIN").ok().and_then(|s| s.parse().ok()).unwrap_or(10)
+});
+static RATE_LIMIT_LOGIN_PER_MIN_BASE: once_cell::sync::Lazy<i64> = once_cell::sync::Lazy::new(|| {
+    std::env::var("RATE_LIMIT_LOGIN_PER_MIN").ok().and_then(|s| s.parse().ok()).unwrap_or(3)
+});
+static RATE_LIMIT_LOGIN_FAIL_USER: once_cell::sync::Lazy<i64> = once_cell::sync::Lazy::new(|| {
+    std::env::var("RATE_LIMIT_LOGIN_FAIL_USER")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or_else(|| std::cmp::max(5_i64, *RATE_LIMIT_LOGIN_PER_MIN_BASE))
+});
+static RATE_LIMIT_LOGIN_FAIL_IP: once_cell::sync::Lazy<i64> = once_cell::sync::Lazy::new(|| {
+    std::env::var("RATE_LIMIT_LOGIN_FAIL_IP")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or_else(|| std::cmp::max(20_i64, RATE_LIMIT_LOGIN_PER_MIN_BASE.saturating_mul(5)))
+});
+
 pub async fn login(state: web::Data<AppState>, req: actix_web::HttpRequest) -> impl Responder {
     // Rate limit by IP (fixed window) — allow disabling with 0 or -1
     let ip_key = get_client_ip(&req);
-    let limit_i64: i64 = std::env::var("RATE_LIMIT_LOGIN_PER_MIN")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(10);
+    let limit_i64: i64 = *RATE_LIMIT_LOGIN_PER_MIN;
     if limit_i64 > 0 {
         let limit = (limit_i64.min(u32::MAX as i64)) as u32;
         if !RL_WINDOW_LOGIN.check_and_increment(&format!("login:{}", ip_key), limit) {
@@ -132,7 +152,27 @@ pub async fn login(state: web::Data<AppState>, req: actix_web::HttpRequest) -> i
             true,
         );
     }
-    let rows = state.store.query(&q_user).await.unwrap_or_default();
+    let rows = match state.store.query(&q_user).await {
+        Ok(rows) => rows,
+        Err(e) => {
+            // Distinguish "database unreachable" from "credentials invalid": silently
+            // treating a DB error as an empty result set makes every outage look like
+            // a wrong password to the caller and to anyone reading auth failure logs.
+            log_output(
+                "ERROR",
+                "core.rs/login",
+                "flx_users-query",
+                format!("Login query failed: {}", e),
+                true,
+            );
+            return HttpResponse::ServiceUnavailable().json(WebResponse {
+                success: false,
+                message: "Service temporarily unavailable".into(),
+                total_data: 0,
+                data: Value::Null,
+            });
+        }
+    };
     let (password_db, id_user_str, name) = if let Some(row0) = rows.first() {
         let password = row0
             .get("password")
@@ -187,19 +227,9 @@ pub async fn login(state: web::Data<AppState>, req: actix_web::HttpRequest) -> i
     if !password_ok {
         // Apply per-user and per-IP failure rate limits within a 5-minute window.
         // Any of these env values <= 0 disables that specific limiter.
-        let base_per_min_i64: i64 = std::env::var("RATE_LIMIT_LOGIN_PER_MIN")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(3);
         // Defaults if env not set: user=5 per 5 min, ip=20 per 5 min
-        let fail_user_limit_i64: i64 = std::env::var("RATE_LIMIT_LOGIN_FAIL_USER")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or_else(|| std::cmp::max(5_i64, base_per_min_i64));
-        let fail_ip_limit_i64: i64 = std::env::var("RATE_LIMIT_LOGIN_FAIL_IP")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or_else(|| std::cmp::max(20_i64, base_per_min_i64.saturating_mul(5)));
+        let fail_user_limit_i64: i64 = *RATE_LIMIT_LOGIN_FAIL_USER;
+        let fail_ip_limit_i64: i64 = *RATE_LIMIT_LOGIN_FAIL_IP;
 
         let mut over_user = false;
         let mut over_ip = false;
@@ -1007,7 +1037,12 @@ fn extract_zip(zip_path: &str, target_dir: &str) -> Result<(), Box<dyn Error + S
 
     for i in 0..archive.len() {
         let mut file = archive.by_index(i)?;
-        let out_path = Path::new(target_dir).join(file.name());
+        // `enclosed_name()` rejects absolute paths and `..` components, preventing a
+        // malicious/corrupt archive entry from writing outside `target_dir` (zip-slip).
+        let Some(safe_name) = file.enclosed_name() else {
+            return Err(format!("Unsafe path in zip entry: {}", file.name()).into());
+        };
+        let out_path = Path::new(target_dir).join(safe_name);
 
         if file.is_dir() {
             std::fs::create_dir_all(&out_path)?;

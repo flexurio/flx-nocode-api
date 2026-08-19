@@ -39,7 +39,7 @@ pub static CONFIG: Lazy<crate::model::Config> = Lazy::new(|| {
             );
             return crate::model::Config {
                 routes: vec![],
-                route_publics: vec![],
+                route_publics: std::collections::HashSet::new(),
                 converter_token: ClaimsConverter::default(),
             };
         }

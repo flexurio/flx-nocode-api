@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::sync::Arc;
+use once_cell::sync::Lazy;
 use serde_json::Value;
 
 use crate::log::log_output;
@@ -7,6 +8,15 @@ use crate::model::{ParamJoin, TableSchema};
 use crate::AppState;
 use crate::storage::ast::{Filter as QF, Query as QQ, Val as QV, Expr as QE, Join as QJ, JoinKind as QJK};
 use crate::helpers::split_column_operator;
+
+// Env vars are loaded once at process start (dotenv in main()) and never change
+// afterward, so resolve these once instead of on every GET request.
+static LIMIT_DEFAULT_ENV: Lazy<i32> = Lazy::new(|| {
+    std::env::var("LIMIT_DEFAULT").ok().and_then(|s| s.parse().ok()).unwrap_or(200)
+});
+static LIMIT_MAX_ENV: Lazy<i32> = Lazy::new(|| {
+    std::env::var("LIMIT_MAX").ok().and_then(|s| s.parse().ok()).unwrap_or(2000)
+});
 
 #[allow(clippy::collapsible_if)]
 pub async fn fetch_dynamic_data(
@@ -17,14 +27,8 @@ pub async fn fetch_dynamic_data(
 ) -> Result<(Vec<Value>, usize), String> {
     // Build AST query
     // Tuneable limits via env to control memory usage per request
-    let limit_default_env: i32 = std::env::var("LIMIT_DEFAULT")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(200);
-    let limit_max_env: i32 = std::env::var("LIMIT_MAX")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(2000);
+    let limit_default_env: i32 = *LIMIT_DEFAULT_ENV;
+    let limit_max_env: i32 = *LIMIT_MAX_ENV;
 
     let mut i_limit_ast = limit_default_env;
     let mut i_page_ast = 1i32;

@@ -3,11 +3,48 @@ use base64::Engine;
 use tokio::io::AsyncWriteExt;
 use colored::Colorize;
 use futures::StreamExt;
+use once_cell::sync::Lazy;
 use regex::Regex;
 use serde_json::{json, Value};
 use std::collections::HashSet;
 
 use crate::{log::log_output, ISDEBUG};
+
+// Env vars are loaded once at process start (dotenv in main()) and never change
+// afterward, so resolve upload limits once instead of on every multipart request.
+static UPLOAD_MAX_FILE_SIZE: Lazy<usize> = Lazy::new(|| {
+    let mb: usize = std::env::var("UPLOAD_LIMIT_MB").ok().and_then(|s| s.parse().ok()).unwrap_or(10);
+    mb * 1024 * 1024
+});
+static UPLOAD_MAX_FIELD_SIZE: Lazy<usize> = Lazy::new(|| {
+    let kb: usize = std::env::var("UPLOAD_TEXT_LIMIT_KB").ok().and_then(|s| s.parse().ok()).unwrap_or(1024);
+    kb * 1024
+});
+static UPLOAD_MAX_FILES: Lazy<usize> = Lazy::new(|| {
+    std::env::var("UPLOAD_MAX_FILES").ok().and_then(|s| s.parse().ok()).unwrap_or(10)
+});
+static UPLOAD_MAX_FIELDS: Lazy<usize> = Lazy::new(|| {
+    std::env::var("UPLOAD_MAX_FIELDS").ok().and_then(|s| s.parse().ok()).unwrap_or(200)
+});
+static UPLOAD_EXT_ALLOW: Lazy<Option<HashSet<String>>> = Lazy::new(|| {
+    std::env::var("UPLOAD_EXT_ALLOW").ok().map(|v| {
+        v.split(',')
+            .filter_map(|s| {
+                let t = s.trim().to_lowercase();
+                if t.is_empty() { None } else { Some(t) }
+            })
+            .collect()
+    })
+});
+// Trust X-Forwarded-For / X-Real-IP for client IP resolution (rate limiting,
+// IP allowlists). Defaults to true to preserve existing behavior; set to
+// "0"/"false" when the app is NOT behind a trusted reverse proxy, since an
+// untrusted client can otherwise spoof these headers to bypass IP-based limits.
+static TRUST_PROXY_HEADERS: Lazy<bool> = Lazy::new(|| {
+    std::env::var("TRUST_PROXY_HEADERS")
+        .map(|v| !matches!(v.to_lowercase().as_str(), "0" | "false" | "no"))
+        .unwrap_or(true)
+});
 
 pub fn cetak_label(host: String, port: u16) {
     // print version from cargo.toml
@@ -78,26 +115,30 @@ pub fn split_column_operator(key: &str, s_table: &str, value: &str) -> (String, 
 
 // Extract client IP reliably (supports proxies) with safe fallbacks
 pub fn get_client_ip(req: &actix_web::HttpRequest) -> String {
-    // Check common proxy headers first (take the first IP when multiple)
-    if let Some(ip) = req
-        .headers()
-        .get("x-forwarded-for")
-        .and_then(|h| h.to_str().ok())
-        .and_then(|v| v.split(',').map(|s| s.trim()).find(|s| !s.is_empty()))
-    {
-        return ip.to_string();
+    // Proxy headers are client-controlled unless a trusted reverse proxy overwrites
+    // them, so honoring them without TRUST_PROXY_HEADERS lets a client spoof its
+    // apparent IP and bypass IP-based rate limits / whitelists.
+    if *TRUST_PROXY_HEADERS {
+        // Check common proxy headers first (take the first IP when multiple)
+        if let Some(ip) = req
+            .headers()
+            .get("x-forwarded-for")
+            .and_then(|h| h.to_str().ok())
+            .and_then(|v| v.split(',').map(|s| s.trim()).find(|s| !s.is_empty()))
+        {
+            return ip.to_string();
+        }
+        if let Some(real) = req
+            .headers()
+            .get("x-real-ip")
+            .and_then(|h| h.to_str().ok())
+            .map(|v| v.trim())
+            .filter(|v| !v.is_empty())
+        {
+            return real.to_string();
+        }
     }
-    if let Some(real) = req
-        .headers()
-        .get("x-real-ip")
-        .and_then(|h| h.to_str().ok())
-        .map(|v| v.trim())
-        .filter(|v| !v.is_empty())
-    {
-        return real.to_string();
-    }
-    
-    
+
     // Fallback to peer_addr
     req.peer_addr()
         .map(|a| a.ip().to_string())
@@ -125,39 +166,14 @@ pub fn operator_query(symbol: &str) -> String {
 // create function convert MultiPart to Json with security and memory optimizations
 pub async fn multipart_to_json(mut multipart: Multipart) -> Result<Value, actix_web::Error> {
     let mut json_data = json!({});
-    // Limits (configurable via env)
-    let max_file_mb: usize = std::env::var("UPLOAD_LIMIT_MB")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(10);
-    let max_file_size: usize = max_file_mb * 1024 * 1024;
-    let max_field_kb: usize = std::env::var("UPLOAD_TEXT_LIMIT_KB")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(1024);
-    let max_field_size: usize = max_field_kb * 1024;
-    let max_files: usize = std::env::var("UPLOAD_MAX_FILES")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(10);
-    let max_fields: usize = std::env::var("UPLOAD_MAX_FIELDS")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(200);
-
-    // Allowed extensions (optional)
-    let allowed_ext: Option<HashSet<String>> = std::env::var("UPLOAD_EXT_ALLOW").ok().map(|v| {
-        v.split(',')
-            .filter_map(|s| {
-                let t = s.trim().to_lowercase();
-                if t.is_empty() {
-                    None
-                } else {
-                    Some(t)
-                }
-            })
-            .collect()
-    });
+    // Limits (configurable via env; cached at process start — see statics above)
+    let max_file_size: usize = *UPLOAD_MAX_FILE_SIZE;
+    let max_field_size: usize = *UPLOAD_MAX_FIELD_SIZE;
+    let max_files: usize = *UPLOAD_MAX_FILES;
+    let max_fields: usize = *UPLOAD_MAX_FIELDS;
+    // Clone (cheap: usually None, otherwise a handful of strings) to preserve the
+    // original owned-Option call sites below without touching their match arms.
+    let allowed_ext: Option<HashSet<String>> = UPLOAD_EXT_ALLOW.clone();
 
     let mut file_count = 0usize;
     let mut field_count = 0usize;
@@ -484,7 +500,6 @@ mod tests {
 }
 
 // Static compiled regex for performance - compiled only once instead of every call
-use once_cell::sync::Lazy;
 static EXPR_REGEX: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"\{([^{}]+)\}").expect("Failed to compile expression regex")
 });

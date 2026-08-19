@@ -67,14 +67,16 @@ where
     }
 
     fn call(&self, req: ServiceRequest) -> Self::Future {
-        let method = req.method().as_str().to_uppercase();
+        // Standard HTTP methods are always uppercase on the wire (RFC 7230 method
+        // token); avoid allocating a new String per request just to normalize case.
+        let method = req.method().as_str();
         let limit_val = RL_ALL.unwrap_or_else(|| {
-            if method == "GET" { *RL_GET } else { RL_METHOD.get(method.as_str()).copied().unwrap_or(*RL_MUTATE) }
+            if method == "GET" { *RL_GET } else { RL_METHOD.get(method).copied().unwrap_or(*RL_MUTATE) }
         });
         if limit_val > 0 {
             let ip = get_client_ip(req.request());
             let path_seg = req.path().trim_matches('/').split('/').next().unwrap_or("");
-            let op = match method.as_str() {
+            let op = match method {
                 "GET" => RateOp::Get,
                 "POST" => RateOp::Post,
                 "PUT" => RateOp::Put,
@@ -144,7 +146,7 @@ where
             .app_data::<web::Data<AppState>>()
             .map(|st| {
                 let route = req.path().trim_start_matches('/');
-                st.route_publics.contains(&route.to_string())
+                st.route_publics.contains(route)
             })
             .unwrap_or(false);
         if is_public {

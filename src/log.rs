@@ -2,10 +2,27 @@
 
 use crate::ISDEBUG;
 use colored::{Color, Colorize};
+use once_cell::sync::Lazy;
 use regex::Regex;
 
 const MAX_LOG_BODY_LEN: usize = 2000;
 
+// Compiled once for the process lifetime instead of on every log_output() call.
+static RE_REDACT_QUOTED: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?i)(password|pass|secret|token|authorization|api[_-]?key|encrypt_key|secret_key)\s*[:=]\s*\"[^\"]*\""#)
+        .expect("valid redact-quoted regex")
+});
+static RE_REDACT_UNQUOTED: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?i)(password|pass|secret|token|authorization|api[_-]?key|encrypt_key|secret_key)\s*[:=]\s*[^,\s\}]+"#)
+        .expect("valid redact-unquoted regex")
+});
+static RE_REDACT_BEARER: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?i)Bearer\s+[A-Za-z0-9\-._~+/]+=*"#).expect("valid redact-bearer regex")
+});
+
+// Intentionally NOT cached in a `Lazy`: unlike the redact regexes, this is a
+// cheap single env lookup, and tests toggle LOG_VERBOSE at runtime expecting
+// it to react immediately.
 fn is_verbose_enabled() -> bool {
     match std::env::var("LOG_VERBOSE") {
         Ok(v) => {
@@ -18,24 +35,10 @@ fn is_verbose_enabled() -> bool {
 
 fn redact_sensitive(body: &str) -> String {
     // Redact common secrets in key/value text and JSON.
-    let mut out = body.to_string();
-    let patterns: [(&str, &str); 3] = [
-        (
-            r#"(?i)(password|pass|secret|token|authorization|api[_-]?key|encrypt_key|secret_key)\s*[:=]\s*\"[^\"]*\""#,
-            "$1=***",
-        ),
-        (
-            r#"(?i)(password|pass|secret|token|authorization|api[_-]?key|encrypt_key|secret_key)\s*[:=]\s*[^,\s\}]+"#,
-            "$1=***",
-        ),
-        (r#"(?i)Bearer\s+[A-Za-z0-9\-._~+/]+=*"#, "Bearer ***"),
-    ];
-    for (pat, repl) in patterns {
-        if let Ok(re) = Regex::new(pat) {
-            out = re.replace_all(&out, repl).to_string();
-        }
-    }
-    out
+    let out = RE_REDACT_QUOTED.replace_all(body, "$1=***");
+    let out = RE_REDACT_UNQUOTED.replace_all(&out, "$1=***");
+    let out = RE_REDACT_BEARER.replace_all(&out, "Bearer ***");
+    out.into_owned()
 }
 
 fn truncate_log_body(body: String) -> String {

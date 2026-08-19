@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 
 use crate::auth::ClaimsConverter;
 
@@ -41,7 +42,7 @@ pub struct Config {
     #[serde(default)]
     pub routes: Vec<String>,
     #[serde(default)]
-    pub route_publics: Vec<String>,
+    pub route_publics: HashSet<String>,
     #[serde(default)]
     pub converter_token: ClaimsConverter,
 }

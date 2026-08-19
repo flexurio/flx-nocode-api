@@ -11,6 +11,23 @@ use serde_json::Value;
 
 use crate::{database::state::DbParam, helpers::get_client_ip, AppState};
 
+// The app's own JWT signing secret (SECRET_KEY) is read once from the environment
+// at process start (main.rs) and never changes for the process lifetime, so the
+// derived encoding/decoding keys and validation config are cached here instead of
+// being rebuilt on every login / every authenticated request.
+static JWT_SECRET_BYTES: Lazy<Vec<u8>> =
+    Lazy::new(|| env::var("SECRET_KEY").unwrap_or_default().into_bytes());
+static JWT_ENCODING_KEY: Lazy<EncodingKey> =
+    Lazy::new(|| EncodingKey::from_secret(&JWT_SECRET_BYTES));
+static JWT_DECODING_KEY: Lazy<DecodingKey> =
+    Lazy::new(|| DecodingKey::from_secret(&JWT_SECRET_BYTES));
+static JWT_VALIDATION: Lazy<Validation> = Lazy::new(|| {
+    let mut v = Validation::new(Algorithm::HS256);
+    v.validate_exp = true;
+    v.leeway = 30; // Allow 30 seconds clock skew
+    v
+});
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Claims {
     pub id: String,
@@ -72,7 +89,7 @@ pub fn validate_token(
 ) -> Result<Claims, HttpResponse> {
     // Fast path: check IP whitelist and public routes first
     if is_ip_whitelisted(req, &state.whitelist_ips) ||
-        state.route_publics.contains(&req.path().to_string()) {
+        state.route_publics.contains(req.path()) {
         return Ok(Claims::default());
     }
 
@@ -102,15 +119,10 @@ pub fn validate_token(
             .ok_or_else(|| HttpResponse::Unauthorized().json("Failed to extract converter token claims"));
     }
 
-    // Create validation config once
-    let mut validation = Validation::new(Algorithm::HS256);
-    validation.validate_exp = true;
-    validation.leeway = 30; // Allow 30 seconds clock skew
-
     match decode::<Claims>(
         auth_header.trim_start_matches("Bearer "),
-        &DecodingKey::from_secret(state.secret.as_ref()),
-        &validation,
+        &JWT_DECODING_KEY,
+        &JWT_VALIDATION,
     ) {
         Ok(token_data) => Ok(token_data.claims),
         Err(e) => {
@@ -348,11 +360,7 @@ pub async fn create_token(
         cs: addjwt,
     };
 
-    match encode(
-        &Header::default(),
-        &claims,
-        &EncodingKey::from_secret(state.secret.as_ref()),
-    ) {
+    match encode(&Header::default(), &claims, &JWT_ENCODING_KEY) {
         Ok(token) => token,
         Err(e) => {
             eprintln!("Failed to create JWT token: {}", e);
@@ -362,15 +370,11 @@ pub async fn create_token(
 }
 
 // Function untuk mengekstrak claims dari token
-fn extract_token_claims(token: &str, secret: &[u8]) -> Result<Claims, jsonwebtoken::errors::Error> {
+fn extract_token_claims(token: &str) -> Result<Claims, jsonwebtoken::errors::Error> {
     let token = token.trim_start_matches("Bearer ");
 
     // Decode token dan ekstrak claims
-    let token_data = decode::<Claims>(
-        token,
-        &DecodingKey::from_secret(secret),
-        &Validation::new(Algorithm::HS256),
-    )?;
+    let token_data = decode::<Claims>(token, &JWT_DECODING_KEY, &JWT_VALIDATION)?;
 
     Ok(token_data.claims)
 }
@@ -436,7 +440,7 @@ pub fn get_user_info_from_token(
                 return Err(false);
             }
         }
-        return match extract_token_claims(auth, state.secret.as_ref()) {
+        return match extract_token_claims(auth) {
             Ok(claims) => Ok(claims),
             Err(_) => Err(false),
         };
@@ -486,8 +490,9 @@ fn load_rules() -> &'static [Rule] {
     //   2) `[Rule, ...]`                              (legacy flat list)
     //   3) `Rule`                                     (legacy single rule)
     static RULES: Lazy<Vec<Rule>> = Lazy::new(|| {
-        let loc = std::env::var("LOC_CONFIG").unwrap_or_else(|_| "config".to_string());
-        let path = format!("{}/rules.json", loc);
+        // Reuse the single CONFIG_LOCATION source of truth (also backed by LOC_CONFIG)
+        // instead of re-reading the env var here, so both never risk diverging.
+        let path = format!("{}/rules.json", crate::config::CONFIG_LOCATION.as_str());
         let content = match std::fs::read_to_string(&path) {
             Ok(c) => c,
             Err(_) => return Vec::new(),

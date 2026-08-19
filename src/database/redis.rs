@@ -7,6 +7,12 @@ use std::sync::Arc;
 // Use connection pool instead of single ConnectionManager for better concurrency
 static REDIS_CLIENT: OnceCell<Arc<Client>> = OnceCell::new();
 
+// A `MultiplexedConnection` is designed to be cheaply cloned and shared across
+// concurrent callers (it multiplexes all requests over one underlying TCP
+// connection via an internal task), so we initialize it once and clone it on
+// every call instead of paying a fresh TCP connect + handshake per operation.
+static REDIS_CONN: tokio::sync::OnceCell<MultiplexedConnection> = tokio::sync::OnceCell::const_new();
+
 /// Sanitize a key component to allow only safe characters
 fn sanitize_key_component(s: &str) -> String {
     s.chars()
@@ -70,13 +76,19 @@ pub(crate) async fn get_manager() -> Result<Arc<Client>> {
     Ok(arc_client)
 }
 
-// Helper to get a fresh connection from pool (cheap to clone)
+// Returns a clone of the shared multiplexed connection, establishing it once
+// on first use. Cloning is cheap (shares the same underlying TCP connection).
 async fn get_connection() -> Result<MultiplexedConnection> {
-    let client = get_manager().await?;
-    client
-        .get_multiplexed_async_connection()
-        .await
-        .map_err(|e| anyhow!("Failed to get Redis connection: {}", e))
+    let conn = REDIS_CONN
+        .get_or_try_init(|| async {
+            let client = get_manager().await?;
+            client
+                .get_multiplexed_async_connection()
+                .await
+                .map_err(|e| anyhow!("Failed to get Redis connection: {}", e))
+        })
+        .await?;
+    Ok(conn.clone())
 }
 
 /// Set a string value by key with optional TTL seconds (None -> persist)
@@ -122,23 +134,39 @@ pub async fn redis_get_json<T: serde::de::DeserializeOwned>(key: &str) -> Result
     }
 }
 
-/// Delete all keys matching the given prefix (prefix*) using KEYS then DEL.
+/// Delete all keys matching the given prefix (prefix*) using SCAN + UNLINK.
+/// Unlike KEYS, SCAN walks the keyspace incrementally without blocking the
+/// Redis server for the duration of the scan on large datasets.
 /// Returns the number of keys deleted.
 pub async fn redis_delete_by_prefix(prefix: &str) -> Result<usize> {
     let pattern = format!("{}*", prefix);
     let mut conn = get_connection().await?;
-    let keys: Vec<String> = redis::cmd("KEYS")
-        .arg(&pattern)
-        .query_async(&mut conn)
-        .await
-        .map_err(|e| anyhow!("Redis KEYS failed: {}", e))?;
-    if keys.is_empty() {
-        return Ok(0);
+    let mut cursor: u64 = 0;
+    let mut total_deleted: usize = 0;
+    loop {
+        let (next_cursor, keys): (u64, Vec<String>) = redis::cmd("SCAN")
+            .arg(cursor)
+            .arg("MATCH")
+            .arg(&pattern)
+            .arg("COUNT")
+            .arg(500)
+            .query_async(&mut conn)
+            .await
+            .map_err(|e| anyhow!("Redis SCAN failed: {}", e))?;
+
+        if !keys.is_empty() {
+            let deleted: i64 = redis::cmd("UNLINK")
+                .arg(&keys)
+                .query_async(&mut conn)
+                .await
+                .map_err(|e| anyhow!("Redis UNLINK failed: {}", e))?;
+            total_deleted += deleted.max(0) as usize;
+        }
+
+        cursor = next_cursor;
+        if cursor == 0 {
+            break;
+        }
     }
-    let deleted: i64 = redis::cmd("DEL")
-        .arg(keys)
-        .query_async(&mut conn)
-        .await
-        .map_err(|e| anyhow!("Redis DEL failed: {}", e))?;
-    Ok(deleted.max(0) as usize)
+    Ok(total_deleted)
 }

@@ -1,6 +1,7 @@
 use once_cell::sync::Lazy;
 use regex::Regex;
 use serde_json::Value;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use crate::{auth::ClaimsConverter, log::log_output};
@@ -14,11 +15,15 @@ pub struct AppState {
     pub db: Arc<dyn DbRepository>,
     pub require_auth: bool,
     pub db_type: crate::model::DbType,
+    // Kept for API compatibility; JWT signing/verification now uses the cached
+    // JWT_ENCODING_KEY / JWT_DECODING_KEY statics in auth.rs (built once from the
+    // same SECRET_KEY env var) instead of rebuilding keys from this field per call.
+    #[allow(dead_code)]
     pub secret: String,
     pub encrypt_key: String,
     pub query_converter: QueryConverter,
     pub whitelist_ips: Vec<String>,
-    pub route_publics: Vec<String>,
+    pub route_publics: HashSet<String>,
     pub converter_token: ClaimsConverter,
     /// Backend-agnostic data store adapter (initially SQL-backed). Use this for new code paths.
     pub store: Arc<dyn crate::storage::traits::DataStore>,

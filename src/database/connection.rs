@@ -37,10 +37,13 @@ impl PoolSettings {
             .and_then(|s| s.parse().ok())
             .unwrap_or(((cpu as u32) * 8).clamp(32, 256));  // Increased min from 16 to 32 for high concurrency
 
+        // Default kept low so a saturated pool fails fast (30s) instead of piling
+        // up requests for minutes and cascading into worker starvation. Override
+        // via CONNECT_TIMEOUT for deployments with known slow DB connect times.
         let acquire_timeout_secs = env::var("CONNECT_TIMEOUT")
             .ok()
             .and_then(|s| s.parse().ok())
-            .unwrap_or(300);
+            .unwrap_or(30);
 
         // Min pool: pre-warm connections to avoid cold starts
         // 50% of max_pool, but at least 8 connections for safety

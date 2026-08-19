@@ -45,7 +45,7 @@ pub async fn process_insert_request(
     // 1. Auth Check (Early)
     let mut actor_id_opt: Option<String> = None;
 
-    if state.require_auth && !state.route_publics.contains(&route.to_string()) {
+    if state.require_auth && !state.route_publics.contains(route) {
         let claims =
             get_user_info_from_token(req, state.clone()).map_err(|_| err("Invalid token"))?;
         check_access(&claims, req).map_err(|e| err(format!("Unauthorized: {}", e)))?;
