@@ -27,30 +27,23 @@ impl RateLimiter {
     /// Returns true if allowed, false if rate-limited.
     pub fn check_and_increment(&self, key: &str, limit: u32) -> bool {
         let now = Instant::now();
-        
-        // Phase 1: Quick check if cleanup is needed (minimize lock time)
-        let needs_cleanup = {
-            let map = self.inner.lock();
-            !map.contains_key(key) && map.len() >= self.max_keys
-        };
-        
-        // Phase 2: Find key to remove if needed (outside main lock)
-        let old_key = if needs_cleanup {
-            let map = self.inner.lock();
-            map.iter()
-                .min_by_key(|(_, e)| e.window_start)
-                .map(|(k, _)| k.clone())
-        } else {
-            None
-        };
-        
-        // Phase 3: Update with minimal lock time
         let mut map = self.inner.lock();
-        
-        if let Some(k) = old_key {
-            map.remove(&k);
+
+        // Evict expired entries when capacity is getting high
+        if map.len() >= self.max_keys && !map.contains_key(key) {
+            let window = self.window;
+            map.retain(|_, e| now.duration_since(e.window_start) < window);
+            // If still at capacity after evicting expired entries, drop oldest key
+            if map.len() >= self.max_keys
+                && let Some(old_key) = map
+                    .iter()
+                    .min_by_key(|(_, e)| e.window_start)
+                    .map(|(k, _)| k.clone())
+            {
+                map.remove(&old_key);
+            }
         }
-        
+
         let entry = map.entry(key.to_string()).or_insert(Entry {
             count: 0,
             window_start: now,

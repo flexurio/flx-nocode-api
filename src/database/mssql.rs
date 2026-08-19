@@ -141,36 +141,48 @@ pub struct MssqlRepo {
     pub client: Arc<tokio::sync::Mutex<TiberiusClient>>,
 }
 
-// Minimal conversion from MSSQL Row to serde_json::Value
-fn mssql_row_to_json(row: &Row) -> Value {
-    let mut obj = Map::new();
-    for col in row.columns() {
-        let name = col.name();
-        // Try common types by downcasting; fallback to string
-        // Order matters: MSSQL INT is 32-bit; BIGINT is 64-bit.
-        let val = if let Ok(v) = row.try_get::<i32, _>(name) {
-            v.map(|n| Value::Number(n.into())).unwrap_or(Value::Null)
-        } else if let Ok(v) = row.try_get::<i64, _>(name) {
-            v.map(|n| Value::Number(n.into())).unwrap_or(Value::Null)
-        } else if let Ok(v) = row.try_get::<f64, _>(name) {
-            v.and_then(serde_json::Number::from_f64)
-                .map(Value::Number)
-                .unwrap_or(Value::Null)
-        } else if let Ok(v) = row.try_get::<bool, _>(name) {
-            v.map(Value::Bool).unwrap_or(Value::Null)
-        } else if let Ok(v) = row.try_get::<chrono::NaiveDateTime, _>(name) {
-            v.map(|dt| Value::String(dt.format("%Y-%m-%dT%H:%M:%SZ").to_string())).unwrap_or(Value::Null)
-        } else if let Ok(v) = row.try_get::<&str, _>(name) {
-            v.map(|s| Value::String(s.to_string())).unwrap_or(Value::Null)
-        } else if let Ok(v) = row.try_get::<&[u8], _>(name) {
-            v.map(|b| Value::String(base64::engine::general_purpose::STANDARD.encode(b)))
-                .unwrap_or(Value::Null)
-        } else {
-            Value::Null
-        };
-        obj.insert(name.to_string(), val);
+pub fn mssql_rows_to_json(rows: &[Row]) -> Vec<Value> {
+    if rows.is_empty() {
+        return Vec::new();
     }
-    Value::Object(obj)
+    let col_names: Vec<String> = rows[0]
+        .columns()
+        .iter()
+        .map(|c| c.name().to_string())
+        .collect();
+
+    let mut json_array = Vec::with_capacity(rows.len());
+
+    for row in rows {
+        let mut obj = Map::with_capacity(col_names.len());
+        for (idx, name) in col_names.iter().enumerate() {
+            let val = if let Ok(v) = row.try_get::<i32, _>(idx) {
+                v.map(|n| Value::Number(n.into())).unwrap_or(Value::Null)
+            } else if let Ok(v) = row.try_get::<i64, _>(idx) {
+                v.map(|n| Value::Number(n.into())).unwrap_or(Value::Null)
+            } else if let Ok(v) = row.try_get::<f64, _>(idx) {
+                v.and_then(serde_json::Number::from_f64)
+                    .map(Value::Number)
+                    .unwrap_or(Value::Null)
+            } else if let Ok(v) = row.try_get::<bool, _>(idx) {
+                v.map(Value::Bool).unwrap_or(Value::Null)
+            } else if let Ok(v) = row.try_get::<chrono::NaiveDateTime, _>(idx) {
+                v.map(|dt| Value::String(dt.format("%Y-%m-%dT%H:%M:%SZ").to_string()))
+                    .unwrap_or(Value::Null)
+            } else if let Ok(v) = row.try_get::<&str, _>(idx) {
+                v.map(|s| Value::String(s.to_string())).unwrap_or(Value::Null)
+            } else if let Ok(v) = row.try_get::<&[u8], _>(idx) {
+                v.map(|b| Value::String(base64::engine::general_purpose::STANDARD.encode(b)))
+                    .unwrap_or(Value::Null)
+            } else {
+                Value::Null
+            };
+            obj.insert(name.clone(), val);
+        }
+        json_array.push(Value::Object(obj));
+    }
+    json_array.shrink_to_fit();
+    json_array
 }
 
 // ================================
@@ -181,39 +193,65 @@ fn mssql_row_to_json(row: &Row) -> Value {
 #[async_trait::async_trait]
 impl DbRepository for MssqlRepo {
     async fn query(&self, sql: &str) -> Result<Vec<Value>, anyhow::Error> {
-        let mut conn = self.pool.get().await.map_err(|e| anyhow::anyhow!("Pool error: {:?}", e))?;
+        let mut conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| anyhow::anyhow!("Pool error: {:?}", e))?;
         let norm = normalize_mssql_booleans(sql);
         let stream = conn.simple_query(&norm).await?;
         let rows: Vec<Row> = stream.into_first_result().await?;
-        Ok(rows.iter().map(mssql_row_to_json).collect())
+        Ok(mssql_rows_to_json(&rows))
     }
 
-    async fn query_with_params(&self, sql: &str, params: Vec<DbParam>) -> Result<Vec<Value>, anyhow::Error> {
-        let mut conn = self.pool.get().await.map_err(|e| anyhow::anyhow!("Pool error: {:?}", e))?;
+    async fn query_with_params(
+        &self,
+        sql: &str,
+        params: Vec<DbParam>,
+    ) -> Result<Vec<Value>, anyhow::Error> {
+        let mut conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| anyhow::anyhow!("Pool error: {:?}", e))?;
         let converted = rehydrate_placeholders(sql, "mssql");
         let norm = normalize_mssql_booleans(&converted);
         let mut q = Query::new(norm);
         for p in params {
             match p {
-                DbParam::I64(v) => { q.bind(v); },
-                DbParam::F64(v) => { q.bind(v); },
-                DbParam::Str(v) => { q.bind(v); },
-                DbParam::Bool(v) => { q.bind(v); },
-                DbParam::Null => { q.bind(Option::<i32>::None); },
+                DbParam::I64(v) => {
+                    q.bind(v);
+                }
+                DbParam::F64(v) => {
+                    q.bind(v);
+                }
+                DbParam::Str(v) => {
+                    q.bind(v);
+                }
+                DbParam::Bool(v) => {
+                    q.bind(v);
+                }
+                DbParam::Null => {
+                    q.bind(Option::<i32>::None);
+                }
             }
         }
         let stream = q.query(&mut *conn).await?;
         let rows: Vec<Row> = stream.into_first_result().await?;
-        Ok(rows.into_iter().map(|r| mssql_row_to_json(&r)).collect())
+        Ok(mssql_rows_to_json(&rows))
     }
 
     async fn begin_transaction(&self) -> Result<Box<dyn DbTransaction>, anyhow::Error> {
         // Start transaction on a pooled connection
-        let mut conn = self.pool.get().await.map_err(|e| anyhow::anyhow!("Pool error: {:?}", e))?;
+        let mut conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| anyhow::anyhow!("Pool error: {:?}", e))?;
         conn.simple_query("BEGIN TRAN").await?;
-        Ok(Box::new(MssqlTransaction { 
-            pool: self.pool.clone(), 
-            in_transaction: true 
+        Ok(Box::new(MssqlTransaction {
+            pool: self.pool.clone(),
+            in_transaction: true,
         }))
     }
 }
@@ -230,26 +268,40 @@ impl DbRepository for MssqlRepo {
         let norm = normalize_mssql_booleans(sql);
         let stream = client.simple_query(&norm).await?;
         let rows: Vec<Row> = stream.into_first_result().await?;
-        Ok(rows.iter().map(mssql_row_to_json).collect())
+        Ok(mssql_rows_to_json(&rows))
     }
 
-    async fn query_with_params(&self, sql: &str, params: Vec<DbParam>) -> Result<Vec<Value>, anyhow::Error> {
+    async fn query_with_params(
+        &self,
+        sql: &str,
+        params: Vec<DbParam>,
+    ) -> Result<Vec<Value>, anyhow::Error> {
         let mut client = self.client.lock().await;
         let converted = rehydrate_placeholders(sql, "mssql");
         let norm = normalize_mssql_booleans(&converted);
         let mut q = Query::new(norm);
         for p in params {
             match p {
-                DbParam::I64(v) => { q.bind(v); },
-                DbParam::F64(v) => { q.bind(v); },
-                DbParam::Str(v) => { q.bind(v); },
-                DbParam::Bool(v) => { q.bind(v); },
-                DbParam::Null => { q.bind(Option::<i32>::None); },
+                DbParam::I64(v) => {
+                    q.bind(v);
+                }
+                DbParam::F64(v) => {
+                    q.bind(v);
+                }
+                DbParam::Str(v) => {
+                    q.bind(v);
+                }
+                DbParam::Bool(v) => {
+                    q.bind(v);
+                }
+                DbParam::Null => {
+                    q.bind(Option::<i32>::None);
+                }
             }
         }
         let stream = q.query(&mut *client).await?;
         let rows: Vec<Row> = stream.into_first_result().await?;
-        Ok(rows.into_iter().map(|r| mssql_row_to_json(&r)).collect())
+        Ok(mssql_rows_to_json(&rows))
     }
 
     async fn begin_transaction(&self) -> Result<Box<dyn DbTransaction>, anyhow::Error> {
@@ -259,7 +311,7 @@ impl DbRepository for MssqlRepo {
             client.simple_query("BEGIN TRAN").await?;
         }
         // Clone the shared client handle into the transaction to satisfy 'static lifetime
-        Ok(Box::new(MssqlTransaction { 
+        Ok(Box::new(MssqlTransaction {
             #[cfg(not(feature = "bb8"))]
             client: self.client.clone(),
             #[cfg(feature = "bb8")]
@@ -287,31 +339,53 @@ pub struct MssqlTransaction {
 #[cfg(feature = "bb8")]
 #[async_trait::async_trait]
 impl DbTransaction for MssqlTransaction {
-    async fn query_with_params(&mut self, sql: &str, params: Vec<DbParam>) -> Result<Vec<Value>, anyhow::Error> {
+    async fn query_with_params(
+        &mut self,
+        sql: &str,
+        params: Vec<DbParam>,
+    ) -> Result<Vec<Value>, anyhow::Error> {
         if !self.in_transaction {
             return Err(anyhow::anyhow!("Transaction already committed/rolled back"));
         }
-        let mut conn = self.pool.get().await.map_err(|e| anyhow::anyhow!("Pool error: {:?}", e))?;
+        let mut conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| anyhow::anyhow!("Pool error: {:?}", e))?;
         let converted = rehydrate_placeholders(sql, "mssql");
         let norm = normalize_mssql_booleans(&converted);
         let mut q = Query::new(norm);
         for p in params {
             match p {
-                DbParam::I64(v) => { q.bind(v); },
-                DbParam::F64(v) => { q.bind(v); },
-                DbParam::Str(v) => { q.bind(v); },
-                DbParam::Bool(v) => { q.bind(v); },
-                DbParam::Null => { q.bind(Option::<i32>::None); },
+                DbParam::I64(v) => {
+                    q.bind(v);
+                }
+                DbParam::F64(v) => {
+                    q.bind(v);
+                }
+                DbParam::Str(v) => {
+                    q.bind(v);
+                }
+                DbParam::Bool(v) => {
+                    q.bind(v);
+                }
+                DbParam::Null => {
+                    q.bind(Option::<i32>::None);
+                }
             }
         }
         let stream = q.query(&mut *conn).await?;
         let rows: Vec<Row> = stream.into_first_result().await?;
-        Ok(rows.into_iter().map(|r| mssql_row_to_json(&r)).collect())
+        Ok(mssql_rows_to_json(&rows))
     }
 
     async fn commit(mut self: Box<Self>) -> Result<(), anyhow::Error> {
         if self.in_transaction {
-            let mut conn = self.pool.get().await.map_err(|e| anyhow::anyhow!("Pool error: {:?}", e))?;
+            let mut conn = self
+                .pool
+                .get()
+                .await
+                .map_err(|e| anyhow::anyhow!("Pool error: {:?}", e))?;
             conn.simple_query("COMMIT TRAN").await?;
             self.in_transaction = false;
         }
@@ -320,7 +394,11 @@ impl DbTransaction for MssqlTransaction {
 
     async fn rollback(mut self: Box<Self>) -> Result<(), anyhow::Error> {
         if self.in_transaction {
-            let mut conn = self.pool.get().await.map_err(|e| anyhow::anyhow!("Pool error: {:?}", e))?;
+            let mut conn = self
+                .pool
+                .get()
+                .await
+                .map_err(|e| anyhow::anyhow!("Pool error: {:?}", e))?;
             conn.simple_query("ROLLBACK TRAN").await?;
             self.in_transaction = false;
         }
@@ -332,23 +410,37 @@ impl DbTransaction for MssqlTransaction {
 #[cfg(not(feature = "bb8"))]
 #[async_trait::async_trait]
 impl DbTransaction for MssqlTransaction {
-    async fn query_with_params(&mut self, sql: &str, params: Vec<DbParam>) -> Result<Vec<Value>, anyhow::Error> {
+    async fn query_with_params(
+        &mut self,
+        sql: &str,
+        params: Vec<DbParam>,
+    ) -> Result<Vec<Value>, anyhow::Error> {
         let mut client = self.client.lock().await;
         let converted = rehydrate_placeholders(sql, "mssql");
         let norm = normalize_mssql_booleans(&converted);
         let mut q = Query::new(norm);
         for p in params {
             match p {
-                DbParam::I64(v) => { q.bind(v); },
-                DbParam::F64(v) => { q.bind(v); },
-                DbParam::Str(v) => { q.bind(v); },
-                DbParam::Bool(v) => { q.bind(v); },
-                DbParam::Null => { q.bind(Option::<i32>::None); },
+                DbParam::I64(v) => {
+                    q.bind(v);
+                }
+                DbParam::F64(v) => {
+                    q.bind(v);
+                }
+                DbParam::Str(v) => {
+                    q.bind(v);
+                }
+                DbParam::Bool(v) => {
+                    q.bind(v);
+                }
+                DbParam::Null => {
+                    q.bind(Option::<i32>::None);
+                }
             }
         }
         let stream = q.query(&mut *client).await?;
         let rows: Vec<Row> = stream.into_first_result().await?;
-        Ok(rows.into_iter().map(|r| mssql_row_to_json(&r)).collect())
+        Ok(mssql_rows_to_json(&rows))
     }
 
     async fn commit(self: Box<Self>) -> Result<(), anyhow::Error> {

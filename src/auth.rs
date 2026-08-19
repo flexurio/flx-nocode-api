@@ -69,15 +69,15 @@ impl Default for ClaimsConverter {
 pub fn validate_token(
     req: &actix_web::HttpRequest,
     state: &web::Data<AppState>,
-) -> Result<(), HttpResponse> {
+) -> Result<Claims, HttpResponse> {
     // Fast path: check IP whitelist and public routes first
     if is_ip_whitelisted(req, &state.whitelist_ips) ||
         state.route_publics.contains(&req.path().to_string()) {
-        return Ok(());
+        return Ok(Claims::default());
     }
 
     if !state.require_auth {
-        return Ok(());
+        return Ok(Claims::default());
     }
 
     // Extract Authorization header once
@@ -97,7 +97,9 @@ pub fn validate_token(
     // mandatory: if no key is configured the request is rejected (fail closed),
     // unless the operator explicitly opts out via CONVERTER_JWT_INSECURE_SKIP_VERIFY.
     if state.converter_token != ClaimsConverter::default() {
-        return validate_converter_token(auth_header, &state.converter_token.exp);
+        validate_converter_token(auth_header, &state.converter_token.exp)?;
+        return extract_token_claims_no_validation(auth_header, (*state).clone())
+            .ok_or_else(|| HttpResponse::Unauthorized().json("Failed to extract converter token claims"));
     }
 
     // Create validation config once
@@ -110,7 +112,7 @@ pub fn validate_token(
         &DecodingKey::from_secret(state.secret.as_ref()),
         &validation,
     ) {
-        Ok(_) => Ok(()),
+        Ok(token_data) => Ok(token_data.claims),
         Err(e) => {
             eprintln!("Token validation failed: {}", e);
             Err(HttpResponse::Unauthorized().json("Invalid or expired token"))
@@ -408,6 +410,12 @@ pub fn get_user_info_from_token(
     req: &actix_web::HttpRequest,
     state: web::Data<AppState>,
 ) -> Result<Claims, bool> {
+    // 1. Fast path: check if claims were already validated & inserted into request extensions by AuthMiddleware
+    use actix_web::HttpMessage;
+    if let Some(claims) = req.extensions().get::<Claims>() {
+        return Ok(claims.clone());
+    }
+
     if is_ip_whitelisted(req, &state.whitelist_ips) {
         println!("IP is whitelisted, returning default claims.");
         // Anda bisa sesuaikan isi Claims berikut sesuai kebutuhan

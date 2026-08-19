@@ -12,68 +12,95 @@ pub struct SqliteRepo {
     pub pool: SqlitePool,
 }
 
+#[derive(Clone, Copy, Debug)]
+enum SqliteColType {
+    Int,
+    RealFloatDouble,
+    TextLike,
+    Blob,
+    DateTime,
+    Fallback,
+}
+
+struct SqliteColMeta {
+    name: String,
+    col_type: SqliteColType,
+}
+
+fn determine_sqlite_col_type(column: &sqlx::sqlite::SqliteColumn) -> SqliteColType {
+    let type_info_debug = format!("{:?}", column.type_info()).to_uppercase();
+
+    if type_info_debug.contains("INT") {
+        SqliteColType::Int
+    } else if type_info_debug.contains("REAL")
+        || type_info_debug.contains("FLOAT")
+        || type_info_debug.contains("DOUBLE")
+    {
+        SqliteColType::RealFloatDouble
+    } else if type_info_debug.contains("TEXT") || type_info_debug.contains("CHAR") {
+        SqliteColType::TextLike
+    } else if type_info_debug.contains("BLOB") {
+        SqliteColType::Blob
+    } else if type_info_debug.contains("DATE") || type_info_debug.contains("TIME") {
+        SqliteColType::DateTime
+    } else {
+        SqliteColType::Fallback
+    }
+}
+
 pub fn sqliterows_to_json(rows: Vec<SqliteRow>) -> Vec<Value> {
-    // Pre-allocate with exact capacity
-    let mut json_array = Vec::with_capacity(rows.len());
-    
     if rows.is_empty() {
-        return json_array;
+        return Vec::new();
     }
 
+    // Inspect column schema ONCE from the first row
+    let meta_list: Vec<SqliteColMeta> = rows[0]
+        .columns()
+        .iter()
+        .map(|col| SqliteColMeta {
+            name: col.name().to_string(),
+            col_type: determine_sqlite_col_type(col),
+        })
+        .collect();
+
+    let mut json_array = Vec::with_capacity(rows.len());
+
     for row in rows {
-        let columns_count = row.columns().len();
-        let mut obj = Map::with_capacity(columns_count);
+        let mut obj = Map::with_capacity(meta_list.len());
 
-        for column in row.columns() {
-            let name = column.name();
-            let type_info_debug = format!("{:?}", column.type_info()).to_uppercase();
-
-            let value = if type_info_debug.contains("INT") {
-                match row.try_get::<Option<i64>, _>(name) {
+        for (idx, meta) in meta_list.iter().enumerate() {
+            let value = match meta.col_type {
+                SqliteColType::Int => match row.try_get::<Option<i64>, _>(idx) {
                     Ok(Some(v)) => Value::Number(v.into()),
-                    Ok(None) => Value::Null,
-                    Err(_) => Value::Null,
-                }
-            } else if type_info_debug.contains("REAL")
-                || type_info_debug.contains("FLOAT")
-                || type_info_debug.contains("DOUBLE")
-            {
-                match row.try_get::<Option<f64>, _>(name) {
+                    _ => Value::Null,
+                },
+                SqliteColType::RealFloatDouble => match row.try_get::<Option<f64>, _>(idx) {
                     Ok(Some(v)) => serde_json::Number::from_f64(v)
                         .map(Value::Number)
                         .unwrap_or(Value::Null),
-                    Ok(None) => Value::Null,
-                    Err(_) => Value::Null,
-                }
-            } else if type_info_debug.contains("TEXT") || type_info_debug.contains("CHAR") {
-                match row.try_get::<Option<String>, _>(name) {
+                    _ => Value::Null,
+                },
+                SqliteColType::TextLike => match row.try_get::<Option<String>, _>(idx) {
                     Ok(Some(v)) => Value::String(v),
-                    Ok(None) => Value::Null,
-                    Err(_) => Value::Null,
-                }
-            } else if type_info_debug.contains("BLOB") {
-                match row.try_get::<Option<Vec<u8>>, _>(name) {
+                    _ => Value::Null,
+                },
+                SqliteColType::Blob => match row.try_get::<Option<Vec<u8>>, _>(idx) {
                     Ok(Some(v)) => {
                         Value::String(base64::engine::general_purpose::STANDARD.encode(v))
                     }
-                    Ok(None) => Value::Null,
-                    Err(_) => Value::Null,
-                }
-            } else if type_info_debug.contains("DATE") || type_info_debug.contains("TIME") {
-                match row.try_get::<Option<String>, _>(name) {
+                    _ => Value::Null,
+                },
+                SqliteColType::DateTime => match row.try_get::<Option<String>, _>(idx) {
                     Ok(Some(v)) => Value::String(v),
                     _ => Value::Null,
-                }
-            } else {
-                // fallback
-                match row.try_get::<Option<String>, _>(name) {
+                },
+                SqliteColType::Fallback => match row.try_get::<Option<String>, _>(idx) {
                     Ok(Some(v)) => Value::String(v),
-                    Ok(None) => Value::Null,
-                    Err(_) => Value::Null,
-                }
+                    _ => Value::Null,
+                },
             };
 
-            obj.insert(name.to_string(), value);
+            obj.insert(meta.name.clone(), value);
         }
 
         json_array.push(Value::Object(obj));

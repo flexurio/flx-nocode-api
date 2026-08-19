@@ -155,7 +155,9 @@ where
         if let Some(app_state) = req.app_data::<web::Data<AppState>>() {
             #[allow(clippy::needless_borrow)]
             match validate_token(req.request(), &app_state) {
-                Ok(_) => {
+                Ok(claims) => {
+                    use actix_web::HttpMessage;
+                    req.extensions_mut().insert(claims);
                     let fut = self.service.call(req);
                     Box::pin(fut)
                 }
