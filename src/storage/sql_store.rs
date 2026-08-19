@@ -31,6 +31,24 @@ pub struct UniqueCheck {
     pub columns: Vec<(String, DbParam)>,
 }
 
+/// Truncate identifier to `max_len` (e.g. 63 for PostgreSQL and MySQL limits).
+/// If `name` exceeds `max_len`, it appends a deterministic 8-char hash suffix from the full name.
+pub fn shorten_identifier(name: &str, max_len: usize) -> String {
+    if name.len() <= max_len {
+        return name.to_string();
+    }
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    name.hash(&mut hasher);
+    let hash_str = format!("{:08x}", hasher.finish() as u32);
+
+    let keep_len = max_len.saturating_sub(9); // 1 for '_' + 8 for hex
+    let boundary = name.floor_char_boundary(keep_len);
+    let prefix = &name[..boundary];
+    format!("{}_{}", prefix, hash_str)
+}
+
 impl SqlStore {
     pub fn new(inner: Arc<dyn DbRepository>, db_type: String) -> Self {
         Self { inner, db_type }
@@ -116,27 +134,33 @@ impl SqlStore {
         // Table constraints
         let mut indexes_to_emit: Vec<(Option<String>, Vec<String>, bool)> = vec![];
         // For MSSQL, emit FKs as separate ALTER TABLE statements guarded by existence checks
-    #[allow(clippy::type_complexity)]
-    let mut fks_to_emit_mssql: Vec<(Option<String>, Vec<String>, String, Vec<String>, Option<crate::storage::ddl::ForeignAction>, Option<crate::storage::ddl::ForeignAction>)> = vec![];
+        #[allow(clippy::type_complexity)]
+        let mut fks_to_emit_mssql: Vec<(Option<String>, Vec<String>, String, Vec<String>, Option<crate::storage::ddl::ForeignAction>, Option<crate::storage::ddl::ForeignAction>)> = vec![];
         for cons in &ct.constraints {
             match cons {
                 TableConstraint::PrimaryKey { columns } => {
                     col_lines.push(format!("PRIMARY KEY ({})", columns.join(", ")));
                 }
                 TableConstraint::Unique { name, columns } => {
-                    if let Some(nm) = name { col_lines.push(format!("CONSTRAINT {} UNIQUE ({})", nm, columns.join(", "))); }
-                    else { col_lines.push(format!("UNIQUE ({})", columns.join(", "))); }
+                    if let Some(nm) = name {
+                        let safe_nm = shorten_identifier(nm, 63);
+                        col_lines.push(format!("CONSTRAINT {} UNIQUE ({})", safe_nm, columns.join(", ")));
+                    } else {
+                        col_lines.push(format!("UNIQUE ({})", columns.join(", ")));
+                    }
                 }
                 TableConstraint::Index { name, columns, unique } => {
                     // Emit as separate CREATE INDEX after CREATE TABLE for portability
                     indexes_to_emit.push((name.clone(), columns.clone(), *unique));
                 }
                 TableConstraint::ForeignKey { name, columns, ref_table, ref_columns, on_delete, on_update } => {
+                    let raw_name = name.clone().unwrap_or_else(|| format!("fk_{}_{}_{}", ct.name, columns.join("_"), ref_table));
+                    let safe_name = shorten_identifier(&raw_name, 63);
                     if self.db_type == "mssql" {
-                        fks_to_emit_mssql.push((name.clone(), columns.clone(), ref_table.clone(), ref_columns.clone(), on_delete.clone(), on_update.clone()));
+                        fks_to_emit_mssql.push((Some(safe_name), columns.clone(), ref_table.clone(), ref_columns.clone(), on_delete.clone(), on_update.clone()));
                     } else {
                         let mut fk = String::new();
-                        if let Some(nm) = name { fk.push_str(&format!("CONSTRAINT {} ", nm)); }
+                        fk.push_str(&format!("CONSTRAINT {} ", safe_name));
                         fk.push_str(&format!(
                             "FOREIGN KEY ({}) REFERENCES {}({})",
                             columns.join(", "),
@@ -193,7 +217,8 @@ impl SqlStore {
         let mut index_sqls: Vec<String> = vec![];
         if self.db_type == "mssql" {
             for (name_opt, cols, ref_tbl, ref_cols, on_del, on_upd) in fks_to_emit_mssql.into_iter() {
-                let fk_name = name_opt.unwrap_or_else(|| format!("fk_{}_{}_{}", ct.name, cols.join("_"), ref_tbl));
+                let raw_name = name_opt.unwrap_or_else(|| format!("fk_{}_{}_{}", ct.name, cols.join("_"), ref_tbl));
+                let fk_name = shorten_identifier(&raw_name, 63);
                 let mut stmt = format!(
                     "IF OBJECT_ID(N'{}', N'U') IS NOT NULL AND OBJECT_ID(N'{}', N'U') IS NOT NULL\nBEGIN\n    ALTER TABLE {} ADD CONSTRAINT {} FOREIGN KEY ({}) REFERENCES {}({})",
                     ct.name, ref_tbl, ct.name, fk_name, cols.join(", "), ref_tbl, ref_cols.join(", ")
@@ -205,7 +230,8 @@ impl SqlStore {
             }
         }
         for (name_opt, cols, unique) in indexes_to_emit.into_iter() {
-            let ix_name = name_opt.unwrap_or_else(|| format!("idx_{}_{}", ct.name, cols.join("_")));
+            let raw_name = name_opt.unwrap_or_else(|| format!("idx_{}_{}", ct.name, cols.join("_")));
+            let ix_name = shorten_identifier(&raw_name, 63);
             let uniq = if unique { "UNIQUE " } else { "" };
             let stmt = match self.db_type.as_str() {
                 "postgres" | "sqlite" => format!(
@@ -1279,4 +1305,33 @@ mod tests {
         let sql = rows.first().unwrap().get("sql").and_then(|v| v.as_str()).unwrap();
         assert!(sql.contains("WHERE (deleted_at IS NULL)"), "got: {}", sql);
     }
+
+    #[test]
+    fn test_shorten_identifier() {
+        use super::shorten_identifier;
+
+        // Short identifier remains unchanged
+        let short = "fk_orders_customer_id_customers";
+        assert_eq!(shorten_identifier(short, 63), short);
+
+        // Exactly 63 chars remains unchanged
+        let exact_63 = "a".repeat(63);
+        assert_eq!(shorten_identifier(&exact_63, 63), exact_63);
+
+        // Long identifier (> 63) is truncated and appended with 8-char hex hash
+        let long = "fk_transaction_inventory_stock_in_supplier_id_master_inventory_supplier";
+        let shortened = shorten_identifier(long, 63);
+        assert!(shortened.len() <= 63);
+        assert_eq!(shortened.len(), 63);
+        assert!(shortened.starts_with("fk_transaction_inventory_stock_in_supplier_id_master_i_"));
+
+        // Deterministic: same input gives same output
+        assert_eq!(shorten_identifier(long, 63), shortened);
+
+        // Different long inputs give different hashes
+        let long2 = "fk_transaction_inventory_stock_in_supplier_id_master_inventory_supplies";
+        let shortened2 = shorten_identifier(long2, 63);
+        assert_ne!(shortened, shortened2);
+    }
 }
+

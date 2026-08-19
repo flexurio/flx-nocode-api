@@ -470,7 +470,8 @@ pub fn generate_table(ds: &SqlStore, data: &TableSchema) -> (String, Vec<String>
         if ix.columns.is_empty() { continue; }
         // Skip pure PK duplicate index (single col equal pk first col)
         if pk_single && ix.columns.len() == 1 && ix.columns[0] == pk_cols[0] { continue; }
-        let name = if ix.name.contains(&data.table) { Some(ix.name.clone()) } else { Some(format!("{}_{}", data.table, ix.name)) };
+        let raw_name = if ix.name.contains(&data.table) { ix.name.clone() } else { format!("{}_{}", data.table, ix.name) };
+        let name = Some(crate::storage::sql_store::shorten_identifier(&raw_name, 63));
         constraints.push(TableConstraint::Index { name, columns: ix.columns.clone(), unique: ix.unique });
     }
 
@@ -478,8 +479,10 @@ pub fn generate_table(ds: &SqlStore, data: &TableSchema) -> (String, Vec<String>
     for fk in &data.foreign_keys {
         let on_del = map_action(&fk.on_delete);
         let on_upd = map_action(&fk.on_update);
+        let raw_fk_name = format!("fk_{}_{}_{}", data.table, fk.column, fk.reference_table);
+        let fk_name = crate::storage::sql_store::shorten_identifier(&raw_fk_name, 63);
         constraints.push(TableConstraint::ForeignKey {
-            name: Some(format!("fk_{}_{}_{}", data.table, fk.column, fk.reference_table)),
+            name: Some(fk_name),
             columns: vec![fk.column.clone()],
             ref_table: fk.reference_table.clone(),
             ref_columns: vec![fk.reference_column.clone()],
