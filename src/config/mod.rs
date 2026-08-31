@@ -23,6 +23,14 @@ pub static CONFIG_LOCATION: Lazy<String> = Lazy::new(|| {
     })
 });
 
+// ── Seed directory location ───────────────────────────────────────────────────
+
+/// Seed directory path, read once from `LOC_SEED` env-var (defaults to "seed" if empty or unset).
+pub static SEED_LOCATION: Lazy<String> = Lazy::new(|| match env::var("LOC_SEED") {
+    Ok(val) if !val.trim().is_empty() => val.trim().to_string(),
+    _ => "seed".to_string(),
+});
+
 // ── routes.json ──────────────────────────────────────────────────────────────
 
 /// Parsed `routes.json`, loaded exactly once at startup.
