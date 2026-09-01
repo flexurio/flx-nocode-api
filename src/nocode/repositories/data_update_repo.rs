@@ -220,6 +220,7 @@ pub async fn perform_update(
     patch_fields: serde_json::Map<String, Value>,
     fk_checks: Vec<(String, String, String, String, String)>,
     password_override: Option<String>,
+    mut prepared_details: Vec<crate::nocode::repositories::data_create_repo::PreparedDetailBatch>,
     body: &Value,
     auth_token: Option<String>,
 ) -> Result<(String, i32, Value), String> {
@@ -358,12 +359,67 @@ pub async fn perform_update(
         }
         
         // Convert Map to json Value for DB update
-        let doc_json = Value::Object(patch_fields); 
+        let doc_json = Value::Object(patch_fields.clone()); 
         
-        match tx.update(&table_schema.table, Some(filter), doc_json.clone()).await {
+        match tx.update(&table_schema.table, Some(filter), doc_json).await {
              Ok(_) => {
+                 let mut final_patch = patch_fields;
+
+                 // Sync Details inside transaction
+                 let ds = SqlStore::new(state.db.clone(), state.db_type.as_str().to_string());
+                 for batch in &mut prepared_details {
+                     if !batch.target_table.is_empty() && !batch.foreign_key_column.is_empty() {
+                         // 1. Delete existing details for this parent
+                         let delete_sql = format!(
+                             "DELETE FROM {} WHERE {} = ?",
+                             batch.target_table, batch.foreign_key_column
+                         );
+                         let fk_pk_param = crate::nocode::pk_utils::dbparam_from_str_and_type(id_raw, &batch.fk_type_data);
+                         let built_delete = crate::database::state::rehydrate_placeholders(&delete_sql, state.db_type.as_str());
+                         if let Err(e) = tx.raw_sql(&built_delete, vec![fk_pk_param.clone()]).await {
+                             let _ = tx.rollback().await;
+                             return Err(format!("Error clearing old detail items for {}: {}", batch.target_table, e));
+                         }
+
+                         // 2. Insert new details if any
+                         if !batch.rows.is_empty() {
+                             for r in &mut batch.rows {
+                                 if batch.fk_index < r.len() {
+                                     r[batch.fk_index] = InsertValue::Param(fk_pk_param.clone());
+                                 }
+                             }
+
+                             for resp in &mut batch.response_items {
+                                 resp.insert(batch.foreign_key_column.clone(), serde_json::json!(id_raw));
+                             }
+
+                             let (bulk_sql, bulk_params) = ds
+                                 .preview_insert_bulk(&batch.target_table, &batch.columns, &batch.rows)
+                                 .map_err(|e| format!("Error building bulk insert for {}: {}", batch.target_table, e))?;
+
+                             let built_bulk = crate::database::state::rehydrate_placeholders(&bulk_sql, state.db_type.as_str());
+                             if let Err(e) = tx.raw_sql(&built_bulk, bulk_params).await {
+                                 let _ = tx.rollback().await;
+                                 return Err(format!("Error inserting detail items into {}: {}", batch.target_table, e));
+                             }
+                         }
+
+                         final_patch.insert(
+                             batch.field.clone(),
+                             Value::Array(
+                                 batch
+                                     .response_items
+                                     .iter()
+                                     .cloned()
+                                     .map(Value::Object)
+                                     .collect(),
+                             ),
+                         );
+                     }
+                 }
+
                  let _ = tx.commit().await;
-                 Ok(("Data updated successfully".to_string(), 1, doc_json))
+                 Ok(("Data updated successfully".to_string(), 1, Value::Object(final_patch)))
              }
              Err(e) => {
                  let _ = tx.rollback().await;

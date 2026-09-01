@@ -11,9 +11,22 @@ use crate::log::log_output;
 use crate::storage::ast::{Filter as F, Query as Q};
 // use crate::crypt::{encrypt, is_encrypted_string};
 
+/// Represents a pre-prepared detail batch ready for instant bulk insertion inside the transaction.
+#[derive(Debug, Clone, Default)]
+pub struct PreparedDetailBatch {
+    pub field: String,
+    pub target_table: String,
+    pub foreign_key_column: String,
+    pub fk_type_data: String,
+    pub columns: Vec<String>,
+    pub fk_index: usize,
+    pub rows: Vec<Vec<InsertValue>>,
+    pub response_items: Vec<serde_json::Map<String, Value>>,
+}
+
 /// Batch validate foreign keys in a single query for better performance (optimization)
 /// This replaces N sequential DB queries with 1 UNION ALL query
-async fn validate_foreign_keys_batch(
+pub(crate) async fn validate_foreign_keys_batch(
     state: &web::Data<AppState>,
     // (col_name, ref_table, ref_column, value, type_data) — type_data is the FK column's own
     // type so the value can be bound with the correct DbParam variant (avoids comparing an
@@ -466,6 +479,7 @@ pub async fn perform_insert(
     mut doc_map: serde_json::Map<String, Value>,
     fk_checks: Vec<(String, String, String, String, String)>,
     function_id_split: Vec<String>,
+    mut prepared_details: Vec<PreparedDetailBatch>,
     route: &str,
     auth_token: Option<String>,
 ) -> Result<(String, i64, Value), String> {
@@ -602,8 +616,34 @@ pub async fn perform_insert(
             Ok(returned_val) => {
                 let mut final_doc = doc_map;
                 if returned_val != Value::Null && !final_doc.contains_key("id") {
-                    final_doc.insert("id".to_string(), returned_val);
+                    final_doc.insert("id".to_string(), returned_val.clone());
                 }
+                let header_id = final_doc.get("id").cloned().unwrap_or(Value::Null);
+
+                // Insert details in MongoDB
+                for batch in &mut prepared_details {
+                    for resp in &mut batch.response_items {
+                        resp.insert(batch.foreign_key_column.clone(), header_id.clone());
+                        let detail_json = Value::Object(resp.clone());
+                        let _ = state
+                            .store
+                            .insert(&batch.target_table, detail_json)
+                            .await
+                            .map_err(|e| format!("Error inserting detail (mongo): {}", e))?;
+                    }
+                    final_doc.insert(
+                        batch.field.clone(),
+                        Value::Array(
+                            batch
+                                .response_items
+                                .iter()
+                                .cloned()
+                                .map(Value::Object)
+                                .collect(),
+                        ),
+                    );
+                }
+
                 Ok((
                     "Data inserted successfully".to_string(),
                     1,
@@ -693,7 +733,7 @@ pub async fn perform_insert(
 
                 match tx.raw_sql(&sql, params).await {
                     Ok(rows_returned) => {
-                        let inserted_id = if !rows_returned.is_empty() {
+                        let mut inserted_id = if !rows_returned.is_empty() {
                             // Try to get "id" column
                             rows_returned[0]
                                 .get("id")
@@ -705,8 +745,76 @@ pub async fn perform_insert(
                             doc_map.get("id").cloned().unwrap_or(Value::Null)
                         };
 
+                        // For MySQL auto_increment if id is not yet retrieved
+                        if inserted_id == Value::Null && state.db_type == DbType::Mysql {
+                            if let Ok(id_rows) = tx.raw_sql("SELECT LAST_INSERT_ID() as id", vec![]).await {
+                                if !id_rows.is_empty() {
+                                    inserted_id = id_rows[0].get("id").cloned().unwrap_or(Value::Null);
+                                }
+                            }
+                        }
+
                         if inserted_id != Value::Null && !doc_map.contains_key("id") {
-                            doc_map.insert("id".to_string(), inserted_id);
+                            doc_map.insert("id".to_string(), inserted_id.clone());
+                        }
+
+                        // Bulk insert prepared details inside active transaction
+                        for batch in &mut prepared_details {
+                            if !batch.rows.is_empty() {
+                                let fk_param = if let Some(n) = inserted_id.as_i64() {
+                                    DbParam::I64(n)
+                                } else if let Some(s) = inserted_id.as_str() {
+                                    if batch.fk_type_data.to_lowercase().contains("int") {
+                                        if let Ok(n) = s.parse::<i64>() {
+                                            DbParam::I64(n)
+                                        } else {
+                                            DbParam::Str(s.to_string())
+                                        }
+                                    } else {
+                                        DbParam::Str(s.to_string())
+                                    }
+                                } else {
+                                    DbParam::Str(inserted_id.to_string())
+                                };
+
+                                for r in &mut batch.rows {
+                                    if batch.fk_index < r.len() {
+                                        r[batch.fk_index] = InsertValue::Param(fk_param.clone());
+                                    }
+                                }
+
+                                for resp in &mut batch.response_items {
+                                    resp.insert(batch.foreign_key_column.clone(), inserted_id.clone());
+                                }
+
+                                let (bulk_sql, bulk_params) = ds
+                                    .preview_insert_bulk(&batch.target_table, &batch.columns, &batch.rows)
+                                    .map_err(|e| format!("Error building bulk insert for {}: {}", batch.target_table, e))?;
+
+                                if *crate::ISDEBUG {
+                                    log_output("QUERY", "POST DETAIL BULK", route, bulk_sql.clone(), true);
+                                    log_output("PARAMS", "POST DETAIL BULK", route, format!("{:?}", bulk_params), true);
+                                }
+
+                                let built_bulk = crate::database::state::rehydrate_placeholders(&bulk_sql, state.db_type.as_str());
+                                if let Err(e) = tx.raw_sql(&built_bulk, bulk_params).await {
+                                    let _ = tx.rollback().await;
+                                    return Err(format!("Error inserting detail items into {}: {}", batch.target_table, e));
+                                }
+                            }
+
+                            // Embed detail items into response doc_map
+                            doc_map.insert(
+                                batch.field.clone(),
+                                Value::Array(
+                                    batch
+                                        .response_items
+                                        .iter()
+                                        .cloned()
+                                        .map(Value::Object)
+                                        .collect(),
+                                ),
+                            );
                         }
 
                         // Construct merged body containing doc_map (which includes generated id and fields)
@@ -769,10 +877,116 @@ pub async fn perform_insert(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::database::state::DbParam;
+    use crate::storage::sql_store::{InsertValue, SqlStore};
 
     #[test]
     fn test_repo_structure_compiles() {
-        // Assertion on constant fixed
         assert_eq!(1, 1);
+    }
+
+    #[actix_web::test]
+    async fn test_prepared_detail_batch_fk_injection_and_bulk_sql() {
+        // 1. Simulate pre-allocated PreparedDetailBatch before transaction
+        let mut batch = PreparedDetailBatch {
+            field: "items".to_string(),
+            target_table: "transaction_purchase_order_item".to_string(),
+            foreign_key_column: "purchase_order_id".to_string(),
+            fk_type_data: "int".to_string(),
+            columns: vec![
+                "purchase_order_id".to_string(),
+                "material_id".to_string(),
+                "qty_ordered".to_string(),
+                "unit_price".to_string(),
+            ],
+            fk_index: 0,
+            rows: vec![
+                vec![
+                    InsertValue::Param(DbParam::Null), // placeholder for header FK
+                    InsertValue::Param(DbParam::I64(10)),
+                    InsertValue::Param(DbParam::F64(500.0)),
+                    InsertValue::Param(DbParam::F64(15000.0)),
+                ],
+                vec![
+                    InsertValue::Param(DbParam::Null), // placeholder for header FK
+                    InsertValue::Param(DbParam::I64(20)),
+                    InsertValue::Param(DbParam::F64(250.0)),
+                    InsertValue::Param(DbParam::F64(8000.0)),
+                ],
+            ],
+            response_items: vec![
+                serde_json::json!({ "material_id": 10, "qty_ordered": 500.0, "unit_price": 15000.0 })
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                serde_json::json!({ "material_id": 20, "qty_ordered": 250.0, "unit_price": 8000.0 })
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            ],
+        };
+
+        // 2. Simulate Header Insert resulting in header_id = 99
+        let header_id = 99i64;
+        let fk_param = DbParam::I64(header_id);
+
+        for r in &mut batch.rows {
+            r[batch.fk_index] = InsertValue::Param(fk_param.clone());
+        }
+        for resp in &mut batch.response_items {
+            resp.insert(
+                batch.foreign_key_column.clone(),
+                serde_json::json!(header_id),
+            );
+        }
+
+        // 3. Verify that FK slot was stamped with 99
+        for r in &batch.rows {
+            match &r[0] {
+                InsertValue::Param(DbParam::I64(n)) => assert_eq!(*n, 99),
+                _ => panic!("Expected DbParam::I64(99)"),
+            }
+        }
+        for resp in &batch.response_items {
+            assert_eq!(resp.get("purchase_order_id"), Some(&serde_json::json!(99)));
+        }
+
+        // 4. Test preview_insert_bulk compilation with SQLite pool
+        let pool = sqlx::SqlitePool::connect_lazy("sqlite::memory:").unwrap();
+        let db_repo = std::sync::Arc::new(crate::database::sqlite::SqliteRepo { pool });
+
+        let ds_pg = SqlStore::new(db_repo.clone(), "postgres".to_string());
+        let (sql_pg, params_pg) = ds_pg
+            .preview_insert_bulk(&batch.target_table, &batch.columns, &batch.rows)
+            .expect("Failed to build Postgres bulk insert");
+
+        assert!(sql_pg.contains("INSERT INTO transaction_purchase_order_item"));
+        assert!(sql_pg.contains("purchase_order_id,material_id,qty_ordered,unit_price"));
+        assert_eq!(params_pg.len(), 8); // 4 columns * 2 rows = 8 params
+
+        let ds_mysql = SqlStore::new(db_repo, "mysql".to_string());
+        let (sql_mysql, params_mysql) = ds_mysql
+            .preview_insert_bulk(&batch.target_table, &batch.columns, &batch.rows)
+            .expect("Failed to build MySQL bulk insert");
+
+        assert!(sql_mysql.contains("INSERT INTO transaction_purchase_order_item"));
+        assert_eq!(params_mysql.len(), 8);
+    }
+
+    #[test]
+    fn test_master_detail_entity_schema_file() {
+        let schema_json = include_str!("../../../config/entity/transaction_purchase_order.json");
+        let schema: TableSchema =
+            serde_json::from_str(schema_json).expect("Failed to deserialize transaction_purchase_order");
+
+        assert_eq!(schema.table, "transaction_purchase_order");
+        assert_eq!(schema.details.len(), 1);
+        let detail = &schema.details[0];
+        assert_eq!(detail.field, "items");
+        assert_eq!(detail.target_table, "transaction_purchase_order_item");
+        assert_eq!(detail.foreign_key_column, "purchase_order_id");
+        assert_eq!(detail.update_strategy.as_deref(), Some("replace"));
+        assert_eq!(detail.cascade_delete, Some(true));
     }
 }

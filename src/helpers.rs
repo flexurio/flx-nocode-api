@@ -382,7 +382,92 @@ pub async fn multipart_to_json(mut multipart: Multipart) -> Result<Value, actix_
     Ok(json_data)
 }
 
+/// Extract JSON payload from HTTP request body, supporting both `application/json`,
+/// `multipart/form-data`, and `application/x-www-form-urlencoded`.
+pub async fn extract_request_payload(
+    req: &actix_web::HttpRequest,
+    mut payload: actix_web::web::Payload,
+) -> Result<Value, actix_web::Error> {
+    let content_type = req
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_lowercase();
+
+    if content_type.starts_with("multipart/form-data") {
+        let multipart = Multipart::new(req.headers(), payload);
+        multipart_to_json(multipart).await
+    } else {
+        let mut buffer = Vec::new();
+        let max_size: usize = *UPLOAD_MAX_FIELD_SIZE;
+        while let Some(chunk) = payload.next().await {
+            let data = chunk.map_err(actix_web::Error::from)?;
+            buffer.extend_from_slice(&data);
+            if buffer.len() > max_size {
+                return Err(actix_web::error::ErrorPayloadTooLarge("Payload too large"));
+            }
+        }
+        if buffer.is_empty() {
+            return Ok(json!({}));
+        }
+        if content_type.starts_with("application/x-www-form-urlencoded") {
+            let s = String::from_utf8_lossy(&buffer);
+            let mut map = serde_json::Map::new();
+            for (k, v) in url::form_urlencoded::parse(s.as_bytes()) {
+                let parsed_val = match serde_json::from_str::<Value>(&v) {
+                    Ok(val) => val,
+                    Err(_) => json!(v.to_string()),
+                };
+                map.insert(k.to_string(), parsed_val);
+            }
+            Ok(Value::Object(map))
+        } else {
+            match serde_json::from_slice::<Value>(&buffer) {
+                Ok(val) => Ok(val),
+                Err(e) => Err(actix_web::error::ErrorBadRequest(format!(
+                    "Invalid JSON payload: {}",
+                    e
+                ))),
+            }
+        }
+    }
+}
+
 // (removed duplicate is_safe_mime_type; using the public version defined earlier)
+
+// Static compiled regex for performance - compiled only once instead of every call
+static EXPR_REGEX: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"\{([^{}]+)\}").expect("Failed to compile expression regex")
+});
+
+pub fn extract_expressions(input: &str) -> HashSet<String> {
+    let mut results = HashSet::with_capacity(8); // Pre-allocate for common case
+
+    for cap in EXPR_REGEX.captures_iter(input) {
+        let expr = cap[1].to_string();
+        results.insert(expr.clone());
+
+        // Cek apakah di dalam ekspresi ada ekspresi lain, seperti [{...}]
+        let nested_expr = extract_expressions(&expr);
+        results.extend(nested_expr);
+    }
+
+    results
+}
+
+pub fn find_column_match<'a>(columns: &'a [&str], target: &str) -> (bool, Option<&'a str>) {
+    for col in columns.iter() {
+        if col
+            .split_once('=')
+            .map(|(name, _)| name == target)
+            .unwrap_or(false)
+        {
+            return (true, Some(*col));
+        }
+    }
+    (false, None)
+}
 
 #[cfg(test)]
 mod tests {
@@ -497,37 +582,4 @@ mod tests {
     fn test_is_safe_mime_type_empty_string() {
         assert!(!is_safe_mime_type(""));
     }
-}
-
-// Static compiled regex for performance - compiled only once instead of every call
-static EXPR_REGEX: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"\{([^{}]+)\}").expect("Failed to compile expression regex")
-});
-
-pub fn extract_expressions(input: &str) -> HashSet<String> {
-    let mut results = HashSet::with_capacity(8); // Pre-allocate for common case
-
-    for cap in EXPR_REGEX.captures_iter(input) {
-        let expr = cap[1].to_string();
-        results.insert(expr.clone());
-
-        // Cek apakah di dalam ekspresi ada ekspresi lain, seperti [{...}]
-        let nested_expr = extract_expressions(&expr);
-        results.extend(nested_expr);
-    }
-
-    results
-}
-
-pub fn find_column_match<'a>(columns: &'a [&str], target: &str) -> (bool, Option<&'a str>) {
-    for col in columns.iter() {
-        if col
-            .split_once('=')
-            .map(|(name, _)| name == target)
-            .unwrap_or(false)
-        {
-            return (true, Some(*col));
-        }
-    }
-    (false, None)
 }

@@ -178,10 +178,10 @@ pub fn convert_field_value(raw: &str, col_opt: Option<&Column>) -> Value {
             if trimmed.is_empty() {
                 return Value::Null;
             }
-            if type_lower.contains("year") {
-                if let Ok(n) = trimmed.parse::<i64>() {
-                    return Value::Number(serde_json::Number::from(n));
-                }
+            if type_lower.contains("year")
+                && let Ok(n) = trimmed.parse::<i64>()
+            {
+                return Value::Number(serde_json::Number::from(n));
             }
             return Value::String(trimmed.to_string());
         }
@@ -383,44 +383,48 @@ pub async fn seed_table(
     }
 
     // Check if .json file or .sql file containing JSON payload
-    if file_path.ends_with(".json") || (file_path.ends_with(".sql") && (trimmed.starts_with('[') || (trimmed.starts_with('{') && !trimmed.to_lowercase().starts_with("begin")))) {
-        if let Ok(json_val) = serde_json::from_str::<Value>(trimmed) {
-            let rows_opt: Option<Vec<Map<String, Value>>> = match json_val {
-                Value::Array(arr) => {
-                    let mut list = Vec::new();
-                    for item in arr {
-                        if let Value::Object(m) = item {
-                            list.push(m);
-                        }
+    if (file_path.ends_with(".json")
+        || (file_path.ends_with(".sql")
+            && (trimmed.starts_with('[')
+                || (trimmed.starts_with('{')
+                    && !trimmed.to_lowercase().starts_with("begin")))))
+        && let Ok(json_val) = serde_json::from_str::<Value>(trimmed)
+    {
+        let rows_opt: Option<Vec<Map<String, Value>>> = match json_val {
+            Value::Array(arr) => {
+                let mut list = Vec::new();
+                for item in arr {
+                    if let Value::Object(m) = item {
+                        list.push(m);
                     }
-                    Some(list)
                 }
-                Value::Object(ref obj) => {
-                    // Check keys like "data", "rows", "records", "items", "seed"
-                    let candidate_keys = ["data", "rows", "records", "items", "seed"];
-                    let mut found_rows = None;
-                    for key in candidate_keys {
-                        if let Some(Value::Array(arr)) = obj.get(key) {
-                            let mut list = Vec::new();
-                            for item in arr {
-                                if let Value::Object(m) = item {
-                                    list.push(m.clone());
-                                }
-                            }
-                            found_rows = Some(list);
-                            break;
-                        }
-                    }
-                    found_rows
-                }
-                _ => None,
-            };
-
-            if let Some(rows) = rows_opt {
-                if !rows.is_empty() {
-                    return execute_seed_json_rows(&state, &route, &table_schema, rows).await;
-                }
+                Some(list)
             }
+            Value::Object(ref obj) => {
+                // Check keys like "data", "rows", "records", "items", "seed"
+                let candidate_keys = ["data", "rows", "records", "items", "seed"];
+                let mut found_rows = None;
+                for key in candidate_keys {
+                    if let Some(Value::Array(arr)) = obj.get(key) {
+                        let mut list = Vec::new();
+                        for item in arr {
+                            if let Value::Object(m) = item {
+                                list.push(m.clone());
+                            }
+                        }
+                        found_rows = Some(list);
+                        break;
+                    }
+                }
+                found_rows
+            }
+            _ => None,
+        };
+
+        if let Some(rows) = rows_opt
+            && !rows.is_empty()
+        {
+            return execute_seed_json_rows(&state, &route, &table_schema, rows).await;
         }
     }
 

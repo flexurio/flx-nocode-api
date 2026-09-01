@@ -405,7 +405,7 @@ mod tests {
     fn test_val_variants_debug() {
         let vals = vec![
             Val::I64(42),
-            Val::F64(3.14),
+            Val::F64(3.5),
             Val::Bool(true),
             Val::Str("hello".into()),
             Val::Null,

@@ -485,6 +485,82 @@ pub async fn fetch_dynamic_data(
         Err(e) => return Err(format!("Error NCO-GET(AST) route {}: {}. Query : {:?}", route, e, q)),
     };
 
+    // Embed child details if configured and rows are present
+    let mut enriched_rows = rows;
+    if !table_schema.details.is_empty() && !enriched_rows.is_empty() {
+        for detail in &table_schema.details {
+            if detail.field.is_empty()
+                || detail.target_table.is_empty()
+                || detail.foreign_key_column.is_empty()
+            {
+                continue;
+            }
+
+            let parent_ids: Vec<crate::storage::ast::Val> = enriched_rows
+                .iter()
+                .filter_map(|r| r.get("id"))
+                .map(|v| match v {
+                    Value::Number(n) => {
+                        if let Some(i) = n.as_i64() {
+                            crate::storage::ast::Val::I64(i)
+                        } else {
+                            crate::storage::ast::Val::F64(n.as_f64().unwrap_or(0.0))
+                        }
+                    }
+                    Value::String(s) => {
+                        if let Ok(i) = s.parse::<i64>() {
+                            crate::storage::ast::Val::I64(i)
+                        } else {
+                            crate::storage::ast::Val::Str(s.clone())
+                        }
+                    }
+                    _ => crate::storage::ast::Val::Null,
+                })
+                .collect();
+
+            if !parent_ids.is_empty() {
+                let detail_query = crate::storage::ast::Query::from(detail.target_table.clone())
+                    .select(vec!["*".to_string()])
+                    .r#where(crate::storage::ast::Filter::In(
+                        detail.foreign_key_column.clone(),
+                        parent_ids,
+                    ));
+
+                if let Ok(detail_rows) = state.store.query(&detail_query).await {
+                    let mut detail_groups: std::collections::HashMap<String, Vec<Value>> =
+                        std::collections::HashMap::new();
+                    for d_row in detail_rows {
+                        if let Some(fk_val) = d_row.get(&detail.foreign_key_column) {
+                            let fk_key = match fk_val {
+                                Value::Number(n) => n.to_string(),
+                                Value::String(s) => s.clone(),
+                                _ => fk_val.to_string(),
+                            };
+                            detail_groups.entry(fk_key).or_default().push(d_row);
+                        }
+                    }
+
+                    for row in &mut enriched_rows {
+                        if let Some(parent_id_val) = row.get("id") {
+                            let parent_key = match parent_id_val {
+                                Value::Number(n) => n.to_string(),
+                                Value::String(s) => s.clone(),
+                                _ => parent_id_val.to_string(),
+                            };
+                            let items = detail_groups
+                                .get(&parent_key)
+                                .cloned()
+                                .unwrap_or_default();
+                            if let Some(row_obj) = row.as_object_mut() {
+                                row_obj.insert(detail.field.clone(), Value::Array(items));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     let total = match count_query {
         Some(cq) => match state.store.query(&cq).await {
             Ok(crows) => crows
@@ -495,11 +571,11 @@ pub async fn fetch_dynamic_data(
                 .max(0) as usize,
             Err(e) => {
                 log_output("ERROR", "DATA READ COUNT", route, format!("count failed: {}", e), false);
-                rows.len()
+                enriched_rows.len()
             }
         },
-        None => rows.len(),
+        None => enriched_rows.len(),
     };
 
-    Ok((rows, total))
+    Ok((enriched_rows, total))
 }

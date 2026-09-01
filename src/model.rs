@@ -91,6 +91,31 @@ pub struct ReferenceForeignKeyAction {
     pub type_delete: String, // soft or hard
 }
 
+#[derive(Debug, Default, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct DetailSchema {
+    /// Field name in the request JSON payload (e.g. "items", "details", "lines")
+    #[serde(default)]
+    pub field: String,
+    /// Target detail table / entity name (e.g. "transaction_purchase_order_item")
+    #[serde(default)]
+    pub target_table: String,
+    /// Foreign key column in the detail table referencing the parent header (e.g. "po_id")
+    #[serde(default)]
+    pub foreign_key_column: String,
+    /// Parent primary key column to reference (default: "id")
+    #[serde(default)]
+    pub parent_key_column: Option<String>,
+    /// Optional column whitelist/mapping for the detail table
+    #[serde(default)]
+    pub columns: Vec<String>,
+    /// Update strategy on PUT: "replace" (default), "upsert", "append"
+    #[serde(default)]
+    pub update_strategy: Option<String>,
+    /// Cascade delete detail records when parent header is deleted (default: true)
+    #[serde(default)]
+    pub cascade_delete: Option<bool>,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct TableSchema {
     #[serde(default)]
@@ -101,6 +126,8 @@ pub struct TableSchema {
     pub columns: Vec<Column>,
     #[serde(default)]
     pub foreign_keys: Vec<ForeignKey>,
+    #[serde(default)]
+    pub details: Vec<DetailSchema>,
     #[serde(default)]
     pub indexes: Vec<Index>,
     #[serde(default)]
@@ -133,6 +160,7 @@ impl Default for TableSchema {
             primary_key: PrimaryKey { columns: vec![] },
             columns: vec![],
             foreign_keys: vec![],
+            details: vec![],
             indexes: vec![],
             redis: Redis {
                 keys: vec![],
@@ -449,6 +477,7 @@ mod tests {
         assert!(schema.columns.is_empty(), "Default columns should be empty");
         assert!(schema.primary_key.columns.is_empty(), "Default PK should be empty");
         assert!(schema.foreign_keys.is_empty());
+        assert!(schema.details.is_empty());
         assert!(schema.indexes.is_empty());
         assert!(!schema.auto_generate);
         assert!(!schema.seed);
@@ -456,6 +485,27 @@ mod tests {
         assert!(!schema.post.enable_method);
         assert!(!schema.put.enable_method);
         assert!(!schema.del.enable_method);
+    }
+
+    #[test]
+    fn test_detail_schema_serde() {
+        let json = r#"{
+            "field": "items",
+            "target_table": "transaction_purchase_order_item",
+            "foreign_key_column": "po_id",
+            "parent_key_column": "id",
+            "columns": ["material_id", "qty_ordered", "unit_price"],
+            "update_strategy": "replace",
+            "cascade_delete": true
+        }"#;
+        let detail: DetailSchema = serde_json::from_str(json).unwrap();
+        assert_eq!(detail.field, "items");
+        assert_eq!(detail.target_table, "transaction_purchase_order_item");
+        assert_eq!(detail.foreign_key_column, "po_id");
+        assert_eq!(detail.parent_key_column.as_deref(), Some("id"));
+        assert_eq!(detail.columns, vec!["material_id", "qty_ordered", "unit_price"]);
+        assert_eq!(detail.update_strategy.as_deref(), Some("replace"));
+        assert_eq!(detail.cascade_delete, Some(true));
     }
 
     // --- Column default ---

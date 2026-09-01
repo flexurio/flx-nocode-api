@@ -1,9 +1,9 @@
 use actix_web::{web, HttpResponse, Responder, HttpRequest};
-use actix_multipart::Multipart;
 use serde_json::Value;
 use std::sync::Arc;
 
 use crate::AppState;
+use crate::helpers::extract_request_payload;
 use crate::model::TableSchema;
 use crate::nocode::services::data_create_service;
 
@@ -12,18 +12,29 @@ pub async fn insert(
     parameters: web::Query<Value>,
     route: String,
     table_schema: Arc<TableSchema>,
-    multipart: Multipart,
+    payload: web::Payload,
     req: HttpRequest,
 ) -> impl Responder {
+    let body = match extract_request_payload(&req, payload).await {
+        Ok(b) => b,
+        Err(e) => {
+            return HttpResponse::BadRequest().json(crate::nocode::services::web_err(format!(
+                "Failed to parse request payload: {}",
+                e
+            )));
+        }
+    };
 
     match data_create_service::process_insert_request(
         &state,
         &parameters,
         &route,
         &table_schema,
-        multipart,
-        &req
-    ).await {
+        body,
+        &req,
+    )
+    .await
+    {
         Ok(response) => HttpResponse::Ok().json(response),
         Err(err_response) => {
             // Map error response to appropriate HTTP status
@@ -31,10 +42,13 @@ pub async fn insert(
                 HttpResponse::Unauthorized().json(err_response)
             } else if err_response.message.contains("not found") {
                 HttpResponse::NotFound().json(err_response)
-            } else if err_response.message.contains("Missing required field") || err_response.message.contains("Invalid") {
-                 HttpResponse::BadRequest().json(err_response)
+            } else if err_response.message.contains("Missing required field")
+                || err_response.message.contains("Invalid")
+                || err_response.message.contains("must be an array")
+            {
+                HttpResponse::BadRequest().json(err_response)
             } else {
-                 HttpResponse::InternalServerError().json(err_response)
+                HttpResponse::InternalServerError().json(err_response)
             }
         }
     }

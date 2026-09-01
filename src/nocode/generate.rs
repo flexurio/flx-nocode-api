@@ -609,8 +609,10 @@ mod tests {
         // Use "mysql" dialect for testing as it was the context of the issue
         let store = SqlStore::new(repo, "mysql".to_string());
 
-        let mut schema = TableSchema::default();
-        schema.table = "test_table".to_string();
+        let mut schema = TableSchema {
+            table: "test_table".to_string(),
+            ..Default::default()
+        };
         schema.columns.push(Column {
             name: "col_default".to_string(),
             type_data: "tinyint".to_string(),

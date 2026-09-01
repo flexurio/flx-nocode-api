@@ -777,8 +777,10 @@ mod tests {
 
     #[test]
     fn test_claims_converter_inequality_when_different() {
-        let mut c = ClaimsConverter::default();
-        c.id = "user_id".to_string();
+        let c = ClaimsConverter {
+            id: "user_id".to_string(),
+            ..Default::default()
+        };
         assert_ne!(c, ClaimsConverter::default());
     }
 

@@ -197,14 +197,14 @@ pub fn configure_routes(
             base_res = base_res.route(web::post().to(
                 move |state: web::Data<AppState>,
                       parameters: web::Query<Value>,
-                      multipart: Multipart,
+                      payload: web::Payload,
                       req: actix_web::HttpRequest| {
                     crate::nocode::handlers::post_handler::insert(
                         state,
                         parameters,
                         b.route.to_string(),
                         b.schema.clone(),
-                        multipart,
+                        payload,
                         req,
                     )
                 },
@@ -286,7 +286,7 @@ pub fn configure_routes(
             id_res = id_res.route(web::put().to(
                 move |state: web::Data<AppState>,
                       parameters: web::Query<Value>,
-                      multipart: Multipart,
+                      payload: web::Payload,
                       path: Path<String>,
                       req: actix_web::HttpRequest| {
                     crate::nocode::handlers::put_handler::update(
@@ -295,7 +295,7 @@ pub fn configure_routes(
                         b.route.to_string(),
                         b.schema.clone(),
                         b.ref_fks.clone(),
-                        multipart,
+                        payload,
                         path,
                         req,
                     )
