@@ -1,15 +1,15 @@
 [package]
 name = "flx-nocode-api"
-version = "0.4.2"
+version = "0.4.4"
 edition = "2024"
 
 # Optimization settings for performance
 [profile.release]
-opt-level = 3      # Maximum optimization
-lto = "thin"       # Thin LTO for strong inter-procedural optimization
-codegen-units = 1  # Maximum optimization across compilation units
-panic = "abort"    # Smaller binary size and no unwinding overhead
-strip = true       # Remove debug symbols
+opt-level = 3     # Maximum optimization
+lto = "thin"      # Thin LTO for strong inter-procedural optimization
+codegen-units = 1 # Maximum optimization across compilation units
+panic = "abort"   # Smaller binary size and no unwinding overhead
+strip = true      # Remove debug symbols
 
 [profile.dev]
 opt-level = 1          # Some optimization in debug mode
