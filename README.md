@@ -22,18 +22,20 @@ Ship full CRUD plus advanced data operations (GET / POST / PUT / DELETE / PATCH 
 6. [Configuration layout (`LOC_CONFIG`)](#6-configuration-layout-loc_config)
 7. [Entity schema reference](#7-entity-schema-reference)
 8. [Custom ID generation (`function`)](#8-custom-id-generation-function)
-9. [Hooks & validation](#9-hooks--validation)
-10. [Formula placeholders](#10-formula-placeholders)
-11. [Endpoint reference](#11-endpoint-reference)
-12. [Authentication & authorization](#12-authentication--authorization)
-13. [Import & export](#13-import--export)
-14. [Column encryption](#14-column-encryption)
-15. [Logging & observability](#15-logging--observability)
-16. [Database feature flags (compile‑time)](#16-database-feature-flags-compile-time)
-17. [Multi‑target build script (`build.sh`)](#17-multi-target-build-script-buildsh)
-18. [Troubleshooting](#18-troubleshooting)
-19. [Security checklist](#19-security-checklist)
-20. [Contributing & license](#20-contributing--license)
+9. [Master‑Detail (Header‑Detail) transactional orchestration](#9-master-detail-header-detail-transactional-orchestration)
+10. [Database seeding (`seed`)](#10-database-seeding-seed)
+11. [Hooks & validation](#11-hooks--validation)
+12. [Formula placeholders](#12-formula-placeholders)
+13. [Endpoint reference](#13-endpoint-reference)
+14. [Authentication & authorization](#14-authentication--authorization)
+15. [Import & export](#15-import--export)
+16. [Column encryption](#16-column-encryption)
+17. [Logging & observability](#17-logging--observability)
+18. [Database feature flags (compile‑time)](#18-database-feature-flags-compile-time)
+19. [Multi‑target build script (`build.sh`)](#19-multi-target-build-script-buildsh)
+20. [Troubleshooting](#20-troubleshooting)
+21. [Security checklist](#21-security-checklist)
+22. [Contributing & license](#22-contributing--license)
 
 ---
 
@@ -115,7 +117,7 @@ On first start the engine creates `flx_users` / `flx_roles` if missing and, if t
 Your admin Password: 1234
 ```
 
-Log in with email `admin` and that password (see [§12](#12-authentication--authorization)).
+Log in with email `admin` and that password (see [§14](#14-authentication--authorization)).
 
 ---
 
@@ -170,7 +172,7 @@ cargo build --release
 ./target/release/flx-nocode-api
 ```
 
-To build a smaller binary with only the database backend(s) you need, see [§16](#16-database-feature-flags-compile-time).
+To build a smaller binary with only the database backend(s) you need, see [§18](#18-database-feature-flags-compile-time).
 
 ### 4.5 Docker
 
@@ -224,6 +226,7 @@ cp env .env
 | `LOC_IMAGE` | `images` | Image upload directory (inside the static directory). |
 | `LOC_LOGGING` | `logs` | Directory for log files. |
 | `LOC_AUDIT` | — | Path to the audit event log (keep outside `static/` to avoid exposing it). |
+| `LOC_SEED` | `seed` | Directory containing seed data files (`.json`, `.csv`, `.sql`). |
 
 ### Authorization & external JWT (converter token)
 
@@ -237,7 +240,7 @@ cp env .env
 | `CONVERTER_JWT_ISSUER` / `CONVERTER_JWT_AUDIENCE` | Optional issuer / audience claim checks (comma‑separated). |
 | `CONVERTER_JWT_INSECURE_SKIP_VERIFY` | `true` to accept external JWTs **without** signature verification (only if an upstream gateway already validates them). |
 
-> Converter‑token mode is **fail‑closed**: if it is active and none of the verification variables are set, all converter‑token requests are rejected. See [§12](#12-authentication--authorization).
+> Converter‑token mode is **fail‑closed**: if it is active and none of the verification variables are set, all converter‑token requests are rejected. See [§14](#14-authentication--authorization).
 
 ### Limits, uploads & rate limiting
 
@@ -328,13 +331,15 @@ Each `entity/<route>.json` deserializes into a `TableSchema` (see [src/model.rs]
 | `primary_key.columns` | Array of PK columns (supports composite keys). |
 | `columns[]` | Column definitions (see below). |
 | `foreign_keys[]` | `{ column, reference_table, reference_column, on_delete, on_update }`. Actions: `cascade`, `restrict`, `set null`, `no action`. |
+| `details[]` | Array of `DetailSchema` for transactional master‑detail orchestration (see [§9](#9-master-detail-header-detail-transactional-orchestration)). |
 | `indexes[]` | `{ name, columns[], unique }`. Unique indexes are enforced on insert/update. |
 | `redis` | `{ keys[], ttl }` — cache blueprint. |
 | `get` | Read pipeline (see below). |
-| `post` / `put` | Create / update behavior + hooks (see [§9](#9-hooks--validation)). Suffix a name in `columns` with `*` to make that field required — e.g. `"columns": ["name*", "phone"]`. |
+| `post` / `put` | Create / update behavior + hooks (see [§11](#11-hooks--validation)). Suffix a name in `columns` with `*` to make that field required — e.g. `"columns": ["name*", "phone"]`. |
 | `del` | `{ enable_method, columns, type_delete, pre_process, post_process }`; `type_delete` = `soft` or `hard`. |
 | `patch` | Stored‑procedure / parameterized op: `{ enable_method, pre_process_sp, parameters[], return_mode }`. `return_mode` = `""` / `rows` / `affected`. |
 | `trace` | Advanced insert + select / upsert pipeline for journaling & change capture. |
+| `seed` | If `true`, registers `POST /seed/<route>` and `POST /generate/seed/<route>` for database seeding (see [§10](#10-database-seeding-seed)). |
 | `auto_generate` | If `true`, the `POST /generate/table/<route>` endpoint is exposed. |
 | `collate` | Per‑table collation override. |
 
@@ -365,7 +370,7 @@ Each HTTP method is only registered when its section sets `"enable_method": true
 | `function` | *(optional)* A pattern that builds the column value automatically on **insert** — e.g. `"{request.id_trans}/%Y/%m/000ID"` produces `SO/2026/01/0001`. Empty string = no generation (the client supplies the value). Full token list in [§8](#8-custom-id-generation-function). |
 | `function_endpoint` | *(optional)* When `function` contains a numeric `…ID` token, fetch the running number from this HTTP endpoint instead of computing `MAX(id)+1`. Empty string = use the built‑in `MAX(id)+1`. Supports `{request.field}` in the URL. Detail in [§8](#8-custom-id-generation-function). |
 | `function_endpoint_path` | *(optional)* Dotted JSON path to the number inside the `function_endpoint` response. Defaults to `data`, i.e. a response of `{ "data": 1 }`. Ignored when `function_endpoint` is empty. |
-| `encrypt` | If `true`, the value is stored encrypted with `ENCRYPT_KEY` — see [§14](#14-column-encryption). |
+| `encrypt` | If `true`, the value is stored encrypted with `ENCRYPT_KEY` — see [§16](#16-column-encryption). |
 | `default` | Default value used by `generate/table`. |
 
 #### ID generation fields at a glance
@@ -457,11 +462,238 @@ Expected response shape (with the default path `data`):
 
 > **No fallback:** if the endpoint times out, returns a non‑2xx status, or the field is missing/non‑numeric, the insert is aborted with an error. Leave `function_endpoint` empty to use the built‑in `MAX(id)+1` strategy.
 
-Implementation: [src/nocode/repositories/data_create_repo.rs](src/nocode/repositories/data_create_repo.rs) (`fetch_next_number_from_endpoint` and `query_next_number_from_max`).
+ Implementation: [src/nocode/repositories/data_create_repo.rs](src/nocode/repositories/data_create_repo.rs) (`fetch_next_number_from_endpoint` and `query_next_number_from_max`).
 
 ---
 
-## 9. Hooks & validation
+## 9. Master‑Detail (Header‑Detail) transactional orchestration
+
+Flexurio provides first-class, **atomic transactional orchestration** for Master‑Detail (Header‑Detail / Parent‑Child) business workflows — such as Purchase Orders with line items, Invoices with tax charges, or Sales Orders with products.
+
+Instead of writing multiple manual API requests and managing partial failure rollbacks on the frontend, clients send a single payload with nested items. The engine orchestrates parent generation, foreign key injection, and child batching within a **single ACID database transaction**.
+
+```
+                ┌────────────────────────────────────────────────────────┐
+   Single POST  │  { id_trans: "PO", customer: "ACME", items: [...] }   │
+                └───────────────────────────┬────────────────────────────┘
+                                            │
+                                            ▼
+                       ┌────────────────────────────────────────┐
+                       │  Atomic Database Transaction (ACID)     │
+                       │                                        │
+                       │  1. INSERT Header (e.g. PO/2026/01/001)│
+                       │  2. Extract/Auto-gen Parent PK         │
+                       │  3. Inject po_id into each child item  │
+                       │  4. Bulk INSERT Detail Items           │
+                       │  5. COMMIT (or ROLLBACK all on error)  │
+                       └────────────────────────────────────────┘
+```
+
+### 9.1 Schema Configuration (`details[]`)
+
+Configure one or more detail relationships inside `LOC_CONFIG/entity/<parent_route>.json`:
+
+```json
+{
+  "table": "transaction_purchase_orders",
+  "primary_key": {
+    "columns": ["id"]
+  },
+  "columns": [
+    { "name": "id", "type_data": "varchar(20)", "function": "{request.id_trans}/%Y/%m/000ID" },
+    { "name": "customer", "type_data": "varchar(100)" },
+    { "name": "total_amount", "type_data": "decimal(15,2)" }
+  ],
+  "details": [
+    {
+      "field": "items",
+      "target_table": "transaction_purchase_order_items",
+      "foreign_key_column": "po_id",
+      "parent_key_column": "id",
+      "columns": ["item_code", "description", "qty", "unit_price", "subtotal"],
+      "update_strategy": "replace",
+      "cascade_delete": true
+    }
+  ],
+  "post": { "enable_method": true, "columns": ["id_trans", "customer", "total_amount"] },
+  "put": { "enable_method": true, "columns": ["customer", "total_amount"] },
+  "get": { "enable_method": true, "columns": ["id", "customer", "total_amount"] },
+  "del": { "enable_method": true, "type_delete": "hard" }
+}
+```
+
+| `DetailSchema` Field | Default | Description |
+|----------------------|---------|-------------|
+| `field` | *(required)* | Key name in the JSON request payload containing the array of child records (e.g. `"items"`, `"details"`, `"lines"`). |
+| `target_table` | *(required)* | Physical table name of the detail/child entity. |
+| `foreign_key_column` | *(required)* | Column in the child table referencing the parent header's primary key (e.g. `"po_id"`). |
+| `parent_key_column` | `"id"` | Column on the parent table whose value is injected into child records. |
+| `columns` | `[]` | *(optional)* Column whitelist for child records. If specified, any extra keys in detail items are safely ignored. |
+| `update_strategy` | `"replace"` | Strategy on `PUT /<route>/{id}`: `"replace"` (delete old & insert new), `"upsert"` (update existing / insert new), or `"append"` (keep existing & insert new). |
+| `cascade_delete` | `true` | When `true`, deleting the parent via `DELETE /<route>/{id}` automatically deletes child records in the same transaction. |
+
+### 9.2 Creating Master‑Detail Records (`POST`)
+
+Send a `POST /<parent_route>` with multipart/form-data or JSON containing the nested items array:
+
+```json
+{
+  "id_trans": "PO",
+  "customer": "PT Maju Bersama",
+  "total_amount": 1500000,
+  "items": [
+    {
+      "item_code": "ITM-001",
+      "description": "Mechanical Keyboard",
+      "qty": 2,
+      "unit_price": 500000,
+      "subtotal": 1000000
+    },
+    {
+      "item_code": "ITM-002",
+      "description": "Ergonomic Mouse",
+      "qty": 1,
+      "unit_price": 500000,
+      "subtotal": 500000
+    }
+  ]
+}
+```
+
+**Execution Lifecycle:**
+1. The engine generates or assigns the parent primary key (e.g. `PO/2026/01/0001` via `function` pattern or auto-increment).
+2. The parent header is inserted into `transaction_purchase_orders`.
+3. The generated `id` is automatically injected as `po_id: "PO/2026/01/0001"` into each item in `items`.
+4. All child items are bulk-inserted into `transaction_purchase_order_items`.
+5. The entire operation is committed atomically. If any detail record fails validation or DB constraint, the parent record is automatically rolled back.
+
+### 9.3 Updating Master‑Detail Records (`PUT`)
+
+Send `PUT /<parent_route>/{id}` with the updated header fields and new/modified detail items:
+
+```json
+{
+  "customer": "PT Maju Bersama Perkasa",
+  "total_amount": 2000000,
+  "items": [
+    { "item_code": "ITM-001", "description": "Mechanical Keyboard", "qty": 4, "unit_price": 500000, "subtotal": 2000000 }
+  ]
+}
+```
+
+Under `"update_strategy": "replace"` (default), existing child items for that parent are deleted and the new list is inserted within the transaction.
+
+### 9.4 Reading Master‑Detail Records (`GET`)
+
+When calling `GET /<parent_route>` or `GET /<parent_route>/{id}`, Flexurio automatically queries and embeds matching child records inside each parent item under the declared `field` name:
+
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "id": "PO/2026/01/0001",
+      "customer": "PT Maju Bersama",
+      "total_amount": 1500000,
+      "items": [
+        { "id": 1, "po_id": "PO/2026/01/0001", "item_code": "ITM-001", "qty": 2, "subtotal": 1000000 },
+        { "id": 2, "po_id": "PO/2026/01/0001", "item_code": "ITM-002", "qty": 1, "subtotal": 500000 }
+      ]
+    }
+  ],
+  "total_data": 1
+}
+```
+
+---
+
+## 10. Database seeding (`seed`)
+
+Flexurio supports declarative database seeding for initial master data, lookup tables, and test fixtures.
+
+```
+   LOC_SEED/ (or seed/)
+     ├── banks.json          # JSON seed
+     ├── bank_types.csv      # CSV seed with schema-aware type casting
+     └── init_roles.sql      # Multi-statement raw SQL script
+```
+
+### 10.1 Enabling Seeding in Entity Schema
+
+Add `"seed": true` to `LOC_CONFIG/entity/<route>.json`:
+
+```json
+{
+  "table": "banks",
+  "seed": true,
+  "columns": [
+    { "name": "id", "type_data": "int", "auto_increment": true },
+    { "name": "name", "type_data": "varchar(50)", "nullable": false },
+    { "name": "code", "type_data": "varchar(10)", "nullable": false }
+  ]
+}
+```
+
+When `"seed": true` is enabled, the engine registers two administrative endpoints:
+* `POST /seed/<route>`
+* `POST /generate/seed/<route>`
+
+> **Security**: Seed endpoints require an **Admin** role token (`admin`, `administrator`, or bitmask `127` / `*/127`). Non-admin requests receive `403 Forbidden`.
+
+### 10.2 Supported Seed File Formats
+
+Seed files are stored in the directory configured by `LOC_SEED` (default: `seed/`). The engine automatically detects and loads files named `<route>.*` or `<table_name>.*`:
+
+#### 1. JSON (`<LOC_SEED>/<route>.json`)
+An array of objects matching column names:
+```json
+[
+  { "name": "Bank Central Asia", "code": "BCA" },
+  { "name": "Bank Mandiri", "code": "MANDIRI" },
+  { "name": "Bank Rakyat Indonesia", "code": "BRI" }
+]
+```
+
+#### 2. CSV (`<LOC_SEED>/<route>.csv`)
+Comma-separated values with a header row matching column names. Flexurio uses the entity schema to perform **schema-aware type casting** (converting integers, decimals, booleans, dates, timestamps, and JSON strings, while omitting empty auto-increment PKs):
+```csv
+name,code
+Bank Central Asia,BCA
+Bank Mandiri,MANDIRI
+Bank Rakyat Indonesia,BRI
+```
+
+#### 3. SQL Script (`<LOC_SEED>/<route>.sql`)
+Raw multi-statement DDL/DML script. The engine parses and splits statements safely (preserving semicolons within quotes and ignoring line/block comments) and executes them inside a transaction:
+```sql
+-- Initial seed for banks
+INSERT INTO banks (name, code) VALUES ('Bank Central Asia', 'BCA');
+INSERT INTO banks (name, code) VALUES ('Bank Mandiri', 'MANDIRI');
+INSERT INTO banks (name, code) VALUES ('Bank Rakyat Indonesia', 'BRI');
+```
+
+### 10.3 Triggering a Seed Run
+
+Trigger seeding by sending an authenticated POST request:
+
+```bash
+curl -X POST http://localhost:8080/seed/banks \
+  -H "Authorization: Bearer <ADMIN_JWT_TOKEN>"
+```
+
+Response:
+```json
+{
+  "success": true,
+  "message": "Seeding for 'banks' completed successfully from 'seed/banks.json' (3 records inserted)",
+  "total_data": 3,
+  "data": null
+}
+```
+
+---
+
+## 11. Hooks & validation
 
 `post`, `put`, and `del` can run extra logic around the main database operation. All hook strings are **prefixed** to indicate their kind; an empty string or a value without a recognized prefix is ignored.
 
@@ -545,7 +777,7 @@ Notes:
 
 ---
 
-## 10. Formula placeholders
+## 12. Formula placeholders
 
 Placeholders are available inside hooks and formula values:
 
@@ -563,20 +795,22 @@ Notes:
 
 ---
 
-## 11. Endpoint reference
+## 13. Endpoint reference
 
 For a route `<route>` listed in `routes.json` (each method requires `enable_method: true` in its schema section):
 
 | Method & path | Schema section | Description |
 |---------------|----------------|-------------|
-| `GET /<route>?col.op=value` | `get` | Filtered read. |
-| `POST /<route>` | `post` | Create (multipart/form‑data; supports file uploads). Required fields are marked with a `*` suffix in `post.columns` — see [§9](#required-fields--suffix). |
-| `PUT /<route>/{id}` | `put` | Update by id. |
-| `DELETE /<route>/{id}` | `del` | Delete (soft or hard per `del.type_delete`). |
+| `GET /<route>?col.op=value` | `get` | Filtered read (automatically embeds child records if `details[]` configured). |
+| `POST /<route>` | `post` | Create (multipart/form‑data; supports file uploads & atomic master‑detail items). Required fields use `*` suffix — see [§11](#required-fields--suffix). |
+| `PUT /<route>/{id}` | `put` | Update by id (synchronizes child detail records per `update_strategy`). |
+| `DELETE /<route>/{id}` | `del` | Delete (soft or hard per `del.type_delete`; cascade deletes details if enabled). |
 | `PATCH /<route>` | `patch` | Stored‑procedure / parameterized operation. |
 | `TRACE /<route>` | `trace` | Custom select + insert / upsert pipeline. |
-| `POST /import/<route>` | `post` | Bulk import (CSV / XLSX). See [§13](#13-import--export). |
-| `GET /export/<route>` | `get` | Export (CSV / XLSX). See [§13](#13-import--export). |
+| `POST /seed/<route>` | `seed` | Trigger database seeding from `<LOC_SEED>/<route>.*` (Admin only; requires `"seed": true`). |
+| `POST /generate/seed/<route>` | `seed` | Alternative seed endpoint (Admin only; requires `"seed": true`). |
+| `POST /import/<route>` | `post` | Bulk import (CSV / XLSX). See [§15](#15-import--export). |
+| `GET /export/<route>` | `get` | Export (CSV / XLSX). See [§15](#15-import--export). |
 | `GET /validate/<route>` | — | Validate the entity JSON against the database. |
 | `POST /generate/table/<route>` | — | Create the physical table (requires `auto_generate: true`; not for core tables). |
 
@@ -584,7 +818,7 @@ Core / system endpoints:
 
 | Method & path | Description |
 |---------------|-------------|
-| `POST /login` | Authenticate, returns a JWT (see [§12](#12-authentication--authorization)). |
+| `POST /login` | Authenticate, returns a JWT (see [§14](#14-authentication--authorization)). |
 | `POST /register` | Register a user (multipart). |
 | `GET /roles` | List roles. |
 | `GET /healthz` | Health check: `{ "status": "ok", "db": "up\|down", "db_type": "…" }`. Returns `503` if the DB is unreachable. |
@@ -593,7 +827,7 @@ Core / system endpoints:
 
 ---
 
-## 12. Authentication & authorization
+## 14. Authentication & authorization
 
 ### Login
 
@@ -621,20 +855,20 @@ When `routes.json` defines a non‑default `converter_token` mapping, JWTs are i
 
 ---
 
-## 13. Import & export
+## 15. Import & export
 
 * **Import** — `POST /import/<route>` with a multipart file. CSV and XLSX are supported; column headers must match the entity's insertable columns. Rows are inserted in batches (`IMPORT_BATCH_SIZE`).
 * **Export** — `GET /export/<route>?type=csv|xlsx` returns the route's data in the requested format (defaults to CSV; falls back to CSV if XLSX generation fails). The same filtering as `GET /<route>` applies.
 
 ---
 
-## 14. Column encryption
+## 16. Column encryption
 
 Set `"encrypt": true` on a column to store its value encrypted at rest using `ENCRYPT_KEY` (AES‑GCM). The engine encrypts on write and decrypts on read transparently. Keep `ENCRYPT_KEY` secret and stable — rotating it requires re‑encrypting existing data.
 
 ---
 
-## 15. Logging & observability
+## 17. Logging & observability
 
 * Structured logs cover endpoint registration and query execution; control verbosity with the `LOG_*`, `DEBUG`, and `LOGGING` variables ([§5](#5-environment-variables-env)).
 * `GET /healthz` for liveness/readiness probes.
@@ -644,7 +878,7 @@ Set `"encrypt": true` on a column to store its value encrypted at rest using `EN
 
 ---
 
-## 16. Database feature flags (compile‑time)
+## 18. Database feature flags (compile‑time)
 
 Database backends are gated behind Cargo features so you can build a lean binary with only what you need.
 
@@ -678,7 +912,7 @@ Smaller builds compile faster, produce smaller binaries, and remove unused code 
 
 ---
 
-## 17. Multi‑target build script (`build.sh`)
+## 19. Multi‑target build script (`build.sh`)
 
 `build.sh` produces per‑database, per‑OS binaries with feature‑gated builds, and optionally signs/notarizes macOS artifacts when Apple credentials are present.
 
@@ -714,7 +948,7 @@ For each driver the script runs `cargo build --release --target <triple> --no-de
 
 ---
 
-## 18. Troubleshooting
+## 20. Troubleshooting
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
@@ -724,13 +958,13 @@ For each driver the script runs `cargo build --release --target <triple> --no-de
 | Duplicate table error | Two schemas share the same `table` value | Rename one. |
 | `401 Unauthorized` | Missing/invalid `Authorization` header | Re‑login and send `Bearer <token>`. |
 | Table not found | Table never created | `POST /generate/table/<route>` (needs `auto_generate: true`) or create it manually. |
-| `<backend> feature disabled` | `DB_TYPE` points to a backend not compiled in | Rebuild with that feature, or change `DB_TYPE` ([§16](#16-database-feature-flags-compile-time)). |
-| Hooks not running | Used `before`/`after` keys | Use `pre_process` / `post_process` with the `SQL:` prefix ([§9](#9-hooks--validation)). |
+| `<backend> feature disabled` | `DB_TYPE` points to a backend not compiled in | Rebuild with that feature, or change `DB_TYPE` ([§18](#18-database-feature-flags-compile-time)). |
+| Hooks not running | Used `before`/`after` keys | Use `pre_process` / `post_process` with the `SQL:` prefix ([§11](#11-hooks--validation)). |
 | Custom id insert fails | `function_endpoint` unreachable / bad response | Endpoint must return 2xx JSON with the configured field; or clear `function_endpoint` to use `MAX(id)+1` ([§8](#8-custom-id-generation-function)). |
 
 ---
 
-## 19. Security checklist
+## 21. Security checklist
 
 * Use long, random `SECRET_KEY` and `ENCRYPT_KEY`; keep them out of version control.
 * Rotate keys periodically (reissue tokens; re‑encrypt data if `ENCRYPT_KEY` changes).
@@ -742,7 +976,7 @@ For each driver the script runs `cargo build --release --target <triple> --no-de
 
 ---
 
-## 20. Contributing & license
+## 22. Contributing & license
 
 **Contributing**
 

@@ -86,7 +86,7 @@ impl Default for ClaimsConverter {
 pub fn validate_token(
     req: &actix_web::HttpRequest,
     state: &web::Data<AppState>,
-) -> Result<Claims, HttpResponse> {
+) -> Result<Claims, Box<HttpResponse>> {
     // Fast path: check IP whitelist and public routes first
     if is_ip_whitelisted(req, &state.whitelist_ips) ||
         state.route_publics.contains(req.path()) {
@@ -102,10 +102,10 @@ pub fn validate_token(
         Some(header) => match header.to_str() {
             Ok(auth_str) if auth_str.starts_with("Bearer ") => auth_str,
             _ => {
-                return Err(HttpResponse::Unauthorized().json("Invalid Authorization header format"))
+                return Err(Box::new(HttpResponse::Unauthorized().json("Invalid Authorization header format")))
             }
         },
-        None => return Err(HttpResponse::Unauthorized().json("Missing Authorization header")),
+        None => return Err(Box::new(HttpResponse::Unauthorized().json("Missing Authorization header"))),
     };
 
     // When converter_token is set, the token is issued by an external/third-party
@@ -116,7 +116,7 @@ pub fn validate_token(
     if state.converter_token != ClaimsConverter::default() {
         validate_converter_token(auth_header, &state.converter_token.exp)?;
         return extract_token_claims_no_validation(auth_header, (*state).clone())
-            .ok_or_else(|| HttpResponse::Unauthorized().json("Failed to extract converter token claims"));
+            .ok_or_else(|| Box::new(HttpResponse::Unauthorized().json("Failed to extract converter token claims")));
     }
 
     match decode::<Claims>(
@@ -127,7 +127,7 @@ pub fn validate_token(
         Ok(token_data) => Ok(token_data.claims),
         Err(e) => {
             eprintln!("Token validation failed: {}", e);
-            Err(HttpResponse::Unauthorized().json("Invalid or expired token"))
+            Err(Box::new(HttpResponse::Unauthorized().json("Invalid or expired token")))
         }
     }
 }
@@ -241,11 +241,11 @@ fn load_converter_verify_config() -> ConverterVerifyConfig {
 
 /// Verify an externally-issued JWT (converter_token mode).
 /// `auth_header` is the raw `Authorization` value (may include the `Bearer ` prefix).
-fn validate_converter_token(auth_header: &str, exp_field: &str) -> Result<(), HttpResponse> {
+fn validate_converter_token(auth_header: &str, exp_field: &str) -> Result<(), Box<HttpResponse>> {
     let token = auth_header.trim_start_matches("Bearer ").trim();
     let parts: Vec<&str> = token.split('.').collect();
     if parts.len() != 3 {
-        return Err(HttpResponse::Unauthorized().json("Invalid token structure"));
+        return Err(Box::new(HttpResponse::Unauthorized().json("Invalid token structure")));
     }
 
     let cfg = &*CONVERTER_VERIFY;
@@ -267,7 +267,7 @@ fn validate_converter_token(auth_header: &str, exp_field: &str) -> Result<(), Ht
             Ok(_) => Ok(()),
             Err(e) => {
                 eprintln!("Converter JWT verification failed: {}", e);
-                Err(HttpResponse::Unauthorized().json("Invalid or expired token"))
+                Err(Box::new(HttpResponse::Unauthorized().json("Invalid or expired token")))
             }
         };
     }
@@ -289,7 +289,7 @@ fn validate_converter_token(auth_header: &str, exp_field: &str) -> Result<(), Ht
         {
             let now = Utc::now().timestamp() as u64;
             if now > exp + 30 {
-                return Err(HttpResponse::Unauthorized().json("Token expired"));
+                return Err(Box::new(HttpResponse::Unauthorized().json("Token expired")));
             }
         }
         return Ok(());
@@ -304,7 +304,7 @@ fn validate_converter_token(auth_header: &str, exp_field: &str) -> Result<(), Ht
              Rejecting all converter_token requests until configured."
         );
     }
-    Err(HttpResponse::Unauthorized().json("Token verification not configured"))
+    Err(Box::new(HttpResponse::Unauthorized().json("Token verification not configured")))
 }
 
 // Handler untuk login dan generate token

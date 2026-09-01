@@ -3,7 +3,7 @@ use aes_gcm::{
     Aes256Gcm, Key, Nonce,
 };
 use argon2::{
-    password_hash::{rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
+    password_hash::{phc::PasswordHash, PasswordHasher, PasswordVerifier},
     Argon2,
 };
 use base64::Engine;
@@ -93,8 +93,7 @@ pub fn decrypt(key: String, encrypted_string: String) -> String {
 /// String kosong dikembalikan bila hashing gagal (caller harus memperlakukan
 /// nilai kosong sebagai kegagalan, bukan sebagai hash valid).
 pub fn hash_password(plaintext: &str) -> String {
-    let salt = SaltString::generate(&mut OsRng);
-    match Argon2::default().hash_password(plaintext.as_bytes(), &salt) {
+    match Argon2::default().hash_password(plaintext.as_bytes()) {
         Ok(hash) => hash.to_string(),
         Err(e) => {
             eprintln!("Password hashing failed: {}", e);
