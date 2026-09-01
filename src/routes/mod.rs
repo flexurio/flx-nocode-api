@@ -25,6 +25,7 @@ use crate::log::log_output;
 use crate::metrics::METRICS;
 use crate::model::{ReferenceForeignKey, TableSchema};
 use crate::nocode::generate::create_table;
+use crate::nocode::seed::seed_table;
 use crate::nocode::validate::check_table_design;
 
 // ── Route bundle ──────────────────────────────────────────────────────────────
@@ -418,6 +419,49 @@ pub fn configure_routes(
                     web::post().to(
                         move |state: web::Data<AppState>, req: actix_web::HttpRequest| {
                             create_table(state, b.route.to_string(), b.schema.clone(), req)
+                        },
+                    ),
+                ),
+            );
+        }
+
+        // ── Seed table  POST /seed/<route> & POST /generate/seed/<route> ──
+        if bundle.schema.seed
+            && bundle.route.as_ref() != "flx_users"
+            && bundle.route.as_ref() != "flx_roles"
+        {
+            let b = bundle.clone();
+            if do_log {
+                log_output(
+                    "ENDPOINT",
+                    "METHOD",
+                    "POST",
+                    format!(
+                        "http://{}:{}/{}/{}",
+                        host.red(),
+                        port_str.green(),
+                        "seed".yellow(),
+                        b.route.as_ref().purple()
+                    ),
+                    false,
+                );
+            }
+            let b1 = bundle.clone();
+            cfg.service(
+                web::resource(format!("seed/{}", b.route.as_ref())).route(
+                    web::post().to(
+                        move |state: web::Data<AppState>, req: actix_web::HttpRequest| {
+                            seed_table(state, b1.route.to_string(), b1.schema.clone(), req)
+                        },
+                    ),
+                ),
+            );
+            let b2 = bundle.clone();
+            cfg.service(
+                web::resource(format!("generate/seed/{}", b.route.as_ref())).route(
+                    web::post().to(
+                        move |state: web::Data<AppState>, req: actix_web::HttpRequest| {
+                            seed_table(state, b2.route.to_string(), b2.schema.clone(), req)
                         },
                     ),
                 ),

@@ -16,5 +16,6 @@ __pycache__
 __pycache__/*
 .env*
 config*
+seed*
 .agent
 .claude

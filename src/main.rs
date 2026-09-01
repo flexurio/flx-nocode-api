@@ -34,7 +34,7 @@ use crate::storage::mongodb_store::MongoStore;
 use middleware::{AuthMiddleware, GlobalRateLimit, StatusLogger};
 
 mod config;
-use config::{CONFIG, CONFIG_LOCATION, ENDPOINT_LOG_ONCE, ISDEBUG, SCHEMAS};
+use config::{CONFIG, CONFIG_LOCATION, ENDPOINT_LOG_ONCE, ISDEBUG, SCHEMAS, SEED_LOCATION};
 
 mod cli;
 mod routes;
@@ -103,6 +103,12 @@ async fn main() -> anyhow::Result<()> {
             std::fs::create_dir_all(&path_image)?;
         }
         println!("path image: {}", path_image);
+    }
+
+    // ── Ensure seed directory ────────────────────────────────────────────────
+    let seed_storage = SEED_LOCATION.as_str();
+    if !std::path::Path::new(seed_storage).exists() {
+        let _ = std::fs::create_dir_all(seed_storage);
     }
 
     // ── Database initialisation ───────────────────────────────────────────────

@@ -120,6 +120,8 @@ pub struct TableSchema {
     #[serde(default)]
     pub auto_generate: bool,
     #[serde(default)]
+    pub seed: bool,
+    #[serde(default)]
     pub collate: String,
 }
 
@@ -184,6 +186,7 @@ impl Default for TableSchema {
                 column_conflicts: vec![],
             },
             auto_generate: false,
+            seed: false,
             collate: "".to_string(),
         }
     }
@@ -448,6 +451,7 @@ mod tests {
         assert!(schema.foreign_keys.is_empty());
         assert!(schema.indexes.is_empty());
         assert!(!schema.auto_generate);
+        assert!(!schema.seed);
         assert!(!schema.get.enable_method);
         assert!(!schema.post.enable_method);
         assert!(!schema.put.enable_method);
