@@ -6,10 +6,10 @@ use std::sync::Arc;
 
 use crate::{
     AppState,
-    auth::{check_access, get_user_info_from_token},
+    auth::{get_user_info_from_token, Claims},
     config::SEED_LOCATION,
     log::log_output,
-    model::{DbType, TableSchema, WebResponse},
+    model::{Column, DbType, TableSchema, WebResponse},
     storage::sql_store::SqlStore,
 };
 
@@ -87,8 +87,143 @@ pub fn split_sql_statements(sql: &str) -> Vec<String> {
     statements
 }
 
-/// Helper to parse CSV bytes into a vector of JSON maps.
-fn parse_csv_data(content: &str) -> anyhow::Result<Vec<Map<String, Value>>> {
+/// Validate if the claims have Admin role.
+/// Allowed roles: "admin" or "administrator" (case-insensitive, e.g. "admin", "Admin", "Administrator", "admin/1"),
+/// or bitmask "127" / "*/127".
+pub fn is_admin_role(claims: &Claims) -> bool {
+    claims.get_roles().iter().any(|r| {
+        let r_trimmed = r.trim();
+        let role_name = r_trimmed.split('/').next().unwrap_or(r_trimmed).trim();
+        role_name.eq_ignore_ascii_case("admin")
+            || role_name.eq_ignore_ascii_case("administrator")
+            || r_trimmed == "127"
+            || r_trimmed == "*/127"
+    })
+}
+
+fn is_string_type(type_lower: &str) -> bool {
+    type_lower.contains("char")
+        || type_lower.contains("text")
+        || type_lower.contains("blob")
+        || type_lower.contains("enum")
+}
+
+/// Helper to coerce a raw CSV string into a typed serde_json::Value
+/// based on the target column's type_data and nullable definitions.
+pub fn convert_field_value(raw: &str, col_opt: Option<&Column>) -> Value {
+    let trimmed = raw.trim();
+    let is_null_literal = trimmed.eq_ignore_ascii_case("null") || trimmed == "\\N";
+
+    if let Some(col) = col_opt {
+        let type_lower = col.type_data.to_ascii_lowercase();
+
+        // Check if value should be treated as NULL
+        if is_null_literal || (trimmed.is_empty() && (col.nullable || !is_string_type(&type_lower))) {
+            return Value::Null;
+        }
+
+        // Integer types: int, tinyint, smallint, mediumint, bigint, serial
+        if type_lower.contains("int") || type_lower.contains("serial") {
+            if let Ok(n) = trimmed.parse::<i64>() {
+                return Value::Number(serde_json::Number::from(n));
+            } else if let Ok(u) = trimmed.parse::<u64>() {
+                return Value::Number(serde_json::Number::from(u));
+            } else if trimmed.is_empty() {
+                return Value::Null;
+            }
+            return Value::String(trimmed.to_string());
+        }
+
+        // Float / Decimal / Double / Real / Numeric / Money
+        if type_lower.contains("float")
+            || type_lower.contains("double")
+            || type_lower.contains("decimal")
+            || type_lower.contains("numeric")
+            || type_lower.contains("real")
+            || type_lower.contains("money")
+        {
+            if let Ok(f) = trimmed.parse::<f64>() {
+                if let Some(num) = serde_json::Number::from_f64(f) {
+                    return Value::Number(num);
+                }
+            } else if trimmed.is_empty() {
+                return Value::Null;
+            }
+            return Value::String(trimmed.to_string());
+        }
+
+        // Boolean types: boolean, bool
+        if type_lower.starts_with("bool") {
+            let lower = trimmed.to_ascii_lowercase();
+            if lower == "true" || lower == "1" || lower == "t" || lower == "yes" {
+                return Value::Bool(true);
+            } else if lower == "false" || lower == "0" || lower == "f" || lower == "no" {
+                return Value::Bool(false);
+            } else if trimmed.is_empty() {
+                return Value::Null;
+            }
+            return Value::String(trimmed.to_string());
+        }
+
+        // JSON types: json, jsonb
+        if type_lower.contains("json") {
+            if let Ok(val) = serde_json::from_str::<Value>(trimmed) {
+                return val;
+            }
+            return Value::String(trimmed.to_string());
+        }
+
+        // Date / Datetime / Timestamp / Time / Year
+        if type_lower.contains("date") || type_lower.contains("time") || type_lower.contains("year") {
+            if trimmed.is_empty() {
+                return Value::Null;
+            }
+            if type_lower.contains("year") {
+                if let Ok(n) = trimmed.parse::<i64>() {
+                    return Value::Number(serde_json::Number::from(n));
+                }
+            }
+            return Value::String(trimmed.to_string());
+        }
+
+        // String types (varchar, char, text, longtext, etc.)
+        if trimmed.is_empty() && col.nullable {
+            return Value::Null;
+        }
+        Value::String(raw.to_string())
+    } else {
+        // Fallback when column metadata is unknown
+        if is_null_literal || trimmed.is_empty() {
+            Value::Null
+        } else if let Ok(n) = trimmed.parse::<i64>() {
+            Value::Number(serde_json::Number::from(n))
+        } else if let Ok(f) = trimmed.parse::<f64>() {
+            if let Some(num) = serde_json::Number::from_f64(f) {
+                Value::Number(num)
+            } else {
+                Value::String(trimmed.to_string())
+            }
+        } else if trimmed.eq_ignore_ascii_case("true") {
+            Value::Bool(true)
+        } else if trimmed.eq_ignore_ascii_case("false") {
+            Value::Bool(false)
+        } else if (trimmed.starts_with('{') && trimmed.ends_with('}'))
+            || (trimmed.starts_with('[') && trimmed.ends_with(']'))
+        {
+            if let Ok(val) = serde_json::from_str::<Value>(trimmed) {
+                val
+            } else {
+                Value::String(raw.to_string())
+            }
+        } else {
+            Value::String(raw.to_string())
+        }
+    }
+}
+
+/// Helper to parse CSV bytes into a vector of JSON maps,
+/// converting each field according to the table schema columns.
+pub fn parse_csv_data(content: &str, table_schema: &TableSchema) -> anyhow::Result<Vec<Map<String, Value>>> {
     let mut rdr = csv::ReaderBuilder::new()
         .has_headers(true)
         .flexible(true)
@@ -101,10 +236,33 @@ fn parse_csv_data(content: &str) -> anyhow::Result<Vec<Map<String, Value>>> {
         let mut map = Map::new();
         for (i, field) in rec.iter().enumerate() {
             if let Some(h) = headers.get(i) {
-                map.insert(h.trim().to_string(), Value::String(field.to_string()));
+                let h_clean = h.trim();
+                if h_clean.is_empty() {
+                    continue;
+                }
+                let col = table_schema.columns.iter().find(|c| c.name.eq_ignore_ascii_case(h_clean));
+
+                if let Some(c) = col {
+                    let field_trimmed = field.trim();
+                    // If auto-increment column and field is empty or null, omit it so DB sequence handles it
+                    if c.auto_increment
+                        && (field_trimmed.is_empty()
+                            || field_trimmed.eq_ignore_ascii_case("null")
+                            || field_trimmed == "\\N")
+                    {
+                        continue;
+                    }
+                    let val = convert_field_value(field, Some(c));
+                    map.insert(c.name.clone(), val);
+                } else {
+                    let val = convert_field_value(field, None);
+                    map.insert(h_clean.to_string(), val);
+                }
             }
         }
-        rows.push(map);
+        if !map.is_empty() {
+            rows.push(map);
+        }
     }
     Ok(rows)
 }
@@ -117,24 +275,24 @@ pub async fn seed_table(
     table_schema: Arc<TableSchema>,
     req: actix_web::HttpRequest,
 ) -> impl Responder {
-    // 1. Auth check
-    if state.require_auth && !state.route_publics.contains(&route) {
+    // 1. Auth check: Only Admin role is allowed to execute seed
+    if state.require_auth {
         let claims = match get_user_info_from_token(&req, state.clone()) {
             Ok(c) => c,
             Err(_) => {
                 return HttpResponse::Unauthorized().json(WebResponse {
                     success: false,
-                    message: "Invalid token".to_string(),
+                    message: "Invalid or missing token".to_string(),
                     total_data: 0,
                     data: Value::Null,
                 });
             }
         };
 
-        if let Err(e) = check_access(&claims, &req) {
-            return HttpResponse::Unauthorized().json(WebResponse {
+        if !is_admin_role(&claims) {
+            return HttpResponse::Forbidden().json(WebResponse {
                 success: false,
-                message: format!("Unauthorized: {}", e),
+                message: "Forbidden: Only Admin role is allowed to seed tables".to_string(),
                 total_data: 0,
                 data: Value::Null,
             });
@@ -208,7 +366,7 @@ pub async fn seed_table(
     // 4. Process file content based on format
     if file_path.ends_with(".csv") {
         // CSV data seeding
-        let rows = match parse_csv_data(trimmed) {
+        let rows = match parse_csv_data(trimmed, &table_schema) {
             Ok(r) => r,
             Err(e) => {
                 let msg = format!("Failed to parse CSV in '{}': {}", file_path, e);
@@ -507,12 +665,153 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_csv_data() {
-        let csv_text = "id,name,value\n1,Alpha,100\n2,Beta,200";
-        let rows = parse_csv_data(csv_text).unwrap();
+    fn test_is_admin_role() {
+        let admin_claims1 = Claims {
+            rl: "admin/1".to_string(),
+            ..Claims::default()
+        };
+        assert!(is_admin_role(&admin_claims1));
+
+        let admin_claims2 = Claims {
+            rl: "Admin".to_string(),
+            ..Claims::default()
+        };
+        assert!(is_admin_role(&admin_claims2));
+
+        let admin_claims3 = Claims {
+            rl: "ADMIN/99".to_string(),
+            ..Claims::default()
+        };
+        assert!(is_admin_role(&admin_claims3));
+
+        let admin_claims4 = Claims {
+            rl: "127".to_string(),
+            ..Claims::default()
+        };
+        assert!(is_admin_role(&admin_claims4));
+
+        let admin_claims5 = Claims {
+            rl: "*/127".to_string(),
+            ..Claims::default()
+        };
+        assert!(is_admin_role(&admin_claims5));
+
+        let admin_claims6 = Claims {
+            rl: "user/2,admin/1".to_string(),
+            ..Claims::default()
+        };
+        assert!(is_admin_role(&admin_claims6));
+
+        let admin_claims7 = Claims {
+            rl: "Administrator".to_string(),
+            ..Claims::default()
+        };
+        assert!(is_admin_role(&admin_claims7));
+
+        let admin_claims8 = Claims {
+            rl: "user/2,administrator/1".to_string(),
+            ..Claims::default()
+        };
+        assert!(is_admin_role(&admin_claims8));
+
+        let non_admin = Claims {
+            rl: "user/1,viewer/2".to_string(),
+            ..Claims::default()
+        };
+        assert!(!is_admin_role(&non_admin));
+
+        let empty_claims = Claims {
+            rl: "".to_string(),
+            ..Claims::default()
+        };
+        assert!(!is_admin_role(&empty_claims));
+    }
+
+    #[test]
+    fn test_parse_csv_data_with_column_types() {
+        let schema = TableSchema {
+            table: "products".to_string(),
+            columns: vec![
+                Column {
+                    name: "id".to_string(),
+                    type_data: "bigint".to_string(),
+                    auto_increment: true,
+                    nullable: false,
+                    ..Default::default()
+                },
+                Column {
+                    name: "name".to_string(),
+                    type_data: "varchar(100)".to_string(),
+                    auto_increment: false,
+                    nullable: false,
+                    ..Default::default()
+                },
+                Column {
+                    name: "price".to_string(),
+                    type_data: "decimal(10,2)".to_string(),
+                    auto_increment: false,
+                    nullable: false,
+                    ..Default::default()
+                },
+                Column {
+                    name: "is_active".to_string(),
+                    type_data: "boolean".to_string(),
+                    auto_increment: false,
+                    nullable: false,
+                    ..Default::default()
+                },
+                Column {
+                    name: "metadata".to_string(),
+                    type_data: "json".to_string(),
+                    auto_increment: false,
+                    nullable: true,
+                    ..Default::default()
+                },
+                Column {
+                    name: "deleted_at".to_string(),
+                    type_data: "datetime".to_string(),
+                    auto_increment: false,
+                    nullable: true,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+
+        let csv_text = "id,name,price,is_active,metadata,deleted_at\n\
+                        1,Widget A,19.99,true,\"{\"\"tag\"\":\"\"sample\"\"}\",\n\
+                        ,Widget B,25.50,false,NULL,NULL";
+
+        let rows = parse_csv_data(csv_text, &schema).unwrap();
         assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0].get("id").and_then(|v| v.as_str()), Some("1"));
-        assert_eq!(rows[0].get("name").and_then(|v| v.as_str()), Some("Alpha"));
-        assert_eq!(rows[1].get("value").and_then(|v| v.as_str()), Some("200"));
+
+        // Row 1:
+        // id is non-empty -> parsed as i64
+        assert_eq!(rows[0].get("id"), Some(&serde_json::json!(1)));
+        assert_eq!(rows[0].get("name"), Some(&serde_json::json!("Widget A")));
+        assert_eq!(rows[0].get("price"), Some(&serde_json::json!(19.99)));
+        assert_eq!(rows[0].get("is_active"), Some(&serde_json::json!(true)));
+        assert_eq!(rows[0].get("metadata"), Some(&serde_json::json!({"tag": "sample"})));
+        assert_eq!(rows[0].get("deleted_at"), Some(&Value::Null));
+
+        // Row 2:
+        // id is empty and auto_increment -> omitted from map
+        assert_eq!(rows[1].get("id"), None);
+        assert_eq!(rows[1].get("name"), Some(&serde_json::json!("Widget B")));
+        assert_eq!(rows[1].get("price"), Some(&serde_json::json!(25.5)));
+        assert_eq!(rows[1].get("is_active"), Some(&serde_json::json!(false)));
+        assert_eq!(rows[1].get("metadata"), Some(&Value::Null));
+        assert_eq!(rows[1].get("deleted_at"), Some(&Value::Null));
+    }
+
+    #[test]
+    fn test_parse_csv_data_without_schema_fallback() {
+        let schema = TableSchema::default();
+        let csv_text = "id,name,value\n1,Alpha,100\n2,Beta,200";
+        let rows = parse_csv_data(csv_text, &schema).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].get("id"), Some(&serde_json::json!(1)));
+        assert_eq!(rows[0].get("name"), Some(&serde_json::json!("Alpha")));
+        assert_eq!(rows[1].get("value"), Some(&serde_json::json!(200)));
     }
 }
