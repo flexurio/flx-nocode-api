@@ -22,12 +22,15 @@ static RE_REDACT_BEARER: Lazy<Regex> = Lazy::new(|| {
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
+#[inline]
+fn parse_verbose_val(val: &str) -> bool {
+    let v = val.to_ascii_lowercase();
+    v == "1" || v == "true" || v == "yes"
+}
+
 static VERBOSE_FLAG: Lazy<AtomicBool> = Lazy::new(|| {
     let enabled = match std::env::var("LOG_VERBOSE") {
-        Ok(v) => {
-            let v = v.to_ascii_lowercase();
-            v == "1" || v == "true" || v == "yes"
-        }
+        Ok(v) => parse_verbose_val(&v),
         Err(_) => false,
     };
     AtomicBool::new(enabled)
@@ -35,19 +38,6 @@ static VERBOSE_FLAG: Lazy<AtomicBool> = Lazy::new(|| {
 
 fn is_verbose_enabled() -> bool {
     VERBOSE_FLAG.load(Ordering::Relaxed)
-}
-
-#[cfg(test)]
-fn refresh_verbose_from_env() -> bool {
-    let enabled = match std::env::var("LOG_VERBOSE") {
-        Ok(v) => {
-            let v = v.to_ascii_lowercase();
-            v == "1" || v == "true" || v == "yes"
-        }
-        Err(_) => false,
-    };
-    VERBOSE_FLAG.store(enabled, Ordering::Relaxed);
-    enabled
 }
 
 fn contains_sensitive_keyword(s: &str) -> bool {
@@ -217,44 +207,15 @@ mod tests {
     }
 
     #[test]
-    fn test_is_verbose_enabled_default_false() {
-        // SAFETY: single-threaded test context, no concurrent env mutations
-        unsafe { std::env::remove_var("LOG_VERBOSE"); }
-        assert!(!refresh_verbose_from_env(), "Should be false when env var not set");
-    }
-
-    #[test]
-    fn test_is_verbose_enabled_with_one() {
-        unsafe { std::env::set_var("LOG_VERBOSE", "1"); }
-        assert!(refresh_verbose_from_env());
-        unsafe { std::env::remove_var("LOG_VERBOSE"); }
-    }
-
-    #[test]
-    fn test_is_verbose_enabled_with_true() {
-        unsafe { std::env::set_var("LOG_VERBOSE", "true"); }
-        assert!(refresh_verbose_from_env());
-        unsafe { std::env::remove_var("LOG_VERBOSE"); }
-    }
-
-    #[test]
-    fn test_is_verbose_enabled_with_yes() {
-        unsafe { std::env::set_var("LOG_VERBOSE", "yes"); }
-        assert!(refresh_verbose_from_env());
-        unsafe { std::env::remove_var("LOG_VERBOSE"); }
-    }
-
-    #[test]
-    fn test_is_verbose_enabled_case_insensitive() {
-        unsafe { std::env::set_var("LOG_VERBOSE", "TRUE"); }
-        assert!(refresh_verbose_from_env());
-        unsafe { std::env::remove_var("LOG_VERBOSE"); }
-    }
-
-    #[test]
-    fn test_is_verbose_disabled_with_false() {
-        unsafe { std::env::set_var("LOG_VERBOSE", "false"); }
-        assert!(!refresh_verbose_from_env());
-        unsafe { std::env::remove_var("LOG_VERBOSE"); }
+    fn test_is_verbose_enabled_variations() {
+        assert!(parse_verbose_val("1"));
+        assert!(parse_verbose_val("true"));
+        assert!(parse_verbose_val("yes"));
+        assert!(parse_verbose_val("TRUE"));
+        assert!(parse_verbose_val("YES"));
+        assert!(!parse_verbose_val("0"));
+        assert!(!parse_verbose_val("false"));
+        assert!(!parse_verbose_val("no"));
+        assert!(!parse_verbose_val(""));
     }
 }

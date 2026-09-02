@@ -9,56 +9,74 @@ struct Entry {
     window_start: Instant,
 }
 
+const NUM_SHARDS: usize = 64;
+
 pub struct RateLimiter {
-    inner: Mutex<AHashMap<String, Entry>>, // key -> entry (using faster AHashMap)
+    shards: Box<[Mutex<AHashMap<String, Entry>>]>,
     window: Duration,
-    max_keys: usize,
+    max_keys_per_shard: usize,
+    hasher: ahash::RandomState,
 }
 
 impl RateLimiter {
     pub fn new(window_secs: u64) -> Self {
-        Self {
-            inner: Mutex::new(AHashMap::with_capacity(1000)), // Pre-allocate capacity
-            window: Duration::from_secs(window_secs),
-            max_keys: 10_000,
+        let mut shards = Vec::with_capacity(NUM_SHARDS);
+        for _ in 0..NUM_SHARDS {
+            shards.push(Mutex::new(AHashMap::with_capacity(256)));
         }
+        Self {
+            shards: shards.into_boxed_slice(),
+            window: Duration::from_secs(window_secs),
+            max_keys_per_shard: 2_000,
+            hasher: ahash::RandomState::new(),
+        }
+    }
+
+    #[inline]
+    fn shard_index(&self, key: &str) -> usize {
+        (self.hasher.hash_one(key) as usize) & (NUM_SHARDS - 1)
     }
 
     /// Returns true if allowed, false if rate-limited.
     pub fn check_and_increment(&self, key: &str, limit: u32) -> bool {
         let now = Instant::now();
-        let mut map = self.inner.lock();
+        let idx = self.shard_index(key);
+        let mut map = self.shards[idx].lock();
 
-        // Evict expired entries when capacity is getting high
-        if map.len() >= self.max_keys && !map.contains_key(key) {
-            let window = self.window;
-            map.retain(|_, e| now.duration_since(e.window_start) < window);
-            // If still at capacity after evicting expired entries, drop oldest key
-            if map.len() >= self.max_keys
-                && let Some(old_key) = map
-                    .iter()
-                    .min_by_key(|(_, e)| e.window_start)
-                    .map(|(k, _)| k.clone())
-            {
-                map.remove(&old_key);
+        // Fast-path: key already exists (zero heap allocation!)
+        if let Some(entry) = map.get_mut(key) {
+            if now.duration_since(entry.window_start) >= self.window {
+                entry.count = 1;
+                entry.window_start = now;
+                return true;
             }
-        }
 
-        let entry = map.entry(key.to_string()).or_insert(Entry {
-            count: 0,
-            window_start: now,
-        });
-
-        if now.duration_since(entry.window_start) >= self.window {
-            entry.count = 1;
-            entry.window_start = now;
+            if entry.count >= limit {
+                return false;
+            }
+            entry.count += 1;
             return true;
         }
 
-        if entry.count >= limit {
-            return false;
+        // Slow-path: key does not exist yet. Evict expired entries if nearing capacity
+        if map.len() >= self.max_keys_per_shard {
+            let window = self.window;
+            map.retain(|_, e| now.duration_since(e.window_start) < window);
+            // If still full, remove arbitrary key to make room
+            if map.len() >= self.max_keys_per_shard {
+                if let Some(first_key) = map.keys().next().cloned() {
+                    map.remove(&first_key);
+                }
+            }
         }
-        entry.count += 1;
+
+        map.insert(
+            key.to_string(),
+            Entry {
+                count: 1,
+                window_start: now,
+            },
+        );
         true
     }
 }
@@ -78,7 +96,7 @@ pub enum RateOp { Get, Post, Put, Patch, Delete, Trace, Import }
 
 impl RateOp { #[inline] fn as_str(self) -> &'static str { match self { RateOp::Get=>"get", RateOp::Post=>"post", RateOp::Put=>"put", RateOp::Patch=>"patch", RateOp::Delete=>"delete", RateOp::Trace=>"trace", RateOp::Import=>"import"} } }
 
-static PREFIX_CACHE: Lazy<Mutex<AHashMap<String, Arc<String>>>> = Lazy::new(|| Mutex::new(AHashMap::with_capacity(256)));
+static PREFIX_CACHE: Lazy<dashmap::DashMap<String, Arc<String>>> = Lazy::new(|| dashmap::DashMap::with_capacity(256));
 
 #[inline]
 fn cache_key(op: RateOp, route: &str) -> String {
@@ -87,9 +105,8 @@ fn cache_key(op: RateOp, route: &str) -> String {
 
 pub fn prefix(op: RateOp, route: &str) -> Arc<String> {
     let ck = cache_key(op, route);
-    {
-        let map = PREFIX_CACHE.lock();
-        if let Some(p) = map.get(&ck) { return p.clone(); }
+    if let Some(p) = PREFIX_CACHE.get(&ck) {
+        return p.value().clone();
     }
     let mut base = String::new();
     base.push_str(op.as_str());
@@ -99,8 +116,7 @@ pub fn prefix(op: RateOp, route: &str) -> Arc<String> {
         base.push(':');
     }
     let arc = Arc::new(base);
-    let mut map = PREFIX_CACHE.lock();
-    map.insert(ck, arc.clone());
+    PREFIX_CACHE.insert(ck, arc.clone());
     arc
 }
 
@@ -166,6 +182,24 @@ mod tests {
         assert!(!rl.check_and_increment("win_key", 2), "Should be blocked before window resets");
         thread::sleep(Duration::from_millis(1100));
         assert!(rl.check_and_increment("win_key", 2), "Should be allowed after window resets");
+    }
+
+    #[test]
+    fn test_rate_limiter_concurrent_sharding() {
+        let rl = Arc::new(RateLimiter::new(60));
+        let mut handles = Vec::new();
+        for t in 0..16 {
+            let rl_cl = Arc::clone(&rl);
+            handles.push(thread::spawn(move || {
+                for i in 0..100 {
+                    let key = format!("user_{}_{}", t, i % 10);
+                    rl_cl.check_and_increment(&key, 1000);
+                }
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
     }
 
     // --- prefix and build_key ---

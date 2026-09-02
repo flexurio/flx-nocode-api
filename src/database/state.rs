@@ -32,6 +32,7 @@ pub struct AppState {
     pub write_queue_fast_ack: bool, // return 202 immediately without awaiting enqueue
     pub default_collate: String, // default collation for tables (e.g. utf8mb4_bin)
     pub rules: Value, // cached rules.json
+    pub l1_cache: moka::future::Cache<String, crate::model::WebResponse>,
 }
 
 /// Simple cross-DB parameter type for binding values safely.

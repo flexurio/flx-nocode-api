@@ -390,7 +390,7 @@ pub struct Trace {
     pub column_conflicts: Vec<String>,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct WebResponse {
     #[serde(default)]
     pub success: bool,

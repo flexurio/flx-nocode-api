@@ -219,26 +219,52 @@ pub fn enqueue_jobs_background(jobs: Vec<WriteJob>, source: &str) {
 }
 
 
-/// BRPOP with an existing Redis connection. Returns None on timeout.
-async fn dequeue_with_conn(conn: &mut MultiplexedConnection) -> Result<Option<WriteJob>> {
-    // BRPOP returns (key, value)
+/// Dequeue a batch of jobs. Blocks on BRPOP for the first item, then drains up to `max_batch - 1` additional items with RPOP count.
+async fn dequeue_batch_with_conn(
+    conn: &mut MultiplexedConnection,
+    max_batch: usize,
+) -> Result<Vec<WriteJob>> {
+    let mut jobs = Vec::with_capacity(max_batch.min(64));
+    // 1. Wait for at least one job
     let res: Option<(String, String)> = redis::cmd("BRPOP")
         .arg(WriteJob::queue_key())
-        .arg(10) // seconds (longer to reduce wakeups)
+        .arg(5) // seconds
         .query_async(conn)
         .await?;
+
     if let Some((_k, v)) = res {
-        let job: WriteJob = serde_json::from_str(&v)?;
-        Ok(Some(job))
+        if let Ok(job) = serde_json::from_str::<WriteJob>(&v) {
+            jobs.push(job);
+        }
     } else {
-        Ok(None)
+        return Ok(jobs);
     }
+
+    // 2. If additional jobs are waiting, batch pop without blocking
+    let remaining = max_batch.saturating_sub(jobs.len());
+    if remaining > 0 {
+        let batch_raw: Result<Vec<String>, _> = redis::cmd("RPOP")
+            .arg(WriteJob::queue_key())
+            .arg(remaining)
+            .query_async(conn)
+            .await;
+        if let Ok(items) = batch_raw {
+            for item in items {
+                if let Ok(job) = serde_json::from_str::<WriteJob>(&item) {
+                    jobs.push(job);
+                }
+            }
+        }
+    }
+
+    Ok(jobs)
 }
 
 /// Start N concurrent workers to pull from queue and execute writes.
 pub async fn start_consumer(state: Data<AppState>, schemas_map: Arc<HashMap<String, Arc<TableSchema>>>) {
     let concurrency: usize = std::env::var("WRITE_CONCURRENCY").ok().and_then(|s| s.parse().ok()).unwrap_or(4);
-    log_output("QUEUE", "START", "consumer", format!("Workers={}", concurrency), true);
+    let batch_size: usize = std::env::var("WRITE_BATCH_SIZE").ok().and_then(|s| s.parse().ok()).unwrap_or(32);
+    log_output("QUEUE", "START", "consumer", format!("Workers={}, BatchSize={}", concurrency, batch_size), true);
 
     let mut set = JoinSet::new();
     for idx in 0..concurrency {
@@ -295,24 +321,27 @@ pub async fn start_consumer(state: Data<AppState>, schemas_map: Arc<HashMap<Stri
             };
             
             loop {
-                match dequeue_with_conn(&mut conn).await {
-                    Ok(Some(job)) => {
+                match dequeue_batch_with_conn(&mut conn, batch_size).await {
+                    Ok(jobs) if !jobs.is_empty() => {
                         // Reset error counter on success
                         consecutive_errors = 0;
                         backoff_ms = 250;
                         
                         let worker_name = format!("worker-{}", idx);
                         let retry_max: usize = *WRITE_EXEC_RETRY_MAX;
-                        let job_for_dlq = job.clone();
-                        if let Err(e) = execute_with_retry(state_cl.clone(), schemas_map_cl.clone(), job, retry_max).await {
-                            log_output("QUEUE", "EXEC-ERR", worker_name.as_str(), format!("{}", e), false);
-                            match push_dlq(job_for_dlq, worker_name.as_str(), &e.to_string()).await {
-                                Ok(dlq_len) => log_output("QUEUE", "DLQ-PUSH", worker_name.as_str(), format!("len={}", dlq_len), false),
-                                Err(dlq_err) => log_output("QUEUE", "DLQ-ERR", worker_name.as_str(), format!("{}", dlq_err), false),
+
+                        for job in jobs {
+                            let job_for_dlq = job.clone();
+                            if let Err(e) = execute_with_retry(state_cl.clone(), schemas_map_cl.clone(), job, retry_max).await {
+                                log_output("QUEUE", "EXEC-ERR", worker_name.as_str(), format!("{}", e), false);
+                                match push_dlq(job_for_dlq, worker_name.as_str(), &e.to_string()).await {
+                                    Ok(dlq_len) => log_output("QUEUE", "DLQ-PUSH", worker_name.as_str(), format!("len={}", dlq_len), false),
+                                    Err(dlq_err) => log_output("QUEUE", "DLQ-ERR", worker_name.as_str(), format!("{}", dlq_err), false),
+                                }
                             }
                         }
                     }
-                    Ok(None) => {
+                    Ok(_) => {
                         // idle tick - queue empty
                         consecutive_errors = 0; // Reset on successful poll
                     }
@@ -496,7 +525,8 @@ async fn exec_post(state: Data<AppState>, route: String, schemas_map: Arc<HashMa
 
     match state.store.insert(&schema.table, Value::Object(doc_map)).await {
         Ok(_) => {
-            // Invalidate cached GET results for this route (public scope)
+            // Invalidate cached GET results for this route (L1 & L2 Redis)
+            state.l1_cache.invalidate_all();
             let cache_prefix = crate::database::redis::build_key_prefix("public", &route);
             let _ = crate::database::redis::redis_delete_by_prefix(&cache_prefix).await;
             Ok(())
@@ -574,6 +604,7 @@ async fn exec_put(state: Data<AppState>, route: String, schemas_map: Arc<HashMap
 
     match state.store.update(&schema.table, filter, Value::Object(doc_map)).await {
         Ok(_) => {
+            state.l1_cache.invalidate_all();
             let cache_prefix = crate::database::redis::build_key_prefix("public", &route);
             let _ = crate::database::redis::redis_delete_by_prefix(&cache_prefix).await;
             Ok(())
@@ -600,6 +631,7 @@ async fn exec_delete(state: Data<AppState>, route: String, schemas_map: Arc<Hash
 
         match state.store.update(&schema.table, filter, Value::Object(patch)).await {
             Ok(_) => {
+                state.l1_cache.invalidate_all();
                 let cache_prefix = crate::database::redis::build_key_prefix("public", &route);
                 if let Ok(n) = crate::database::redis::redis_delete_by_prefix(&cache_prefix).await {
                     log_output("REDIS", "INVALIDATE", route.as_str(), format!("prefix={}, deleted={}", cache_prefix, n), true);
@@ -614,6 +646,7 @@ async fn exec_delete(state: Data<AppState>, route: String, schemas_map: Arc<Hash
     } else {
         match state.store.delete(&schema.table, filter).await {
             Ok(_) => {
+                state.l1_cache.invalidate_all();
                 let cache_prefix = crate::database::redis::build_key_prefix("public", &route);
                 if let Ok(n) = crate::database::redis::redis_delete_by_prefix(&cache_prefix).await {
                     log_output("REDIS", "INVALIDATE", route.as_str(), format!("prefix={}, deleted={}", cache_prefix, n), true);

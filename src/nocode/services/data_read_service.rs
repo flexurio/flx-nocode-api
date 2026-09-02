@@ -101,43 +101,50 @@ pub async fn process_get_request(
 
     // Cache Logic
     let mut isredis = false;
-    let mut use_cache = false;
     let mut cache_key: Option<String> = None;
 
-    if state.is_cachedb
-        && let Some(redis_val) = params_map_awal.get("redis") {
-            isredis = match redis_val {
-                Value::Bool(b) => *b,
-                Value::String(s) => {
-                    let s_lower = s.to_ascii_lowercase();
-                    s_lower == "true" || s_lower == "1" || s_lower == "yes"
-                }
-                Value::Number(n) => n.as_i64().unwrap_or(0) != 0,
-                _ => false,
-            };
-            params_map.remove("redis");
-        }
+    if let Some(redis_val) = params_map_awal.get("redis") {
+        isredis = match redis_val {
+            Value::Bool(b) => *b,
+            Value::String(s) => {
+                let s_lower = s.to_ascii_lowercase();
+                s_lower == "true" || s_lower == "1" || s_lower == "yes"
+            }
+            Value::Number(n) => n.as_i64().unwrap_or(0) != 0,
+            _ => false,
+        };
+        params_map.remove("redis");
+    }
 
     // log isredis 
     log_output("DEBUG", "ISREDIS", route, format!("isredis: {}", isredis), true);
 
-    if isredis {
-        use_cache = (isredis || table_schema.redis.ttl > 0) && state.is_cachedb;
-        if use_cache {
-            let prefix = build_key_prefix(&cache_tenant, route);
-            let mut keys: Vec<_> = params_map
-                .iter()
-                .map(|(k, v)| format!("{}={}", k, v))
-                .collect();
-            keys.sort();
-            let key_suffix = keys.join("&");
-            let full_key = if key_suffix.is_empty() { prefix } else { format!("{}:{}", prefix, key_suffix) };
-            cache_key = Some(full_key);
+    let use_cache = isredis || table_schema.redis.ttl > 0;
+    if use_cache {
+        let prefix = build_key_prefix(&cache_tenant, route);
+        let mut keys: Vec<_> = params_map
+            .iter()
+            .map(|(k, v)| format!("{}={}", k, v))
+            .collect();
+        keys.sort();
+        let key_suffix = keys.join("&");
+        let full_key = if key_suffix.is_empty() { prefix } else { format!("{}:{}", prefix, key_suffix) };
+        cache_key = Some(full_key);
 
-            if let Some(ref k) = cache_key {
+        if let Some(ref k) = cache_key {
+            // Tier 1: L1 In-Memory Cache (sub-microsecond latency)
+            if let Some(cached) = state.l1_cache.get(k).await {
+                log_output("L1_CACHE", "CACHE HIT", route, format!("Key: {}, Records: {}", k, cached.total_data), true);
+                return HttpResponse::Ok().json(cached);
+            }
+
+            // Tier 2: L2 Redis Distributed Cache
+            if state.is_cachedb {
                 match redis_get_json::<WebResponse>(k.as_str()).await {
                     Ok(Some(cached)) => {
                         log_output("REDIS", "CACHE HIT", route, format!("Key: {}, Records: {}", k, cached.total_data), true);
+                        // Populate L1 cache from L2 hit
+                        state.l1_cache.insert(k.clone(), cached.clone()).await;
                         return HttpResponse::Ok().json(cached);
                     }
                     Ok(None) => {
@@ -161,16 +168,26 @@ pub async fn process_get_request(
                 data: Value::Array(rows),
             };
 
-            // Cache Write
+            // Cache Write (both L1 in-memory and L2 Redis)
             if let Some(k) = cache_key
                 .as_ref()
-                .filter(|_| use_cache && state.is_cachedb && table_schema.redis.ttl > 0)
+                .filter(|_| use_cache)
             {
-                let ttl = table_schema.redis.ttl as usize;
-                if let Err(e) = redis_set_json(k, &result, Some(ttl)).await {
-                     log_output("ERROR", "CACHE WRITE", route, format!("Failed to cache: {}", e), false);
-                } else {
-                     log_output("REDIS", "CACHE WRITE", route, format!("Key: {}, TTL: {}s, Records: {}", k, ttl, total), true);
+                // Write to L1 In-Memory Cache
+                state.l1_cache.insert(k.clone(), result.clone()).await;
+
+                // Write to L2 Redis Cache
+                if state.is_cachedb {
+                    let ttl = if table_schema.redis.ttl > 0 {
+                        table_schema.redis.ttl as usize
+                    } else {
+                        300
+                    };
+                    if let Err(e) = redis_set_json(k, &result, Some(ttl)).await {
+                        log_output("ERROR", "CACHE WRITE", route, format!("Failed to cache: {}", e), false);
+                    } else {
+                        log_output("REDIS", "CACHE WRITE", route, format!("Key: {}, TTL: {}s, Records: {}", k, ttl, total), true);
+                    }
                 }
             }
 

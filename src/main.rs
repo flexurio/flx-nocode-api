@@ -11,6 +11,9 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 mod auth;
 mod crypt;
 mod database;
@@ -198,6 +201,21 @@ async fn main() -> anyhow::Result<()> {
         .map(|v| matches!(v.to_lowercase().as_str(), "1" | "true" | "yes"))
         .unwrap_or(true);
 
+    // ── L1 In-Memory Cache (Moka) ──────────────────────────────────────────
+    let l1_cache_ttl_secs: u64 = env::var("L1_CACHE_TTL_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(60);
+    let l1_cache_max_capacity: u64 = env::var("L1_CACHE_MAX_CAPACITY")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(50_000);
+
+    let l1_cache = moka::future::Cache::builder()
+        .max_capacity(l1_cache_max_capacity)
+        .time_to_live(Duration::from_secs(l1_cache_ttl_secs))
+        .build();
+
     // ── AppState ──────────────────────────────────────────────────────────────
     let app_state = web::Data::new(AppState {
         db: db_repo,
@@ -221,6 +239,7 @@ async fn main() -> anyhow::Result<()> {
                 Err(_) => serde_json::json!({}),
             }
         },
+        l1_cache,
     });
 
     // ── Generate default users ────────────────────────────────────────────────
@@ -408,7 +427,12 @@ async fn main() -> anyhow::Result<()> {
                     .unwrap_or(false),
                 cors,
             ))
-            .wrap(Compress::default())
+            .wrap(Condition::new(
+                env::var("ENABLE_COMPRESSION")
+                    .map(|v| matches!(v.to_lowercase().as_str(), "1" | "true" | "yes"))
+                    .unwrap_or(false),
+                Compress::default(),
+            ))
             .wrap(StatusLogger)
             .configure(|cfg| {
                 routes::configure_routes(cfg, require_auth, do_log, host, port, app_state.clone())
