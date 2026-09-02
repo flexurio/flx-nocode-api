@@ -232,29 +232,9 @@ pub async fn process_export_request(
          Err(e) => return HttpResponse::InternalServerError().json(WebResponse { success: false, message: e, total_data: 0, data: Value::Null })
     };
 
-    // Transform rows
-    let mut headers: Vec<String> = Vec::new();
-    let mut data_rows: Vec<Vec<String>> = Vec::new();
-    if let Some(obj) = rows.first().and_then(|f| f.as_object()) {
-         headers = obj.keys().cloned().collect();
-    }
-     for row in rows.iter() {
-        if let Some(obj) = row.as_object() {
-            if headers.is_empty() { headers = obj.keys().cloned().collect(); }
-            let mut line: Vec<String> = Vec::with_capacity(headers.len());
-            for h in headers.iter() {
-                let val = obj.get(h).unwrap_or(&Value::Null);
-                line.push(match val {
-                    Value::Null => String::new(),
-                    Value::String(s) => s.clone(),
-                    Value::Number(n) => n.to_string(),
-                    Value::Bool(b) => if *b { "1".into() } else { "0".into() },
-                    other => other.to_string().trim_matches('"').to_string(),
-                });
-            }
-            data_rows.push(line);
-        }
-    }
+    // Transform rows: flatten nested JSON and stringified JSON into tabular columns
+    let (headers, data_rows) = flatten_records_for_export(&rows);
+
 
     let ts = Local::now().format("%Y%m%d-%H%M%S");
      let (content_type, file_ext, bytes) = if export_type == "xlsx" {
@@ -471,3 +451,273 @@ pub fn write_xlsx(headers: &[String], rows: &[Vec<String>]) -> Result<Vec<u8>, a
     let buf: Vec<u8> = workbook.save_to_buffer()?;
     Ok(buf)
 }
+
+/// Recursively flattens a `serde_json::Value` into dot-notated key-value string pairs.
+pub fn flatten_json_value(prefix: &str, val: &Value, output: &mut Vec<(String, String)>) {
+    match val {
+        Value::Object(map) => {
+            if map.is_empty() {
+                if !prefix.is_empty() {
+                    output.push((prefix.to_string(), String::new()));
+                }
+            } else {
+                for (k, v) in map {
+                    let new_key = if prefix.is_empty() {
+                        k.clone()
+                    } else {
+                        format!("{}.{}", prefix, k)
+                    };
+                    flatten_json_value(&new_key, v, output);
+                }
+            }
+        }
+        Value::Array(arr) => {
+            if arr.is_empty() {
+                if !prefix.is_empty() {
+                    output.push((prefix.to_string(), String::new()));
+                }
+            } else {
+                let all_primitive = arr.iter().all(|item| !item.is_object() && !item.is_array());
+                if all_primitive {
+                    let joined = arr
+                        .iter()
+                        .map(|v| match v {
+                            Value::String(s) => s.clone(),
+                            Value::Number(n) => n.to_string(),
+                            Value::Bool(b) => if *b { "1".to_string() } else { "0".to_string() },
+                            Value::Null => String::new(),
+                            other => other.to_string(),
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    output.push((prefix.to_string(), joined));
+                } else {
+                    for (i, item) in arr.iter().enumerate() {
+                        let new_key = if prefix.is_empty() {
+                            format!("{}", i)
+                        } else {
+                            format!("{}.{}", prefix, i)
+                        };
+                        flatten_json_value(&new_key, item, output);
+                    }
+                }
+            }
+        }
+        Value::String(s) => {
+            let trimmed = s.trim();
+            if (trimmed.starts_with('{') && trimmed.ends_with('}'))
+                || (trimmed.starts_with('[') && trimmed.ends_with(']'))
+            {
+                if let Ok(parsed) = serde_json::from_str::<Value>(trimmed) {
+                    if parsed.is_object() || parsed.is_array() {
+                        flatten_json_value(prefix, &parsed, output);
+                        return;
+                    }
+                }
+            }
+            output.push((prefix.to_string(), s.clone()));
+        }
+        Value::Number(n) => {
+            output.push((prefix.to_string(), n.to_string()));
+        }
+        Value::Bool(b) => {
+            output.push((prefix.to_string(), if *b { "1".into() } else { "0".into() }));
+        }
+        Value::Null => {
+            output.push((prefix.to_string(), String::new()));
+        }
+    }
+}
+
+/// Flattens a list of JSON records into tabular headers and 2D string rows for export.
+pub fn flatten_records_for_export(rows: &[Value]) -> (Vec<String>, Vec<Vec<String>>) {
+    let mut flattened_rows: Vec<std::collections::HashMap<String, String>> = Vec::with_capacity(rows.len());
+    let mut headers: Vec<String> = Vec::new();
+    let mut seen_headers: HashSet<String> = HashSet::new();
+
+    for row in rows {
+        let mut row_pairs = Vec::new();
+        if let Some(obj) = row.as_object() {
+            for (k, v) in obj {
+                flatten_json_value(k, v, &mut row_pairs);
+            }
+        } else {
+            flatten_json_value("", row, &mut row_pairs);
+        }
+
+        let mut row_map = std::collections::HashMap::with_capacity(row_pairs.len());
+        for (k, v) in row_pairs {
+            if !seen_headers.contains(&k) {
+                seen_headers.insert(k.clone());
+                headers.push(k.clone());
+            }
+            row_map.insert(k, v);
+        }
+        flattened_rows.push(row_map);
+    }
+
+    let mut data_rows = Vec::with_capacity(flattened_rows.len());
+    for row_map in flattened_rows {
+        let mut line = Vec::with_capacity(headers.len());
+        for h in &headers {
+            line.push(row_map.get(h).cloned().unwrap_or_default());
+        }
+        data_rows.push(line);
+    }
+
+    (headers, data_rows)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_flatten_flat_json() {
+        let rows = vec![
+            json!({
+                "id": 1,
+                "name": "Alice",
+                "is_active": true
+            }),
+            json!({
+                "id": 2,
+                "name": "Bob",
+                "is_active": false
+            }),
+        ];
+
+        let (headers, data_rows) = flatten_records_for_export(&rows);
+        assert_eq!(headers, vec!["id", "name", "is_active"]);
+        assert_eq!(data_rows.len(), 2);
+        assert_eq!(data_rows[0], vec!["1", "Alice", "1"]);
+        assert_eq!(data_rows[1], vec!["2", "Bob", "0"]);
+    }
+
+    #[test]
+    fn test_flatten_nested_json_object() {
+        let rows = vec![
+            json!({
+                "id": 1,
+                "user": {
+                    "name": "Alice",
+                    "address": {
+                        "city": "Jakarta",
+                        "zip": "10110"
+                    }
+                }
+            }),
+            json!({
+                "id": 2,
+                "user": {
+                    "name": "Bob",
+                    "address": {
+                        "city": "Bandung",
+                        "zip": "40115"
+                    }
+                }
+            }),
+        ];
+
+        let (headers, data_rows) = flatten_records_for_export(&rows);
+        assert_eq!(headers, vec!["id", "user.name", "user.address.city", "user.address.zip"]);
+        assert_eq!(data_rows.len(), 2);
+        assert_eq!(data_rows[0], vec!["1", "Alice", "Jakarta", "10110"]);
+        assert_eq!(data_rows[1], vec!["2", "Bob", "Bandung", "40115"]);
+    }
+
+    #[test]
+    fn test_flatten_stringified_json() {
+        let rows = vec![
+            json!({
+                "id": 1,
+                "config": "{\"theme\": \"dark\", \"retries\": 3}"
+            }),
+            json!({
+                "id": 2,
+                "config": "{\"theme\": \"light\", \"retries\": 5}"
+            }),
+        ];
+
+        let (headers, data_rows) = flatten_records_for_export(&rows);
+        assert_eq!(headers, vec!["id", "config.theme", "config.retries"]);
+        assert_eq!(data_rows[0], vec!["1", "dark", "3"]);
+        assert_eq!(data_rows[1], vec!["2", "light", "5"]);
+    }
+
+    #[test]
+    fn test_flatten_array_primitives() {
+        let rows = vec![
+            json!({
+                "id": 1,
+                "tags": ["admin", "developer", "tester"]
+            }),
+            json!({
+                "id": 2,
+                "tags": ["guest"]
+            }),
+        ];
+
+        let (headers, data_rows) = flatten_records_for_export(&rows);
+        assert_eq!(headers, vec!["id", "tags"]);
+        assert_eq!(data_rows[0], vec!["1", "admin, developer, tester"]);
+        assert_eq!(data_rows[1], vec!["2", "guest"]);
+    }
+
+    #[test]
+    fn test_flatten_sparse_rows() {
+        let rows = vec![
+            json!({
+                "id": 1,
+                "profile": {
+                    "email": "a@example.com"
+                }
+            }),
+            json!({
+                "id": 2,
+                "profile": {
+                    "phone": "0812345678"
+                }
+            }),
+        ];
+
+        let (headers, data_rows) = flatten_records_for_export(&rows);
+        assert_eq!(headers, vec!["id", "profile.email", "profile.phone"]);
+        assert_eq!(data_rows[0], vec!["1", "a@example.com", ""]);
+        assert_eq!(data_rows[1], vec!["2", "", "0812345678"]);
+    }
+
+    #[test]
+    fn test_write_xlsx_and_csv_with_flattened_data() {
+        let rows = vec![
+            json!({
+                "id": 101,
+                "customer": {
+                    "name": "PT Maju Jaya",
+                    "location": {
+                        "city": "Surabaya"
+                    }
+                },
+                "tags": ["corporate", "b2b"]
+            }),
+        ];
+
+        let (headers, data_rows) = flatten_records_for_export(&rows);
+        assert_eq!(headers, vec!["id", "customer.name", "customer.location.city", "tags"]);
+
+        // Test CSV
+        let csv_bytes = write_csv(&headers, &data_rows).expect("write_csv should succeed");
+        let csv_str = String::from_utf8(csv_bytes).expect("Valid utf8 csv");
+        assert!(csv_str.contains("customer.location.city"));
+        assert!(csv_str.contains("Surabaya"));
+        assert!(csv_str.contains("corporate, b2b"));
+
+        // Test XLSX
+        let xlsx_bytes = write_xlsx(&headers, &data_rows).expect("write_xlsx should succeed");
+        assert!(!xlsx_bytes.is_empty());
+        // Verify ZIP header for XLSX
+        assert_eq!(&xlsx_bytes[0..2], b"PK");
+    }
+}
+
