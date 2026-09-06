@@ -505,16 +505,13 @@ pub fn flatten_json_value(prefix: &str, val: &Value, output: &mut Vec<(String, S
         }
         Value::String(s) => {
             let trimmed = s.trim();
-            if (trimmed.starts_with('{') && trimmed.ends_with('}'))
-                || (trimmed.starts_with('[') && trimmed.ends_with(']'))
-            {
-                if let Ok(parsed) = serde_json::from_str::<Value>(trimmed) {
-                    if parsed.is_object() || parsed.is_array() {
+            if ((trimmed.starts_with('{') && trimmed.ends_with('}'))
+                || (trimmed.starts_with('[') && trimmed.ends_with(']')))
+                && let Ok(parsed) = serde_json::from_str::<Value>(trimmed)
+                    && (parsed.is_object() || parsed.is_array()) {
                         flatten_json_value(prefix, &parsed, output);
                         return;
                     }
-                }
-            }
             output.push((prefix.to_string(), s.clone()));
         }
         Value::Number(n) => {

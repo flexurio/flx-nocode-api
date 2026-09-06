@@ -13,7 +13,7 @@ use serde_json::{Map, Value};
 
 use crate::database::state::DbParam;
 use crate::log::log_output;
-use crate::model::{ActionTrigger, DbType, TableSchema, TriggerAction, TriggerCondition};
+use crate::model::{DbType, TableSchema, TriggerAction, TriggerCondition};
 use crate::storage::traits::TxStore;
 
 /// Context data available during trigger execution.
@@ -46,11 +46,10 @@ pub fn evaluate_condition(
         let new_val = new_record.get(&cond.field);
 
         // For update / status_change events, if the field didn't change at all, do NOT trigger.
-        if event_name.contains("update") || event_name.contains("status") {
-            if old_val == new_val && !old_record.is_empty() {
+        if (event_name.contains("update") || event_name.contains("status"))
+            && old_val == new_val && !old_record.is_empty() {
                 return false;
             }
-        }
 
         // Check `from` constraint if specified
         if let Some(from_rule) = &cond.from {
@@ -114,11 +113,10 @@ pub fn resolve_nested_json(root: &Value, path: &str) -> Option<Value> {
         return Some(root.clone());
     }
     // Fast path: direct key in object
-    if let Value::Object(map) = root {
-        if let Some(val) = map.get(path) {
+    if let Value::Object(map) = root
+        && let Some(val) = map.get(path) {
             return Some(val.clone());
         }
-    }
     let parts: Vec<&str> = path.split('.').collect();
     let mut current = root;
     for part in parts {
@@ -146,76 +144,67 @@ pub fn resolve_numeric_var(
     let clean = ident.trim().trim_matches('{').trim_matches('}');
 
     // 1. Check accumulators (prefix "acc." or "accumulated." or raw key)
-    if let Some(prop) = clean.strip_prefix("acc.").or_else(|| clean.strip_prefix("accumulated.")) {
-        if let Some(runtime) = runtime_opt {
-            if let Some(v) = runtime.accumulated.get(prop) {
+    if let Some(prop) = clean.strip_prefix("acc.").or_else(|| clean.strip_prefix("accumulated."))
+        && let Some(runtime) = runtime_opt
+            && let Some(v) = runtime.accumulated.get(prop) {
                 return Some(*v);
             }
-        }
-    }
-    if let Some(runtime) = runtime_opt {
-        if let Some(v) = runtime.accumulated.get(clean) {
+    if let Some(runtime) = runtime_opt
+        && let Some(v) = runtime.accumulated.get(clean) {
             return Some(*v);
         }
-    }
 
     // 2. Check item line row
-    if let Some(prop) = clean.strip_prefix("item.") {
-        if let Some(item) = item_opt {
+    if let Some(prop) = clean.strip_prefix("item.")
+        && let Some(item) = item_opt {
             let item_val = Value::Object(item.clone());
             if let Some(val) = resolve_nested_json(&item_val, prop) {
                 if let Some(n) = val.as_f64() {
                     return Some(n);
                 }
-                if let Some(s) = val.as_str() {
-                    if let Ok(n) = s.trim().parse::<f64>() {
+                if let Some(s) = val.as_str()
+                    && let Ok(n) = s.trim().parse::<f64>() {
                         return Some(n);
                     }
-                }
             }
         }
-    }
     if let Some(item) = item_opt {
         let item_val = Value::Object(item.clone());
         if let Some(val) = resolve_nested_json(&item_val, clean) {
             if let Some(n) = val.as_f64() {
                 return Some(n);
             }
-            if let Some(s) = val.as_str() {
-                if let Ok(n) = s.trim().parse::<f64>() {
+            if let Some(s) = val.as_str()
+                && let Ok(n) = s.trim().parse::<f64>() {
                     return Some(n);
                 }
-            }
         }
     }
 
     // 3. Check lookup store
-    if let Some(prop) = clean.strip_prefix("lookup.") {
-        if let Some(runtime) = runtime_opt {
+    if let Some(prop) = clean.strip_prefix("lookup.")
+        && let Some(runtime) = runtime_opt {
             let lookup_val = Value::Object(runtime.lookups.iter().map(|(k, v)| (k.clone(), v.clone())).collect());
             if let Some(val) = resolve_nested_json(&lookup_val, prop) {
                 if let Some(n) = val.as_f64() {
                     return Some(n);
                 }
-                if let Some(s) = val.as_str() {
-                    if let Ok(n) = s.trim().parse::<f64>() {
+                if let Some(s) = val.as_str()
+                    && let Ok(n) = s.trim().parse::<f64>() {
                         return Some(n);
                     }
-                }
             }
         }
-    }
     if let Some(runtime) = runtime_opt {
         let lookup_val = Value::Object(runtime.lookups.iter().map(|(k, v)| (k.clone(), v.clone())).collect());
         if let Some(val) = resolve_nested_json(&lookup_val, clean) {
             if let Some(n) = val.as_f64() {
                 return Some(n);
             }
-            if let Some(s) = val.as_str() {
-                if let Ok(n) = s.trim().parse::<f64>() {
+            if let Some(s) = val.as_str()
+                && let Ok(n) = s.trim().parse::<f64>() {
                     return Some(n);
                 }
-            }
         }
     }
 
@@ -226,22 +215,20 @@ pub fn resolve_numeric_var(
             if let Some(n) = val.as_f64() {
                 return Some(n);
             }
-            if let Some(s) = val.as_str() {
-                if let Ok(n) = s.trim().parse::<f64>() {
+            if let Some(s) = val.as_str()
+                && let Ok(n) = s.trim().parse::<f64>() {
                     return Some(n);
                 }
-            }
         }
         let old_obj = Value::Object(ctx.old_record.clone());
         if let Some(val) = resolve_nested_json(&old_obj, prop) {
             if let Some(n) = val.as_f64() {
                 return Some(n);
             }
-            if let Some(s) = val.as_str() {
-                if let Ok(n) = s.trim().parse::<f64>() {
+            if let Some(s) = val.as_str()
+                && let Ok(n) = s.trim().parse::<f64>() {
                     return Some(n);
                 }
-            }
         }
     }
     let parent_obj = Value::Object(ctx.new_record.clone());
@@ -249,26 +236,23 @@ pub fn resolve_numeric_var(
         if let Some(n) = val.as_f64() {
             return Some(n);
         }
-        if let Some(s) = val.as_str() {
-            if let Ok(n) = s.trim().parse::<f64>() {
+        if let Some(s) = val.as_str()
+            && let Ok(n) = s.trim().parse::<f64>() {
                 return Some(n);
             }
-        }
     }
 
     // 5. Check request body
-    if let Some(prop) = clean.strip_prefix("request.") {
-        if let Some(val) = resolve_nested_json(ctx.request_body, prop) {
+    if let Some(prop) = clean.strip_prefix("request.")
+        && let Some(val) = resolve_nested_json(ctx.request_body, prop) {
             if let Some(n) = val.as_f64() {
                 return Some(n);
             }
-            if let Some(s) = val.as_str() {
-                if let Ok(n) = s.trim().parse::<f64>() {
+            if let Some(s) = val.as_str()
+                && let Ok(n) = s.trim().parse::<f64>() {
                     return Some(n);
                 }
-            }
         }
-    }
 
     None
 }
@@ -642,6 +626,7 @@ pub fn interpolate_string_full(
     output
 }
 
+#[allow(dead_code)]
 pub fn interpolate_string(
     template: &str,
     ctx: &TriggerContext,
@@ -667,9 +652,9 @@ fn resolve_single_token(
     }
 
     // 2. Math formula: e.g. "{calc: item.qty * product.cost_price}"
-    if expr.starts_with("calc:") || expr.starts_with("math:") || expr.starts_with("eval:") {
-        if let Some((_, math_expr)) = expr.split_once(':') {
-            let clean = math_expr.trim().replace('{', "").replace('}', "");
+    if (expr.starts_with("calc:") || expr.starts_with("math:") || expr.starts_with("eval:"))
+        && let Some((_, math_expr)) = expr.split_once(':') {
+            let clean = math_expr.trim().replace(['{', '}'], "");
             match eval_math_expr(&clean, |ident| resolve_numeric_var(ident, ctx, runtime_opt, item_opt)) {
                 Ok(val) => {
                     return if val.fract() == 0.0 {
@@ -686,31 +671,26 @@ fn resolve_single_token(
                 }
             }
         }
-    }
 
     // 3. Conditional: e.g. "{if: item.qty_delivered >= item.qty ? 'COMPLETED' : 'PARTIAL'}"
-    if expr.starts_with("if:") || expr.starts_with("case:") {
-        if let Some((_, cond_expr)) = expr.split_once(':') {
-            if let Some(res) = eval_conditional_token(cond_expr, ctx, runtime_opt, item_opt) {
+    if (expr.starts_with("if:") || expr.starts_with("case:"))
+        && let Some((_, cond_expr)) = expr.split_once(':')
+            && let Some(res) = eval_conditional_token(cond_expr, ctx, runtime_opt, item_opt) {
                 return res;
             }
-        }
-    }
 
     // 4. Sequence token: e.g. "{seq:AR_INVOICE}" or "{seq:AR_INVOICE:INV/{YYYY}/{MM}/{0000ID}}"
-    if expr.starts_with("seq:") || expr.starts_with("sequence:") {
-        if let Some((_, rest)) = expr.split_once(':') {
+    if (expr.starts_with("seq:") || expr.starts_with("sequence:"))
+        && let Some((_, rest)) = expr.split_once(':') {
             let key = match rest.split_once(':') {
                 Some((k, _)) => k.trim(),
                 None => rest.trim(),
             };
-            if let Some(runtime) = runtime_opt {
-                if let Some(seq_val) = runtime.sequences.get(key) {
+            if let Some(runtime) = runtime_opt
+                && let Some(seq_val) = runtime.sequences.get(key) {
                     return seq_val.clone();
                 }
-            }
         }
-    }
 
     // 5. Resolving parent / item / acc / lookup / request references
     if let Some(prop) = expr.strip_prefix("parent.") {
@@ -730,8 +710,8 @@ fn resolve_single_token(
             }
         }
     } else if let Some(prop) = expr.strip_prefix("acc.").or_else(|| expr.strip_prefix("accumulated.")) {
-        if let Some(runtime) = runtime_opt {
-            if let Some(v) = runtime.accumulated.get(prop) {
+        if let Some(runtime) = runtime_opt
+            && let Some(v) = runtime.accumulated.get(prop) {
                 return if v.fract() == 0.0 {
                     format!("{}", *v as i64)
                 } else {
@@ -741,7 +721,6 @@ fn resolve_single_token(
                         .to_string()
                 };
             }
-        }
     } else if let Some(prop) = expr.strip_prefix("lookup.") {
         if let Some(runtime) = runtime_opt {
             let lookup_obj = Value::Object(runtime.lookups.iter().map(|(k, v)| (k.clone(), v.clone())).collect());
@@ -808,14 +787,13 @@ fn format_date_expression(expr: &str) -> String {
     let now = Local::now();
     let mut target_date = now;
 
-    if expr.contains('+') {
-        if let Some(plus_part) = expr.split('+').nth(1) {
+    if expr.contains('+')
+        && let Some(plus_part) = expr.split('+').nth(1) {
             let num_str: String = plus_part.chars().take_while(|c| c.is_ascii_digit()).collect();
             if let Ok(days) = num_str.parse::<i64>() {
                 target_date = now + Duration::days(days);
             }
         }
-    }
 
     if expr.contains("YYYY-MM-DD") || expr == "now()" {
         target_date.format("%Y-%m-%d").to_string()
@@ -858,18 +836,16 @@ fn compute_set_value_full(
     }
 
     // 2. Backward compatibility fallback: "<col_name> - <val>"
-    if let Some((_col, right)) = trimmed.split_once('-') {
-        if let Ok(deduct_val) = right.trim().parse::<f64>() {
+    if let Some((_col, right)) = trimmed.split_once('-')
+        && let Ok(deduct_val) = right.trim().parse::<f64>() {
             return Ok(current_val - deduct_val);
         }
-    }
 
     // 3. Backward compatibility fallback: "<col_name> + <val>"
-    if let Some((_col, right)) = trimmed.split_once('+') {
-        if let Ok(add_val) = right.trim().parse::<f64>() {
+    if let Some((_col, right)) = trimmed.split_once('+')
+        && let Ok(add_val) = right.trim().parse::<f64>() {
             return Ok(current_val + add_val);
         }
-    }
 
     // 4. Fallback: direct number
     if let Ok(num) = trimmed.parse::<f64>() {
@@ -879,6 +855,7 @@ fn compute_set_value_full(
     Err(format!("Unsupported set expression: '{}' ({})", set_expr, eval_res.err().unwrap_or_default()))
 }
 
+#[allow(dead_code)]
 fn compute_set_value(
     current_val: f64,
     set_expr: &str,
@@ -949,8 +926,8 @@ pub fn parse_sequence_pattern(pattern: &str) -> (String, usize, String) {
     let mut prefix = expanded.clone();
     let mut suffix = String::new();
 
-    if let Some(start_idx) = expanded.find('{') {
-        if let Some(end_idx) = expanded[start_idx..].find('}') {
+    if let Some(start_idx) = expanded.find('{')
+        && let Some(end_idx) = expanded[start_idx..].find('}') {
             let inner = &expanded[start_idx + 1..start_idx + end_idx];
             if inner.ends_with("ID") || inner.ends_with("id") {
                 let zeros = inner[..inner.len() - 2].chars().filter(|c| *c == '0').count();
@@ -960,7 +937,6 @@ pub fn parse_sequence_pattern(pattern: &str) -> (String, usize, String) {
                 return (prefix, width, suffix);
             }
         }
-    }
 
     if let Some(id_idx) = expanded.find("ID").or_else(|| expanded.find("id")) {
         let before = &expanded[..id_idx];
@@ -1145,6 +1121,8 @@ pub async fn execute_triggers<'a>(
     Ok(executed_triggers)
 }
 
+type ActionFuture<'a> = std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<Map<String, Value>>, String>> + Send + 'a>>;
+
 /// Execute a single trigger action (and recurse if `iterate_detail`).
 fn execute_action<'a>(
     db_type: DbType,
@@ -1153,14 +1131,13 @@ fn execute_action<'a>(
     ctx: &'a TriggerContext<'a>,
     runtime: &'a mut TriggerRuntime,
     item_opt: Option<Map<String, Value>>,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<Map<String, Value>>, String>> + Send + 'a>> {
+) -> ActionFuture<'a> {
     Box::pin(async move {
         // Evaluate condition guard on individual action if specified
-        if let Some(cond) = &action.condition {
-            if !evaluate_condition(&Some(cond.clone()), "on_update", ctx.old_record, ctx.new_record) {
+        if let Some(cond) = &action.condition
+            && !evaluate_condition(&Some(cond.clone()), "on_update", ctx.old_record, ctx.new_record) {
                 return Ok(item_opt);
             }
-        }
 
         let action_type = action.action_type.to_lowercase();
 
@@ -1236,12 +1213,11 @@ fn execute_action<'a>(
                             Value::String(s) => s.as_str(),
                             other => other.as_str().unwrap_or(""),
                         };
-                        let mut clean_formula = formula_str.trim().replace('{', "").replace('}', "");
-                        if let Some((_, inner)) = clean_formula.split_once(':') {
-                            if clean_formula.starts_with("calc:") || clean_formula.starts_with("math:") || clean_formula.starts_with("eval:") {
+                        let mut clean_formula = formula_str.trim().replace(['{', '}'], "");
+                        if let Some((_, inner)) = clean_formula.split_once(':')
+                            && (clean_formula.starts_with("calc:") || clean_formula.starts_with("math:") || clean_formula.starts_with("eval:")) {
                                 clean_formula = inner.trim().to_string();
                             }
-                        }
                         let val = eval_math_expr(&clean_formula, |ident| {
                             resolve_numeric_var(ident, ctx, Some(runtime), item_opt.as_ref())
                         })?;
@@ -1289,11 +1265,10 @@ fn execute_action<'a>(
                 let mut sorted_items = items;
                 sorted_items.sort_by(|a, b| {
                     let get_sort_key = |val: &Value| -> String {
-                        if let Value::Object(m) = val {
-                            if let Some(id) = m.get("id").or_else(|| m.get("product_id")).or_else(|| m.get("item_id")) {
+                        if let Value::Object(m) = val
+                            && let Some(id) = m.get("id").or_else(|| m.get("product_id")).or_else(|| m.get("item_id")) {
                                 return json_val_to_str(id);
                             }
-                        }
                         "".to_string()
                     };
                     get_sort_key(a).cmp(&get_sort_key(b))
@@ -1316,12 +1291,11 @@ fn execute_action<'a>(
                                 Value::String(s) => s.as_str(),
                                 other => other.as_str().unwrap_or(""),
                             };
-                            let mut clean_formula = formula_str.trim().replace('{', "").replace('}', "");
-                            if let Some((_, inner)) = clean_formula.split_once(':') {
-                                if clean_formula.starts_with("calc:") || clean_formula.starts_with("math:") || clean_formula.starts_with("eval:") {
+                            let mut clean_formula = formula_str.trim().replace(['{', '}'], "");
+                            if let Some((_, inner)) = clean_formula.split_once(':')
+                                && (clean_formula.starts_with("calc:") || clean_formula.starts_with("math:") || clean_formula.starts_with("eval:")) {
                                     clean_formula = inner.trim().to_string();
                                 }
-                            }
                             let val = eval_math_expr(&clean_formula, |ident| {
                                 resolve_numeric_var(ident, ctx, Some(runtime), Some(&current_item))
                             })?;
@@ -1435,14 +1409,14 @@ fn execute_action<'a>(
 
                             let is_explicit_math = expr_str.contains("calc:") || expr_str.contains("math:") || expr_str.contains("eval:");
                             let contains_arithmetic = trimmed.contains('+') || trimmed.contains('-') || trimmed.contains('*') || trimmed.contains('/');
-                            let is_existing_numeric = existing_row.get(col).map_or(false, |v| v.is_number());
+                            let is_existing_numeric = existing_row.get(col).is_some_and(|v| v.is_number());
 
                             if is_explicit_math || contains_arithmetic || is_existing_numeric {
                                 if let Ok(new_calculated) = compute_set_value_full(col, current_col_val, expr_str, ctx, Some(runtime), item_opt.as_ref()) {
                                     // Enforce minimum validation constraint (e.g. preventing negative inventory)
-                                    if let Some(validate) = &action.validate {
-                                        if let Some(min_map) = &validate.min {
-                                            if let Some(min_val_json) = min_map.get(col) {
+                                    if let Some(validate) = &action.validate
+                                        && let Some(min_map) = &validate.min
+                                            && let Some(min_val_json) = min_map.get(col) {
                                                 let min_threshold = min_val_json.as_f64().unwrap_or(0.0);
                                                 if new_calculated < min_threshold {
                                                     let default_msg = format!(
@@ -1457,8 +1431,6 @@ fn execute_action<'a>(
                                                     return Err(err_msg);
                                                 }
                                             }
-                                        }
-                                    }
 
                                     if new_calculated.fract() == 0.0 {
                                         update_params.push(DbParam::I64(new_calculated as i64));
@@ -1571,8 +1543,8 @@ fn execute_action<'a>(
                 }
 
                 // ERP Double-Entry Balancing Invariant check (Debit == Credit)
-                if let Some(validate) = &action.validate {
-                    if let Some(bal) = &validate.assert_balanced {
+                if let Some(validate) = &action.validate
+                    && let Some(bal) = &validate.assert_balanced {
                         let debit_field = &bal.debit_field;
                         let credit_field = &bal.credit_field;
                         let tolerance = bal.tolerance.unwrap_or(0.001);
@@ -1615,7 +1587,6 @@ fn execute_action<'a>(
                             return Err(err_msg);
                         }
                     }
-                }
 
                 for row_map in rows {
                     let mut cols = Vec::new();
@@ -1684,6 +1655,7 @@ fn execute_action<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::ActionTrigger;
 
     #[test]
     fn test_evaluate_condition_matches_field_change() {

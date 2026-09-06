@@ -63,11 +63,10 @@ impl RateLimiter {
             let window = self.window;
             map.retain(|_, e| now.duration_since(e.window_start) < window);
             // If still full, remove arbitrary key to make room
-            if map.len() >= self.max_keys_per_shard {
-                if let Some(first_key) = map.keys().next().cloned() {
+            if map.len() >= self.max_keys_per_shard
+                && let Some(first_key) = map.keys().next().cloned() {
                     map.remove(&first_key);
                 }
-            }
         }
 
         map.insert(

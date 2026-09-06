@@ -102,12 +102,9 @@ pub async fn perform_delete_sql(
 
     let select_current_sql = format!("SELECT * FROM {} WHERE {} = ?", table_schema.table, pk_col_first);
     let built_select_current = crate::database::state::rehydrate_placeholders(&select_current_sql, state.db_type.as_str());
-    if let Ok(rows) = tx.raw_sql(&built_select_current, vec![pk_param]).await {
-        if let Some(first_row) = rows.into_iter().next() {
-            if let Value::Object(map) = first_row {
-                old_record = map;
-            }
-        }
+    if let Ok(rows) = tx.raw_sql(&built_select_current, vec![pk_param]).await
+        && let Some(Value::Object(map)) = rows.into_iter().next() {
+        old_record = map;
     }
 
     // 1. Check document immutability lock (locked_when)
