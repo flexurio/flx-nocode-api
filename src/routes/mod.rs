@@ -301,6 +301,28 @@ pub fn configure_routes(
                     )
                 },
             ));
+
+            // Also register PATCH on {route}/{id} for status update / partial update support
+            log_ep(do_log, "ENDPOINT", "PATCH", host, &port_str, &format!("{}/{{id}}", bundle.route.as_ref()));
+            let b_patch = bundle.clone();
+            id_res = id_res.route(web::patch().to(
+                move |state: web::Data<AppState>,
+                      parameters: web::Query<Value>,
+                      payload: web::Payload,
+                      path: Path<String>,
+                      req: actix_web::HttpRequest| {
+                    crate::nocode::handlers::put_handler::update(
+                        state,
+                        parameters,
+                        b_patch.route.to_string(),
+                        b_patch.schema.clone(),
+                        b_patch.ref_fks.clone(),
+                        payload,
+                        path,
+                        req,
+                    )
+                },
+            ));
             has_id = true;
         }
 

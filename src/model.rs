@@ -116,6 +116,93 @@ pub struct DetailSchema {
     pub cascade_delete: Option<bool>,
 }
 
+#[derive(Debug, Default, Serialize, Deserialize, Clone, PartialEq)]
+pub struct ActionTrigger {
+    #[serde(default)]
+    pub name: String,
+    /// Event type: "on_update", "on_status_change", "on_create", "on_delete"
+    #[serde(default = "default_trigger_event")]
+    pub event: String,
+    /// Condition to evaluate before executing actions
+    #[serde(default)]
+    pub condition: Option<TriggerCondition>,
+    /// List of actions to execute sequentially within the same database transaction
+    #[serde(default)]
+    pub actions: Vec<TriggerAction>,
+}
+
+fn default_trigger_event() -> String {
+    "on_update".to_string()
+}
+
+#[derive(Debug, Default, Serialize, Deserialize, Clone, PartialEq)]
+pub struct TriggerCondition {
+    /// Field to check for changes (e.g. "status")
+    #[serde(default)]
+    pub field: String,
+    /// Expected previous value or list of allowed previous values (e.g. ["APPROVED", "PENDING"])
+    #[serde(default)]
+    pub from: Option<serde_json::Value>,
+    /// Target value that triggers the action (e.g. "SHIPPED")
+    #[serde(default)]
+    pub to: Option<serde_json::Value>,
+    /// Optional boolean expression or formula (e.g. "total_net > 0")
+    #[serde(default)]
+    pub expression: Option<String>,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize, Clone, PartialEq)]
+pub struct TriggerAction {
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Action type: "iterate_detail", "update", "insert", "insert_batch", "sql"
+    #[serde(default, rename = "type")]
+    pub action_type: String,
+    /// Target table
+    #[serde(default)]
+    pub target_table: String,
+    /// Detail table to iterate over (used when type is "iterate_detail")
+    #[serde(default)]
+    pub detail_table: Option<String>,
+    /// Foreign key column in detail table pointing to parent (e.g. "sales_order_id")
+    #[serde(default)]
+    pub foreign_key: Option<String>,
+    /// Filter condition for update (e.g. { "product_id": "{item.product_id}" })
+    #[serde(default)]
+    pub filter: Option<serde_json::Map<String, serde_json::Value>>,
+    /// Set map for updates (e.g. { "qty": "qty - {item.qty}" })
+    #[serde(default)]
+    pub set: Option<serde_json::Map<String, serde_json::Value>>,
+    /// Single row fields for insert (e.g. { "customer_id": "{parent.customer_id}", ... })
+    #[serde(default, alias = "values")]
+    pub fields: Option<serde_json::Map<String, serde_json::Value>>,
+    /// Multiple rows for insert_batch (e.g. GL journal lines)
+    #[serde(default)]
+    pub rows: Option<Vec<serde_json::Map<String, serde_json::Value>>>,
+    /// Sub-actions for iterate_detail
+    #[serde(default)]
+    pub actions: Option<Vec<TriggerAction>>,
+    /// Raw or parameterized SQL statement (for type "sql")
+    #[serde(default)]
+    pub statement: Option<String>,
+    /// SQL parameters (for type "sql")
+    #[serde(default)]
+    pub params: Option<Vec<String>>,
+    /// Optional validations (e.g. min quantity checks)
+    #[serde(default)]
+    pub validate: Option<TriggerValidation>,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize, Clone, PartialEq)]
+pub struct TriggerValidation {
+    /// Minimum allowed values per column after update (e.g. { "qty": 0 })
+    #[serde(default)]
+    pub min: Option<serde_json::Map<String, serde_json::Value>>,
+    /// Custom error message if validation fails
+    #[serde(default)]
+    pub error_message: Option<String>,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct TableSchema {
     #[serde(default)]
@@ -128,6 +215,8 @@ pub struct TableSchema {
     pub foreign_keys: Vec<ForeignKey>,
     #[serde(default)]
     pub details: Vec<DetailSchema>,
+    #[serde(default, alias = "triggers")]
+    pub action_triggers: Vec<ActionTrigger>,
     #[serde(default)]
     pub indexes: Vec<Index>,
     #[serde(default)]
@@ -161,6 +250,7 @@ impl Default for TableSchema {
             columns: vec![],
             foreign_keys: vec![],
             details: vec![],
+            action_triggers: vec![],
             indexes: vec![],
             redis: Redis {
                 keys: vec![],
@@ -534,5 +624,98 @@ mod tests {
         assert_eq!(json["success"], true);
         assert_eq!(json["message"], "OK");
         assert_eq!(json["total_data"], 1);
+    }
+
+    // --- ActionTrigger Serde ---
+
+    #[test]
+    fn test_action_trigger_serde_roundtrip() {
+        let json = r#"{
+            "name": "sales_order_fulfillment",
+            "event": "on_update",
+            "condition": {
+                "field": "status",
+                "from": ["APPROVED", "PENDING"],
+                "to": "SHIPPED"
+            },
+            "actions": [
+                {
+                    "type": "iterate_detail",
+                    "detail_table": "transaction_sales_order_item",
+                    "foreign_key": "sales_order_id",
+                    "actions": [
+                        {
+                            "type": "update",
+                            "target_table": "transaction_product_lot",
+                            "filter": { "product_id": "{item.product_id}" },
+                            "set": { "qty": "qty - {item.qty}" },
+                            "validate": { "min": { "qty": 0 }, "error_message": "Insufficient stock" }
+                        }
+                    ]
+                },
+                {
+                    "type": "insert",
+                    "target_table": "transaction_account_receivable",
+                    "fields": {
+                        "customer_id": "{parent.customer_id}",
+                        "total_receivable": "{parent.total_net}",
+                        "status": "UNPAID"
+                    }
+                }
+            ]
+        }"#;
+
+        let trigger: ActionTrigger = serde_json::from_str(json).unwrap();
+        assert_eq!(trigger.name, "sales_order_fulfillment");
+        assert_eq!(trigger.event, "on_update");
+        let cond = trigger.condition.unwrap();
+        assert_eq!(cond.field, "status");
+        assert_eq!(cond.to, Some(serde_json::json!("SHIPPED")));
+        assert_eq!(trigger.actions.len(), 2);
+        assert_eq!(trigger.actions[0].action_type, "iterate_detail");
+        assert_eq!(trigger.actions[0].detail_table.as_deref(), Some("transaction_sales_order_item"));
+        assert_eq!(trigger.actions[1].action_type, "insert");
+        assert_eq!(trigger.actions[1].target_table, "transaction_account_receivable");
+    }
+
+    #[test]
+    fn test_table_schema_backward_compatibility_without_triggers() {
+        let json = r#"{
+            "table": "legacy_table",
+            "columns": []
+        }"#;
+        let schema: TableSchema = serde_json::from_str(json).unwrap();
+        assert_eq!(schema.table, "legacy_table");
+        assert!(schema.action_triggers.is_empty(), "Schemas without action_triggers should default to empty vec");
+    }
+
+    #[test]
+    fn test_table_schema_with_triggers_alias() {
+        let json = r#"{
+            "table": "sample_table",
+            "triggers": [
+                {
+                    "name": "auto_log",
+                    "event": "on_update",
+                    "actions": []
+                }
+            ]
+        }"#;
+        let schema: TableSchema = serde_json::from_str(json).unwrap();
+        assert_eq!(schema.action_triggers.len(), 1);
+        assert_eq!(schema.action_triggers[0].name, "auto_log");
+    }
+
+    #[test]
+    fn test_transaction_sales_order_config_file_deserialization() {
+        let path = std::path::Path::new("config/entity/transaction_sales_order.json");
+        if path.exists() {
+            let content = std::fs::read_to_string(path).expect("Failed to read transaction_sales_order.json");
+            let schema: TableSchema = serde_json::from_str(&content).expect("Failed to parse TableSchema");
+            assert_eq!(schema.table, "transaction_sales_order");
+            assert_eq!(schema.action_triggers.len(), 1);
+            assert_eq!(schema.action_triggers[0].name, "sales_order_fulfillment");
+            assert_eq!(schema.action_triggers[0].actions.len(), 3);
+        }
     }
 }

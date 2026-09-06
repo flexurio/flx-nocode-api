@@ -5,6 +5,7 @@ pub mod seed;
 pub mod validate;
 pub mod consumer;
 pub mod email_queue;
+pub mod trigger_engine;
 
 pub mod handlers;
 pub mod services;

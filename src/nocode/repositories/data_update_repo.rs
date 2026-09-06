@@ -255,6 +255,23 @@ pub async fn perform_update(
     if state.db_type != crate::model::DbType::Mongodb {
         let mut tx = state.store.begin_tx().await.map_err(|e| format!("Error starting transaction: {}", e))?;
         
+        let pk_cols = &table_schema.primary_key.columns;
+        let pk_col_first = pk_cols.first().cloned().unwrap_or_else(|| "id".to_string());
+        let pk_meta = table_schema.columns.iter().find(|c| c.name == pk_col_first);
+        let pk_param = if let Some(m) = pk_meta { dbparam_from_value_and_type(&serde_json::json!(id_raw), Some(m)) } else { DbParam::Str(id_raw.to_string()) };
+
+        // Fetch pre-update record state for triggers and conditional evaluation
+        let mut old_record: serde_json::Map<String, Value> = serde_json::Map::new();
+        let select_current_sql = format!("SELECT * FROM {} WHERE {} = ?", table_schema.table, pk_col_first);
+        let built_select_current = crate::database::state::rehydrate_placeholders(&select_current_sql, state.db_type.as_str());
+        if let Ok(rows) = tx.raw_sql(&built_select_current, vec![pk_param.clone()]).await {
+            if let Some(first_row) = rows.into_iter().next() {
+                if let Value::Object(map) = first_row {
+                    old_record = map;
+                }
+            }
+        }
+
         // Batch FK Validation
         if !fk_checks.is_empty() {
              if let Err(e) = validate_foreign_keys_batch_put(state, &mut *tx, &fk_checks).await {
@@ -265,11 +282,6 @@ pub async fn perform_update(
 
         // Unique Validation
         if !table_schema.indexes.is_empty() {
-            let pk_cols = &table_schema.primary_key.columns;
-            let pk_col_first = pk_cols.first().cloned().unwrap_or_else(|| "id".to_string());
-            let pk_meta = table_schema.columns.iter().find(|c| c.name == pk_col_first);
-            let pk_param = if let Some(m) = pk_meta { dbparam_from_value_and_type(&serde_json::json!(id_raw), Some(m)) } else { DbParam::Str(id_raw.to_string()) };
-
             let affected: Vec<&Index> = table_schema.indexes.iter().filter(|ix| ix.unique && ix.columns.iter().any(|c| patch_fields.contains_key(c))).collect();
             
             if !affected.is_empty() {
@@ -415,6 +427,61 @@ pub async fn perform_update(
                                      .collect(),
                              ),
                          );
+                     }
+                 }
+
+                 // Execute Action Triggers
+                 if !table_schema.action_triggers.is_empty() {
+                     let mut new_record = old_record.clone();
+                     for (k, v) in &final_patch {
+                         new_record.insert(k.clone(), v.clone());
+                     }
+
+                     let trigger_ctx = crate::nocode::trigger_engine::TriggerContext {
+                         parent_table: &table_schema.table,
+                         parent_pk: id_raw,
+                         old_record: &old_record,
+                         new_record: &new_record,
+                         request_body: body,
+                         actor_id: None,
+                     };
+
+                     match crate::nocode::trigger_engine::execute_triggers(
+                         state.db_type.clone(),
+                         &mut *tx,
+                         table_schema,
+                         &trigger_ctx,
+                         "on_update",
+                     ).await {
+                         Ok(executed) => {
+                             for trig_name in executed {
+                                 crate::audit::write_audit(&crate::audit::AuditEntry {
+                                     at: chrono::Local::now().to_rfc3339(),
+                                     actor_id: "system".to_string(),
+                                     action: "TRIGGER",
+                                     route: &format!("{}:{}", route, trig_name),
+                                     id: Some(id_raw),
+                                     ip: None,
+                                 });
+                             }
+                         }
+                         Err(err) => {
+                             let _ = tx.rollback().await;
+                             return Err(format!("Action trigger failed: {}", err));
+                         }
+                     }
+                 }
+
+                 // Post-Process (legacy SQL formula)
+                 if table_schema.put.post_process.contains("SQL:") {
+                     if let Err(err) = crate::database::state::execute_sql_formula_with_txstore(
+                         &mut tx,
+                         table_schema.put.post_process.clone(),
+                         body,
+                         route,
+                     ).await {
+                         let _ = tx.rollback().await;
+                         return Err(format!("Error in post-process: {}", err));
                      }
                  }
 
