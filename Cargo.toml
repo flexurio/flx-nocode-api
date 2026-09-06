@@ -21,7 +21,16 @@ overflow-checks = true # Runtime integer overflow checks
 
 [dependencies]
 actix = "0.13.5"
-actix-web = "4.15.0"
+actix-web = { version = "4.15.0", default-features = false, features = [
+    "macros",
+    "compress-brotli",
+    "compress-gzip",
+    "compress-zstd",
+    "cookies",
+    "unicode",
+    "compat",
+    "ws",
+] }
 actix-files = "0.7"
 actix-multipart = "0.8"
 dotenv = "0.15.0"
