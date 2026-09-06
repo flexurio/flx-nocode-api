@@ -24,19 +24,20 @@ Ship full CRUD plus advanced data operations (GET / POST / PUT / DELETE / PATCH 
 8. [Custom ID generation (`function`)](#8-custom-id-generation-function)
 9. [Master‑Detail (Header‑Detail) transactional orchestration](#9-master-detail-header-detail-transactional-orchestration)
 10. [Declarative Action Triggers & ERP Cascading Workflows (`action_triggers`)](#10-declarative-action-triggers--erp-cascading-workflows-action_triggers)
-11. [Database seeding (`seed`)](#11-database-seeding-seed)
-12. [Hooks & validation](#12-hooks--validation)
-13. [Formula placeholders](#13-formula-placeholders)
-14. [Endpoint reference](#14-endpoint-reference)
-15. [Authentication & authorization](#15-authentication--authorization)
-16. [Import & export](#16-import--export)
-17. [Column encryption](#17-column-encryption)
-18. [Logging & observability](#18-logging--observability)
-19. [Database feature flags (compile‑time)](#19-database-feature-flags-compile-time)
-20. [Multi‑target build script (`build.sh`)](#20-multi-target-build-script-buildsh)
-21. [Troubleshooting](#21-troubleshooting)
-22. [Security checklist](#22-security-checklist)
-23. [Contributing & license](#23-contributing--license)
+11. [Document Immutability & State Machine Governance (`locked_when` & `state_machine`)](#11-document-immutability--state-machine-governance-locked_when--state_machine)
+12. [Database seeding (`seed`)](#12-database-seeding-seed)
+13. [Hooks & validation](#13-hooks--validation)
+14. [Formula placeholders](#14-formula-placeholders)
+15. [Endpoint reference](#15-endpoint-reference)
+16. [Authentication & authorization](#16-authentication--authorization)
+17. [Import & export](#17-import--export)
+18. [Column encryption](#18-column-encryption)
+19. [Logging & observability](#19-logging--observability)
+20. [Database feature flags (compile‑time)](#20-database-feature-flags-compile-time)
+21. [Multi‑target build script (`build.sh`)](#21-multi-target-build-script-buildsh)
+22. [Troubleshooting](#22-troubleshooting)
+23. [Security checklist](#23-security-checklist)
+24. [Contributing & license](#24-contributing--license)
 
 ---
 
@@ -118,7 +119,7 @@ On first start the engine creates `flx_users` / `flx_roles` if missing and, if t
 Your admin Password: 1234
 ```
 
-Log in with email `admin` and that password (see [§15](#15-authentication--authorization)).
+Log in with email `admin` and that password (see [§16](#16-authentication--authorization)).
 
 ---
 
@@ -173,7 +174,7 @@ cargo build --release
 ./target/release/flx-nocode-api
 ```
 
-To build a smaller binary with only the database backend(s) you need, see [§19](#19-database-feature-flags-compile-time).
+To build a smaller binary with only the database backend(s) you need, see [§20](#20-database-feature-flags-compile-time).
 
 ### 4.5 Docker
 
@@ -241,7 +242,7 @@ cp env .env
 | `CONVERTER_JWT_ISSUER` / `CONVERTER_JWT_AUDIENCE` | Optional issuer / audience claim checks (comma‑separated). |
 | `CONVERTER_JWT_INSECURE_SKIP_VERIFY` | `true` to accept external JWTs **without** signature verification (only if an upstream gateway already validates them). |
 
-> Converter‑token mode is **fail‑closed**: if it is active and none of the verification variables are set, all converter‑token requests are rejected. See [§15](#15-authentication--authorization).
+> Converter‑token mode is **fail‑closed**: if it is active and none of the verification variables are set, all converter‑token requests are rejected. See [§16](#16-authentication--authorization).
 
 ### Limits, uploads & rate limiting
 
@@ -334,14 +335,16 @@ Each `entity/<route>.json` deserializes into a `TableSchema` (see [src/model.rs]
 | `foreign_keys[]` | `{ column, reference_table, reference_column, on_delete, on_update }`. Actions: `cascade`, `restrict`, `set null`, `no action`. |
 | `details[]` | Array of `DetailSchema` for transactional master‑detail orchestration (see [§9](#9-master-detail-header-detail-transactional-orchestration)). |
 | `action_triggers[]` | Array of `ActionTrigger` for declarative, multi‑table cascading ERP workflows, lot stock deductions, AR/GL posting, and state‑change triggers (see [§10](#10-declarative-action-triggers--erp-cascading-workflows-action_triggers)). Also accepts alias `"triggers"`. |
+| `locked_when` | Document immutability lock: `{ status: ["SHIPPED", "PAID"], except_columns: ["notes"] }`. Prevents updating or deleting records once locked (see [§11](#11-document-immutability--state-machine-governance-locked_when--state_machine)). |
+| `state_machine` | Declarative state machine transition matrix: `{ field: "status", initial: "DRAFT", transitions: [...] }` with role-based transition guards (see [§11](#11-document-immutability--state-machine-governance-locked_when--state_machine)). |
 | `indexes[]` | `{ name, columns[], unique }`. Unique indexes are enforced on insert/update. |
 | `redis` | `{ keys[], ttl }` — cache blueprint. |
 | `get` | Read pipeline (see below). |
-| `post` / `put` | Create / update behavior + hooks (see [§12](#12-hooks--validation)). Suffix a name in `columns` with `*` to make that field required — e.g. `"columns": ["name*", "phone"]`. |
+| `post` / `put` | Create / update behavior + hooks (see [§13](#13-hooks--validation)). Suffix a name in `columns` with `*` to make that field required — e.g. `"columns": ["name*", "phone"]`. |
 | `del` | `{ enable_method, columns, type_delete, pre_process, post_process }`; `type_delete` = `soft` or `hard`. |
-| `patch` | Stored‑procedure / parameterized op: `{ enable_method, pre_process_sp, parameters[], return_mode }`. `return_mode` = `""` / `rows` / `affected`. For partial updates by id, see `PATCH /<route>/{id}` in [§14](#14-endpoint-reference). |
+| `patch` | Stored‑procedure / parameterized op: `{ enable_method, pre_process_sp, parameters[], return_mode }`. `return_mode` = `""` / `rows` / `affected`. For partial updates by id, see `PATCH /<route>/{id}` in [§15](#15-endpoint-reference). |
 | `trace` | Advanced insert + select / upsert pipeline for journaling & change capture. |
-| `seed` | If `true`, registers `POST /seed/<route>` and `POST /generate/seed/<route>` for database seeding (see [§11](#11-database-seeding-seed)). |
+| `seed` | If `true`, registers `POST /seed/<route>` and `POST /generate/seed/<route>` for database seeding (see [§12](#12-database-seeding-seed)). |
 | `auto_generate` | If `true`, the `POST /generate/table/<route>` endpoint is exposed. |
 | `collate` | Per‑table collation override. |
 
@@ -372,7 +375,7 @@ Each HTTP method is only registered when its section sets `"enable_method": true
 | `function` | *(optional)* A pattern that builds the column value automatically on **insert** — e.g. `"{request.id_trans}/%Y/%m/000ID"` produces `SO/2026/01/0001`. Empty string = no generation (the client supplies the value). Full token list in [§8](#8-custom-id-generation-function). |
 | `function_endpoint` | *(optional)* When `function` contains a numeric `…ID` token, fetch the running number from this HTTP endpoint instead of computing `MAX(id)+1`. Empty string = use the built‑in `MAX(id)+1`. Supports `{request.field}` in the URL. Detail in [§8](#8-custom-id-generation-function). |
 | `function_endpoint_path` | *(optional)* Dotted JSON path to the number inside the `function_endpoint` response. Defaults to `data`, i.e. a response of `{ "data": 1 }`. Ignored when `function_endpoint` is empty. |
-| `encrypt` | If `true`, the value is stored encrypted with `ENCRYPT_KEY` — see [§17](#17-column-encryption). |
+| `encrypt` | If `true`, the value is stored encrypted with `ENCRYPT_KEY` — see [§18](#18-column-encryption). |
 | `default` | Default value used by `generate/table`. |
 
 #### ID generation fields at a glance
@@ -749,26 +752,40 @@ Add an `"action_triggers"` (or `"triggers"`) array to `LOC_CONFIG/entity/<route>
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `name` | `string` | Human-readable name for the trigger (appears in logs and audit trails). |
-| `event` | `string` | Event to listen for: `"update"` / `"on_update"`, `"create"` / `"on_create"`, `"delete"` / `"on_delete"`. |
-| `condition` | `object` | *(optional)* Filter specifying when the trigger should fire. |
+| `name` | `string` | Human-readable identifier for the trigger (appears in logs and audit trails). |
+| `event` | `string` | Lifecycle event to listen for: `"on_create"` (or `"create"`), `"on_update"` (or `"update"`), `"on_delete"` (or `"delete"`). |
+| `condition` | `object` | *(optional)* Filter specifying when the trigger activates. |
 | `condition.field` | `string` | Column name to monitor for changes (e.g. `"status"`). |
-| `condition.from` | `string` / `array` | Required previous value(s) (e.g. `"CONFIRMED"` or `["CONFIRMED", "APPROVED", "PENDING"]`). |
-| `condition.to` | `string` | Target value that activates the trigger (e.g. `"SHIPPED"`). |
-| `actions[]` | `array` | Sequential list of actions to execute inside the transaction. |
+| `condition.from` | `string` / `array` | Required previous value(s) (e.g. `"CONFIRMED"` or `["CONFIRMED", "APPROVED"]`). Supports `"*"` for any. |
+| `condition.to` | `string` | Target value that activates the trigger (e.g. `"SHIPPED"`). Supports `"*"` for any. |
+| `actions[]` | `array` | Sequential list of actions executed atomically within the database transaction. |
 
 #### Supported Action Types (`actions[].type`)
 
 | Action Type | Key Attributes | Purpose |
 |-------------|----------------|---------|
-| `iterate_detail` (or `loop_detail`) | `target_table`, `actions[]` | Queries detail line items matching the parent header and executes nested actions for each item. |
-| `update` | `target_table`, `filter`, `set`, `validate` | Updates matching records in `target_table`. Supports dynamic calculations (e.g. `"qty - {item.qty}"`) and boundary validations (`validate.min`). |
-| `insert` | `target_table`, `values` (or `fields`) | Inserts a new single row into `target_table` with dynamic placeholder resolution and type coercion. |
-| `insert_batch` | `target_table`, `rows[]` | Bulk-inserts multiple rows within the transaction (e.g. balanced GL journal vouchers). |
-| `sql` | `statement`, `params[]` | Raw parameterized SQL escape hatch. Placeholders are rehydrated per database type. |
+| `iterate_detail` (or `loop_detail`) | `target_table`, `actions[]` | Queries relational detail line items matching the parent header and executes nested actions for each line item. |
+| `lookup` | `target_table`, `filter`, `as`, `optional` | Queries master reference data (e.g. product catalog, currency rates) by key and injects the row attributes into the trigger evaluation context under the specified alias (e.g. `{product.cost_price}`). If `optional: false` (default) and the record is not found, the transaction aborts with an HTTP 400 error. |
+| `accumulate` | `accumulate: { "<metric>": "<expression>" }` | Evaluates arithmetic expressions per detail line and accumulates a running total in the runtime context (accessible via `{acc.<metric>}`). |
+| `update` | `target_table`, `filter`, `set`, `validate`, `atomic` | Updates records in `target_table`. Supports dynamic arithmetic (`set`), boundary validations (`validate.min`), and row-level locking (`atomic: true`). |
+| `insert` | `target_table`, `values` (or `fields`) | Inserts a new single row into `target_table` with dynamic placeholder resolution, type coercion, and formula calculations. |
+| `insert_batch` | `target_table`, `rows[]`, `validate` | Bulk-inserts multiple rows within the transaction (e.g. balanced GL journal vouchers). Supports `validate.assert_balanced` for double-entry ledger verification. |
+| `sql` | `statement`, `params[]` | Parameterized raw SQL escape hatch. Placeholders (`{:?}`, `?`, `$1`, `@p1`) are automatically rehydrated per database dialect. |
 
-#### Boundary Validations (`validate`)
-Use `validate` inside `update` actions to prevent business logic violations such as negative inventory:
+#### Concurrency & Atomic Row-Locking (`atomic: true`)
+High-volume ERP environments face race condition risks during inventory deductions and account balance updates (e.g. concurrent checkout requests attempting to fulfill orders against the same remaining stock).
+
+To eliminate dirty reads and stock overdrafts:
+* Flexurio defaults `atomic: true` on `update` actions.
+* For **PostgreSQL** and **MySQL**, the engine automatically injects a `SELECT ... FOR UPDATE` row lock on the target records prior to modification.
+* For **SQLite** and **MSSQL**, operations are serialized within the exclusive ACID database transaction.
+* If another transaction has locked the row, the incoming request waits until the lock is released or throws a transaction timeout, guaranteeing complete serializability.
+
+#### Boundary Validations & Accounting Balance Assertion (`validate`)
+Use `validate` inside `update` and `insert_batch` actions to enforce business invariants:
+
+##### 1. Lower-Bound Quantity Check (`validate.min`)
+Prevents negative inventory balances:
 ```json
 "validate": {
   "min": {
@@ -777,25 +794,80 @@ Use `validate` inside `update` actions to prevent business logic violations such
   "error_message": "Insufficient inventory for product {item.product_id} lot {item.lot_number}"
 }
 ```
-If the resulting calculated value drops below the `min` threshold, the trigger aborts and the transaction immediately rolls back with an HTTP `400 Bad Request`.
+If the resulting calculated value drops below the threshold, the transaction rolls back immediately with an HTTP `400 Bad Request`.
+
+##### 2. Double-Entry Accounting Balancing (`validate.assert_balanced`)
+In financial ledgers, unbalanced journal entries violate fundamental accounting principles:
+```json
+"validate": {
+  "assert_balanced": {
+    "debit_field": "debit",
+    "credit_field": "credit",
+    "tolerance": 0.001
+  },
+  "error_message": "General Ledger transaction unbalanced: total debits must equal total credits"
+}
+```
+The engine sums all rows in `insert_batch` and verifies $|\sum \text{debits} - \sum \text{credits}| \le \text{tolerance}$. If unbalanced, the entire transaction is rejected.
+
+#### Embedded Arithmetic Formula Evaluator (`{calc: ...}`)
+Flexurio includes an enterprise recursive-descent math evaluator for dynamic calculations inside `set`, `values`, `rows`, and `accumulate`:
+
+* **Syntax**: `{calc: expression}` (e.g. `{calc: item.qty * lookup.product.cost_price}` or `{calc: parent.subtotal * 0.11}`).
+* **Operators**: `+`, `-`, `*`, `/`, `%` with standard operator precedence and parentheses `(...)`.
+* **Math Functions**:
+  * `round(value, decimals)` — e.g. `round(parent.subtotal * 0.11, 2)`
+  * `floor(value)`
+  * `ceil(value)`
+  * `abs(value)`
+  * `min(a, b)`
+  * `max(a, b)`
+* **Direct Variable Support**: Variables inside formulas can be referenced with or without braces: `{calc: item.qty * product.cost_price}` or `{calc: {item.qty} * {product.cost_price}}`.
+
+#### Conditional Action Execution (`condition` & `{if: ...}`)
+Individual actions within an `action_triggers` pipeline can be conditionally executed:
+```json
+{
+  "type": "insert",
+  "target_table": "transaction_shipping_notice",
+  "condition": {
+    "field": "shipping_method",
+    "from": "*",
+    "to": "COURIER"
+  },
+  "values": { ... }
+}
+```
+Inline ternary conditional strings are also supported:
+```
+"{if: parent.is_taxable == 1 ? {calc: parent.subtotal * 0.11} : 0}"
+```
 
 #### Template Interpolation Tokens
-Strings inside `filter`, `set`, `values`, `rows`, and `validate.error_message` support dynamic token replacement:
+Strings inside `filter`, `set`, `values`, `rows`, and `error_message` support dynamic token replacement:
 
 | Token Pattern | Description | Example |
 |---------------|-------------|---------|
 | `{parent.<column>}` | Value from the updated parent header document | `{parent.id}`, `{parent.customer_id}`, `{parent.total_amount}` |
 | `{item.<column>}` | Value from the current child detail item (inside `iterate_detail`) | `{item.product_id}`, `{item.lot_number}`, `{item.qty}` |
-| `{request.<field>}` | Value supplied in the incoming HTTP request body | `{request.status}`, `{request.notes}` |
-| `{now:FORMAT}` | Current timestamp formatted with standard date tokens | `{now:YYYY-MM-DD}` $\to$ `2026-09-05` |
-| `{now+Nd:FORMAT}` | Current timestamp plus $N$ days | `{now+30d:YYYY-MM-DD}` $\to$ `2026-10-05` |
-| `{token\|default}` | Fallback syntax if the variable is null or absent | `{request.notes\|No notes provided}` |
+| `{lookup.<alias>.<col>}` or `{<alias>.<col>}` | Master record field retrieved via a `lookup` action | `{lookup.product.cost_price}`, `{product.standard_cost}` |
+| `{acc.<name>}` | Running total aggregated across detail lines via `accumulate` | `{acc.total_cogs}`, `{acc.total_weight}` |
+| `{calc:<expression>}` | Arithmetic calculation evaluated via the math engine | `{calc: item.qty * product.cost_price}`, `{calc: round(parent.subtotal * 0.11, 2)}` |
+| `{if: cond ? val1 : val2}` | Inline conditional ternary expression | `{if: parent.is_taxable == 1 ? 11 : 0}` |
+| `{request.<field>}` | Value supplied in the incoming HTTP request payload | `{request.status}`, `{request.notes}` |
+| `{now:FORMAT}` | Current timestamp formatted with date tokens | `{now:YYYY-MM-DD}` $\to$ `2026-09-05` |
+| `{seq:KEY:PATTERN}` or `{seq:KEY}` | Atomic running sequence number generator (e.g. `{seq:INV:INV/{YYYY}/{MM}/{0000ID}}`). Downstream steps can reuse `{seq:KEY}` to share the exact same number across documents. | `{seq:AR_INVOICE:INV/{YYYY}/{MM}/{0000ID}}` $\to$ `INV/2026/09/0001` |
+| `{token|default}` | Fallback syntax if the variable is null or absent | `{request.notes|No notes provided}` |
+
+> **Note on Action `update`**: The `set` dictionary in `update` actions supports arithmetic modifications (`"qty": "qty - {item.qty}"`), as well as non-numeric column assignments including status transitions (`"status": "FULFILLED"`), dates (`"closed_at": "{now:YYYY-MM-DD}"`), booleans (`"is_closed": true`), and null.
+>
+> **State Machine & `locked_when` Harmony**: When a document is locked (e.g., `status IN ('APPROVED', 'POSTED')`), users with authorized roles listed in `state_machine.transitions[].roles` can still submit status transitions (e.g., `APPROVED` $\to$ `SHIPPED`). The engine strictly permits only the status change while prohibiting modifications to any locked business columns.
 
 ---
 
 ### 10.4 Complete Production Configuration Example
 
-Here is the complete configuration for `LOC_CONFIG/entity/transaction_sales_order.json`:
+Here is the complete configuration for `LOC_CONFIG/entity/transaction_sales_order.json` featuring master data lookup, line item COGS accumulation, lot inventory deduction with row-level locks, AR invoice creation, and balanced GL journal posting:
 
 ```json
 {
@@ -809,9 +881,25 @@ Here is the complete configuration for `LOC_CONFIG/entity/transaction_sales_orde
     { "name": "so_number", "type_data": "varchar(50)", "nullable": false },
     { "name": "customer_id", "type_data": "int", "nullable": false },
     { "name": "order_date", "type_data": "date", "nullable": false },
+    { "name": "subtotal", "type_data": "decimal(15,2)", "default_value": "0" },
     { "name": "total_amount", "type_data": "decimal(15,2)", "default_value": "0" },
-    { "name": "status", "type_data": "varchar(20)", "default_value": "'DRAFT'" }
+    { "name": "status", "type_data": "varchar(20)", "default_value": "'DRAFT'" },
+    { "name": "notes", "type_data": "text", "nullable": true }
   ],
+  "locked_when": {
+    "status": ["SHIPPED", "PAID", "POSTED", "CANCELLED"],
+    "except_columns": ["notes"]
+  },
+  "state_machine": {
+    "field": "status",
+    "initial": "DRAFT",
+    "transitions": [
+      { "from": "DRAFT", "to": "CONFIRMED", "roles": ["sales", "sales_manager", "admin"] },
+      { "from": "CONFIRMED", "to": "SHIPPED", "roles": ["warehouse", "logistics", "admin"] },
+      { "from": "SHIPPED", "to": "PAID", "roles": ["finance", "admin"] },
+      { "from": ["DRAFT", "CONFIRMED"], "to": "CANCELLED", "roles": ["sales_manager", "admin"] }
+    ]
+  },
   "details": [
     {
       "field": "items",
@@ -825,7 +913,7 @@ Here is the complete configuration for `LOC_CONFIG/entity/transaction_sales_orde
   "action_triggers": [
     {
       "name": "sales_order_fulfillment",
-      "event": "update",
+      "event": "on_update",
       "condition": {
         "field": "status",
         "from": ["CONFIRMED", "APPROVED"],
@@ -837,8 +925,23 @@ Here is the complete configuration for `LOC_CONFIG/entity/transaction_sales_orde
           "target_table": "transaction_sales_order_item",
           "actions": [
             {
+              "type": "lookup",
+              "target_table": "master_product",
+              "filter": {
+                "id": "{item.product_id}"
+              },
+              "as": "product"
+            },
+            {
+              "type": "accumulate",
+              "accumulate": {
+                "total_cogs": "{calc: item.qty * product.cost_price}"
+              }
+            },
+            {
               "type": "update",
               "target_table": "transaction_product_lot",
+              "atomic": true,
               "filter": {
                 "product_id": "{item.product_id}",
                 "lot_number": "{item.lot_number}"
@@ -870,6 +973,14 @@ Here is the complete configuration for `LOC_CONFIG/entity/transaction_sales_orde
         {
           "type": "insert_batch",
           "target_table": "transaction_general_ledger_line",
+          "validate": {
+            "assert_balanced": {
+              "debit_field": "debit",
+              "credit_field": "credit",
+              "tolerance": 0.001
+            },
+            "error_message": "GL Transaction unbalanced: debits and credits must match"
+          },
           "rows": [
             {
               "reference_id": "{parent.id}",
@@ -883,16 +994,37 @@ Here is the complete configuration for `LOC_CONFIG/entity/transaction_sales_orde
               "account_code": "4100",
               "description": "Sales Revenue - {parent.so_number}",
               "debit": 0,
-              "credit": "{parent.total_amount}"
+              "credit": "{parent.subtotal}"
+            },
+            {
+              "reference_id": "{parent.id}",
+              "account_code": "2150",
+              "description": "VAT Output Tax (11%)",
+              "debit": 0,
+              "credit": "{calc: parent.total_amount - parent.subtotal}"
+            },
+            {
+              "reference_id": "{parent.id}",
+              "account_code": "5100",
+              "description": "Cost of Goods Sold - {parent.so_number}",
+              "debit": "{acc.total_cogs}",
+              "credit": 0
+            },
+            {
+              "reference_id": "{parent.id}",
+              "account_code": "1300",
+              "description": "Inventory Finished Goods Asset",
+              "debit": 0,
+              "credit": "{acc.total_cogs}"
             }
           ]
         }
       ]
     }
   ],
-  "get": { "enable_method": true, "columns": ["id", "so_number", "customer_id", "total_amount", "status"] },
-  "post": { "enable_method": true, "columns": ["so_number*", "customer_id*", "order_date*", "total_amount", "status"] },
-  "put": { "enable_method": true, "columns": ["so_number", "customer_id", "order_date", "total_amount", "status"] }
+  "get": { "enable_method": true, "columns": ["id", "so_number", "customer_id", "subtotal", "total_amount", "status", "notes"] },
+  "post": { "enable_method": true, "columns": ["so_number*", "customer_id*", "order_date*", "subtotal*", "total_amount*", "status", "notes"] },
+  "put": { "enable_method": true, "columns": ["so_number", "customer_id", "order_date", "subtotal", "total_amount", "status", "notes"] }
 }
 ```
 
@@ -941,9 +1073,195 @@ If any lot does not have enough stock to satisfy line item quantities, the engin
 ```
 *Result*: The Sales Order status remains `CONFIRMED`, no inventory is deducted, no AR invoice is created, and no GL lines are posted. Database integrity is 100% preserved.
 
+#### 3. Automatic Rollback on Unbalanced Accounting Voucher
+If journal debits do not equal credits within the specified tolerance, the trigger transaction immediately rolls back:
+
+```json
+{
+  "success": false,
+  "message": "Trigger 'sales_order_fulfillment' action failed: GL Transaction unbalanced: debits and credits must match (total_debit=250000.00, total_credit=225000.00)",
+  "total_data": 0,
+  "data": null
+}
+```
+
 ---
 
-## 11. Database seeding (`seed`)
+### 10.6 Two-Step Delivery (Delivery Order) & Partial Fulfillment Pattern
+
+In enterprise supply chain operations, shipping is frequently handled via a dedicated **Delivery Order (Surat Jalan)** entity rather than modifying the Sales Order directly. A single Sales Order can be fulfilled across multiple partial shipments.
+
+Flexurio supports this natively by placing `action_triggers` on `transaction_delivery_order`:
+
+```json
+{
+  "table": "transaction_delivery_order",
+  "action_triggers": [
+    {
+      "name": "delivery_order_dispatch",
+      "event": "on_update",
+      "condition": {
+        "field": "status",
+        "from": "DRAFT",
+        "to": "DISPATCHED"
+      },
+      "actions": [
+        {
+          "type": "iterate_detail",
+          "target_table": "transaction_delivery_order_item",
+          "actions": [
+            {
+              "type": "update",
+              "target_table": "transaction_product_lot",
+              "atomic": true,
+              "filter": {
+                "product_id": "{item.product_id}",
+                "lot_number": "{item.lot_number}"
+              },
+              "set": {
+                "qty_available": "qty_available - {item.qty_shipped}"
+              },
+              "validate": {
+                "min": { "qty_available": 0 },
+                "error_message": "Insufficient stock for product {item.product_id} lot {item.lot_number}"
+              }
+            },
+            {
+              "type": "update",
+              "target_table": "transaction_sales_order_item",
+              "filter": {
+                "sales_order_id": "{parent.sales_order_id}",
+                "product_id": "{item.product_id}"
+              },
+              "set": {
+                "qty_delivered": "qty_delivered + {item.qty_shipped}"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+```
+
+---
+
+## 11. Document Immutability & State Machine Governance (`locked_when` & `state_machine`)
+
+Enterprise ERP and accounting software require strict governance guarantees over document lifecycles to comply with audit regulations (such as SOX, GAAP, and IFRS) and prevent unauthorized status manipulations.
+
+Flexurio provides two native, declarative engine features directly inside each entity schema:
+1. **Document Immutability Lock (`locked_when`)**
+2. **State Machine Transition Matrix (`state_machine`)**
+
+---
+
+### 11.1 Document Immutability Lock (`locked_when`)
+
+Once a transactional document (e.g. Sales Order, Purchase Order, Bank Disbursement) reaches a finalized status such as `SHIPPED`, `INVOICED`, `PAID`, or `POSTED`, modifying line items, quantities, or financial totals corrupts inventory and ledger integrity.
+
+#### Schema Definition
+Add `"locked_when"` to `LOC_CONFIG/entity/<route>.json`:
+
+```json
+{
+  "table": "transaction_sales_order",
+  "locked_when": {
+    "status": ["SHIPPED", "PAID", "POSTED", "CANCELLED"],
+    "except_columns": ["notes", "internal_memo"]
+  }
+}
+```
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `<column_name>` | `string` / `array` | The field and corresponding value(s) that trigger the immutability lock (e.g. `"status": ["SHIPPED", "PAID"]`). |
+| `except_columns` | `array` | *(optional)* List of non-financial columns that remain editable even when locked (e.g. `"notes"`, `"internal_memo"`). System timestamp columns starting with `updated_` are also permitted. |
+
+#### Behavior & Enforcement
+* **Updates (`PUT` / `PATCH`)**:
+  - Before applying any update, the engine reads the current record from the database.
+  - If the record matches the `locked_when` conditions and the incoming payload contains fields outside `except_columns`, the transaction is rolled back immediately:
+    ```json
+    {
+      "success": false,
+      "message": "Cannot modify locked record: field 'status' is currently 'SHIPPED'",
+      "total_data": 0,
+      "data": null
+    }
+    ```
+* **Deletions (`DELETE`)**:
+  - Deleting a locked record is strictly forbidden. The delete request is rejected with HTTP `400 Bad Request`:
+    ```json
+    {
+      "success": false,
+      "message": "Cannot delete locked record: field 'status' is currently 'SHIPPED'",
+      "total_data": 0,
+      "data": null
+    }
+    ```
+
+---
+
+### 11.2 Declarative State Machine Transition Matrix (`state_machine`)
+
+Business documents must transition through predictable lifecycles (e.g. `DRAFT` $\to$ `CONFIRMED` $\to$ `SHIPPED` $\to$ `PAID`). Unregulated updates could allow an operator to skip mandatory approval steps or resurrect a cancelled order.
+
+#### Schema Definition
+Add `"state_machine"` to `LOC_CONFIG/entity/<route>.json`:
+
+```json
+{
+  "table": "transaction_sales_order",
+  "state_machine": {
+    "field": "status",
+    "initial": "DRAFT",
+    "transitions": [
+      { "from": "DRAFT", "to": "CONFIRMED", "roles": ["sales", "sales_manager", "admin"] },
+      { "from": "CONFIRMED", "to": "SHIPPED", "roles": ["warehouse", "logistics", "admin"] },
+      { "from": "SHIPPED", "to": "PAID", "roles": ["finance", "admin"] },
+      { "from": ["DRAFT", "CONFIRMED"], "to": "CANCELLED", "roles": ["sales_manager", "admin"] }
+    ]
+  }
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `field` | `string` | The status column governed by the state machine (e.g. `"status"`, `"approval_stage"`). |
+| `initial` | `string` | The mandatory initial state when a new record is created via `POST` (defaults to this value if omitted in the payload). |
+| `transitions[]` | `array` | List of allowed state transitions. |
+| `transitions[].from` | `string` / `array` | The current state(s) from which transition is valid. Supports `"*"` for any. |
+| `transitions[].to` | `string` | The target state. |
+| `transitions[].roles` | `array` | *(optional)* User roles authorized to perform this transition. If omitted or `["*"]`, any authenticated user may transition. |
+
+#### Behavior & Enforcement
+1. **Illegal State Transitions**:
+   - If a client attempts an illegal state jump (e.g. jumping from `DRAFT` directly to `PAID`), the engine rejects the request with HTTP `400 Bad Request`:
+     ```json
+     {
+       "success": false,
+       "message": "Illegal state transition on 'status': cannot transition from 'DRAFT' to 'PAID'",
+       "total_data": 0,
+       "data": null
+     }
+     ```
+2. **Role-Based Transition Guards**:
+   - The user's role is extracted from their authenticated JWT claims (`role` or `rl`).
+   - If a warehouse operator (`role: "warehouse"`) attempts to confirm a draft order (which requires role `"sales"` or `"sales_manager"`), the engine rejects the request with HTTP `403 Forbidden`:
+     ```json
+     {
+       "success": false,
+       "message": "Unauthorized state transition on 'status': role 'warehouse' is not permitted to transition from 'DRAFT' to 'CONFIRMED'",
+       "total_data": 0,
+       "data": null
+     }
+     ```
+
+---
+
+## 12. Database seeding (`seed`)
 
 Flexurio supports declarative database seeding for initial master data, lookup tables, and test fixtures.
 
@@ -954,7 +1272,7 @@ Flexurio supports declarative database seeding for initial master data, lookup t
      └── init_roles.sql      # Multi-statement raw SQL script
 ```
 
-### 11.1 Enabling Seeding in Entity Schema
+### 12.1 Enabling Seeding in Entity Schema
 
 Add `"seed": true` to `LOC_CONFIG/entity/<route>.json`:
 
@@ -976,7 +1294,7 @@ When `"seed": true` is enabled, the engine registers two administrative endpoint
 
 > **Security**: Seed endpoints require an **Admin** role token (`admin`, `administrator`, or bitmask `127` / `*/127`). Non-admin requests receive `403 Forbidden`.
 
-### 11.2 Supported Seed File Formats
+### 12.2 Supported Seed File Formats
 
 Seed files are stored in the directory configured by `LOC_SEED` (default: `seed/`). The engine automatically detects and loads files named `<route>.*` or `<table_name>.*`:
 
@@ -1008,7 +1326,7 @@ INSERT INTO banks (name, code) VALUES ('Bank Mandiri', 'MANDIRI');
 INSERT INTO banks (name, code) VALUES ('Bank Rakyat Indonesia', 'BRI');
 ```
 
-### 11.3 Triggering a Seed Run
+### 12.3 Triggering a Seed Run
 
 Trigger seeding by sending an authenticated POST request:
 
@@ -1029,7 +1347,7 @@ Response:
 
 ---
 
-## 12. Hooks & validation
+## 13. Hooks & validation
 
 `post`, `put`, and `del` can run extra logic around the main database operation. All hook strings are **prefixed** to indicate their kind; an empty string or a value without a recognized prefix is ignored.
 
@@ -1113,7 +1431,7 @@ Notes:
 
 ---
 
-## 13. Formula placeholders
+## 14. Formula placeholders
 
 Placeholders are available inside hooks and formula values:
 
@@ -1131,14 +1449,14 @@ Notes:
 
 ---
 
-## 14. Endpoint reference
+## 15. Endpoint reference
 
 For a route `<route>` listed in `routes.json` (each method requires `enable_method: true` in its schema section):
 
 | Method & path | Schema section | Description |
 |---------------|----------------|-------------|
 | `GET /<route>?col.op=value` | `get` | Filtered read (automatically embeds child records if `details[]` configured). |
-| `POST /<route>` | `post` | Create (multipart/form‑data; supports file uploads & atomic master‑detail items). Required fields use `*` suffix — see [§12](#required-fields--suffix). |
+| `POST /<route>` | `post` | Create (multipart/form‑data; supports file uploads & atomic master‑detail items). Required fields use `*` suffix — see [§13](#required-fields--suffix). |
 | `PUT /<route>/{id}` | `put` | Update by id (synchronizes child detail records per `update_strategy`; executes `action_triggers`). |
 | `PATCH /<route>/{id}` | `put` | Partial update by id (updates only sent fields; executes `action_triggers` & writes audit trail). |
 | `DELETE /<route>/{id}` | `del` | Delete (soft or hard per `del.type_delete`; cascade deletes details if enabled). |
@@ -1146,8 +1464,8 @@ For a route `<route>` listed in `routes.json` (each method requires `enable_meth
 | `TRACE /<route>` | `trace` | Custom select + insert / upsert pipeline. |
 | `POST /seed/<route>` | `seed` | Trigger database seeding from `<LOC_SEED>/<route>.*` (Admin only; requires `"seed": true`). |
 | `POST /generate/seed/<route>` | `seed` | Alternative seed endpoint (Admin only; requires `"seed": true`). |
-| `POST /import/<route>` | `post` | Bulk import (CSV / XLSX). See [§16](#16-import--export). |
-| `GET /export/<route>` | `get` | Export (CSV / XLSX). See [§16](#16-import--export). |
+| `POST /import/<route>` | `post` | Bulk import (CSV / XLSX). See [§17](#17-import--export). |
+| `GET /export/<route>` | `get` | Export (CSV / XLSX). See [§17](#17-import--export). |
 | `GET /validate/<route>` | — | Validate the entity JSON against the database. |
 | `POST /generate/table/<route>` | — | Create the physical table (requires `auto_generate: true`; not for core tables). |
 
@@ -1155,7 +1473,7 @@ Core / system endpoints:
 
 | Method & path | Description |
 |---------------|-------------|
-| `POST /login` | Authenticate, returns a JWT (see [§15](#15-authentication--authorization)). |
+| `POST /login` | Authenticate, returns a JWT (see [§16](#16-authentication--authorization)). |
 | `POST /register` | Register a user (multipart). |
 | `GET /roles` | List roles. |
 | `GET /healthz` | Health check: `{ "status": "ok", "db": "up\|down", "db_type": "…" }`. Returns `503` if the DB is unreachable. |
@@ -1164,7 +1482,7 @@ Core / system endpoints:
 
 ---
 
-## 15. Authentication & authorization
+## 16. Authentication & authorization
 
 ### Login
 
@@ -1192,20 +1510,20 @@ When `routes.json` defines a non‑default `converter_token` mapping, JWTs are i
 
 ---
 
-## 16. Import & export
+## 17. Import & export
 
 * **Import** — `POST /import/<route>` with a multipart file. CSV and XLSX are supported; column headers must match the entity's insertable columns. Rows are inserted in batches (`IMPORT_BATCH_SIZE`).
 * **Export** — `GET /export/<route>?type=csv|xlsx` returns the route's data in the requested format (defaults to CSV; falls back to CSV if XLSX generation fails). The same filtering as `GET /<route>` applies.
 
 ---
 
-## 17. Column encryption
+## 18. Column encryption
 
 Set `"encrypt": true` on a column to store its value encrypted at rest using `ENCRYPT_KEY` (AES‑GCM). The engine encrypts on write and decrypts on read transparently. Keep `ENCRYPT_KEY` secret and stable — rotating it requires re‑encrypting existing data.
 
 ---
 
-## 18. Logging & observability
+## 19. Logging & observability
 
 * Structured logs cover endpoint registration and query execution; control verbosity with the `LOG_*`, `DEBUG`, and `LOGGING` variables ([§5](#5-environment-variables-env)).
 * `GET /healthz` for liveness/readiness probes.
@@ -1215,7 +1533,7 @@ Set `"encrypt": true` on a column to store its value encrypted at rest using `EN
 
 ---
 
-## 19. Database feature flags (compile‑time)
+## 20. Database feature flags (compile‑time)
 
 Database backends are gated behind Cargo features so you can build a lean binary with only what you need.
 
@@ -1249,7 +1567,7 @@ Smaller builds compile faster, produce smaller binaries, and remove unused code 
 
 ---
 
-## 20. Multi‑target build script (`build.sh`)
+## 21. Multi‑target build script (`build.sh`)
 
 `build.sh` produces per‑database, per‑OS binaries with feature‑gated builds, and optionally signs/notarizes macOS artifacts when Apple credentials are present.
 
@@ -1285,7 +1603,7 @@ For each driver the script runs `cargo build --release --target <triple> --no-de
 
 ---
 
-## 21. Troubleshooting
+## 22. Troubleshooting
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
@@ -1295,13 +1613,13 @@ For each driver the script runs `cargo build --release --target <triple> --no-de
 | Duplicate table error | Two schemas share the same `table` value | Rename one. |
 | `401 Unauthorized` | Missing/invalid `Authorization` header | Re‑login and send `Bearer <token>`. |
 | Table not found | Table never created | `POST /generate/table/<route>` (needs `auto_generate: true`) or create it manually. |
-| `<backend> feature disabled` | `DB_TYPE` points to a backend not compiled in | Rebuild with that feature, or change `DB_TYPE` ([§19](#19-database-feature-flags-compile-time)). |
-| Hooks not running | Used `before`/`after` keys | Use `pre_process` / `post_process` with the `SQL:` prefix ([§12](#12-hooks--validation)). |
+| `<backend> feature disabled` | `DB_TYPE` points to a backend not compiled in | Rebuild with that feature, or change `DB_TYPE` ([§20](#20-database-feature-flags-compile-time)). |
+| Hooks not running | Used `before`/`after` keys | Use `pre_process` / `post_process` with the `SQL:` prefix ([§13](#13-hooks--validation)). |
 | Custom id insert fails | `function_endpoint` unreachable / bad response | Endpoint must return 2xx JSON with the configured field; or clear `function_endpoint` to use `MAX(id)+1` ([§8](#8-custom-id-generation-function)). |
 
 ---
 
-## 22. Security checklist
+## 23. Security checklist
 
 * Use long, random `SECRET_KEY` and `ENCRYPT_KEY`; keep them out of version control.
 * Rotate keys periodically (reissue tokens; re‑encrypt data if `ENCRYPT_KEY` changes).
@@ -1313,7 +1631,7 @@ For each driver the script runs `cargo build --release --target <triple> --no-de
 
 ---
 
-## 23. Contributing & license
+## 24. Contributing & license
 
 **Contributing**
 

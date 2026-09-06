@@ -274,37 +274,8 @@ pub async fn perform_update(
             }
         }
 
-        // 1. Check document immutability lock (locked_when)
-        if let Some(locked_cfg) = &table_schema.locked_when {
-            let conditions = locked_cfg.get_conditions();
-            let except_cols = locked_cfg.get_except_columns();
-
-            for (field, expected_val) in conditions {
-                if let Some(actual_val) = old_record.get(field) {
-                    let is_match = match expected_val {
-                        Value::Array(arr) => arr.iter().any(|v| crate::nocode::trigger_engine::value_matches(v, Some(actual_val))),
-                        single => crate::nocode::trigger_engine::value_matches(single, Some(actual_val)),
-                    };
-                    if is_match {
-                        let modified_keys: Vec<&String> = patch_fields.keys().filter(|k| !k.starts_with("updated_")).collect();
-                        let only_allowed = !modified_keys.is_empty() && modified_keys.iter().all(|k| except_cols.contains(k));
-                        if !only_allowed {
-                            let _ = tx.rollback().await;
-                            return Err(format!(
-                                "Cannot modify locked record: field '{}' is currently '{}'",
-                                field,
-                                match actual_val {
-                                    Value::String(s) => s.as_str(),
-                                    _ => "locked",
-                                }
-                            ));
-                        }
-                    }
-                }
-            }
-        }
-
-        // 2. Check state machine transition guards
+        // 1. Check state machine transition guards
+        let mut status_transition_authorized = false;
         if let Some(sm) = &table_schema.state_machine {
             if let Some(new_status_val) = patch_fields.get(&sm.field) {
                 let old_status_val = old_record.get(&sm.field);
@@ -345,6 +316,40 @@ pub async fn perform_update(
                                     ));
                                 }
                             }
+                            status_transition_authorized = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. Check document immutability lock (locked_when)
+        if let Some(locked_cfg) = &table_schema.locked_when {
+            let conditions = locked_cfg.get_conditions();
+            let except_cols = locked_cfg.get_except_columns();
+            let sm_field_opt = table_schema.state_machine.as_ref().map(|sm| &sm.field);
+
+            for (field, expected_val) in conditions {
+                if let Some(actual_val) = old_record.get(field) {
+                    let is_match = match expected_val {
+                        Value::Array(arr) => arr.iter().any(|v| crate::nocode::trigger_engine::value_matches(v, Some(actual_val))),
+                        single => crate::nocode::trigger_engine::value_matches(single, Some(actual_val)),
+                    };
+                    if is_match {
+                        let modified_keys: Vec<&String> = patch_fields.keys().filter(|k| !k.starts_with("updated_")).collect();
+                        let only_allowed = !modified_keys.is_empty() && modified_keys.iter().all(|k| {
+                            except_cols.contains(k) || (status_transition_authorized && sm_field_opt == Some(*k))
+                        });
+                        if !only_allowed {
+                            let _ = tx.rollback().await;
+                            return Err(format!(
+                                "Cannot modify locked record: field '{}' is currently '{}'",
+                                field,
+                                match actual_val {
+                                    Value::String(s) => s.as_str(),
+                                    _ => "locked",
+                                }
+                            ));
                         }
                     }
                 }
@@ -872,4 +877,70 @@ mod tests {
         let unauthorized = trans.unwrap().roles.iter().any(|r| r.eq_ignore_ascii_case("staff"));
         assert!(!unauthorized, "Staff role must not be authorized to approve");
     }
+
+    #[test]
+    fn test_erp_locked_when_permits_authorized_state_transition() {
+        let locked_json = r#"{
+            "status": ["SHIPPED", "COMPLETED"],
+            "except_columns": ["notes"]
+        }"#;
+        let locked_cfg: crate::model::LockedWhen = serde_json::from_str(locked_json).unwrap();
+        let conditions = locked_cfg.get_conditions();
+        let except_cols = locked_cfg.get_except_columns();
+
+        let mut old_record = serde_json::Map::new();
+        old_record.insert("status".to_string(), serde_json::json!("SHIPPED"));
+        old_record.insert("total_amount".to_string(), serde_json::json!(500000));
+
+        let sm = crate::model::StateMachine {
+            field: "status".to_string(),
+            initial: Some("DRAFT".to_string()),
+            transitions: vec![
+                crate::model::StateTransition {
+                    from: serde_json::json!("SHIPPED"),
+                    to: "RETURNED".to_string(),
+                    roles: vec!["admin".to_string()],
+                },
+            ],
+        };
+
+        // 1. Admin transitions SHIPPED -> RETURNED (Authorized state transition alone)
+        let mut patch_status_only = serde_json::Map::new();
+        patch_status_only.insert("status".to_string(), serde_json::json!("RETURNED"));
+
+        let status_transition_authorized = true;
+        let sm_field = &sm.field;
+
+        for (field, expected_val) in conditions {
+            if let Some(actual_val) = old_record.get(field) {
+                let is_match = match expected_val {
+                    Value::Array(arr) => arr.iter().any(|v| crate::nocode::trigger_engine::value_matches(v, Some(actual_val))),
+                    single => crate::nocode::trigger_engine::value_matches(single, Some(actual_val)),
+                };
+                assert!(is_match);
+
+                let modified_keys: Vec<&String> = patch_status_only.keys().filter(|k| !k.starts_with("updated_")).collect();
+                let only_allowed = !modified_keys.is_empty() && modified_keys.iter().all(|k| {
+                    except_cols.contains(k) || (status_transition_authorized && sm_field == *k)
+                });
+                assert!(only_allowed, "Authorized status transition must pass locked_when");
+            }
+        }
+
+        // 2. Client attempts to modify total_amount on locked record while also sending RETURNED
+        let mut patch_with_fraud = serde_json::Map::new();
+        patch_with_fraud.insert("status".to_string(), serde_json::json!("RETURNED"));
+        patch_with_fraud.insert("total_amount".to_string(), serde_json::json!(1000));
+
+        for (field, _expected_val) in conditions {
+            if old_record.contains_key(field) {
+                let modified_keys: Vec<&String> = patch_with_fraud.keys().filter(|k| !k.starts_with("updated_")).collect();
+                let only_allowed = !modified_keys.is_empty() && modified_keys.iter().all(|k| {
+                    except_cols.contains(k) || (status_transition_authorized && sm_field == *k)
+                });
+                assert!(!only_allowed, "Modification of total_amount must still be blocked on locked record");
+            }
+        }
+    }
 }
+

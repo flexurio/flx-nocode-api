@@ -104,6 +104,8 @@ pub struct TriggerRuntime {
     pub lookups: HashMap<String, Value>,
     /// Accumulated numeric totals across detail line items (e.g. "total_cogs", "total_tax")
     pub accumulated: HashMap<String, f64>,
+    /// Generated running sequence numbers indexed by key (e.g. "AR_INVOICE", "GL_JOURNAL")
+    pub sequences: HashMap<String, String>,
 }
 
 /// Traverse nested JSON object by dot-separated path (e.g. "product.cost_price", "category.code")
@@ -695,7 +697,22 @@ fn resolve_single_token(
         }
     }
 
-    // 4. Resolving parent / item / acc / lookup / request references
+    // 4. Sequence token: e.g. "{seq:AR_INVOICE}" or "{seq:AR_INVOICE:INV/{YYYY}/{MM}/{0000ID}}"
+    if expr.starts_with("seq:") || expr.starts_with("sequence:") {
+        if let Some((_, rest)) = expr.split_once(':') {
+            let key = match rest.split_once(':') {
+                Some((k, _)) => k.trim(),
+                None => rest.trim(),
+            };
+            if let Some(runtime) = runtime_opt {
+                if let Some(seq_val) = runtime.sequences.get(key) {
+                    return seq_val.clone();
+                }
+            }
+        }
+    }
+
+    // 5. Resolving parent / item / acc / lookup / request references
     if let Some(prop) = expr.strip_prefix("parent.") {
         let parent_obj = Value::Object(ctx.new_record.clone());
         if let Some(v) = resolve_nested_json(&parent_obj, prop) {
@@ -871,6 +888,195 @@ fn compute_set_value(
     compute_set_value_full("", current_val, set_expr, ctx, None, item_opt)
 }
 
+/// Check if string matches a standard date/datetime format (e.g. `YYYY-MM-DD` or `YYYY/MM/DD`).
+pub fn is_date_format(s: &str) -> bool {
+    let trimmed = s.trim();
+    if trimmed.len() >= 10 {
+        let b = trimmed.as_bytes();
+        if b[0..4].iter().all(|c| c.is_ascii_digit())
+            && (b[4] == b'-' || b[4] == b'/')
+            && b[5..7].iter().all(|c| c.is_ascii_digit())
+            && (b[7] == b'-' || b[7] == b'/')
+            && b[8..10].iter().all(|c| c.is_ascii_digit())
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// Coerce a resolved string into the most appropriate DbParam type.
+/// Prevents PostgreSQL "operator does not exist: integer = character varying" type mismatches.
+pub fn coerce_dbparam(s: &str) -> DbParam {
+    let trimmed = s.trim();
+    if is_date_format(trimmed) {
+        return DbParam::Str(trimmed.to_string());
+    }
+    if let Ok(i) = trimmed.parse::<i64>() {
+        DbParam::I64(i)
+    } else if let Ok(f) = trimmed.parse::<f64>() {
+        DbParam::F64(f)
+    } else if trimmed.eq_ignore_ascii_case("true") {
+        DbParam::Bool(true)
+    } else if trimmed.eq_ignore_ascii_case("false") {
+        DbParam::Bool(false)
+    } else if trimmed.eq_ignore_ascii_case("null") {
+        DbParam::Null
+    } else {
+        DbParam::Str(s.to_string())
+    }
+}
+
+/// Parse and expand a sequence pattern (e.g. `INV/{YYYY}/{MM}/{0000ID}`) into prefix, width, and suffix.
+pub fn parse_sequence_pattern(pattern: &str) -> (String, usize, String) {
+    let now = Local::now();
+    let yyyy = now.format("%Y").to_string();
+    let yy = now.format("%y").to_string();
+    let mm = now.format("%m").to_string();
+    let dd = now.format("%d").to_string();
+
+    let expanded = pattern
+        .replace("{YYYY}", &yyyy)
+        .replace("{yyyy}", &yyyy)
+        .replace("{YY}", &yy)
+        .replace("{yy}", &yy)
+        .replace("{MM}", &mm)
+        .replace("{mm}", &mm)
+        .replace("{DD}", &dd)
+        .replace("{dd}", &dd);
+
+    let mut width = 4;
+    let mut prefix = expanded.clone();
+    let mut suffix = String::new();
+
+    if let Some(start_idx) = expanded.find('{') {
+        if let Some(end_idx) = expanded[start_idx..].find('}') {
+            let inner = &expanded[start_idx + 1..start_idx + end_idx];
+            if inner.ends_with("ID") || inner.ends_with("id") {
+                let zeros = inner[..inner.len() - 2].chars().filter(|c| *c == '0').count();
+                width = if zeros > 0 { zeros } else { 1 };
+                prefix = expanded[..start_idx].to_string();
+                suffix = expanded[start_idx + end_idx + 1..].to_string();
+                return (prefix, width, suffix);
+            }
+        }
+    }
+
+    if let Some(id_idx) = expanded.find("ID").or_else(|| expanded.find("id")) {
+        let before = &expanded[..id_idx];
+        let zeros = before.chars().rev().take_while(|c| *c == '0').count();
+        if zeros > 0 {
+            width = zeros;
+            prefix = expanded[..id_idx - zeros].to_string();
+            suffix = expanded[id_idx + 2..].to_string();
+            return (prefix, width, suffix);
+        }
+    }
+
+    (prefix, width, suffix)
+}
+
+/// Queries the latest sequence number matching `prefix` in `table`.`col` and increments by 1.
+async fn query_next_sequence<'a>(
+    tx: &'a mut (dyn TxStore + 'a),
+    table: &str,
+    col: &str,
+    prefix: &str,
+) -> i64 {
+    if table.is_empty() || col.is_empty() {
+        return 1;
+    }
+
+    let like_pat = format!("{}%", prefix);
+    let q_max = crate::storage::ast::Query::from(table.to_string())
+        .select([col])
+        .r#where(crate::storage::ast::Filter::Like(col.into(), like_pat))
+        .order_by(col, false)
+        .limit(1);
+
+    let max_val: String = match tx.query(&q_max).await {
+        Ok(rows) if !rows.is_empty() => rows[0]
+            .get(col)
+            .and_then(|v| v.as_str().map(|s| s.to_string()))
+            .unwrap_or_default(),
+        _ => String::new(),
+    };
+
+    if max_val.is_empty() {
+        return 1;
+    }
+
+    let num_part: String = max_val
+        .chars()
+        .rev()
+        .take_while(|c| c.is_ascii_digit())
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect();
+
+    if let Ok(n) = num_part.parse::<i64>() {
+        n + 1
+    } else {
+        1
+    }
+}
+
+/// Scans text for `{seq:KEY:PATTERN}` or `{seq:KEY}` and resolves it atomically into `runtime.sequences`.
+async fn ensure_sequences<'a>(
+    tx: &'a mut (dyn TxStore + 'a),
+    runtime: &'a mut TriggerRuntime,
+    text: &str,
+    target_table: &str,
+    target_col: &str,
+) -> Result<(), String> {
+    let chars: Vec<char> = text.chars().collect();
+    let len = chars.len();
+    let mut i = 0;
+
+    while i < len {
+        if chars[i] == '{' {
+            let is_seq = (i + 5 <= len && chars[i..i + 5].iter().collect::<String>() == "{seq:")
+                || (i + 10 <= len && chars[i..i + 10].iter().collect::<String>() == "{sequence:");
+            if is_seq {
+                let start = i + 1;
+                let mut depth = 1;
+                let mut j = start;
+                while j < len && depth > 0 {
+                    if chars[j] == '{' {
+                        depth += 1;
+                    } else if chars[j] == '}' {
+                        depth -= 1;
+                    }
+                    j += 1;
+                }
+                if depth == 0 {
+                    let token_content: String = chars[start..j - 1].iter().collect();
+                    if let Some((_, rest)) = token_content.split_once(':') {
+                        let (key, pattern_opt) = match rest.split_once(':') {
+                            Some((k, p)) => (k.trim(), Some(p.trim())),
+                            None => (rest.trim(), None),
+                        };
+
+                        if !runtime.sequences.contains_key(key) {
+                            let pattern = pattern_opt.unwrap_or("{0000ID}");
+                            let (prefix, width, suffix) = parse_sequence_pattern(pattern);
+
+                            let next_num = query_next_sequence(tx, target_table, target_col, &prefix).await;
+                            let formatted = format!("{}{:0width$}{}", prefix, next_num, suffix, width = width);
+                            runtime.sequences.insert(key.to_string(), formatted);
+                        }
+                    }
+                    i = j;
+                    continue;
+                }
+            }
+        }
+        i += 1;
+    }
+    Ok(())
+}
+
 /// Execute all matching triggers within the current transaction scope.
 pub async fn execute_triggers<'a>(
     db_type: DbType,
@@ -978,7 +1184,7 @@ fn execute_action<'a>(
                         other => json_val_to_str(other),
                     };
                     where_clauses.push(format!("{} = ?", col));
-                    filter_params.push(DbParam::Str(resolved_str));
+                    filter_params.push(coerce_dbparam(&resolved_str));
                 }
                 let where_sql = where_clauses.join(" AND ");
 
@@ -1073,15 +1279,29 @@ fn execute_action<'a>(
                     db_type.as_str(),
                 );
 
-                let fk_param = DbParam::Str(ctx.parent_pk.to_string());
+                let fk_param = coerce_dbparam(ctx.parent_pk);
                 let items = tx
                     .raw_sql(&built_sql, vec![fk_param])
                     .await
                     .map_err(|e| format!("Querying detail items from '{}' failed: {}", detail_table, e))?;
 
+                // Sort items deterministically by key to eliminate circular wait deadlocks across concurrent transactions
+                let mut sorted_items = items;
+                sorted_items.sort_by(|a, b| {
+                    let get_sort_key = |val: &Value| -> String {
+                        if let Value::Object(m) = val {
+                            if let Some(id) = m.get("id").or_else(|| m.get("product_id")).or_else(|| m.get("item_id")) {
+                                return json_val_to_str(id);
+                            }
+                        }
+                        "".to_string()
+                    };
+                    get_sort_key(a).cmp(&get_sort_key(b))
+                });
+
                 let sub_actions = action.actions.as_deref().unwrap_or(&[]);
 
-                for item in &items {
+                for item in &sorted_items {
                     let mut current_item = item.as_object().cloned().unwrap_or_default();
                     for sub_act in sub_actions {
                         if let Some(updated) = execute_action(db_type.clone(), tx, sub_act, ctx, runtime, Some(current_item.clone())).await? {
@@ -1126,7 +1346,14 @@ fn execute_action<'a>(
                     format!("Action 'update' on '{}' requires 'set'", target_table)
                 })?;
 
-                // 1. Build filter WHERE clause
+                // Pre-generate sequences if referenced in set values
+                for (col, val) in set_map {
+                    if let Value::String(s) = val {
+                        ensure_sequences(tx, runtime, s, target_table, col).await?;
+                    }
+                }
+
+                // 1. Build filter WHERE clause with type-coerced parameters
                 let mut where_clauses = Vec::new();
                 let mut filter_params = Vec::new();
                 for (col, tmpl_val) in filter_map {
@@ -1135,18 +1362,18 @@ fn execute_action<'a>(
                         other => json_val_to_str(other),
                     };
                     where_clauses.push(format!("{} = ?", col));
-                    filter_params.push(DbParam::Str(resolved_str));
+                    filter_params.push(coerce_dbparam(&resolved_str));
                 }
                 let where_sql = where_clauses.join(" AND ");
 
                 // 2. Fetch current record to perform atomic validation & calculation
                 let is_atomic = action.atomic.unwrap_or(true);
-                let lock_clause = if is_atomic && (db_type == DbType::Postgres || db_type == DbType::Mysql) {
-                    " FOR UPDATE"
-                } else {
-                    ""
+                let (from_target, lock_clause) = match db_type {
+                    DbType::Postgres | DbType::Mysql if is_atomic => (target_table.to_string(), " FOR UPDATE"),
+                    DbType::Mssql if is_atomic => (format!("{} WITH (UPDLOCK, ROWLOCK)", target_table), ""),
+                    _ => (target_table.to_string(), ""),
                 };
-                let select_sql = format!("SELECT * FROM {} WHERE {}{}", target_table, where_sql, lock_clause);
+                let select_sql = format!("SELECT * FROM {} WHERE {}{}", from_target, where_sql, lock_clause);
                 let built_select = crate::database::state::rehydrate_placeholders(
                     &select_sql,
                     db_type.as_str(),
@@ -1168,50 +1395,86 @@ fn execute_action<'a>(
                     format!("Invalid row format returned from '{}'", target_table)
                 })?;
 
-                // 3. Compute new values and enforce validations
+                // 3. Compute new values (supporting numeric math, strings, booleans, dates, nulls)
                 let mut update_assignments = Vec::new();
                 let mut update_params = Vec::new();
 
                 for (col, set_expr_val) in set_map {
-                    let current_col_val = match existing_row.get(col) {
-                        Some(Value::Number(n)) => n.as_f64().unwrap_or(0.0),
-                        Some(Value::String(s)) => s.parse::<f64>().unwrap_or(0.0),
-                        _ => 0.0,
-                    };
+                    update_assignments.push(format!("{} = ?", col));
 
-                    let expr_str = match set_expr_val {
-                        Value::String(s) => s.as_str(),
-                        _ => return Err(format!("Set expression for '{}' must be a string", col)),
-                    };
-
-                    let new_calculated = compute_set_value_full(col, current_col_val, expr_str, ctx, Some(runtime), item_opt.as_ref())?;
-
-                    // Enforce minimum validation constraint (e.g. preventing negative inventory)
-                    if let Some(validate) = &action.validate {
-                        if let Some(min_map) = &validate.min {
-                            if let Some(min_val_json) = min_map.get(col) {
-                                let min_threshold = min_val_json.as_f64().unwrap_or(0.0);
-                                if new_calculated < min_threshold {
-                                    let default_msg = format!(
-                                        "Validation failed on '{}': resulting {} ({}) is below minimum allowed ({})",
-                                        target_table, col, new_calculated, min_threshold
-                                    );
-                                    let err_msg = validate
-                                        .error_message
-                                        .as_ref()
-                                        .map(|m| interpolate_string_full(m, ctx, Some(runtime), item_opt.as_ref()))
-                                        .unwrap_or(default_msg);
-                                    return Err(err_msg);
-                                }
+                    match set_expr_val {
+                        Value::Bool(b) => {
+                            update_params.push(DbParam::Bool(*b));
+                        }
+                        Value::Number(n) => {
+                            if let Some(i) = n.as_i64() {
+                                update_params.push(DbParam::I64(i));
+                            } else if let Some(f) = n.as_f64() {
+                                update_params.push(DbParam::F64(f));
+                            } else {
+                                update_params.push(coerce_dbparam(&n.to_string()));
                             }
                         }
-                    }
+                        Value::Null => {
+                            update_params.push(DbParam::Null);
+                        }
+                        Value::String(expr_str) => {
+                            let resolved_str = interpolate_string_full(expr_str, ctx, Some(runtime), item_opt.as_ref());
+                            let trimmed = resolved_str.trim();
 
-                    update_assignments.push(format!("{} = ?", col));
-                    if new_calculated.fract() == 0.0 {
-                        update_params.push(DbParam::I64(new_calculated as i64));
-                    } else {
-                        update_params.push(DbParam::F64(new_calculated));
+                            if is_date_format(trimmed) {
+                                update_params.push(DbParam::Str(trimmed.to_string()));
+                                continue;
+                            }
+
+                            let current_col_val = match existing_row.get(col) {
+                                Some(Value::Number(n)) => n.as_f64().unwrap_or(0.0),
+                                Some(Value::String(s)) => s.parse::<f64>().unwrap_or(0.0),
+                                _ => 0.0,
+                            };
+
+                            let is_explicit_math = expr_str.contains("calc:") || expr_str.contains("math:") || expr_str.contains("eval:");
+                            let contains_arithmetic = trimmed.contains('+') || trimmed.contains('-') || trimmed.contains('*') || trimmed.contains('/');
+                            let is_existing_numeric = existing_row.get(col).map_or(false, |v| v.is_number());
+
+                            if is_explicit_math || contains_arithmetic || is_existing_numeric {
+                                if let Ok(new_calculated) = compute_set_value_full(col, current_col_val, expr_str, ctx, Some(runtime), item_opt.as_ref()) {
+                                    // Enforce minimum validation constraint (e.g. preventing negative inventory)
+                                    if let Some(validate) = &action.validate {
+                                        if let Some(min_map) = &validate.min {
+                                            if let Some(min_val_json) = min_map.get(col) {
+                                                let min_threshold = min_val_json.as_f64().unwrap_or(0.0);
+                                                if new_calculated < min_threshold {
+                                                    let default_msg = format!(
+                                                        "Validation failed on '{}': resulting {} ({}) is below minimum allowed ({})",
+                                                        target_table, col, new_calculated, min_threshold
+                                                    );
+                                                    let err_msg = validate
+                                                        .error_message
+                                                        .as_ref()
+                                                        .map(|m| interpolate_string_full(m, ctx, Some(runtime), item_opt.as_ref()))
+                                                        .unwrap_or(default_msg);
+                                                    return Err(err_msg);
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    if new_calculated.fract() == 0.0 {
+                                        update_params.push(DbParam::I64(new_calculated as i64));
+                                    } else {
+                                        update_params.push(DbParam::F64(new_calculated));
+                                    }
+                                    continue;
+                                } else if is_explicit_math {
+                                    return Err(format!("Failed evaluating math expression for '{}': {}", col, expr_str));
+                                }
+                            }
+
+                            // Otherwise, treat as dynamic string / boolean / null / scalar
+                            update_params.push(coerce_dbparam(trimmed));
+                        }
+                        _ => return Err(format!("Set expression for '{}' must be a string, number, or boolean", col)),
                     }
                 }
 
@@ -1248,6 +1511,13 @@ fn execute_action<'a>(
                     format!("Action 'insert' on '{}' requires 'fields'", target_table)
                 })?;
 
+                // Pre-generate sequences if referenced in insert fields
+                for (col, val) in fields_map {
+                    if let Value::String(s) = val {
+                        ensure_sequences(tx, runtime, s, target_table, col).await?;
+                    }
+                }
+
                 let mut cols = Vec::new();
                 let mut placeholders = Vec::new();
                 let mut params = Vec::new();
@@ -1261,14 +1531,7 @@ fn execute_action<'a>(
                         other => json_val_to_str(other),
                     };
 
-                    // Type coercion for numeric values
-                    if let Ok(i) = resolved_str.parse::<i64>() {
-                        params.push(DbParam::I64(i));
-                    } else if let Ok(f) = resolved_str.parse::<f64>() {
-                        params.push(DbParam::F64(f));
-                    } else {
-                        params.push(DbParam::Str(resolved_str));
-                    }
+                    params.push(coerce_dbparam(&resolved_str));
                 }
 
                 let insert_sql = format!(
@@ -1297,6 +1560,15 @@ fn execute_action<'a>(
                 }
 
                 let rows = action.rows.as_deref().unwrap_or(&[]);
+
+                // Pre-generate sequences if referenced in batch rows
+                for row_map in rows {
+                    for (col, val) in row_map {
+                        if let Value::String(s) = val {
+                            ensure_sequences(tx, runtime, s, target_table, col).await?;
+                        }
+                    }
+                }
 
                 // ERP Double-Entry Balancing Invariant check (Debit == Credit)
                 if let Some(validate) = &action.validate {
@@ -1359,13 +1631,7 @@ fn execute_action<'a>(
                             other => json_val_to_str(other),
                         };
 
-                        if let Ok(i) = resolved_str.parse::<i64>() {
-                            params.push(DbParam::I64(i));
-                        } else if let Ok(f) = resolved_str.parse::<f64>() {
-                            params.push(DbParam::F64(f));
-                        } else {
-                            params.push(DbParam::Str(resolved_str));
-                        }
+                        params.push(coerce_dbparam(&resolved_str));
                     }
 
                     let insert_sql = format!(
@@ -1398,13 +1664,7 @@ fn execute_action<'a>(
                 if let Some(param_templates) = &action.params {
                     for tmpl in param_templates {
                         let resolved = interpolate_string_full(tmpl, ctx, Some(runtime), item_opt.as_ref());
-                        if let Ok(i) = resolved.parse::<i64>() {
-                            params.push(DbParam::I64(i));
-                        } else if let Ok(f) = resolved.parse::<f64>() {
-                            params.push(DbParam::F64(f));
-                        } else {
-                            params.push(DbParam::Str(resolved));
-                        }
+                        params.push(coerce_dbparam(&resolved));
                     }
                 }
 
@@ -1507,7 +1767,12 @@ mod tests {
 
     #[async_trait::async_trait]
     impl TxStore for MockTxStore {
-        async fn query(&mut self, _q: &crate::storage::ast::Query) -> anyhow::Result<Vec<Value>> {
+        async fn query(&mut self, q: &crate::storage::ast::Query) -> anyhow::Result<Vec<Value>> {
+            if q.collection == "transaction_account_receivable" {
+                return Ok(vec![serde_json::json!({
+                    "faktur_no": "INV/2026/09/0042"
+                })]);
+            }
             Ok(vec![])
         }
         async fn insert(&mut self, _collection: &str, doc: Value) -> anyhow::Result<Value> {
@@ -1525,17 +1790,20 @@ mod tests {
             // Detail items for Sales Order
             if sql.contains("SELECT * FROM transaction_sales_order_item") {
                 for p in &params {
-                    if let DbParam::Str(s) = p {
-                        if s == "10" {
-                            return Ok(vec![serde_json::json!({
-                                "id": 10,
-                                "sales_order_id": 105,
-                                "product_id": 12,
-                                "qty": 10,
-                                "qty_delivered": 0,
-                                "fulfillment_status": "PENDING"
-                            })]);
-                        }
+                    let p_str = match p {
+                        DbParam::Str(s) => s.clone(),
+                        DbParam::I64(n) => n.to_string(),
+                        _ => "".to_string(),
+                    };
+                    if p_str == "10" {
+                        return Ok(vec![serde_json::json!({
+                            "id": 10,
+                            "sales_order_id": 105,
+                            "product_id": 12,
+                            "qty": 10,
+                            "qty_delivered": 0,
+                            "fulfillment_status": "PENDING"
+                        })]);
                     }
                 }
                 return Ok(vec![
@@ -1559,25 +1827,28 @@ mod tests {
             // Master Product lookup
             if sql.contains("SELECT * FROM master_product") {
                 for p in &params {
-                    if let DbParam::Str(s) = p {
-                        if s == "12" {
-                            return Ok(vec![serde_json::json!({
-                                "id": 12,
-                                "name": "Paracetamol 500mg",
-                                "cost_price": 12000,
-                                "cogs_account_code": "5101",
-                                "inventory_account_code": "1103"
-                            })]);
-                        }
-                        if s == "14" {
-                            return Ok(vec![serde_json::json!({
-                                "id": 14,
-                                "name": "Amoxicillin 500mg",
-                                "cost_price": 15000,
-                                "cogs_account_code": "5101",
-                                "inventory_account_code": "1103"
-                            })]);
-                        }
+                    let p_str = match p {
+                        DbParam::Str(s) => s.clone(),
+                        DbParam::I64(n) => n.to_string(),
+                        _ => "".to_string(),
+                    };
+                    if p_str == "12" {
+                        return Ok(vec![serde_json::json!({
+                            "id": 12,
+                            "name": "Paracetamol 500mg",
+                            "cost_price": 12000,
+                            "cogs_account_code": "5101",
+                            "inventory_account_code": "1103"
+                        })]);
+                    }
+                    if p_str == "14" {
+                        return Ok(vec![serde_json::json!({
+                            "id": 14,
+                            "name": "Amoxicillin 500mg",
+                            "cost_price": 15000,
+                            "cogs_account_code": "5101",
+                            "inventory_account_code": "1103"
+                        })]);
                     }
                 }
             }
@@ -1599,21 +1870,24 @@ mod tests {
             // Current inventory lot stock query
             if sql.contains("SELECT * FROM transaction_product_lot") {
                 for p in &params {
-                    if let DbParam::Str(s) = p {
-                        if s == "12" {
-                            return Ok(vec![serde_json::json!({
-                                "id": 1,
-                                "product_id": 12,
-                                "qty": self.lot_stock_12,
-                            })]);
-                        }
-                        if s == "14" {
-                            return Ok(vec![serde_json::json!({
-                                "id": 2,
-                                "product_id": 14,
-                                "qty": self.lot_stock_14,
-                            })]);
-                        }
+                    let p_str = match p {
+                        DbParam::Str(s) => s.clone(),
+                        DbParam::I64(n) => n.to_string(),
+                        _ => "".to_string(),
+                    };
+                    if p_str == "12" {
+                        return Ok(vec![serde_json::json!({
+                            "id": 1,
+                            "product_id": 12,
+                            "qty": self.lot_stock_12,
+                        })]);
+                    }
+                    if p_str == "14" {
+                        return Ok(vec![serde_json::json!({
+                            "id": 2,
+                            "product_id": 14,
+                            "qty": self.lot_stock_14,
+                        })]);
                     }
                 }
             }
@@ -2270,5 +2544,288 @@ mod tests {
         let has_qty_5 = so_updates[0].1.iter().any(|p| match p { DbParam::I64(n) => *n == 5, _ => false });
         assert!(has_qty_5, "Sales Order item qty_delivered should be incremented to 5");
     }
+
+    #[test]
+    fn test_parse_sequence_pattern_and_date_tokens() {
+        let pattern = "INV/{YYYY}/{MM}/{0000ID}";
+        let (prefix, width, suffix) = parse_sequence_pattern(pattern);
+        let now = Local::now();
+        let expected_prefix = format!("INV/{}/{}/", now.format("%Y"), now.format("%m"));
+        assert_eq!(prefix, expected_prefix);
+        assert_eq!(width, 4);
+        assert_eq!(suffix, "");
+
+        let pattern_with_suffix = "JV/{YYYY}/{000ID}-TEST";
+        let (prefix2, width2, suffix2) = parse_sequence_pattern(pattern_with_suffix);
+        assert_eq!(prefix2, format!("JV/{}/", now.format("%Y")));
+        assert_eq!(width2, 3);
+        assert_eq!(suffix2, "-TEST");
+    }
+
+    #[test]
+    fn test_coerce_dbparam_preserves_data_types() {
+        // Integer
+        match coerce_dbparam("105") {
+            DbParam::I64(n) => assert_eq!(n, 105),
+            other => panic!("Expected I64, got {:?}", other),
+        }
+
+        // Float
+        match coerce_dbparam("12500.50") {
+            DbParam::F64(f) => assert!((f - 12500.50).abs() < 1e-6),
+            other => panic!("Expected F64, got {:?}", other),
+        }
+
+        // Date string must NOT be parsed as number or subtraction!
+        match coerce_dbparam("2026-09-06") {
+            DbParam::Str(s) => assert_eq!(s, "2026-09-06"),
+            other => panic!("Expected Str for date, got {:?}", other),
+        }
+
+        // Boolean
+        match coerce_dbparam("true") {
+            DbParam::Bool(b) => assert!(b),
+            other => panic!("Expected Bool, got {:?}", other),
+        }
+
+        // String text
+        match coerce_dbparam("SHIPPED") {
+            DbParam::Str(s) => assert_eq!(s, "SHIPPED"),
+            other => panic!("Expected Str, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_trigger_update_supports_non_numeric_and_status_and_dates() {
+        let trigger_json = r#"{
+            "name": "close_sales_order_and_stamp_date",
+            "event": "on_update",
+            "condition": {
+                "field": "status",
+                "to": "COMPLETED"
+            },
+            "actions": [
+                {
+                    "name": "update_target_status_and_date",
+                    "type": "update",
+                    "target_table": "transaction_sales_order_item",
+                    "filter": { "sales_order_id": "{parent.id}" },
+                    "set": {
+                        "fulfillment_status": "FULFILLED",
+                        "completed_at": "{now:YYYY-MM-DD}",
+                        "is_active": false
+                    }
+                }
+            ]
+        }"#;
+
+        let trigger: ActionTrigger = serde_json::from_str(trigger_json).unwrap();
+        let schema = TableSchema {
+            table: "transaction_sales_order".to_string(),
+            action_triggers: vec![trigger],
+            ..Default::default()
+        };
+
+        let mut old_rec = Map::new();
+        old_rec.insert("id".to_string(), serde_json::json!(105));
+        old_rec.insert("status".to_string(), serde_json::json!("SHIPPED"));
+
+        let mut new_rec = old_rec.clone();
+        new_rec.insert("status".to_string(), serde_json::json!("COMPLETED"));
+
+        let req_body = serde_json::json!({ "status": "COMPLETED" });
+        let ctx = TriggerContext {
+            parent_table: "transaction_sales_order",
+            parent_pk: "105",
+            old_record: &old_rec,
+            new_record: &new_rec,
+            request_body: &req_body,
+            actor_id: None,
+        };
+
+        let mut mock_tx = MockTxStore {
+            executed_sqls: Vec::new(),
+            lot_stock_12: 100.0,
+            lot_stock_14: 100.0,
+        };
+
+        let res = execute_triggers(DbType::Postgres, &mut mock_tx, &schema, &ctx, "on_update").await;
+        assert!(res.is_ok(), "Non-numeric update action must succeed without crash: {:?}", res.err());
+
+        // Verify UPDATE query was executed with string, date, and bool params
+        let updates: Vec<&(String, Vec<DbParam>)> = mock_tx.executed_sqls.iter()
+            .filter(|(s, _)| s.contains("UPDATE transaction_sales_order_item"))
+            .collect();
+        assert_eq!(updates.len(), 1, "Should execute 1 update query");
+
+        let params = &updates[0].1;
+        let has_fulfilled = params.iter().any(|p| match p { DbParam::Str(s) => s == "FULFILLED", _ => false });
+        assert!(has_fulfilled, "Must bind 'FULFILLED' string parameter");
+
+        let today = Local::now().format("%Y-%m-%d").to_string();
+        let has_today = params.iter().any(|p| match p { DbParam::Str(s) => s == &today, _ => false });
+        assert!(has_today, "Must bind today's date formatted as string");
+
+        let has_false = params.iter().any(|p| match p { DbParam::Bool(b) => !*b, _ => false });
+        assert!(has_false, "Must bind boolean false parameter");
+    }
+
+    #[tokio::test]
+    async fn test_trigger_running_sequence_generation_and_shared_reference() {
+        let trigger_json = r#"{
+            "name": "generate_invoice_and_journal_with_sequence",
+            "event": "on_update",
+            "condition": {
+                "field": "status",
+                "to": "SHIPPED"
+            },
+            "actions": [
+                {
+                    "name": "create_ar_invoice_with_sequence",
+                    "type": "insert",
+                    "target_table": "transaction_account_receivable",
+                    "fields": {
+                        "faktur_no": "{seq:AR_INVOICE:INV/{YYYY}/{MM}/{0000ID}}",
+                        "total_amount": 250000
+                    }
+                },
+                {
+                    "name": "post_matching_gl_journal",
+                    "type": "insert_batch",
+                    "target_table": "transaction_general_ledger_line",
+                    "rows": [
+                        {
+                            "voucher_no": "{seq:AR_INVOICE}",
+                            "debit": 250000,
+                            "credit": 0
+                        },
+                        {
+                            "voucher_no": "{seq:AR_INVOICE}",
+                            "debit": 0,
+                            "credit": 250000
+                        }
+                    ]
+                }
+            ]
+        }"#;
+
+        let trigger: ActionTrigger = serde_json::from_str(trigger_json).unwrap();
+        let schema = TableSchema {
+            table: "transaction_sales_order".to_string(),
+            action_triggers: vec![trigger],
+            ..Default::default()
+        };
+
+        let mut old_rec = Map::new();
+        old_rec.insert("id".to_string(), serde_json::json!(105));
+        old_rec.insert("status".to_string(), serde_json::json!("APPROVED"));
+
+        let mut new_rec = old_rec.clone();
+        new_rec.insert("status".to_string(), serde_json::json!("SHIPPED"));
+
+        let req_body = serde_json::json!({ "status": "SHIPPED" });
+        let ctx = TriggerContext {
+            parent_table: "transaction_sales_order",
+            parent_pk: "105",
+            old_record: &old_rec,
+            new_record: &new_rec,
+            request_body: &req_body,
+            actor_id: None,
+        };
+
+        let mut mock_tx = MockTxStore {
+            executed_sqls: Vec::new(),
+            lot_stock_12: 100.0,
+            lot_stock_14: 100.0,
+        };
+
+        let res = execute_triggers(DbType::Postgres, &mut mock_tx, &schema, &ctx, "on_update").await;
+        assert!(res.is_ok(), "Trigger with sequence generation should succeed: {:?}", res.err());
+
+        // Expected sequence derived from mock latest "INV/2026/09/0042" + 1 -> "INV/2026/09/0043"
+        let now = Local::now();
+        let expected_seq = format!("INV/{}/{}/0043", now.format("%Y"), now.format("%m"));
+
+        // Verify AR Invoice insert received the generated sequence number
+        let ar_inserts: Vec<&(String, Vec<DbParam>)> = mock_tx.executed_sqls.iter()
+            .filter(|(s, _)| s.contains("INSERT INTO transaction_account_receivable"))
+            .collect();
+        assert_eq!(ar_inserts.len(), 1);
+        let ar_has_seq = ar_inserts[0].1.iter().any(|p| match p { DbParam::Str(s) => s == &expected_seq, _ => false });
+        assert!(ar_has_seq, "AR Invoice must have generated sequence '{}'", expected_seq);
+
+        // Verify GL Journal inserts shared the EXACT SAME voucher number
+        let gl_inserts: Vec<&(String, Vec<DbParam>)> = mock_tx.executed_sqls.iter()
+            .filter(|(s, _)| s.contains("INSERT INTO transaction_general_ledger_line"))
+            .collect();
+        assert_eq!(gl_inserts.len(), 2);
+        for ins in &gl_inserts {
+            let gl_has_seq = ins.1.iter().any(|p| match p { DbParam::Str(s) => s == &expected_seq, _ => false });
+            assert!(gl_has_seq, "GL line must reuse shared voucher number '{}'", expected_seq);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_mssql_concurrency_lock_hint_syntax() {
+        let trigger_json = r#"{
+            "name": "mssql_lock_test",
+            "event": "on_update",
+            "condition": { "field": "status", "to": "SHIPPED" },
+            "actions": [
+                {
+                    "name": "deduct_stock_mssql",
+                    "type": "update",
+                    "target_table": "transaction_product_lot",
+                    "atomic": true,
+                    "filter": { "product_id": 12 },
+                    "set": { "qty": "qty - 5" }
+                }
+            ]
+        }"#;
+
+        let trigger: ActionTrigger = serde_json::from_str(trigger_json).unwrap();
+        let schema = TableSchema {
+            table: "transaction_sales_order".to_string(),
+            action_triggers: vec![trigger],
+            ..Default::default()
+        };
+
+        let mut old_rec = Map::new();
+        old_rec.insert("status".to_string(), serde_json::json!("APPROVED"));
+        let mut new_rec = old_rec.clone();
+        new_rec.insert("status".to_string(), serde_json::json!("SHIPPED"));
+        let req_body = serde_json::json!({ "status": "SHIPPED" });
+        let ctx = TriggerContext {
+            parent_table: "transaction_sales_order",
+            parent_pk: "105",
+            old_record: &old_rec,
+            new_record: &new_rec,
+            request_body: &req_body,
+            actor_id: None,
+        };
+
+        // 1. Run with MSSQL
+        let mut mock_tx_mssql = MockTxStore {
+            executed_sqls: Vec::new(),
+            lot_stock_12: 100.0,
+            lot_stock_14: 100.0,
+        };
+        let res_mssql = execute_triggers(DbType::Mssql, &mut mock_tx_mssql, &schema, &ctx, "on_update").await;
+        assert!(res_mssql.is_ok());
+        let mssql_select = mock_tx_mssql.executed_sqls.iter().find(|(s, _)| s.contains("SELECT * FROM transaction_product_lot")).unwrap();
+        assert!(mssql_select.0.contains("WITH (UPDLOCK, ROWLOCK)"), "MSSQL must include table hint WITH (UPDLOCK, ROWLOCK)");
+
+        // 2. Run with Postgres
+        let mut mock_tx_pg = MockTxStore {
+            executed_sqls: Vec::new(),
+            lot_stock_12: 100.0,
+            lot_stock_14: 100.0,
+        };
+        let res_pg = execute_triggers(DbType::Postgres, &mut mock_tx_pg, &schema, &ctx, "on_update").await;
+        assert!(res_pg.is_ok());
+        let pg_select = mock_tx_pg.executed_sqls.iter().find(|(s, _)| s.contains("SELECT * FROM transaction_product_lot")).unwrap();
+        assert!(pg_select.0.ends_with(" FOR UPDATE"), "Postgres must append FOR UPDATE");
+    }
 }
+
 
