@@ -851,6 +851,55 @@ pub async fn perform_insert(
                             }
                         }
 
+                        // Execute Action Triggers for on_create
+                        if !table_schema.action_triggers.is_empty() {
+                            let id_str = doc_map
+                                .get("id")
+                                .map(|v| match v {
+                                    Value::String(s) => s.clone(),
+                                    Value::Number(n) => n.to_string(),
+                                    _ => v.to_string(),
+                                })
+                                .unwrap_or_default();
+
+                            let empty_old = serde_json::Map::new();
+                            let trigger_ctx = crate::nocode::trigger_engine::TriggerContext {
+                                parent_table: &table_schema.table,
+                                parent_pk: &id_str,
+                                old_record: &empty_old,
+                                new_record: &doc_map,
+                                request_body: body,
+                                actor_id: None,
+                            };
+
+                            match crate::nocode::trigger_engine::execute_triggers(
+                                state.db_type.clone(),
+                                &mut *tx,
+                                table_schema,
+                                &trigger_ctx,
+                                "on_create",
+                            )
+                            .await
+                            {
+                                Ok(executed) => {
+                                    for trig_name in executed {
+                                        crate::audit::write_audit(&crate::audit::AuditEntry {
+                                            at: chrono::Local::now().to_rfc3339(),
+                                            actor_id: "system".to_string(),
+                                            action: "TRIGGER_CREATE",
+                                            route: &format!("{}:{}", route, trig_name),
+                                            id: Some(&id_str),
+                                            ip: None,
+                                        });
+                                    }
+                                }
+                                Err(err) => {
+                                    let _ = tx.rollback().await;
+                                    return Err(format!("Action trigger on_create failed: {}", err));
+                                }
+                            }
+                        }
+
                         if let Err(e) = tx.commit().await {
                             return Err(format!("Error committing transaction: {}", e));
                         }

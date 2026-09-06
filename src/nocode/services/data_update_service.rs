@@ -394,6 +394,8 @@ pub async fn process_update_request(
         prepared_details,
         &body,
         auth_token,
+        actor_id_opt.as_deref(),
+        Some(claims.rl.as_str()),
     )
     .await
     {

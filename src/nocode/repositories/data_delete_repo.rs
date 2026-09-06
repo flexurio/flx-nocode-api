@@ -89,6 +89,51 @@ pub async fn perform_delete_sql(
     // Transaction
     let mut tx = state.store.begin_tx().await.map_err(|e| format!("Error starting transaction: {}", e))?;
 
+    // Fetch pre-delete record state for locked_when check and on_delete triggers
+    let mut old_record: serde_json::Map<String, Value> = serde_json::Map::new();
+    let pk_cols = &table_schema.primary_key.columns;
+    let pk_col_first = pk_cols.first().cloned().unwrap_or_else(|| "id".to_string());
+    let pk_meta = table_schema.columns.iter().find(|c| c.name == pk_col_first);
+    let pk_param = if let Some(m) = pk_meta {
+        crate::nocode::pk_utils::dbparam_from_str_and_type(id_raw, &m.type_data)
+    } else {
+        crate::database::state::DbParam::Str(id_raw.to_string())
+    };
+
+    let select_current_sql = format!("SELECT * FROM {} WHERE {} = ?", table_schema.table, pk_col_first);
+    let built_select_current = crate::database::state::rehydrate_placeholders(&select_current_sql, state.db_type.as_str());
+    if let Ok(rows) = tx.raw_sql(&built_select_current, vec![pk_param]).await {
+        if let Some(first_row) = rows.into_iter().next() {
+            if let Value::Object(map) = first_row {
+                old_record = map;
+            }
+        }
+    }
+
+    // 1. Check document immutability lock (locked_when)
+    if let Some(locked_cfg) = &table_schema.locked_when {
+        let conditions = locked_cfg.get_conditions();
+        for (field, expected_val) in conditions {
+            if let Some(actual_val) = old_record.get(field) {
+                let is_match = match expected_val {
+                    Value::Array(arr) => arr.iter().any(|v| crate::nocode::trigger_engine::value_matches(v, Some(actual_val))),
+                    single => crate::nocode::trigger_engine::value_matches(single, Some(actual_val)),
+                };
+                if is_match {
+                    let _ = tx.rollback().await;
+                    return Err(format!(
+                        "Cannot delete locked record: field '{}' is currently '{}'",
+                        field,
+                        match actual_val {
+                            Value::String(s) => s.as_str(),
+                            _ => "locked",
+                        }
+                    ));
+                }
+            }
+        }
+    }
+
     // PRE-PROCESS
     if table_schema.del.pre_process.contains("SQL:") && let Err(err) = crate::database::state::execute_sql_formula_with_txstore(&mut tx, table_schema.del.pre_process.clone(), &body, route).await {
         let _ = tx.rollback().await;
@@ -114,6 +159,45 @@ pub async fn perform_delete_sql(
                     let _ = tx.rollback().await;
                     return Err(format!("Error in post-process: {}", err));
                 }
+
+                // Execute Action Triggers for on_delete
+                if !table_schema.action_triggers.is_empty() {
+                    let empty_new = serde_json::Map::new();
+                    let trigger_ctx = crate::nocode::trigger_engine::TriggerContext {
+                        parent_table: &table_schema.table,
+                        parent_pk: id_raw,
+                        old_record: &old_record,
+                        new_record: &empty_new,
+                        request_body: &body,
+                        actor_id: Some(actor_id),
+                    };
+
+                    match crate::nocode::trigger_engine::execute_triggers(
+                        state.db_type.clone(),
+                        &mut *tx,
+                        table_schema,
+                        &trigger_ctx,
+                        "on_delete",
+                    ).await {
+                        Ok(executed) => {
+                            for trig_name in executed {
+                                crate::audit::write_audit(&crate::audit::AuditEntry {
+                                    at: chrono::Local::now().to_rfc3339(),
+                                    actor_id: actor_id.to_string(),
+                                    action: "TRIGGER_DELETE",
+                                    route: &format!("{}:{}", route, trig_name),
+                                    id: Some(id_raw),
+                                    ip: None,
+                                });
+                            }
+                        }
+                        Err(err) => {
+                            let _ = tx.rollback().await;
+                            return Err(format!("Action trigger on_delete failed: {}", err));
+                        }
+                    }
+                }
+
                 tx.commit().await.map_err(|e| format!("Error committing transaction: {}", e))?;
                 Ok(())
             } else {

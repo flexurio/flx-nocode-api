@@ -7,8 +7,8 @@
 //! If any action or validation fails (e.g. insufficient inventory), the error bubbles up
 //! and causes the entire transaction to rollback (`tx.rollback()`).
 
+use std::collections::HashMap;
 use chrono::{Duration, Local};
-use regex::Regex;
 use serde_json::{Map, Value};
 
 use crate::database::state::DbParam;
@@ -79,7 +79,7 @@ pub fn evaluate_condition(
 }
 
 /// Flexible value comparison (handles string vs number, case-insensitive strings).
-fn value_matches(expected: &Value, actual_opt: Option<&Value>) -> bool {
+pub fn value_matches(expected: &Value, actual_opt: Option<&Value>) -> bool {
     let Some(actual) = actual_opt else {
         return expected.is_null();
     };
@@ -97,61 +97,683 @@ fn value_matches(expected: &Value, actual_opt: Option<&Value>) -> bool {
     }
 }
 
-/// Resolve template strings with placeholders:
+/// Runtime state maintained across actions within a single trigger execution.
+#[derive(Debug, Default, Clone)]
+pub struct TriggerRuntime {
+    /// Cached lookup objects indexed by alias or table name (e.g. "product", "customer")
+    pub lookups: HashMap<String, Value>,
+    /// Accumulated numeric totals across detail line items (e.g. "total_cogs", "total_tax")
+    pub accumulated: HashMap<String, f64>,
+}
+
+/// Traverse nested JSON object by dot-separated path (e.g. "product.cost_price", "category.code")
+pub fn resolve_nested_json(root: &Value, path: &str) -> Option<Value> {
+    if path.is_empty() {
+        return Some(root.clone());
+    }
+    // Fast path: direct key in object
+    if let Value::Object(map) = root {
+        if let Some(val) = map.get(path) {
+            return Some(val.clone());
+        }
+    }
+    let parts: Vec<&str> = path.split('.').collect();
+    let mut current = root;
+    for part in parts {
+        match current {
+            Value::Object(map) => {
+                current = map.get(part)?;
+            }
+            Value::Array(arr) => {
+                let idx: usize = part.parse().ok()?;
+                current = arr.get(idx)?;
+            }
+            _ => return None,
+        }
+    }
+    Some(current.clone())
+}
+
+/// Resolve a variable identifier into a numeric value (f64) from item, lookups, accumulators, parent, or request.
+pub fn resolve_numeric_var(
+    ident: &str,
+    ctx: &TriggerContext,
+    runtime_opt: Option<&TriggerRuntime>,
+    item_opt: Option<&Map<String, Value>>,
+) -> Option<f64> {
+    let clean = ident.trim().trim_matches('{').trim_matches('}');
+
+    // 1. Check accumulators (prefix "acc." or "accumulated." or raw key)
+    if let Some(prop) = clean.strip_prefix("acc.").or_else(|| clean.strip_prefix("accumulated.")) {
+        if let Some(runtime) = runtime_opt {
+            if let Some(v) = runtime.accumulated.get(prop) {
+                return Some(*v);
+            }
+        }
+    }
+    if let Some(runtime) = runtime_opt {
+        if let Some(v) = runtime.accumulated.get(clean) {
+            return Some(*v);
+        }
+    }
+
+    // 2. Check item line row
+    if let Some(prop) = clean.strip_prefix("item.") {
+        if let Some(item) = item_opt {
+            let item_val = Value::Object(item.clone());
+            if let Some(val) = resolve_nested_json(&item_val, prop) {
+                if let Some(n) = val.as_f64() {
+                    return Some(n);
+                }
+                if let Some(s) = val.as_str() {
+                    if let Ok(n) = s.trim().parse::<f64>() {
+                        return Some(n);
+                    }
+                }
+            }
+        }
+    }
+    if let Some(item) = item_opt {
+        let item_val = Value::Object(item.clone());
+        if let Some(val) = resolve_nested_json(&item_val, clean) {
+            if let Some(n) = val.as_f64() {
+                return Some(n);
+            }
+            if let Some(s) = val.as_str() {
+                if let Ok(n) = s.trim().parse::<f64>() {
+                    return Some(n);
+                }
+            }
+        }
+    }
+
+    // 3. Check lookup store
+    if let Some(prop) = clean.strip_prefix("lookup.") {
+        if let Some(runtime) = runtime_opt {
+            let lookup_val = Value::Object(runtime.lookups.iter().map(|(k, v)| (k.clone(), v.clone())).collect());
+            if let Some(val) = resolve_nested_json(&lookup_val, prop) {
+                if let Some(n) = val.as_f64() {
+                    return Some(n);
+                }
+                if let Some(s) = val.as_str() {
+                    if let Ok(n) = s.trim().parse::<f64>() {
+                        return Some(n);
+                    }
+                }
+            }
+        }
+    }
+    if let Some(runtime) = runtime_opt {
+        let lookup_val = Value::Object(runtime.lookups.iter().map(|(k, v)| (k.clone(), v.clone())).collect());
+        if let Some(val) = resolve_nested_json(&lookup_val, clean) {
+            if let Some(n) = val.as_f64() {
+                return Some(n);
+            }
+            if let Some(s) = val.as_str() {
+                if let Ok(n) = s.trim().parse::<f64>() {
+                    return Some(n);
+                }
+            }
+        }
+    }
+
+    // 4. Check parent record (new_record fallback old_record)
+    if let Some(prop) = clean.strip_prefix("parent.") {
+        let parent_obj = Value::Object(ctx.new_record.clone());
+        if let Some(val) = resolve_nested_json(&parent_obj, prop) {
+            if let Some(n) = val.as_f64() {
+                return Some(n);
+            }
+            if let Some(s) = val.as_str() {
+                if let Ok(n) = s.trim().parse::<f64>() {
+                    return Some(n);
+                }
+            }
+        }
+        let old_obj = Value::Object(ctx.old_record.clone());
+        if let Some(val) = resolve_nested_json(&old_obj, prop) {
+            if let Some(n) = val.as_f64() {
+                return Some(n);
+            }
+            if let Some(s) = val.as_str() {
+                if let Ok(n) = s.trim().parse::<f64>() {
+                    return Some(n);
+                }
+            }
+        }
+    }
+    let parent_obj = Value::Object(ctx.new_record.clone());
+    if let Some(val) = resolve_nested_json(&parent_obj, clean) {
+        if let Some(n) = val.as_f64() {
+            return Some(n);
+        }
+        if let Some(s) = val.as_str() {
+            if let Ok(n) = s.trim().parse::<f64>() {
+                return Some(n);
+            }
+        }
+    }
+
+    // 5. Check request body
+    if let Some(prop) = clean.strip_prefix("request.") {
+        if let Some(val) = resolve_nested_json(ctx.request_body, prop) {
+            if let Some(n) = val.as_f64() {
+                return Some(n);
+            }
+            if let Some(s) = val.as_str() {
+                if let Ok(n) = s.trim().parse::<f64>() {
+                    return Some(n);
+                }
+            }
+        }
+    }
+
+    None
+}
+
+#[derive(Debug, PartialEq, Clone)]
+enum MathToken {
+    Number(f64),
+    Ident(String),
+    Plus,
+    Minus,
+    Star,
+    Slash,
+    Percent,
+    LParen,
+    RParen,
+    Comma,
+}
+
+fn tokenize_math(expr: &str) -> Result<Vec<MathToken>, String> {
+    let mut tokens = Vec::new();
+    let chars: Vec<char> = expr.chars().collect();
+    let mut i = 0;
+    let len = chars.len();
+
+    while i < len {
+        let c = chars[i];
+        if c.is_whitespace() {
+            i += 1;
+            continue;
+        }
+
+        match c {
+            '+' => { tokens.push(MathToken::Plus); i += 1; }
+            '-' => { tokens.push(MathToken::Minus); i += 1; }
+            '*' => { tokens.push(MathToken::Star); i += 1; }
+            '/' => { tokens.push(MathToken::Slash); i += 1; }
+            '%' => { tokens.push(MathToken::Percent); i += 1; }
+            '(' => { tokens.push(MathToken::LParen); i += 1; }
+            ')' => { tokens.push(MathToken::RParen); i += 1; }
+            ',' => { tokens.push(MathToken::Comma); i += 1; }
+            '0'..='9' | '.' if c != '.' || (i + 1 < len && chars[i + 1].is_ascii_digit()) => {
+                let start = i;
+                let mut has_dot = c == '.';
+                i += 1;
+                while i < len {
+                    let next = chars[i];
+                    if next.is_ascii_digit() {
+                        i += 1;
+                    } else if next == '.' && !has_dot {
+                        has_dot = true;
+                        i += 1;
+                    } else {
+                        break;
+                    }
+                }
+                let num_str: String = chars[start..i].iter().collect();
+                let num = num_str.parse::<f64>().map_err(|_| format!("Invalid number: '{}'", num_str))?;
+                tokens.push(MathToken::Number(num));
+            }
+            'a'..='z' | 'A'..='Z' | '_' => {
+                let start = i;
+                i += 1;
+                while i < len && (chars[i].is_alphanumeric() || chars[i] == '_' || chars[i] == '.') {
+                    i += 1;
+                }
+                let ident: String = chars[start..i].iter().collect();
+                tokens.push(MathToken::Ident(ident));
+            }
+            _ => {
+                return Err(format!("Unexpected character '{}' in math expression '{}'", c, expr));
+            }
+        }
+    }
+
+    Ok(tokens)
+}
+
+struct MathParser<'a, F>
+where
+    F: Fn(&str) -> Option<f64>,
+{
+    tokens: &'a [MathToken],
+    pos: usize,
+    resolver: &'a F,
+}
+
+impl<'a, F> MathParser<'a, F>
+where
+    F: Fn(&str) -> Option<f64>,
+{
+    fn peek(&self) -> Option<&MathToken> {
+        self.tokens.get(self.pos)
+    }
+
+    fn advance(&mut self) -> Option<&MathToken> {
+        let tok = self.tokens.get(self.pos);
+        if tok.is_some() {
+            self.pos += 1;
+        }
+        tok
+    }
+
+    fn parse_expr(&mut self) -> Result<f64, String> {
+        let mut left = self.parse_term()?;
+        while let Some(tok) = self.peek() {
+            match tok {
+                MathToken::Plus => {
+                    self.advance();
+                    left += self.parse_term()?;
+                }
+                MathToken::Minus => {
+                    self.advance();
+                    left -= self.parse_term()?;
+                }
+                _ => break,
+            }
+        }
+        Ok(left)
+    }
+
+    fn parse_term(&mut self) -> Result<f64, String> {
+        let mut left = self.parse_factor()?;
+        while let Some(tok) = self.peek() {
+            match tok {
+                MathToken::Star => {
+                    self.advance();
+                    left *= self.parse_factor()?;
+                }
+                MathToken::Slash => {
+                    self.advance();
+                    let right = self.parse_factor()?;
+                    if right.abs() < 1e-12 {
+                        return Err("Division by zero in math expression".to_string());
+                    }
+                    left /= right;
+                }
+                MathToken::Percent => {
+                    self.advance();
+                    let right = self.parse_factor()?;
+                    if right.abs() < 1e-12 {
+                        return Err("Modulo by zero in math expression".to_string());
+                    }
+                    left %= right;
+                }
+                _ => break,
+            }
+        }
+        Ok(left)
+    }
+
+    fn parse_factor(&mut self) -> Result<f64, String> {
+        match self.peek() {
+            Some(MathToken::Plus) => {
+                self.advance();
+                self.parse_factor()
+            }
+            Some(MathToken::Minus) => {
+                self.advance();
+                Ok(-self.parse_factor()?)
+            }
+            _ => self.parse_primary(),
+        }
+    }
+
+    fn parse_primary(&mut self) -> Result<f64, String> {
+        let tok = self.advance().ok_or_else(|| "Unexpected end of math expression".to_string())?.clone();
+        match tok {
+            MathToken::Number(n) => Ok(n),
+            MathToken::LParen => {
+                let inner = self.parse_expr()?;
+                match self.advance() {
+                    Some(MathToken::RParen) => Ok(inner),
+                    _ => Err("Missing closing parenthesis ')' in math expression".to_string()),
+                }
+            }
+            MathToken::Ident(name) => {
+                if let Some(MathToken::LParen) = self.peek() {
+                    self.advance();
+                    let mut args = Vec::new();
+                    if let Some(MathToken::RParen) = self.peek() {
+                        self.advance();
+                    } else {
+                        loop {
+                            let arg = self.parse_expr()?;
+                            args.push(arg);
+                            match self.peek() {
+                                Some(MathToken::Comma) => {
+                                    self.advance();
+                                }
+                                Some(MathToken::RParen) => {
+                                    self.advance();
+                                    break;
+                                }
+                                _ => return Err(format!("Expected ',' or ')' in function call to '{}'", name)),
+                            }
+                        }
+                    }
+                    match name.to_lowercase().as_str() {
+                        "round" => {
+                            if args.is_empty() || args.len() > 2 {
+                                return Err("Function 'round' takes 1 or 2 arguments: round(val, [decimals])".to_string());
+                            }
+                            let val = args[0];
+                            let decimals = if args.len() == 2 { args[1] as i32 } else { 0 };
+                            let factor = 10.0_f64.powi(decimals);
+                            Ok((val * factor).round() / factor)
+                        }
+                        "floor" => {
+                            if args.len() != 1 {
+                                return Err("Function 'floor' takes 1 argument".to_string());
+                            }
+                            Ok(args[0].floor())
+                        }
+                        "ceil" => {
+                            if args.len() != 1 {
+                                return Err("Function 'ceil' takes 1 argument".to_string());
+                            }
+                            Ok(args[0].ceil())
+                        }
+                        "abs" => {
+                            if args.len() != 1 {
+                                return Err("Function 'abs' takes 1 argument".to_string());
+                            }
+                            Ok(args[0].abs())
+                        }
+                        "min" => {
+                            if args.len() != 2 {
+                                return Err("Function 'min' takes 2 arguments".to_string());
+                            }
+                            Ok(args[0].min(args[1]))
+                        }
+                        "max" => {
+                            if args.len() != 2 {
+                                return Err("Function 'max' takes 2 arguments".to_string());
+                            }
+                            Ok(args[0].max(args[1]))
+                        }
+                        _ => Err(format!("Unknown function '{}' in math expression", name)),
+                    }
+                } else {
+                    (self.resolver)(&name)
+                        .ok_or_else(|| format!("Unknown or non-numeric variable '{}' in math expression", name))
+                }
+            }
+            other => Err(format!("Unexpected token '{:?}' in math expression", other)),
+        }
+    }
+}
+
+/// Evaluate arithmetic expression (supporting operators, parentheses, functions, and dynamic variables).
+pub fn eval_math_expr<F>(expr: &str, resolver: F) -> Result<f64, String>
+where
+    F: Fn(&str) -> Option<f64>,
+{
+    let tokens = tokenize_math(expr)?;
+    if tokens.is_empty() {
+        return Err("Empty math expression".to_string());
+    }
+    let mut parser = MathParser {
+        tokens: &tokens,
+        pos: 0,
+        resolver: &resolver,
+    };
+    let result = parser.parse_expr()?;
+    if parser.pos < parser.tokens.len() {
+        return Err(format!(
+            "Unexpected trailing tokens in math expression after position {}",
+            parser.pos
+        ));
+    }
+    Ok(result)
+}
+
+fn eval_conditional_token(
+    expr: &str,
+    ctx: &TriggerContext,
+    runtime_opt: Option<&TriggerRuntime>,
+    item_opt: Option<&Map<String, Value>>,
+) -> Option<String> {
+    let (cond_part, branches) = expr.split_once('?')?;
+    let (true_val, false_val) = branches.split_once(':')?;
+
+    let is_true = eval_boolean_condition(cond_part.trim(), ctx, runtime_opt, item_opt);
+    let chosen = if is_true { true_val.trim() } else { false_val.trim() };
+    Some(chosen.trim_matches('\'').trim_matches('"').to_string())
+}
+
+fn eval_boolean_condition(
+    cond: &str,
+    ctx: &TriggerContext,
+    runtime_opt: Option<&TriggerRuntime>,
+    item_opt: Option<&Map<String, Value>>,
+) -> bool {
+    for op in &[">=", "<=", "!=", "==", ">", "<"] {
+        if let Some((left_raw, right_raw)) = cond.split_once(op) {
+            let left_num = resolve_numeric_var(left_raw.trim(), ctx, runtime_opt, item_opt)
+                .or_else(|| left_raw.trim().parse::<f64>().ok());
+            let right_num = resolve_numeric_var(right_raw.trim(), ctx, runtime_opt, item_opt)
+                .or_else(|| right_raw.trim().parse::<f64>().ok());
+
+            if let (Some(l), Some(r)) = (left_num, right_num) {
+                return match *op {
+                    ">=" => l >= r,
+                    "<=" => l <= r,
+                    "!=" => (l - r).abs() > 1e-9,
+                    "==" => (l - r).abs() <= 1e-9,
+                    ">" => l > r,
+                    "<" => l < r,
+                    _ => false,
+                };
+            }
+
+            let left_str = interpolate_string_full(left_raw.trim(), ctx, runtime_opt, item_opt);
+            let right_str = interpolate_string_full(right_raw.trim(), ctx, runtime_opt, item_opt);
+            return match *op {
+                "==" => left_str.trim() == right_str.trim(),
+                "!=" => left_str.trim() != right_str.trim(),
+                _ => false,
+            };
+        }
+    }
+    false
+}
+
+/// Fully-featured template string interpolation with:
 /// - `{parent.<col>}`: field from `new_record` (fallback `old_record`)
-/// - `{item.<col>}`: field from child row during `iterate_detail`
+/// - `{item.<col>}` / `{item.lookup.<col>}`: field from child row
+/// - `{lookup.<alias>.<col>}` / `{<alias>.<col>}`: field from previous lookup action
+/// - `{acc.<col>}` / `{accumulated.<col>}`: accumulated totals
 /// - `{request.<col>}`: field from request body
+/// - `{calc: <math_expression>}`: dynamic math formula evaluation
+/// - `{if: <condition> ? <true_val> : <false_val>}`: conditional logic
 /// - `{now:YYYY-MM-DD}`, `{now+30d:YYYY-MM-DD}`, `{now()}`
 /// - `{<var>|<default>}`: fallback syntax
+pub fn interpolate_string_full(
+    template: &str,
+    ctx: &TriggerContext,
+    runtime_opt: Option<&TriggerRuntime>,
+    item_opt: Option<&Map<String, Value>>,
+) -> String {
+    let mut output = String::new();
+    let chars: Vec<char> = template.chars().collect();
+    let len = chars.len();
+    let mut i = 0;
+
+    while i < len {
+        if chars[i] == '{' {
+            let start = i + 1;
+            let mut depth = 1;
+            let mut j = start;
+            while j < len && depth > 0 {
+                if chars[j] == '{' {
+                    depth += 1;
+                } else if chars[j] == '}' {
+                    depth -= 1;
+                }
+                j += 1;
+            }
+            if depth == 0 {
+                let raw_token: String = chars[start..j - 1].iter().collect();
+                let resolved = resolve_single_token(&raw_token, ctx, runtime_opt, item_opt);
+                output.push_str(&resolved);
+                i = j;
+                continue;
+            }
+        }
+        output.push(chars[i]);
+        i += 1;
+    }
+
+    output
+}
+
 pub fn interpolate_string(
     template: &str,
     ctx: &TriggerContext,
     item_opt: Option<&Map<String, Value>>,
 ) -> String {
-    let re = Regex::new(r"\{([^}]+)\}").expect("Invalid regex");
-    re.replace_all(template, |caps: &regex::Captures| {
-        let raw_token = &caps[1];
-        let (expr, fallback) = match raw_token.split_once('|') {
-            Some((e, f)) => (e.trim(), Some(f.trim())),
-            None => (raw_token.trim(), None),
-        };
+    interpolate_string_full(template, ctx, None, item_opt)
+}
 
-        // Date interpolation: e.g. "now:YYYY-MM-DD" or "now+30d:YYYY-MM-DD"
-        if expr == "now()" || expr.starts_with("now") || expr.starts_with("date:") {
-            return format_date_expression(expr);
-        }
+fn resolve_single_token(
+    raw_token: &str,
+    ctx: &TriggerContext,
+    runtime_opt: Option<&TriggerRuntime>,
+    item_opt: Option<&Map<String, Value>>,
+) -> String {
+    let (expr, fallback) = match raw_token.split_once('|') {
+        Some((e, f)) => (e.trim(), Some(f.trim())),
+        None => (raw_token.trim(), None),
+    };
 
-        // Resolving parent / item / request references
-        if let Some(prop) = expr.strip_prefix("parent.") {
-            if let Some(v) = ctx.new_record.get(prop).or_else(|| ctx.old_record.get(prop)) {
-                return json_val_to_str(v);
-            }
-        } else if let Some(prop) = expr.strip_prefix("item.") {
-            if let Some(item) = item_opt {
-                if let Some(v) = item.get(prop) {
-                    return json_val_to_str(v);
+    // 1. Date interpolation: e.g. "now:YYYY-MM-DD" or "now+30d:YYYY-MM-DD"
+    if expr == "now()" || expr.starts_with("now") || expr.starts_with("date:") {
+        return format_date_expression(expr);
+    }
+
+    // 2. Math formula: e.g. "{calc: item.qty * product.cost_price}"
+    if expr.starts_with("calc:") || expr.starts_with("math:") || expr.starts_with("eval:") {
+        if let Some((_, math_expr)) = expr.split_once(':') {
+            let clean = math_expr.trim().replace('{', "").replace('}', "");
+            match eval_math_expr(&clean, |ident| resolve_numeric_var(ident, ctx, runtime_opt, item_opt)) {
+                Ok(val) => {
+                    return if val.fract() == 0.0 {
+                        format!("{}", val as i64)
+                    } else {
+                        format!("{:.4}", val)
+                            .trim_end_matches('0')
+                            .trim_end_matches('.')
+                            .to_string()
+                    };
+                }
+                Err(e) => {
+                    return fallback.unwrap_or(&e).to_string();
                 }
             }
-        } else if let Some(prop) = expr.strip_prefix("request.") {
-            if let Some(v) = ctx.request_body.get(prop) {
-                return json_val_to_str(v);
-            }
-        } else {
-            // Direct lookups: check item first, then parent, then request
-            if let Some(item) = item_opt && let Some(v) = item.get(expr) {
-                return json_val_to_str(v);
-            }
-            if let Some(v) = ctx.new_record.get(expr).or_else(|| ctx.old_record.get(expr)) {
-                return json_val_to_str(v);
-            }
-            if let Some(v) = ctx.request_body.get(expr) {
-                return json_val_to_str(v);
+        }
+    }
+
+    // 3. Conditional: e.g. "{if: item.qty_delivered >= item.qty ? 'COMPLETED' : 'PARTIAL'}"
+    if expr.starts_with("if:") || expr.starts_with("case:") {
+        if let Some((_, cond_expr)) = expr.split_once(':') {
+            if let Some(res) = eval_conditional_token(cond_expr, ctx, runtime_opt, item_opt) {
+                return res;
             }
         }
+    }
 
-        fallback.unwrap_or("").to_string()
-    })
-    .to_string()
+    // 4. Resolving parent / item / acc / lookup / request references
+    if let Some(prop) = expr.strip_prefix("parent.") {
+        let parent_obj = Value::Object(ctx.new_record.clone());
+        if let Some(v) = resolve_nested_json(&parent_obj, prop) {
+            return json_val_to_str(&v);
+        }
+        let old_obj = Value::Object(ctx.old_record.clone());
+        if let Some(v) = resolve_nested_json(&old_obj, prop) {
+            return json_val_to_str(&v);
+        }
+    } else if let Some(prop) = expr.strip_prefix("item.") {
+        if let Some(item) = item_opt {
+            let item_obj = Value::Object(item.clone());
+            if let Some(v) = resolve_nested_json(&item_obj, prop) {
+                return json_val_to_str(&v);
+            }
+        }
+    } else if let Some(prop) = expr.strip_prefix("acc.").or_else(|| expr.strip_prefix("accumulated.")) {
+        if let Some(runtime) = runtime_opt {
+            if let Some(v) = runtime.accumulated.get(prop) {
+                return if v.fract() == 0.0 {
+                    format!("{}", *v as i64)
+                } else {
+                    format!("{:.4}", v)
+                        .trim_end_matches('0')
+                        .trim_end_matches('.')
+                        .to_string()
+                };
+            }
+        }
+    } else if let Some(prop) = expr.strip_prefix("lookup.") {
+        if let Some(runtime) = runtime_opt {
+            let lookup_obj = Value::Object(runtime.lookups.iter().map(|(k, v)| (k.clone(), v.clone())).collect());
+            if let Some(v) = resolve_nested_json(&lookup_obj, prop) {
+                return json_val_to_str(&v);
+            }
+        }
+    } else if let Some(prop) = expr.strip_prefix("request.") {
+        if let Some(v) = resolve_nested_json(ctx.request_body, prop) {
+            return json_val_to_str(&v);
+        }
+    } else {
+        // Direct lookups: check item first, then lookups, then accumulators, then parent, then request
+        if let Some(item) = item_opt {
+            let item_obj = Value::Object(item.clone());
+            if let Some(v) = resolve_nested_json(&item_obj, expr) {
+                return json_val_to_str(&v);
+            }
+        }
+        if let Some(runtime) = runtime_opt {
+            let lookup_obj = Value::Object(runtime.lookups.iter().map(|(k, v)| (k.clone(), v.clone())).collect());
+            if let Some(v) = resolve_nested_json(&lookup_obj, expr) {
+                return json_val_to_str(&v);
+            }
+            if let Some(v) = runtime.accumulated.get(expr) {
+                return if v.fract() == 0.0 {
+                    format!("{}", *v as i64)
+                } else {
+                    format!("{:.4}", v)
+                        .trim_end_matches('0')
+                        .trim_end_matches('.')
+                        .to_string()
+                };
+            }
+        }
+        let parent_obj = Value::Object(ctx.new_record.clone());
+        if let Some(v) = resolve_nested_json(&parent_obj, expr) {
+            return json_val_to_str(&v);
+        }
+        let old_obj = Value::Object(ctx.old_record.clone());
+        if let Some(v) = resolve_nested_json(&old_obj, expr) {
+            return json_val_to_str(&v);
+        }
+        if let Some(v) = resolve_nested_json(ctx.request_body, expr) {
+            return json_val_to_str(&v);
+        }
+    }
+
+    fallback.unwrap_or("").to_string()
 }
 
 fn json_val_to_str(v: &Value) -> String {
@@ -189,40 +811,64 @@ fn format_date_expression(expr: &str) -> String {
     }
 }
 
-/// Evaluate arithmetic set expression, e.g. "qty - {item.qty}"
+/// Evaluate arithmetic set expression, supporting formulas and dynamic variables.
+fn compute_set_value_full(
+    target_col: &str,
+    current_val: f64,
+    set_expr: &str,
+    ctx: &TriggerContext,
+    runtime_opt: Option<&TriggerRuntime>,
+    item_opt: Option<&Map<String, Value>>,
+) -> Result<f64, String> {
+    let interpolated = interpolate_string_full(set_expr, ctx, runtime_opt, item_opt);
+    let trimmed = interpolated.trim();
+
+    // 1. Math evaluation resolving target column and "current" to current_val
+    let eval_res = eval_math_expr(trimmed, |ident| {
+        let clean = ident.trim();
+        if clean.eq_ignore_ascii_case(target_col)
+            || clean.eq_ignore_ascii_case("current")
+            || (target_col.is_empty() && trimmed.starts_with(clean))
+        {
+            Some(current_val)
+        } else {
+            resolve_numeric_var(clean, ctx, runtime_opt, item_opt)
+        }
+    });
+
+    if let Ok(val) = eval_res {
+        return Ok(val);
+    }
+
+    // 2. Backward compatibility fallback: "<col_name> - <val>"
+    if let Some((_col, right)) = trimmed.split_once('-') {
+        if let Ok(deduct_val) = right.trim().parse::<f64>() {
+            return Ok(current_val - deduct_val);
+        }
+    }
+
+    // 3. Backward compatibility fallback: "<col_name> + <val>"
+    if let Some((_col, right)) = trimmed.split_once('+') {
+        if let Ok(add_val) = right.trim().parse::<f64>() {
+            return Ok(current_val + add_val);
+        }
+    }
+
+    // 4. Fallback: direct number
+    if let Ok(num) = trimmed.parse::<f64>() {
+        return Ok(num);
+    }
+
+    Err(format!("Unsupported set expression: '{}' ({})", set_expr, eval_res.err().unwrap_or_default()))
+}
+
 fn compute_set_value(
     current_val: f64,
     set_expr: &str,
     ctx: &TriggerContext,
     item_opt: Option<&Map<String, Value>>,
 ) -> Result<f64, String> {
-    let interpolated = interpolate_string(set_expr, ctx, item_opt);
-    let trimmed = interpolated.trim();
-
-    // Check pattern: "<col_name> - <val>"
-    if let Some((_col, right)) = trimmed.split_once('-') {
-        let deduct_val: f64 = right
-            .trim()
-            .parse::<f64>()
-            .map_err(|_| format!("Cannot parse deduction value in expression '{}'", trimmed))?;
-        return Ok(current_val - deduct_val);
-    }
-
-    // Check pattern: "<col_name> + <val>"
-    if let Some((_col, right)) = trimmed.split_once('+') {
-        let add_val: f64 = right
-            .trim()
-            .parse::<f64>()
-            .map_err(|_| format!("Cannot parse addition value in expression '{}'", trimmed))?;
-        return Ok(current_val + add_val);
-    }
-
-    // Fallback: evaluate as direct number
-    if let Ok(num) = trimmed.parse::<f64>() {
-        return Ok(num);
-    }
-
-    Err(format!("Unsupported set expression: '{}'", set_expr))
+    compute_set_value_full("", current_val, set_expr, ctx, None, item_opt)
 }
 
 /// Execute all matching triggers within the current transaction scope.
@@ -265,9 +911,11 @@ pub async fn execute_triggers<'a>(
             );
         }
 
+        let mut runtime = TriggerRuntime::default();
+
         // Execute sequential actions
         for action in &trigger.actions {
-            execute_action(db_type.clone(), tx, action, ctx, None).await.map_err(|err| {
+            execute_action(db_type.clone(), tx, action, ctx, &mut runtime, None).await.map_err(|err| {
                 format!(
                     "Trigger '{}' action failed: {}",
                     trigger.name, err
@@ -297,13 +945,107 @@ fn execute_action<'a>(
     tx: &'a mut (dyn TxStore + 'a),
     action: &'a TriggerAction,
     ctx: &'a TriggerContext<'a>,
-    item_opt: Option<&'a Map<String, Value>>,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+    runtime: &'a mut TriggerRuntime,
+    item_opt: Option<Map<String, Value>>,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<Map<String, Value>>, String>> + Send + 'a>> {
     Box::pin(async move {
+        // Evaluate condition guard on individual action if specified
+        if let Some(cond) = &action.condition {
+            if !evaluate_condition(&Some(cond.clone()), "on_update", ctx.old_record, ctx.new_record) {
+                return Ok(item_opt);
+            }
+        }
+
         let action_type = action.action_type.to_lowercase();
 
         match action_type.as_str() {
-            // ── 1. Iterate Detail (Line Items / BOM) ─────────────────────────────
+            // ── 1. Lookup Related Master Data (Dynamic Costing & Account Determination) ──
+            "lookup" | "fetch" => {
+                let target_table = &action.target_table;
+                if target_table.is_empty() {
+                    return Err("Action 'lookup' requires 'target_table'".to_string());
+                }
+
+                let filter_map = action.filter.as_ref().ok_or_else(|| {
+                    format!("Action 'lookup' on '{}' requires 'filter'", target_table)
+                })?;
+
+                let mut where_clauses = Vec::new();
+                let mut filter_params = Vec::new();
+                for (col, tmpl_val) in filter_map {
+                    let resolved_str = match tmpl_val {
+                        Value::String(s) => interpolate_string_full(s, ctx, Some(runtime), item_opt.as_ref()),
+                        other => json_val_to_str(other),
+                    };
+                    where_clauses.push(format!("{} = ?", col));
+                    filter_params.push(DbParam::Str(resolved_str));
+                }
+                let where_sql = where_clauses.join(" AND ");
+
+                let select_sql = format!("SELECT * FROM {} WHERE {}", target_table, where_sql);
+                let built_select = crate::database::state::rehydrate_placeholders(
+                    &select_sql,
+                    db_type.as_str(),
+                );
+
+                let rows = tx
+                    .raw_sql(&built_select, filter_params)
+                    .await
+                    .map_err(|e| format!("Error querying record in '{}': {}", target_table, e))?;
+
+                let alias = action
+                    .alias
+                    .as_deref()
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or(target_table);
+
+                if rows.is_empty() {
+                    if action.optional == Some(true) {
+                        return Ok(item_opt);
+                    } else {
+                        return Err(format!(
+                            "Lookup in table '{}' with filter {:?} returned no record",
+                            target_table, filter_map
+                        ));
+                    }
+                }
+
+                let found_row = rows[0].clone();
+                runtime.lookups.insert(alias.to_string(), found_row.clone());
+
+                if let Some(mut item) = item_opt {
+                    item.insert(alias.to_string(), found_row);
+                    return Ok(Some(item));
+                }
+
+                Ok(None)
+            }
+
+            // ── 2. Accumulate Metrics Across Detail Loops ──────────────────────────
+            "accumulate" | "sum" => {
+                let source_map = action.accumulate.as_ref().or(action.fields.as_ref());
+                if let Some(acc_map) = source_map {
+                    for (acc_key, formula_val) in acc_map {
+                        let formula_str = match formula_val {
+                            Value::String(s) => s.as_str(),
+                            other => other.as_str().unwrap_or(""),
+                        };
+                        let mut clean_formula = formula_str.trim().replace('{', "").replace('}', "");
+                        if let Some((_, inner)) = clean_formula.split_once(':') {
+                            if clean_formula.starts_with("calc:") || clean_formula.starts_with("math:") || clean_formula.starts_with("eval:") {
+                                clean_formula = inner.trim().to_string();
+                            }
+                        }
+                        let val = eval_math_expr(&clean_formula, |ident| {
+                            resolve_numeric_var(ident, ctx, Some(runtime), item_opt.as_ref())
+                        })?;
+                        *runtime.accumulated.entry(acc_key.clone()).or_insert(0.0) += val;
+                    }
+                }
+                Ok(item_opt)
+            }
+
+            // ── 3. Iterate Detail (Line Items / BOM) ─────────────────────────────
             "iterate_detail" | "loop_detail" | "for_each_detail" => {
                 let detail_table = action
                     .detail_table
@@ -338,21 +1080,39 @@ fn execute_action<'a>(
                     .map_err(|e| format!("Querying detail items from '{}' failed: {}", detail_table, e))?;
 
                 let sub_actions = action.actions.as_deref().unwrap_or(&[]);
-                if sub_actions.is_empty() {
-                    return Ok(());
-                }
 
                 for item in &items {
-                    if let Some(item_map) = item.as_object() {
-                        for sub_act in sub_actions {
-                            execute_action(db_type.clone(), tx, sub_act, ctx, Some(item_map)).await?;
+                    let mut current_item = item.as_object().cloned().unwrap_or_default();
+                    for sub_act in sub_actions {
+                        if let Some(updated) = execute_action(db_type.clone(), tx, sub_act, ctx, runtime, Some(current_item.clone())).await? {
+                            current_item = updated;
+                        }
+                    }
+
+                    // Evaluate iteration accumulator if specified on iterate_detail
+                    if let Some(accumulate_map) = &action.accumulate {
+                        for (acc_key, formula_val) in accumulate_map {
+                            let formula_str = match formula_val {
+                                Value::String(s) => s.as_str(),
+                                other => other.as_str().unwrap_or(""),
+                            };
+                            let mut clean_formula = formula_str.trim().replace('{', "").replace('}', "");
+                            if let Some((_, inner)) = clean_formula.split_once(':') {
+                                if clean_formula.starts_with("calc:") || clean_formula.starts_with("math:") || clean_formula.starts_with("eval:") {
+                                    clean_formula = inner.trim().to_string();
+                                }
+                            }
+                            let val = eval_math_expr(&clean_formula, |ident| {
+                                resolve_numeric_var(ident, ctx, Some(runtime), Some(&current_item))
+                            })?;
+                            *runtime.accumulated.entry(acc_key.clone()).or_insert(0.0) += val;
                         }
                     }
                 }
-                Ok(())
+                Ok(item_opt)
             }
 
-            // ── 2. Update (e.g. Deduct Inventory Lot) ───────────────────────────
+            // ── 4. Update (e.g. Deduct Inventory Lot, Fulfill Delivery Order) ─────
             "update" | "decrement" => {
                 let target_table = &action.target_table;
                 if target_table.is_empty() {
@@ -371,7 +1131,7 @@ fn execute_action<'a>(
                 let mut filter_params = Vec::new();
                 for (col, tmpl_val) in filter_map {
                     let resolved_str = match tmpl_val {
-                        Value::String(s) => interpolate_string(s, ctx, item_opt),
+                        Value::String(s) => interpolate_string_full(s, ctx, Some(runtime), item_opt.as_ref()),
                         other => json_val_to_str(other),
                     };
                     where_clauses.push(format!("{} = ?", col));
@@ -380,7 +1140,13 @@ fn execute_action<'a>(
                 let where_sql = where_clauses.join(" AND ");
 
                 // 2. Fetch current record to perform atomic validation & calculation
-                let select_sql = format!("SELECT * FROM {} WHERE {}", target_table, where_sql);
+                let is_atomic = action.atomic.unwrap_or(true);
+                let lock_clause = if is_atomic && (db_type == DbType::Postgres || db_type == DbType::Mysql) {
+                    " FOR UPDATE"
+                } else {
+                    ""
+                };
+                let select_sql = format!("SELECT * FROM {} WHERE {}{}", target_table, where_sql, lock_clause);
                 let built_select = crate::database::state::rehydrate_placeholders(
                     &select_sql,
                     db_type.as_str(),
@@ -418,7 +1184,7 @@ fn execute_action<'a>(
                         _ => return Err(format!("Set expression for '{}' must be a string", col)),
                     };
 
-                    let new_calculated = compute_set_value(current_col_val, expr_str, ctx, item_opt)?;
+                    let new_calculated = compute_set_value_full(col, current_col_val, expr_str, ctx, Some(runtime), item_opt.as_ref())?;
 
                     // Enforce minimum validation constraint (e.g. preventing negative inventory)
                     if let Some(validate) = &action.validate {
@@ -433,7 +1199,7 @@ fn execute_action<'a>(
                                     let err_msg = validate
                                         .error_message
                                         .as_ref()
-                                        .map(|m| interpolate_string(m, ctx, item_opt))
+                                        .map(|m| interpolate_string_full(m, ctx, Some(runtime), item_opt.as_ref()))
                                         .unwrap_or(default_msg);
                                     return Err(err_msg);
                                 }
@@ -468,10 +1234,10 @@ fn execute_action<'a>(
                     .await
                     .map_err(|e| format!("Failed to update '{}': {}", target_table, e))?;
 
-                Ok(())
+                Ok(item_opt)
             }
 
-            // ── 3. Insert Record (e.g. Create AR Invoice Draft) ─────────────────
+            // ── 5. Insert Record (e.g. Create AR Invoice Draft) ─────────────────
             "insert" | "create_record" => {
                 let target_table = &action.target_table;
                 if target_table.is_empty() {
@@ -491,7 +1257,7 @@ fn execute_action<'a>(
                     placeholders.push("?");
 
                     let resolved_str = match val {
-                        Value::String(s) => interpolate_string(s, ctx, item_opt),
+                        Value::String(s) => interpolate_string_full(s, ctx, Some(runtime), item_opt.as_ref()),
                         other => json_val_to_str(other),
                     };
 
@@ -520,10 +1286,10 @@ fn execute_action<'a>(
                     .await
                     .map_err(|e| format!("Failed to insert into '{}': {}", target_table, e))?;
 
-                Ok(())
+                Ok(item_opt)
             }
 
-            // ── 4. Insert Batch (e.g. GL Journal Lines) ─────────────────────────
+            // ── 6. Insert Batch (e.g. GL Journal Lines) ─────────────────────────
             "insert_batch" | "create_records" => {
                 let target_table = &action.target_table;
                 if target_table.is_empty() {
@@ -531,6 +1297,54 @@ fn execute_action<'a>(
                 }
 
                 let rows = action.rows.as_deref().unwrap_or(&[]);
+
+                // ERP Double-Entry Balancing Invariant check (Debit == Credit)
+                if let Some(validate) = &action.validate {
+                    if let Some(bal) = &validate.assert_balanced {
+                        let debit_field = &bal.debit_field;
+                        let credit_field = &bal.credit_field;
+                        let tolerance = bal.tolerance.unwrap_or(0.001);
+
+                        let mut total_debit = 0.0;
+                        let mut total_credit = 0.0;
+
+                        for row_map in rows {
+                            if let Some(val) = row_map.get(debit_field) {
+                                let resolved = match val {
+                                    Value::String(s) => interpolate_string_full(s, ctx, Some(runtime), item_opt.as_ref()),
+                                    other => json_val_to_str(other),
+                                };
+                                if let Ok(n) = resolved.parse::<f64>() {
+                                    total_debit += n;
+                                }
+                            }
+                            if let Some(val) = row_map.get(credit_field) {
+                                let resolved = match val {
+                                    Value::String(s) => interpolate_string_full(s, ctx, Some(runtime), item_opt.as_ref()),
+                                    other => json_val_to_str(other),
+                                };
+                                if let Ok(n) = resolved.parse::<f64>() {
+                                    total_credit += n;
+                                }
+                            }
+                        }
+
+                        let diff = (total_debit - total_credit).abs();
+                        if diff > tolerance {
+                            let default_msg = format!(
+                                "Double-entry balancing validation failed on '{}': Total debit ({:.2}) does not balance with total credit ({:.2}) [difference: {:.2}]",
+                                target_table, total_debit, total_credit, diff
+                            );
+                            let err_msg = validate
+                                .error_message
+                                .as_ref()
+                                .map(|m| interpolate_string_full(m, ctx, Some(runtime), item_opt.as_ref()))
+                                .unwrap_or(default_msg);
+                            return Err(err_msg);
+                        }
+                    }
+                }
+
                 for row_map in rows {
                     let mut cols = Vec::new();
                     let mut placeholders = Vec::new();
@@ -541,7 +1355,7 @@ fn execute_action<'a>(
                         placeholders.push("?");
 
                         let resolved_str = match val {
-                            Value::String(s) => interpolate_string(s, ctx, item_opt),
+                            Value::String(s) => interpolate_string_full(s, ctx, Some(runtime), item_opt.as_ref()),
                             other => json_val_to_str(other),
                         };
 
@@ -570,10 +1384,10 @@ fn execute_action<'a>(
                         .map_err(|e| format!("Failed batch insert into '{}': {}", target_table, e))?;
                 }
 
-                Ok(())
+                Ok(item_opt)
             }
 
-            // ── 5. Raw/Parameterized SQL ─────────────────────────────────────────
+            // ── 7. Raw/Parameterized SQL ─────────────────────────────────────────
             "sql" => {
                 let stmt = action
                     .statement
@@ -583,7 +1397,7 @@ fn execute_action<'a>(
                 let mut params = Vec::new();
                 if let Some(param_templates) = &action.params {
                     for tmpl in param_templates {
-                        let resolved = interpolate_string(tmpl, ctx, item_opt);
+                        let resolved = interpolate_string_full(tmpl, ctx, Some(runtime), item_opt.as_ref());
                         if let Ok(i) = resolved.parse::<i64>() {
                             params.push(DbParam::I64(i));
                         } else if let Ok(f) = resolved.parse::<f64>() {
@@ -599,7 +1413,7 @@ fn execute_action<'a>(
                     .await
                     .map_err(|e| format!("Custom SQL action failed: {}", e))?;
 
-                Ok(())
+                Ok(item_opt)
             }
 
             unsupported => Err(format!("Unsupported action type: '{}'", unsupported)),
@@ -710,6 +1524,20 @@ mod tests {
 
             // Detail items for Sales Order
             if sql.contains("SELECT * FROM transaction_sales_order_item") {
+                for p in &params {
+                    if let DbParam::Str(s) = p {
+                        if s == "10" {
+                            return Ok(vec![serde_json::json!({
+                                "id": 10,
+                                "sales_order_id": 105,
+                                "product_id": 12,
+                                "qty": 10,
+                                "qty_delivered": 0,
+                                "fulfillment_status": "PENDING"
+                            })]);
+                        }
+                    }
+                }
                 return Ok(vec![
                     serde_json::json!({
                         "id": 10,
@@ -725,6 +1553,46 @@ mod tests {
                         "product_name": "Amoxicillin 500mg",
                         "qty": 10
                     }),
+                ]);
+            }
+
+            // Master Product lookup
+            if sql.contains("SELECT * FROM master_product") {
+                for p in &params {
+                    if let DbParam::Str(s) = p {
+                        if s == "12" {
+                            return Ok(vec![serde_json::json!({
+                                "id": 12,
+                                "name": "Paracetamol 500mg",
+                                "cost_price": 12000,
+                                "cogs_account_code": "5101",
+                                "inventory_account_code": "1103"
+                            })]);
+                        }
+                        if s == "14" {
+                            return Ok(vec![serde_json::json!({
+                                "id": 14,
+                                "name": "Amoxicillin 500mg",
+                                "cost_price": 15000,
+                                "cogs_account_code": "5101",
+                                "inventory_account_code": "1103"
+                            })]);
+                        }
+                    }
+                }
+            }
+
+            // Detail items for Delivery Order
+            if sql.contains("SELECT * FROM transaction_delivery_order_item") {
+                return Ok(vec![
+                    serde_json::json!({
+                        "id": 1,
+                        "delivery_order_id": 501,
+                        "sales_order_item_id": 10,
+                        "product_id": 12,
+                        "qty_shipped": 5,
+                        "qty_ordered": 10
+                    })
                 ]);
             }
 
@@ -952,4 +1820,455 @@ mod tests {
         let err_msg = res.unwrap_err();
         assert!(err_msg.contains("Validation failed on 'transaction_product_lot'"), "Error should mention validation failure: {}", err_msg);
     }
+
+    #[actix_web::test]
+    async fn test_gl_posting_fails_on_unbalanced_double_entry() {
+        let trigger_json = r#"{
+            "name": "auto_gl",
+            "event": "on_update",
+            "condition": {
+                "field": "status",
+                "to": "SHIPPED"
+            },
+            "actions": [
+                {
+                    "type": "insert_batch",
+                    "target_table": "transaction_general_ledger_line",
+                    "validate": {
+                        "assert_balanced": {
+                            "debit_field": "debit",
+                            "credit_field": "credit"
+                        }
+                    },
+                    "rows": [
+                        { "account_code": "1103", "debit": 250000, "credit": 0 },
+                        { "account_code": "4101", "debit": 0, "credit": 200000 }
+                    ]
+                }
+            ]
+        }"#;
+
+        let trigger: ActionTrigger = serde_json::from_str(trigger_json).unwrap();
+        let schema = TableSchema {
+            table: "transaction_sales_order".to_string(),
+            action_triggers: vec![trigger],
+            ..Default::default()
+        };
+
+        let mut old_rec = Map::new();
+        old_rec.insert("status".to_string(), serde_json::json!("APPROVED"));
+        let mut new_rec = old_rec.clone();
+        new_rec.insert("status".to_string(), serde_json::json!("SHIPPED"));
+
+        let req_body = serde_json::json!({ "status": "SHIPPED" });
+        let ctx = TriggerContext {
+            parent_table: "transaction_sales_order",
+            parent_pk: "105",
+            old_record: &old_rec,
+            new_record: &new_rec,
+            request_body: &req_body,
+            actor_id: None,
+        };
+
+        let mut mock_tx = MockTxStore {
+            executed_sqls: Vec::new(),
+            lot_stock_12: 100.0,
+            lot_stock_14: 100.0,
+        };
+
+        let res = execute_triggers(DbType::Sqlite, &mut mock_tx, &schema, &ctx, "on_update").await;
+        assert!(res.is_err(), "Trigger execution must fail when GL is unbalanced");
+        let err = res.unwrap_err();
+        assert!(err.contains("Double-entry balancing validation failed"), "Error: {}", err);
+    }
+
+    #[actix_web::test]
+    async fn test_gl_posting_succeeds_on_balanced_double_entry() {
+        let trigger_json = r#"{
+            "name": "auto_gl",
+            "event": "on_update",
+            "condition": {
+                "field": "status",
+                "to": "SHIPPED"
+            },
+            "actions": [
+                {
+                    "type": "insert_batch",
+                    "target_table": "transaction_general_ledger_line",
+                    "validate": {
+                        "assert_balanced": {
+                            "debit_field": "debit",
+                            "credit_field": "credit"
+                        }
+                    },
+                    "rows": [
+                        { "account_code": "1103", "debit": 250000, "credit": 0 },
+                        { "account_code": "4101", "debit": 0, "credit": 250000 }
+                    ]
+                }
+            ]
+        }"#;
+
+        let trigger: ActionTrigger = serde_json::from_str(trigger_json).unwrap();
+        let schema = TableSchema {
+            table: "transaction_sales_order".to_string(),
+            action_triggers: vec![trigger],
+            ..Default::default()
+        };
+
+        let mut old_rec = Map::new();
+        old_rec.insert("status".to_string(), serde_json::json!("APPROVED"));
+        let mut new_rec = old_rec.clone();
+        new_rec.insert("status".to_string(), serde_json::json!("SHIPPED"));
+
+        let req_body = serde_json::json!({ "status": "SHIPPED" });
+        let ctx = TriggerContext {
+            parent_table: "transaction_sales_order",
+            parent_pk: "105",
+            old_record: &old_rec,
+            new_record: &new_rec,
+            request_body: &req_body,
+            actor_id: None,
+        };
+
+        let mut mock_tx = MockTxStore {
+            executed_sqls: Vec::new(),
+            lot_stock_12: 100.0,
+            lot_stock_14: 100.0,
+        };
+
+        let res = execute_triggers(DbType::Sqlite, &mut mock_tx, &schema, &ctx, "on_update").await;
+        assert!(res.is_ok(), "Trigger execution must succeed when GL is balanced: {:?}", res.err());
+    }
+
+    #[test]
+    fn test_eval_math_expr_operators_and_functions() {
+        let no_vars = |_name: &str| None;
+
+        // Basic arithmetic & precedence
+        assert_eq!(eval_math_expr("10 + 20 * 3", no_vars).unwrap(), 70.0);
+        assert_eq!(eval_math_expr("(10 + 20) * 3", no_vars).unwrap(), 90.0);
+        assert_eq!(eval_math_expr("100 - 50 / 2", no_vars).unwrap(), 75.0);
+        assert_eq!(eval_math_expr("10 % 3", no_vars).unwrap(), 1.0);
+        assert_eq!(eval_math_expr("-5 + 15", no_vars).unwrap(), 10.0);
+
+        // Math functions
+        assert_eq!(eval_math_expr("round(123.456, 2)", no_vars).unwrap(), 123.46);
+        assert_eq!(eval_math_expr("round(123.456)", no_vars).unwrap(), 123.0);
+        assert_eq!(eval_math_expr("floor(5.99)", no_vars).unwrap(), 5.0);
+        assert_eq!(eval_math_expr("ceil(5.01)", no_vars).unwrap(), 6.0);
+        assert_eq!(eval_math_expr("abs(-42.5)", no_vars).unwrap(), 42.5);
+        assert_eq!(eval_math_expr("min(10, 5)", no_vars).unwrap(), 5.0);
+        assert_eq!(eval_math_expr("max(10, 5)", no_vars).unwrap(), 10.0);
+
+        // Variables
+        let vars = |name: &str| match name {
+            "qty" => Some(5.0),
+            "cost_price" => Some(15000.0),
+            "discount_pct" => Some(10.0),
+            _ => None,
+        };
+        assert_eq!(eval_math_expr("qty * cost_price", vars).unwrap(), 75000.0);
+        assert_eq!(eval_math_expr("qty * cost_price * (1 - discount_pct / 100)", vars).unwrap(), 67500.0);
+
+        // Errors
+        assert!(eval_math_expr("10 / 0", no_vars).is_err(), "Division by zero should error");
+        assert!(eval_math_expr("unknown_var + 1", no_vars).is_err(), "Unknown variable should error");
+    }
+
+    #[test]
+    fn test_interpolate_string_with_calc_and_nested_properties() {
+        let mut old_rec = Map::new();
+        old_rec.insert("customer_id".to_string(), serde_json::json!(3));
+        let mut new_rec = old_rec.clone();
+        new_rec.insert("subtotal".to_string(), serde_json::json!(200000));
+
+        let req_body = serde_json::json!({});
+        let ctx = TriggerContext {
+            parent_table: "transaction_sales_order",
+            parent_pk: "105",
+            old_record: &old_rec,
+            new_record: &new_rec,
+            request_body: &req_body,
+            actor_id: None,
+        };
+
+        let mut item = Map::new();
+        item.insert("qty".to_string(), serde_json::json!(5));
+        item.insert("product".to_string(), serde_json::json!({
+            "cost_price": 12000,
+            "cogs_account_code": "5101"
+        }));
+
+        let mut runtime = TriggerRuntime::default();
+        runtime.accumulated.insert("total_cogs".to_string(), 60000.0);
+
+        // 1. Nested lookup property
+        let res1 = interpolate_string_full("COGS Account: {product.cogs_account_code}", &ctx, Some(&runtime), Some(&item));
+        assert_eq!(res1, "COGS Account: 5101");
+
+        // 2. Dynamic formula calculation without braces
+        let res2 = interpolate_string_full("Line COGS: {calc: item.qty * product.cost_price}", &ctx, Some(&runtime), Some(&item));
+        assert_eq!(res2, "Line COGS: 60000");
+
+        // 3. Dynamic formula with inner braces
+        let res3 = interpolate_string_full("Line COGS: {calc: {item.qty} * {product.cost_price}}", &ctx, Some(&runtime), Some(&item));
+        assert_eq!(res3, "Line COGS: 60000");
+
+        // 4. Tax calculation on parent
+        let res4 = interpolate_string_full("Tax: {calc: parent.subtotal * 0.11}", &ctx, Some(&runtime), Some(&item));
+        assert_eq!(res4, "Tax: 22000");
+
+        // 5. Reading accumulator
+        let res5 = interpolate_string_full("Total COGS: {acc.total_cogs}", &ctx, Some(&runtime), Some(&item));
+        assert_eq!(res5, "Total COGS: 60000");
+    }
+
+    #[test]
+    fn test_conditional_if_token_evaluation() {
+        let old_rec = Map::new();
+        let new_rec = Map::new();
+        let req_body = serde_json::json!({});
+        let ctx = TriggerContext {
+            parent_table: "test",
+            parent_pk: "1",
+            old_record: &old_rec,
+            new_record: &new_rec,
+            request_body: &req_body,
+            actor_id: None,
+        };
+
+        let mut item = Map::new();
+        item.insert("qty".to_string(), serde_json::json!(10));
+        item.insert("qty_shipped".to_string(), serde_json::json!(6));
+
+        // When qty_shipped < qty
+        let res1 = interpolate_string_full(
+            "Status: {if: item.qty_shipped >= item.qty ? 'COMPLETED' : 'PARTIALLY_SHIPPED'}",
+            &ctx,
+            None,
+            Some(&item),
+        );
+        assert_eq!(res1, "Status: PARTIALLY_SHIPPED");
+
+        // When qty_shipped == qty
+        item.insert("qty_shipped".to_string(), serde_json::json!(10));
+        let res2 = interpolate_string_full(
+            "Status: {if: item.qty_shipped >= item.qty ? 'COMPLETED' : 'PARTIALLY_SHIPPED'}",
+            &ctx,
+            None,
+            Some(&item),
+        );
+        assert_eq!(res2, "Status: COMPLETED");
+    }
+
+    #[tokio::test]
+    async fn test_dynamic_cogs_lookup_and_gl_posting_end_to_end() {
+        let trigger_json = r#"{
+            "name": "sales_order_fulfillment_dynamic",
+            "event": "on_update",
+            "condition": {
+                "field": "status",
+                "to": "SHIPPED"
+            },
+            "actions": [
+                {
+                    "name": "process_details",
+                    "type": "iterate_detail",
+                    "detail_table": "transaction_sales_order_item",
+                    "foreign_key": "sales_order_id",
+                    "accumulate": {
+                        "total_cogs": "{calc: item.qty * product.cost_price}"
+                    },
+                    "actions": [
+                        {
+                            "name": "lookup_master_product",
+                            "type": "lookup",
+                            "target_table": "master_product",
+                            "as": "product",
+                            "filter": { "id": "{item.product_id}" }
+                        },
+                        {
+                            "name": "deduct_stock",
+                            "type": "update",
+                            "target_table": "transaction_product_lot",
+                            "filter": { "product_id": "{item.product_id}" },
+                            "set": { "qty": "qty - {item.qty}" },
+                            "validate": { "min": { "qty": 0 } }
+                        }
+                    ]
+                },
+                {
+                    "name": "post_cogs_gl_journal",
+                    "type": "insert_batch",
+                    "target_table": "transaction_general_ledger_line",
+                    "validate": {
+                        "assert_balanced": {
+                            "debit_field": "debit",
+                            "credit_field": "credit"
+                        }
+                    },
+                    "rows": [
+                        {
+                            "account_code": "5101",
+                            "account_name": "Cost of Goods Sold (COGS)",
+                            "debit": "{acc.total_cogs}",
+                            "credit": 0
+                        },
+                        {
+                            "account_code": "1103",
+                            "account_name": "Merchandise Inventory",
+                            "debit": 0,
+                            "credit": "{acc.total_cogs}"
+                        }
+                    ]
+                },
+                {
+                    "name": "generate_tax_invoice",
+                    "type": "insert",
+                    "target_table": "transaction_account_receivable",
+                    "fields": {
+                        "customer_id": "{parent.customer_id}",
+                        "subtotal": "{parent.total_net}",
+                        "tax_amount": "{calc: parent.total_net * 0.11}",
+                        "grand_total": "{calc: parent.total_net * 1.11}",
+                        "status": "UNPAID"
+                    }
+                }
+            ]
+        }"#;
+
+        let trigger: ActionTrigger = serde_json::from_str(trigger_json).unwrap();
+        let schema = TableSchema {
+            table: "transaction_sales_order".to_string(),
+            action_triggers: vec![trigger],
+            ..Default::default()
+        };
+
+        let mut old_rec = Map::new();
+        old_rec.insert("id".to_string(), serde_json::json!(105));
+        old_rec.insert("status".to_string(), serde_json::json!("APPROVED"));
+        old_rec.insert("customer_id".to_string(), serde_json::json!(3));
+        old_rec.insert("total_net".to_string(), serde_json::json!(250000));
+
+        let mut new_rec = old_rec.clone();
+        new_rec.insert("status".to_string(), serde_json::json!("SHIPPED"));
+
+        let req_body = serde_json::json!({ "status": "SHIPPED" });
+        let ctx = TriggerContext {
+            parent_table: "transaction_sales_order",
+            parent_pk: "105",
+            old_record: &old_rec,
+            new_record: &new_rec,
+            request_body: &req_body,
+            actor_id: Some("1"),
+        };
+
+        let mut mock_tx = MockTxStore {
+            executed_sqls: Vec::new(),
+            lot_stock_12: 100.0,
+            lot_stock_14: 50.0,
+        };
+
+        let res = execute_triggers(DbType::Sqlite, &mut mock_tx, &schema, &ctx, "on_update").await;
+        assert!(res.is_ok(), "Dynamic COGS trigger should succeed: {:?}", res.err());
+
+        // Calculation check:
+        // Item 1: Product 12, qty 5 * cost_price 12000 = 60000
+        // Item 2: Product 14, qty 10 * cost_price 15000 = 150000
+        // Expected total_cogs = 210000
+
+        // Verify GL Lines had exact dynamic total_cogs of 210000
+        let gl_inserts: Vec<&(String, Vec<DbParam>)> = mock_tx.executed_sqls.iter()
+            .filter(|(s, _)| s.contains("INSERT INTO transaction_general_ledger_line"))
+            .collect();
+        assert_eq!(gl_inserts.len(), 2, "Should insert 2 GL journal rows");
+        let has_cogs_debit = gl_inserts[0].1.iter().any(|p| match p { DbParam::I64(n) => *n == 210000, _ => false });
+        assert!(has_cogs_debit, "COGS GL line must have debit 210000 calculated dynamically");
+        let has_inventory_credit = gl_inserts[1].1.iter().any(|p| match p { DbParam::I64(n) => *n == 210000, _ => false });
+        assert!(has_inventory_credit, "Inventory GL line must have credit 210000 calculated dynamically");
+
+        // Verify AR Invoice had calculated tax: 250000 * 0.11 = 27500, grand total = 277500
+        let ar_inserts: Vec<&(String, Vec<DbParam>)> = mock_tx.executed_sqls.iter()
+            .filter(|(s, _)| s.contains("INSERT INTO transaction_account_receivable"))
+            .collect();
+        assert_eq!(ar_inserts.len(), 1, "Should insert 1 AR invoice");
+        let has_tax = ar_inserts[0].1.iter().any(|p| match p { DbParam::I64(n) => *n == 27500, _ => false });
+        assert!(has_tax, "AR invoice must have tax calculated as 27500");
+        let has_grand_total = ar_inserts[0].1.iter().any(|p| match p { DbParam::I64(n) => *n == 277500, _ => false });
+        assert!(has_grand_total, "AR invoice must have grand total calculated as 277500");
+    }
+
+    #[tokio::test]
+    async fn test_two_step_delivery_partial_fulfillment() {
+        let trigger_json = r#"{
+            "name": "confirm_delivery_order",
+            "event": "on_update",
+            "condition": {
+                "field": "status",
+                "to": "CONFIRMED"
+            },
+            "actions": [
+                {
+                    "name": "process_delivery_items",
+                    "type": "iterate_detail",
+                    "detail_table": "transaction_delivery_order_item",
+                    "foreign_key": "delivery_order_id",
+                    "actions": [
+                        {
+                            "name": "update_sales_order_item_progress",
+                            "type": "update",
+                            "target_table": "transaction_sales_order_item",
+                            "filter": { "id": "{item.sales_order_item_id}" },
+                            "set": {
+                                "qty_delivered": "qty_delivered + {item.qty_shipped}"
+                            }
+                        }
+                    ]
+                }
+            ]
+        }"#;
+
+        let trigger: ActionTrigger = serde_json::from_str(trigger_json).unwrap();
+        let schema = TableSchema {
+            table: "transaction_delivery_order".to_string(),
+            action_triggers: vec![trigger],
+            ..Default::default()
+        };
+
+        let mut old_rec = Map::new();
+        old_rec.insert("id".to_string(), serde_json::json!(501));
+        old_rec.insert("status".to_string(), serde_json::json!("DRAFT"));
+
+        let mut new_rec = old_rec.clone();
+        new_rec.insert("status".to_string(), serde_json::json!("CONFIRMED"));
+
+        let req_body = serde_json::json!({ "status": "CONFIRMED" });
+        let ctx = TriggerContext {
+            parent_table: "transaction_delivery_order",
+            parent_pk: "501",
+            old_record: &old_rec,
+            new_record: &new_rec,
+            request_body: &req_body,
+            actor_id: None,
+        };
+
+        let mut mock_tx = MockTxStore {
+            executed_sqls: Vec::new(),
+            lot_stock_12: 100.0,
+            lot_stock_14: 100.0,
+        };
+
+        let res = execute_triggers(DbType::Sqlite, &mut mock_tx, &schema, &ctx, "on_update").await;
+        assert!(res.is_ok(), "Delivery order confirmation trigger should succeed: {:?}", res.err());
+
+        // Verify update to sales order item: qty_delivered was 0, ships 5 -> updated to 5
+        let so_updates: Vec<&(String, Vec<DbParam>)> = mock_tx.executed_sqls.iter()
+            .filter(|(s, _)| s.contains("UPDATE transaction_sales_order_item"))
+            .collect();
+        assert_eq!(so_updates.len(), 1, "Should update Sales Order item fulfillment");
+        let has_qty_5 = so_updates[0].1.iter().any(|p| match p { DbParam::I64(n) => *n == 5, _ => false });
+        assert!(has_qty_5, "Sales Order item qty_delivered should be incremented to 5");
+    }
 }
+

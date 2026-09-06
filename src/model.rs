@@ -191,6 +191,21 @@ pub struct TriggerAction {
     /// Optional validations (e.g. min quantity checks)
     #[serde(default)]
     pub validate: Option<TriggerValidation>,
+    /// Execute update with row-level lock (FOR UPDATE) or atomic guard
+    #[serde(default)]
+    pub atomic: Option<bool>,
+    /// Alias for lookup result (e.g. "product", "customer", "category")
+    #[serde(default, rename = "as")]
+    pub alias: Option<String>,
+    /// Accumulate expressions across detail iterations (e.g. { "total_cogs": "item.qty * product.cost_price" })
+    #[serde(default)]
+    pub accumulate: Option<serde_json::Map<String, serde_json::Value>>,
+    /// Optional condition to guard this specific action
+    #[serde(default)]
+    pub condition: Option<TriggerCondition>,
+    /// Whether lookup is optional (if false/omitted, failure returns error and aborts tx)
+    #[serde(default)]
+    pub optional: Option<bool>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize, Clone, PartialEq)]
@@ -201,6 +216,55 @@ pub struct TriggerValidation {
     /// Custom error message if validation fails
     #[serde(default)]
     pub error_message: Option<String>,
+    /// Assert balanced double-entry (e.g. GL journal debit == credit)
+    #[serde(default)]
+    pub assert_balanced: Option<AssertBalanced>,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize, Clone, PartialEq)]
+pub struct AssertBalanced {
+    #[serde(default)]
+    pub debit_field: String,
+    #[serde(default)]
+    pub credit_field: String,
+    #[serde(default)]
+    pub tolerance: Option<f64>,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize, Clone, PartialEq)]
+pub struct StateMachine {
+    #[serde(default)]
+    pub field: String,
+    #[serde(default)]
+    pub initial: Option<String>,
+    #[serde(default)]
+    pub transitions: Vec<StateTransition>,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize, Clone, PartialEq)]
+pub struct StateTransition {
+    pub from: serde_json::Value,
+    pub to: String,
+    #[serde(default)]
+    pub roles: Vec<String>,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize, Clone, PartialEq)]
+pub struct LockedWhen {
+    #[serde(default)]
+    pub except_columns: Vec<String>,
+    #[serde(flatten)]
+    pub conditions: serde_json::Map<String, serde_json::Value>,
+}
+
+impl LockedWhen {
+    pub fn get_conditions(&self) -> &serde_json::Map<String, serde_json::Value> {
+        &self.conditions
+    }
+
+    pub fn get_except_columns(&self) -> &[String] {
+        &self.except_columns
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -233,6 +297,10 @@ pub struct TableSchema {
     pub patch: Patch,
     #[serde(default)]
     pub trace: Trace,
+    #[serde(default)]
+    pub locked_when: Option<LockedWhen>,
+    #[serde(default)]
+    pub state_machine: Option<StateMachine>,
     #[serde(default)]
     pub auto_generate: bool,
     #[serde(default)]
@@ -303,6 +371,8 @@ impl Default for TableSchema {
                 column_groups: vec![],
                 column_conflicts: vec![],
             },
+            locked_when: None,
+            state_machine: None,
             auto_generate: false,
             seed: false,
             collate: "".to_string(),
@@ -707,15 +777,84 @@ mod tests {
     }
 
     #[test]
-    fn test_transaction_sales_order_config_file_deserialization() {
-        let path = std::path::Path::new("config/entity/transaction_sales_order.json");
-        if path.exists() {
-            let content = std::fs::read_to_string(path).expect("Failed to read transaction_sales_order.json");
-            let schema: TableSchema = serde_json::from_str(&content).expect("Failed to parse TableSchema");
-            assert_eq!(schema.table, "transaction_sales_order");
-            assert_eq!(schema.action_triggers.len(), 1);
-            assert_eq!(schema.action_triggers[0].name, "sales_order_fulfillment");
-            assert_eq!(schema.action_triggers[0].actions.len(), 3);
-        }
+    fn test_erp_state_machine_and_locked_when_serde() {
+        let json = r#"{
+            "table": "transaction_sales_order",
+            "locked_when": {
+                "status": ["SHIPPED", "PAID", "VOID"]
+            },
+            "state_machine": {
+                "field": "status",
+                "initial": "DRAFT",
+                "transitions": [
+                    { "from": "DRAFT", "to": "APPROVED", "roles": ["manager"] },
+                    { "from": "APPROVED", "to": "SHIPPED", "roles": ["warehouse"] },
+                    { "from": ["DRAFT", "APPROVED"], "to": "CANCELLED", "roles": ["admin"] }
+                ]
+            }
+        }"#;
+
+        let schema: TableSchema = serde_json::from_str(json).unwrap();
+        assert_eq!(schema.table, "transaction_sales_order");
+
+        let lock_cfg = schema.locked_when.unwrap();
+        let conds = lock_cfg.get_conditions();
+        assert!(conds.contains_key("status"));
+
+        let sm = schema.state_machine.unwrap();
+        assert_eq!(sm.field, "status");
+        assert_eq!(sm.transitions.len(), 3);
+        assert_eq!(sm.transitions[0].to, "APPROVED");
+        assert_eq!(sm.transitions[0].roles, vec!["manager"]);
+    }
+
+    #[test]
+    fn test_trigger_action_assert_balanced_serde() {
+        let json = r#"{
+            "name": "gl_posting",
+            "type": "insert_batch",
+            "target_table": "transaction_general_ledger_line",
+            "atomic": true,
+            "validate": {
+                "assert_balanced": {
+                    "debit_field": "debit",
+                    "credit_field": "credit",
+                    "tolerance": 0.01
+                }
+            }
+        }"#;
+
+        let action: TriggerAction = serde_json::from_str(json).unwrap();
+        assert_eq!(action.action_type, "insert_batch");
+        assert_eq!(action.atomic, Some(true));
+        let validate = action.validate.unwrap();
+        let balanced = validate.assert_balanced.unwrap();
+        assert_eq!(balanced.debit_field, "debit");
+        assert_eq!(balanced.credit_field, "credit");
+        assert_eq!(balanced.tolerance, Some(0.01));
+    }
+
+    #[test]
+    fn test_trigger_action_lookup_and_accumulate_serde() {
+        let json = r#"{
+            "name": "lookup_product_cost",
+            "type": "lookup",
+            "target_table": "master_product",
+            "as": "product",
+            "filter": { "id": "{item.product_id}" },
+            "optional": false,
+            "accumulate": {
+                "total_cogs": "item.qty * product.cost_price"
+            }
+        }"#;
+
+        let action: TriggerAction = serde_json::from_str(json).unwrap();
+        assert_eq!(action.action_type, "lookup");
+        assert_eq!(action.target_table, "master_product");
+        assert_eq!(action.alias, Some("product".to_string()));
+        assert_eq!(action.optional, Some(false));
+        let acc = action.accumulate.unwrap();
+        assert_eq!(acc.get("total_cogs").unwrap(), "item.qty * product.cost_price");
     }
 }
+

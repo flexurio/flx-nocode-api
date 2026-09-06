@@ -223,6 +223,8 @@ pub async fn perform_update(
     mut prepared_details: Vec<crate::nocode::repositories::data_create_repo::PreparedDetailBatch>,
     body: &Value,
     auth_token: Option<String>,
+    actor_id: Option<&str>,
+    caller_role: Option<&str>,
 ) -> Result<(String, i32, Value), String> {
     // Handling password-only update for flx_users
     if route == "flx_users" && password_override.is_some() && table_schema.put.columns.len() == 1 {
@@ -260,7 +262,7 @@ pub async fn perform_update(
         let pk_meta = table_schema.columns.iter().find(|c| c.name == pk_col_first);
         let pk_param = if let Some(m) = pk_meta { dbparam_from_value_and_type(&serde_json::json!(id_raw), Some(m)) } else { DbParam::Str(id_raw.to_string()) };
 
-        // Fetch pre-update record state for triggers and conditional evaluation
+        // Fetch pre-update record state for triggers, state machine, and conditional evaluation
         let mut old_record: serde_json::Map<String, Value> = serde_json::Map::new();
         let select_current_sql = format!("SELECT * FROM {} WHERE {} = ?", table_schema.table, pk_col_first);
         let built_select_current = crate::database::state::rehydrate_placeholders(&select_current_sql, state.db_type.as_str());
@@ -268,6 +270,83 @@ pub async fn perform_update(
             if let Some(first_row) = rows.into_iter().next() {
                 if let Value::Object(map) = first_row {
                     old_record = map;
+                }
+            }
+        }
+
+        // 1. Check document immutability lock (locked_when)
+        if let Some(locked_cfg) = &table_schema.locked_when {
+            let conditions = locked_cfg.get_conditions();
+            let except_cols = locked_cfg.get_except_columns();
+
+            for (field, expected_val) in conditions {
+                if let Some(actual_val) = old_record.get(field) {
+                    let is_match = match expected_val {
+                        Value::Array(arr) => arr.iter().any(|v| crate::nocode::trigger_engine::value_matches(v, Some(actual_val))),
+                        single => crate::nocode::trigger_engine::value_matches(single, Some(actual_val)),
+                    };
+                    if is_match {
+                        let modified_keys: Vec<&String> = patch_fields.keys().filter(|k| !k.starts_with("updated_")).collect();
+                        let only_allowed = !modified_keys.is_empty() && modified_keys.iter().all(|k| except_cols.contains(k));
+                        if !only_allowed {
+                            let _ = tx.rollback().await;
+                            return Err(format!(
+                                "Cannot modify locked record: field '{}' is currently '{}'",
+                                field,
+                                match actual_val {
+                                    Value::String(s) => s.as_str(),
+                                    _ => "locked",
+                                }
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. Check state machine transition guards
+        if let Some(sm) = &table_schema.state_machine {
+            if let Some(new_status_val) = patch_fields.get(&sm.field) {
+                let old_status_val = old_record.get(&sm.field);
+                if old_status_val != Some(new_status_val) {
+                    let old_status_str = old_status_val.map(|v| match v { Value::String(s) => s.as_str(), _ => "" }).unwrap_or("");
+                    let new_status_str = match new_status_val { Value::String(s) => s.as_str(), _ => "" };
+
+                    let matching_transition = sm.transitions.iter().find(|t| {
+                        let matches_to = t.to.eq_ignore_ascii_case(new_status_str);
+                        let matches_from = match &t.from {
+                            Value::Array(arr) => arr.iter().any(|v| match v {
+                                Value::String(s) => s.eq_ignore_ascii_case(old_status_str) || s == "*",
+                                _ => false,
+                            }),
+                            Value::String(s) => s.eq_ignore_ascii_case(old_status_str) || s == "*",
+                            _ => false,
+                        };
+                        matches_to && matches_from
+                    });
+
+                    match matching_transition {
+                        None => {
+                            let _ = tx.rollback().await;
+                            return Err(format!(
+                                "Illegal state transition on '{}': cannot transition from '{}' to '{}'",
+                                sm.field, old_status_str, new_status_str
+                            ));
+                        }
+                        Some(trans) => {
+                            if !trans.roles.is_empty() {
+                                let role = caller_role.unwrap_or("");
+                                let is_role_ok = trans.roles.iter().any(|r| r.eq_ignore_ascii_case(role) || r == "*");
+                                if !is_role_ok {
+                                    let _ = tx.rollback().await;
+                                    return Err(format!(
+                                        "Unauthorized state transition on '{}': role '{}' is not permitted to transition from '{}' to '{}'",
+                                        sm.field, role, old_status_str, new_status_str
+                                    ));
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -443,7 +522,7 @@ pub async fn perform_update(
                          old_record: &old_record,
                          new_record: &new_record,
                          request_body: body,
-                         actor_id: None,
+                         actor_id,
                      };
 
                      match crate::nocode::trigger_engine::execute_triggers(
@@ -457,7 +536,7 @@ pub async fn perform_update(
                              for trig_name in executed {
                                  crate::audit::write_audit(&crate::audit::AuditEntry {
                                      at: chrono::Local::now().to_rfc3339(),
-                                     actor_id: "system".to_string(),
+                                     actor_id: actor_id.unwrap_or("system").to_string(),
                                      action: "TRIGGER",
                                      route: &format!("{}:{}", route, trig_name),
                                      id: Some(id_raw),
@@ -700,5 +779,97 @@ mod tests {
         } else {
             panic!("Expected F64");
         }
+    }
+
+    #[test]
+    fn test_erp_locked_when_check() {
+        let lock_cfg = crate::model::LockedWhen {
+            except_columns: vec!["notes".to_string()],
+            conditions: serde_json::json!({
+                "status": ["SHIPPED", "PAID"]
+            }).as_object().unwrap().clone(),
+        };
+
+        let mut old_rec = serde_json::Map::new();
+        old_rec.insert("status".to_string(), serde_json::json!("SHIPPED"));
+
+        // Case 1: updating locked field or general fields -> should be locked
+        let mut patch = serde_json::Map::new();
+        patch.insert("total_net".to_string(), serde_json::json!(100));
+
+        let conditions = lock_cfg.get_conditions();
+        let except_cols = lock_cfg.get_except_columns();
+
+        let is_locked = conditions.iter().any(|(f, expected)| {
+            if let Some(actual) = old_rec.get(f) {
+                crate::nocode::trigger_engine::value_matches(expected, Some(actual))
+                    || match expected {
+                        Value::Array(arr) => arr.iter().any(|v| crate::nocode::trigger_engine::value_matches(v, Some(actual))),
+                        _ => false,
+                    }
+            } else {
+                false
+            }
+        });
+        assert!(is_locked);
+
+        let modified_keys: Vec<&String> = patch.keys().filter(|k| !k.starts_with("updated_")).collect();
+        let only_allowed = !modified_keys.is_empty() && modified_keys.iter().all(|k| except_cols.contains(k));
+        assert!(!only_allowed, "Updating total_net on locked record must be rejected");
+
+        // Case 2: updating only except_columns (notes) -> allowed!
+        let mut patch_allowed = serde_json::Map::new();
+        patch_allowed.insert("notes".to_string(), serde_json::json!("driver arrived"));
+        let modified_allowed: Vec<&String> = patch_allowed.keys().filter(|k| !k.starts_with("updated_")).collect();
+        let only_allowed_2 = !modified_allowed.is_empty() && modified_allowed.iter().all(|k| except_cols.contains(k));
+        assert!(only_allowed_2, "Updating notes on locked record must be permitted");
+    }
+
+    #[test]
+    fn test_erp_state_machine_transition_validation() {
+        let sm = crate::model::StateMachine {
+            field: "status".to_string(),
+            initial: Some("DRAFT".to_string()),
+            transitions: vec![
+                crate::model::StateTransition {
+                    from: serde_json::json!("DRAFT"),
+                    to: "APPROVED".to_string(),
+                    roles: vec!["manager".to_string(), "admin".to_string()],
+                },
+                crate::model::StateTransition {
+                    from: serde_json::json!("APPROVED"),
+                    to: "SHIPPED".to_string(),
+                    roles: vec!["warehouse".to_string()],
+                },
+            ],
+        };
+
+        // Allowed transition with valid role
+        let old_status = "DRAFT";
+        let new_status = "APPROVED";
+        let caller_role = "manager";
+
+        let trans = sm.transitions.iter().find(|t| {
+            t.to.eq_ignore_ascii_case(new_status) && match &t.from {
+                Value::String(s) => s.eq_ignore_ascii_case(old_status) || s == "*",
+                _ => false,
+            }
+        });
+        assert!(trans.is_some());
+        let authorized = trans.unwrap().roles.iter().any(|r| r.eq_ignore_ascii_case(caller_role));
+        assert!(authorized);
+
+        // Illegal jump (DRAFT -> SHIPPED)
+        let illegal_trans = sm.transitions.iter().find(|t| {
+            t.to.eq_ignore_ascii_case("SHIPPED") && match &t.from {
+                Value::String(s) => s.eq_ignore_ascii_case("DRAFT") || s == "*",
+                _ => false,
+            }
+        });
+        assert!(illegal_trans.is_none(), "DRAFT to SHIPPED jump must not exist");
+
+        // Unauthorized role (staff approving DRAFT -> APPROVED)
+        let unauthorized = trans.unwrap().roles.iter().any(|r| r.eq_ignore_ascii_case("staff"));
+        assert!(!unauthorized, "Staff role must not be authorized to approve");
     }
 }
