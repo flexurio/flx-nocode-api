@@ -43,15 +43,17 @@ fn normalize_mssql_booleans(sql: &str) -> String {
             }
         }
         if !in_str {
+            // Helper to check if a byte is part of a SQL identifier (alphanumeric or underscore)
+            let is_ident_char = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+
             // Try TRUE/FALSE tokens with word boundaries
             // Check for TRUE
             if i + 4 <= bytes.len() {
                 let token = &sql[i..i + 4];
                 if token.eq_ignore_ascii_case("true") {
                     // ensure word boundary before and after
-                    let prev_ok = i == 0 || !sql.as_bytes()[i - 1].is_ascii_alphanumeric();
-                    let next_ok = i + 4 == bytes.len()
-                        || !sql.as_bytes()[i + 4].is_ascii_alphanumeric();
+                    let prev_ok = i == 0 || !is_ident_char(sql.as_bytes()[i - 1]);
+                    let next_ok = i + 4 == bytes.len() || !is_ident_char(sql.as_bytes()[i + 4]);
                     if prev_ok && next_ok {
                         out.push_str("CAST(1 AS bit)");
                         i += 4;
@@ -63,9 +65,8 @@ fn normalize_mssql_booleans(sql: &str) -> String {
             if i + 5 <= bytes.len() {
                 let token = &sql[i..i + 5];
                 if token.eq_ignore_ascii_case("false") {
-                    let prev_ok = i == 0 || !sql.as_bytes()[i - 1].is_ascii_alphanumeric();
-                    let next_ok = i + 5 == bytes.len()
-                        || !sql.as_bytes()[i + 5].is_ascii_alphanumeric();
+                    let prev_ok = i == 0 || !is_ident_char(sql.as_bytes()[i - 1]);
+                    let next_ok = i + 5 == bytes.len() || !is_ident_char(sql.as_bytes()[i + 5]);
                     if prev_ok && next_ok {
                         out.push_str("CAST(0 AS bit)");
                         i += 5;
@@ -515,3 +516,48 @@ pub async fn connect_mssql(url: &str, timeout_secs: u64) -> Result<Client<tokio_
     let client = tiberius::Client::connect(config, tcp.compat_write()).await?;
     Ok(client)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_normalize_mssql_booleans_replaces_bare_keywords() {
+        let sql = "SELECT * FROM users WHERE active = true AND verified = FALSE";
+        let normalized = normalize_mssql_booleans(sql);
+        assert_eq!(
+            normalized,
+            "SELECT * FROM users WHERE active = CAST(1 AS bit) AND verified = CAST(0 AS bit)"
+        );
+    }
+
+    #[test]
+    fn test_normalize_mssql_booleans_preserves_strings() {
+        let sql = "SELECT 'true' AS a, 'false' AS b, 'it is TRUE indeed' AS c";
+        let normalized = normalize_mssql_booleans(sql);
+        assert_eq!(normalized, sql);
+    }
+
+    #[test]
+    fn test_normalize_mssql_booleans_preserves_escaped_quotes() {
+        let sql = "SELECT 'Don''t say true or false' AS msg";
+        let normalized = normalize_mssql_booleans(sql);
+        assert_eq!(normalized, sql);
+    }
+
+    #[test]
+    fn test_normalize_mssql_booleans_avoids_identifiers() {
+        let sql = "SELECT is_true, true_value, false_flag, notfalse FROM table_true";
+        let normalized = normalize_mssql_booleans(sql);
+        assert_eq!(normalized, sql);
+    }
+
+    #[cfg(feature = "bb8")]
+    #[test]
+    fn test_mssql_connection_manager_init() {
+        let manager = MssqlConnectionManager::new("server=localhost;port=1433".to_string(), 30);
+        assert_eq!(manager.timeout_secs, 30);
+        assert_eq!(manager.connection_string, "server=localhost;port=1433");
+    }
+}
+
