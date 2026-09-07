@@ -30,7 +30,8 @@ pub async fn process_export_request(
     state: &web::Data<AppState>,
     route: &str,
     table_schema: &Arc<TableSchema>,
-    multipart: Multipart,
+    parameters: Option<&web::Query<Value>>,
+    multipart: Option<Multipart>,
     req: &actix_web::HttpRequest,
 ) -> HttpResponse {
 
@@ -60,16 +61,44 @@ pub async fn process_export_request(
         actor_id_opt = Some(claims.id);
     }
 
-    // Parse multipart
-    let body_json: Value = match multipart_to_json(multipart).await {
-        Ok(v) => v,
-        Err(_) => Value::Object(serde_json::Map::new()),
-    };
+    // Merge parameters from URL query string and multipart body
+    let mut merged_map: serde_json::Map<String, Value> = serde_json::Map::new();
+
+    // 1. From URL query string
+    let qs = req.query_string();
+    if !qs.is_empty() {
+        for (k, v) in url::form_urlencoded::parse(qs.as_bytes()) {
+            merged_map.insert(k.to_string(), Value::String(v.to_string()));
+        }
+    }
+    if let Some(q) = parameters {
+        if let Some(obj) = q.as_object() {
+            for (k, v) in obj {
+                merged_map.insert(k.clone(), v.clone());
+            }
+        }
+    }
+
+    // 2. From multipart body if provided
+    if let Some(mp) = multipart {
+        if let Ok(body_val) = multipart_to_json(mp).await {
+            if let Some(obj) = body_val.as_object() {
+                for (k, v) in obj {
+                    merged_map.insert(k.clone(), v.clone());
+                }
+            }
+        }
+    }
+
+    let body_json = Value::Object(merged_map);
 
     // Export Config
     let mut export_type = body_json
         .get("type")
-        .and_then(|v| v.as_str())
+        .and_then(|v| match v {
+            Value::String(s) => Some(s.as_str()),
+            _ => None,
+        })
         .unwrap_or("csv")
         .to_lowercase();
     if export_type != "xlsx" && export_type != "csv" { export_type = "csv".to_string(); }
@@ -92,8 +121,11 @@ pub async fn process_export_request(
     // AST Params
     let i_limit = body_json
         .get("limit")
-        .and_then(|v| v.as_str())
-        .and_then(|s| s.parse::<i32>().ok())
+        .and_then(|v| match v {
+            Value::Number(n) => n.as_i64().map(|i| i as i32),
+            Value::String(s) => s.parse::<i32>().ok(),
+            _ => None,
+        })
         .map(|v| v.clamp(1, 100_000))
         .unwrap_or(10_000);
 
@@ -237,16 +269,29 @@ pub async fn process_export_request(
 
 
     let ts = Local::now().format("%Y%m%d-%H%M%S");
-     let (content_type, file_ext, bytes) = if export_type == "xlsx" {
-        let buf = write_xlsx(&headers, &data_rows).unwrap_or_else(|e| {
-             log_output("WARN", "EXPORT", route, format!("Falling back to CSV: {}", e), true);
-             write_csv(&headers, &data_rows).unwrap_or_default()
-        });
-        ("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet".to_string(), "xlsx".to_string(), buf)
-     } else {
-         let buf = write_csv(&headers, &data_rows).unwrap_or_default();
-         ("text/csv".to_string(), "csv".to_string(), buf)
-     };
+    let (content_type, file_ext, bytes) = if export_type == "xlsx" {
+        match write_xlsx(&headers, &data_rows) {
+            Ok(buf) => (
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet".to_string(),
+                "xlsx".to_string(),
+                buf,
+            ),
+            Err(e) => {
+                log_output(
+                    "WARN",
+                    "EXPORT",
+                    route,
+                    format!("XLSX generation failed, falling back to CSV: {}", e),
+                    true,
+                );
+                let buf = write_csv(&headers, &data_rows).unwrap_or_default();
+                ("text/csv".to_string(), "csv".to_string(), buf)
+            }
+        }
+    } else {
+        let buf = write_csv(&headers, &data_rows).unwrap_or_default();
+        ("text/csv".to_string(), "csv".to_string(), buf)
+    };
 
      // Audit
      write_audit(&AuditEntry {
@@ -430,24 +475,87 @@ pub fn write_csv(headers: &[String], rows: &[Vec<String>]) -> Result<Vec<u8>, an
     Ok(wtr.into_inner()?)
 }
 
+/// Truncates string to at most 32,767 characters safely on a valid UTF-8 boundary.
+fn truncate_cell_str(s: &str) -> &str {
+    const MAX_LEN: usize = 32_767;
+    if s.len() <= MAX_LEN {
+        s
+    } else {
+        let mut idx = MAX_LEN;
+        while !s.is_char_boundary(idx) {
+            idx -= 1;
+        }
+        &s[..idx]
+    }
+}
+
+/// Helper to parse clean numbers without corrupting strings with leading zeros (e.g. phone numbers, postal codes).
+fn try_parse_number(s: &str) -> Option<f64> {
+    if s.is_empty() {
+        return None;
+    }
+    let bytes = s.as_bytes();
+    // Keep leading zero numbers like "0812...", "00123" as strings
+    if bytes.len() > 1 && bytes[0] == b'0' && bytes[1] != b'.' {
+        return None;
+    }
+    // Keep "+" prefixed strings (like telephone numbers) as strings
+    if bytes[0] == b'+' {
+        return None;
+    }
+    if let Ok(i) = s.parse::<i64>() {
+        return Some(i as f64);
+    }
+    s.parse::<f64>().ok().filter(|f| f.is_finite())
+}
+
 pub fn write_xlsx(headers: &[String], rows: &[Vec<String>]) -> Result<Vec<u8>, anyhow::Error> {
-    use rust_xlsxwriter::{Format, Workbook};
+    use rust_xlsxwriter::{Color, Format, Workbook};
     let mut workbook = Workbook::new();
     let worksheet = workbook.add_worksheet();
+
+    const MAX_EXCEL_COLS: usize = 16_384;
+    const MAX_EXCEL_ROWS: u32 = 1_048_576;
+
+    let col_count = std::cmp::min(headers.len(), MAX_EXCEL_COLS);
     let mut row_idx: u32 = 0;
-    if !headers.is_empty() {
-        let bold = Format::new().set_bold();
-        for (col, h) in headers.iter().enumerate() {
-            worksheet.write_string_with_format(row_idx, col as u16, h, &bold)?;
+
+    if col_count > 0 {
+        let header_format = Format::new()
+            .set_bold()
+            .set_background_color(Color::RGB(0xF2F4F8));
+        for (col, h) in headers.iter().take(col_count).enumerate() {
+            let safe_header = truncate_cell_str(h);
+            worksheet.write_string_with_format(row_idx, col as u16, safe_header, &header_format)?;
         }
+        worksheet.set_freeze_panes(1, 0)?;
         row_idx += 1;
     }
+
     for r in rows.iter() {
-        for (c, val) in r.iter().enumerate() {
-            worksheet.write_string(row_idx, c as u16, val)?;
+        if row_idx >= MAX_EXCEL_ROWS {
+            break;
+        }
+        for (c, val) in r.iter().take(col_count).enumerate() {
+            let col_idx = c as u16;
+            if val.is_empty() {
+                worksheet.write_blank(row_idx, col_idx, &Format::new())?;
+            } else if val.eq_ignore_ascii_case("true") {
+                worksheet.write_boolean(row_idx, col_idx, true)?;
+            } else if val.eq_ignore_ascii_case("false") {
+                worksheet.write_boolean(row_idx, col_idx, false)?;
+            } else if let Some(num) = try_parse_number(val) {
+                worksheet.write_number(row_idx, col_idx, num)?;
+            } else {
+                let safe_val = truncate_cell_str(val);
+                worksheet.write_string(row_idx, col_idx, safe_val)?;
+            }
         }
         row_idx += 1;
     }
+
+    worksheet.autofit();
+
     let buf: Vec<u8> = workbook.save_to_buffer()?;
     Ok(buf)
 }
@@ -715,6 +823,90 @@ mod tests {
         assert!(!xlsx_bytes.is_empty());
         // Verify ZIP header for XLSX
         assert_eq!(&xlsx_bytes[0..2], b"PK");
+
+        // Verify with calamine (round-trip test)
+        use calamine::{Data, Reader, Xlsx};
+        let cursor = std::io::Cursor::new(xlsx_bytes);
+        let mut workbook: Xlsx<std::io::Cursor<Vec<u8>>> =
+            calamine::open_workbook_from_rs(cursor).expect("calamine should open generated XLSX");
+        let sheet_names = workbook.sheet_names().to_owned();
+        assert!(!sheet_names.is_empty());
+        let range = workbook
+            .worksheet_range(&sheet_names[0])
+            .expect("worksheet range should be valid");
+
+        // Header check
+        let header_row: Vec<String> = range.rows().next().unwrap().iter().map(|c| c.to_string()).collect();
+        assert_eq!(
+            header_row,
+            vec!["id", "customer.name", "customer.location.city", "tags"]
+        );
+
+        // Data row check
+        let data_row: Vec<&Data> = range.rows().nth(1).unwrap().iter().collect();
+        assert_eq!(data_row.len(), 4);
+        // ID should be parsed as numeric
+        match data_row[0] {
+            Data::Int(n) => assert_eq!(*n, 101),
+            Data::Float(f) => assert_eq!(*f, 101.0),
+            other => panic!("Expected numeric cell for id, got {:?}", other),
+        }
+        assert_eq!(data_row[1].to_string(), "PT Maju Jaya");
+        assert_eq!(data_row[2].to_string(), "Surabaya");
+        assert_eq!(data_row[3].to_string(), "corporate, b2b");
+    }
+
+    #[test]
+    fn test_write_xlsx_safe_truncation_large_cell() {
+        // Create a huge string > 32,767 characters to verify safe truncation
+        let huge_val = "x".repeat(40_000);
+        let headers = vec!["id".to_string(), "payload".to_string()];
+        let rows = vec![vec!["1".to_string(), huge_val]];
+
+        let xlsx_bytes = write_xlsx(&headers, &rows).expect("write_xlsx should handle huge string without error");
+        assert!(!xlsx_bytes.is_empty());
+
+        use calamine::{Reader, Xlsx};
+        let cursor = std::io::Cursor::new(xlsx_bytes);
+        let mut workbook: Xlsx<std::io::Cursor<Vec<u8>>> =
+            calamine::open_workbook_from_rs(cursor).expect("calamine should open XLSX with truncated string");
+        let sheet_names = workbook.sheet_names().to_owned();
+        let range = workbook.worksheet_range(&sheet_names[0]).unwrap();
+        let data_row = range.rows().nth(1).unwrap();
+        let cell_str = data_row[1].to_string();
+        assert_eq!(cell_str.len(), 32_767);
+    }
+
+    #[test]
+    fn test_try_parse_number_preserves_identifiers() {
+        assert_eq!(try_parse_number("123"), Some(123.0));
+        assert_eq!(try_parse_number("0"), Some(0.0));
+        assert_eq!(try_parse_number("12.34"), Some(12.34));
+        // Leading zero numbers must NOT be parsed as numbers (preserve phone numbers & codes)
+        assert_eq!(try_parse_number("0812345678"), None);
+        assert_eq!(try_parse_number("0012"), None);
+        // '+' prefix must NOT be parsed as number
+        assert_eq!(try_parse_number("+62812345"), None);
+        // Regular text
+        assert_eq!(try_parse_number("hello"), None);
+        assert_eq!(try_parse_number(""), None);
+    }
+
+    #[test]
+    fn test_write_xlsx_boolean_and_empty() {
+        let headers = vec!["is_active".to_string(), "is_deleted".to_string(), "note".to_string()];
+        let rows = vec![vec!["true".to_string(), "false".to_string(), "".to_string()]];
+
+        let xlsx_bytes = write_xlsx(&headers, &rows).expect("write_xlsx should succeed with bool and empty");
+        use calamine::{Data, Reader, Xlsx};
+        let cursor = std::io::Cursor::new(xlsx_bytes);
+        let mut workbook: Xlsx<std::io::Cursor<Vec<u8>>> = calamine::open_workbook_from_rs(cursor).unwrap();
+        let range = workbook.worksheet_range(&workbook.sheet_names()[0]).unwrap();
+        let data_row = range.rows().nth(1).unwrap();
+
+        assert_eq!(data_row[0], Data::Bool(true));
+        assert_eq!(data_row[1], Data::Bool(false));
+        assert_eq!(data_row[2], Data::Empty);
     }
 }
 

@@ -360,7 +360,7 @@ pub fn configure_routes(
             );
         }
 
-        // ── Export  GET /export/<route> ───────────────────────────────────
+        // ── Export  GET /export/<route> & POST /export/<route> ────────────
         if schema.get.enable_method {
             let b = bundle.clone();
             log_ep(
@@ -371,20 +371,37 @@ pub fn configure_routes(
                 &port_str,
                 &format!("export/{}", b.route.as_ref()),
             );
+            let b_post = bundle.clone();
             cfg.service(
-                web::resource(format!("/export/{}", b.route.as_ref())).route(web::get().to(
-                    move |state: web::Data<AppState>,
-                          multipart: Multipart,
-                          req: actix_web::HttpRequest| {
-                        crate::nocode::handlers::export_handler::export(
-                            state,
-                            b.route.to_string(),
-                            b.schema.clone(),
-                            multipart,
-                            req,
-                        )
-                    },
-                )),
+                web::resource(format!("/export/{}", b.route.as_ref()))
+                    .route(web::get().to(
+                        move |state: web::Data<AppState>,
+                              parameters: web::Query<Value>,
+                              req: actix_web::HttpRequest| {
+                            crate::nocode::handlers::export_handler::export_get(
+                                state,
+                                parameters,
+                                b.route.to_string(),
+                                b.schema.clone(),
+                                req,
+                            )
+                        },
+                    ))
+                    .route(web::post().to(
+                        move |state: web::Data<AppState>,
+                              parameters: web::Query<Value>,
+                              multipart: Multipart,
+                              req: actix_web::HttpRequest| {
+                            crate::nocode::handlers::export_handler::export_post(
+                                state,
+                                parameters,
+                                b_post.route.to_string(),
+                                b_post.schema.clone(),
+                                multipart,
+                                req,
+                            )
+                        },
+                    )),
             );
         }
 
