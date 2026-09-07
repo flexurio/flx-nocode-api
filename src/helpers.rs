@@ -582,4 +582,13 @@ mod tests {
     fn test_is_safe_mime_type_empty_string() {
         assert!(!is_safe_mime_type(""));
     }
+
+    #[test]
+    fn test_dotenv_ng_literal_dollar_parsing() {
+        let env_content = b"TEST_KEY=secret$value$123\nANOTHER_KEY=\"quoted$val\"";
+        let loader = dotenv::EnvLoader::with_reader(&env_content[..]);
+        let map = loader.load().expect("dotenv-ng should parse reader successfully");
+        assert_eq!(map.get("TEST_KEY").map(String::as_str), Some("secret$value$123"));
+        assert_eq!(map.get("ANOTHER_KEY").map(String::as_str), Some("quoted$val"));
+    }
 }

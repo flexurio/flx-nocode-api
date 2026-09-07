@@ -2,7 +2,7 @@ use actix_cors::Cors;
 use actix_web::middleware::{Compress, Condition};
 use actix_web::{App, HttpServer, web};
 use colored::Colorize;
-use dotenv::dotenv;
+use dotenv::EnvLoader;
 use helpers::cetak_label;
 use log::log_output;
 use std::collections::HashSet;
@@ -46,7 +46,10 @@ mod startup;
 #[actix_web::main]
 async fn main() -> anyhow::Result<()> {
     // Load .env early so DEBUG / LOG_* are visible before any Lazy env reads.
-    dotenv().ok();
+    // SAFETY: Called at startup in main before spawning worker threads.
+    unsafe {
+        let _ = EnvLoader::new().load_and_modify();
+    }
 
     // ── CLI: --version ────────────────────────────────────────────────────────
     if matches!(

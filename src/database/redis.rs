@@ -50,7 +50,9 @@ pub(crate) async fn get_manager() -> Result<Arc<Client>> {
     }
 
     // Ensure .env is loaded (no-op if already loaded)
-    let _ = dotenv::dotenv();
+    unsafe {
+        let _ = dotenv::EnvLoader::new().load_and_modify();
+    }
 
     let url = build_redis_connection_url()?;
     let info = url
