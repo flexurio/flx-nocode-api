@@ -40,8 +40,13 @@ mod config;
 use config::{CONFIG, CONFIG_LOCATION, ENDPOINT_LOG_ONCE, ISDEBUG, SCHEMAS, SEED_LOCATION};
 
 mod cli;
+#[cfg(feature = "mcp")]
+mod mcp;
 mod routes;
 mod startup;
+
+/// Response headers browser-based clients (e.g. MCP Inspector) must be able to read.
+const CORS_EXPOSE_HEADERS: [&str; 3] = ["www-authenticate", "mcp-session-id", "mcp-protocol-version"];
 
 #[actix_web::main]
 async fn main() -> anyhow::Result<()> {
@@ -67,6 +72,23 @@ async fn main() -> anyhow::Result<()> {
     if is_reset_cmd {
         return cli::reset_password(&args).await;
     }
+
+    // ── CLI: mcp [--stdio] ────────────────────────────────────────────────────
+    // stdout must carry only JSON-RPC in stdio mode, so it is isolated before
+    // any boot message is printed (they go to stderr instead).
+    #[cfg(feature = "mcp")]
+    if mcp::stdio::is_help_command(&args) {
+        print!("{}", mcp::stdio::HELP);
+        return Ok(());
+    }
+    #[cfg(feature = "mcp")]
+    let is_mcp_stdio = mcp::stdio::is_stdio_command(&args);
+    #[cfg(feature = "mcp")]
+    let mcp_stdout = if is_mcp_stdio {
+        mcp::stdio::isolate_stdout()?
+    } else {
+        None
+    };
 
     // ── Ensure .env exists ────────────────────────────────────────────────────
     if !std::path::Path::new(".env").exists() {
@@ -331,6 +353,40 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    // ── MCP over stdio (no HTTP server) ───────────────────────────────────────
+    #[cfg(feature = "mcp")]
+    if is_mcp_stdio {
+        return mcp::stdio::run(app_state.clone(), &args, mcp_stdout).await;
+    }
+
+    // ── MCP Streamable HTTP service (shared by all workers) ───────────────────
+    #[cfg(feature = "mcp")]
+    let mcp_service = if mcp::MCP_CONFIG.enabled {
+        log_output(
+            "BOOT",
+            "MCP",
+            "streamable-http",
+            format!(
+                "path={} write_tools={} max_rows={} allowed_hosts={}",
+                mcp::MCP_CONFIG.path,
+                mcp::MCP_CONFIG.write_tools,
+                mcp::MCP_CONFIG.max_rows,
+                if mcp::MCP_CONFIG.allowed_hosts.is_empty() {
+                    "*".to_string()
+                } else {
+                    mcp::MCP_CONFIG.allowed_hosts.join(",")
+                }
+            ),
+            false,
+        );
+        Some(web::Data::new(mcp::http_adapter::build_service(
+            app_state.clone(),
+            Arc::new(mcp::MCP_CONFIG.clone()),
+        )))
+    } else {
+        None
+    };
+
     // ── HTTP server ───────────────────────────────────────────────────────────
     let host: &'static str = "0.0.0.0";
     let port: u16 = env::var("PORT")
@@ -380,6 +436,7 @@ async fn main() -> anyhow::Result<()> {
                 let mut c = Cors::default()
                     .allow_any_method()
                     .allow_any_header()
+                    .expose_headers(CORS_EXPOSE_HEADERS)
                     .supports_credentials()
                     .max_age(3600);
                 for origin in val.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()) {
@@ -391,13 +448,14 @@ async fn main() -> anyhow::Result<()> {
                 .allow_any_origin()
                 .allow_any_method()
                 .allow_any_header()
+                .expose_headers(CORS_EXPOSE_HEADERS)
                 .max_age(3600),
         };
 
         // Log endpoints only on the first worker invocation.
         let do_log = !ENDPOINT_LOG_ONCE.swap(true, Ordering::SeqCst);
 
-        App::new()
+        let app = App::new()
             .app_data(app_state.clone())
             .app_data(web::PayloadConfig::new(
                 env::var("UPLOAD_LIMIT_MB")
@@ -436,10 +494,18 @@ async fn main() -> anyhow::Result<()> {
                     .unwrap_or(false),
                 Compress::default(),
             ))
-            .wrap(StatusLogger)
-            .configure(|cfg| {
-                routes::configure_routes(cfg, require_auth, do_log, host, port, app_state.clone())
-            })
+            .wrap(StatusLogger);
+
+        // MCP first so MCP_PATH takes precedence over dynamic entity routes.
+        #[cfg(feature = "mcp")]
+        let app = {
+            let svc = mcp_service.clone();
+            app.configure(move |cfg| mcp::configure(cfg, svc, do_log, host, port))
+        };
+
+        app.configure(|cfg| {
+            routes::configure_routes(cfg, require_auth, do_log, host, port, app_state.clone())
+        })
     })
     .workers(
         env::var("ACTIX_WORKERS")

@@ -14,6 +14,12 @@ pub struct AppMetrics {
     pub cache_hits: AtomicU64,
     pub cache_misses: AtomicU64,
     pub rate_limit_hits: AtomicU64,
+    /// MCP HTTP requests received on `MCP_PATH` (JSON-RPC envelopes, any method)
+    pub mcp_requests: AtomicU64,
+    /// MCP `tools/call` invocations
+    pub mcp_tool_calls: AtomicU64,
+    /// MCP `tools/call` invocations that returned `isError: true`
+    pub mcp_tool_errors: AtomicU64,
 }
 
 impl AppMetrics {
@@ -25,6 +31,9 @@ impl AppMetrics {
             cache_hits: AtomicU64::new(0),
             cache_misses: AtomicU64::new(0),
             rate_limit_hits: AtomicU64::new(0),
+            mcp_requests: AtomicU64::new(0),
+            mcp_tool_calls: AtomicU64::new(0),
+            mcp_tool_errors: AtomicU64::new(0),
         }
     }
 
@@ -49,6 +58,19 @@ impl AppMetrics {
 
     pub fn record_rate_limit_hit(&self) {
         self.rate_limit_hits.fetch_add(1, Ordering::Relaxed);
+    }
+
+    #[allow(dead_code)]
+    pub fn record_mcp_request(&self) {
+        self.mcp_requests.fetch_add(1, Ordering::Relaxed);
+    }
+
+    #[allow(dead_code)]
+    pub fn record_mcp_tool_call(&self, is_error: bool) {
+        self.mcp_tool_calls.fetch_add(1, Ordering::Relaxed);
+        if is_error {
+            self.mcp_tool_errors.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     #[allow(dead_code)]
@@ -101,6 +123,9 @@ impl AppMetrics {
         let cache_misses = self.cache_misses.load(Ordering::Relaxed);
         let rate_limit_hits = self.rate_limit_hits.load(Ordering::Relaxed);
         let db_pool_active = self.db_pool_active.load(Ordering::Relaxed);
+        let mcp_requests = self.mcp_requests.load(Ordering::Relaxed);
+        let mcp_tool_calls = self.mcp_tool_calls.load(Ordering::Relaxed);
+        let mcp_tool_errors = self.mcp_tool_errors.load(Ordering::Relaxed);
 
         format!(
             "# HELP flx_total_requests Total number of requests processed\n\
@@ -137,7 +162,19 @@ impl AppMetrics {
              \n\
              # HELP flx_db_pool_active Active database connections\n\
              # TYPE flx_db_pool_active gauge\n\
-             flx_db_pool_active {}\n",
+             flx_db_pool_active {}\n\
+             \n\
+             # HELP flx_mcp_requests Total MCP HTTP requests\n\
+             # TYPE flx_mcp_requests counter\n\
+             flx_mcp_requests {}\n\
+             \n\
+             # HELP flx_mcp_tool_calls Total MCP tool invocations\n\
+             # TYPE flx_mcp_tool_calls counter\n\
+             flx_mcp_tool_calls {}\n\
+             \n\
+             # HELP flx_mcp_tool_errors Total MCP tool invocations that returned an error result\n\
+             # TYPE flx_mcp_tool_errors counter\n\
+             flx_mcp_tool_errors {}\n",
             total_requests,
             request_errors,
             cache_hits,
@@ -146,7 +183,10 @@ impl AppMetrics {
             self.error_rate(),
             rate_limit_hits,
             self.rate_limit_percentage(),
-            db_pool_active
+            db_pool_active,
+            mcp_requests,
+            mcp_tool_calls,
+            mcp_tool_errors
         )
     }
 }

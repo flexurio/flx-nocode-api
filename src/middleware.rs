@@ -21,6 +21,11 @@ use crate::log::log_output;
 static RL_ALL: Lazy<Option<i64>> = Lazy::new(|| std::env::var("RATE_LIMIT_ALL_PER_SEC").ok().and_then(|v| v.parse().ok()));
 static RL_GET: Lazy<i64> = Lazy::new(|| std::env::var("RATE_LIMIT_GET_PER_SEC").ok().and_then(|v| v.parse().ok()).unwrap_or(20));
 static RL_MUTATE: Lazy<i64> = Lazy::new(|| std::env::var("RATE_LIMIT_MUTATE_PER_SEC").ok().and_then(|v| v.parse().ok()).unwrap_or(10));
+// MCP endpoint: every JSON-RPC message (reads included) is a POST, so it gets its
+// own bucket instead of the write limit. Individual tool calls still hit the
+// service layer, which applies no extra limit of its own.
+#[cfg(feature = "mcp")]
+static RL_MCP: Lazy<i64> = Lazy::new(|| std::env::var("RATE_LIMIT_MCP_PER_SEC").ok().and_then(|v| v.parse().ok()).unwrap_or(30));
 
 // Allow per-method override if desired (optional; falls back to GET / MUTATE buckets)
 // Use AHashMap for faster lookups (optimized hash function for strings)
@@ -70,7 +75,15 @@ where
         // Standard HTTP methods are always uppercase on the wire (RFC 7230 method
         // token); avoid allocating a new String per request just to normalize case.
         let method = req.method().as_str();
+        #[cfg(feature = "mcp")]
+        let is_mcp = crate::mcp::MCP_CONFIG.is_mcp_path(req.path());
+        #[cfg(not(feature = "mcp"))]
+        let is_mcp = false;
         let limit_val = RL_ALL.unwrap_or_else(|| {
+            #[cfg(feature = "mcp")]
+            if is_mcp {
+                return *RL_MCP;
+            }
             if method == "GET" { *RL_GET } else { RL_METHOD.get(method).copied().unwrap_or(*RL_MUTATE) }
         });
         if limit_val > 0 {
@@ -89,7 +102,19 @@ where
             let limiter = if method == "GET" { &*RL_WINDOW_GET } else { &*RL_WINDOW_MUTATE };
             if !limiter.check_and_increment(&key, limit_val as u32) {
                 METRICS.record_rate_limit_hit();  // Record rate limit metric
-                let resp = actix_web::HttpResponse::TooManyRequests().json(WebResponse { success: false, message: "Too many requests".into(), total_data: 0, data: Value::default() }).map_into_boxed_body();
+                let resp = if is_mcp {
+                    // JSON-RPC shaped so MCP clients can surface the error.
+                    actix_web::HttpResponse::TooManyRequests()
+                        .insert_header(("retry-after", "1"))
+                        .json(serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": null,
+                            "error": { "code": -32000, "message": "Too many requests; retry after 1 second" }
+                        }))
+                        .map_into_boxed_body()
+                } else {
+                    actix_web::HttpResponse::TooManyRequests().json(WebResponse { success: false, message: "Too many requests".into(), total_data: 0, data: Value::default() }).map_into_boxed_body()
+                };
                 let (req_head, _pl) = req.into_parts();
                 return Box::pin(async move { Ok(ServiceResponse::new(req_head, resp)) });
             }
@@ -141,6 +166,12 @@ where
             let fut = self.service.call(req);
             return Box::pin(fut);
         }
+        // MCP authorization discovery (RFC 9728) must be reachable without a token.
+        #[cfg(feature = "mcp")]
+        if crate::mcp::auth::is_public_discovery_path(req.path()) {
+            let fut = self.service.call(req);
+            return Box::pin(fut);
+        }
         // Access AppState to evaluate public routes
         let is_public = req
             .app_data::<web::Data<AppState>>()
@@ -164,7 +195,20 @@ where
                     Box::pin(fut)
                 }
                 Err(err_resp) => {
-                    let resp = err_resp.map_into_boxed_body();
+                    #[allow(unused_mut)]
+                    let mut resp = err_resp.map_into_boxed_body();
+                    // MCP spec: a 401 from the MCP endpoint carries a
+                    // WWW-Authenticate challenge pointing at the resource metadata.
+                    #[cfg(feature = "mcp")]
+                    if resp.status() == actix_web::http::StatusCode::UNAUTHORIZED
+                        && crate::mcp::MCP_CONFIG.is_mcp_path(req.path())
+                    {
+                        let presented = req.headers().contains_key(actix_web::http::header::AUTHORIZATION);
+                        let challenge = crate::mcp::auth::www_authenticate(&crate::mcp::MCP_CONFIG, presented);
+                        if let Ok(v) = actix_web::http::header::HeaderValue::from_str(&challenge) {
+                            resp.headers_mut().insert(actix_web::http::header::WWW_AUTHENTICATE, v);
+                        }
+                    }
                     let (parts, _pl) = req.into_parts();
                     Box::pin(async move { Ok(ServiceResponse::new(parts, resp)) })
                 }

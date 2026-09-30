@@ -44,7 +44,7 @@ tiberius = { package = "tiberius-ng", version = "0.13", default-features = false
     "chrono",
     "rustls",
 ] }
-tokio-util = { version = "0.7", features = ["compat"] }
+tokio-util = { version = "0.7", features = ["compat", "rt"] }
 url = "2.5"
 bb8 = { version = "0.9", optional = true }
 futures-util = "0.3"
@@ -53,6 +53,7 @@ tokio = { version = "1.53", features = [
     "macros",
     "net",
     "time",
+    "fs",
 ] }
 chrono = { version = "0.4.45", features = ["serde"] }
 once_cell = "1.21.4"
@@ -99,12 +100,30 @@ lettre = { version = "0.11.23", default-features = false, features = [
     "pool",
     "hostname",
 ] }
+# MCP (Model Context Protocol) server — enabled via the `mcp` feature
+rmcp = { version = "3.5", default-features = false, features = [
+    "server",
+    "macros",
+    "schemars",
+    "transport-io",
+    "transport-streamable-http-server",
+], optional = true }
+schemars = { version = "1", optional = true }
+http1 = { version = "1", package = "http", optional = true }
+http-body = { version = "1", optional = true }
+http-body-util = { version = "0.1", optional = true }
+
+[target.'cfg(unix)'.dependencies]
+# Used by `mcp --stdio` to keep boot logs off the JSON-RPC stdout channel.
+libc = { version = "0.2", optional = true }
 
 [features]
-default = ["mysql", "postgres", "sqlite", "mssql", "mongodb"]
+default = ["mysql", "postgres", "sqlite", "mssql", "mongodb", "mcp"]
 # default = ["mysql"]
 mysql = ["sqlx/mysql", "sqlx/chrono"]
 postgres = ["sqlx/postgres", "sqlx/chrono"]
 sqlite = ["sqlx/sqlite", "sqlx/chrono"]
 mssql = ["tiberius/chrono", "bb8"]
 mongodb = ["dep:mongodb"]
+# Model Context Protocol server (Streamable HTTP at MCP_PATH + `mcp --stdio`)
+mcp = ["dep:rmcp", "dep:schemars", "dep:http1", "dep:http-body", "dep:http-body-util", "dep:libc"]

@@ -31,13 +31,14 @@ Ship full CRUD plus advanced data operations (GET / POST / PUT / DELETE / PATCH 
 15. [Endpoint reference](#15-endpoint-reference)
 16. [Authentication & authorization](#16-authentication--authorization)
 17. [Import & export](#17-import--export)
-18. [Column encryption](#18-column-encryption)
-19. [Logging & observability](#19-logging--observability)
-20. [Database feature flags (compile‑time)](#20-database-feature-flags-compile-time)
-21. [Multi‑target build script (`build.sh`)](#21-multi-target-build-script-buildsh)
-22. [Troubleshooting](#22-troubleshooting)
-23. [Security checklist](#23-security-checklist)
-24. [Contributing & license](#24-contributing--license)
+18. [MCP server (Model Context Protocol)](#18-mcp-server-model-context-protocol)
+19. [Column encryption](#19-column-encryption)
+20. [Logging & observability](#20-logging--observability)
+21. [Database feature flags (compile‑time)](#21-database-feature-flags-compile-time)
+22. [Multi‑target build script (`build.sh`)](#22-multi-target-build-script-buildsh)
+23. [Troubleshooting](#23-troubleshooting)
+24. [Security checklist](#24-security-checklist)
+25. [Contributing & license](#25-contributing--license)
 
 ---
 
@@ -174,7 +175,7 @@ cargo build --release
 ./target/release/flx-nocode-api
 ```
 
-To build a smaller binary with only the database backend(s) you need, see [§20](#20-database-feature-flags-compile-time).
+To build a smaller binary with only the database backend(s) you need, see [§21](#21-database-feature-flags-compile-time).
 
 ### 4.5 Docker
 
@@ -259,6 +260,7 @@ cp env .env
 | `RATE_LIMIT_LOGIN_PER_MIN` | `3` | Login attempts per minute. |
 | `RATE_LIMIT_MUTATE_PER_SEC` | `20` | Per‑second limit for mutating methods. |
 | `RATE_LIMIT_GET_PER_SEC` | `50` | Per‑second limit for `GET`. |
+| `RATE_LIMIT_MCP_PER_SEC` | `30` | Per‑second limit for the MCP endpoint (see [§18](#18-mcp-server-model-context-protocol)). |
 | `RATE_LIMIT_LOGIN_FAIL_USER` / `RATE_LIMIT_LOGIN_FAIL_IP` | — | Failed‑login limits over a 5‑minute window. |
 
 ### Performance & server tuning
@@ -375,7 +377,7 @@ Each HTTP method is only registered when its section sets `"enable_method": true
 | `function` | *(optional)* A pattern that builds the column value automatically on **insert** — e.g. `"{request.id_trans}/%Y/%m/000ID"` produces `SO/2026/01/0001`. Empty string = no generation (the client supplies the value). Full token list in [§8](#8-custom-id-generation-function). |
 | `function_endpoint` | *(optional)* When `function` contains a numeric `…ID` token, fetch the running number from this HTTP endpoint instead of computing `MAX(id)+1`. Empty string = use the built‑in `MAX(id)+1`. Supports `{request.field}` in the URL. Detail in [§8](#8-custom-id-generation-function). |
 | `function_endpoint_path` | *(optional)* Dotted JSON path to the number inside the `function_endpoint` response. Defaults to `data`, i.e. a response of `{ "data": 1 }`. Ignored when `function_endpoint` is empty. |
-| `encrypt` | If `true`, the value is stored encrypted with `ENCRYPT_KEY` — see [§18](#18-column-encryption). |
+| `encrypt` | If `true`, the value is stored encrypted with `ENCRYPT_KEY` — see [§19](#19-column-encryption). |
 | `default` | Default value used by `generate/table`. |
 
 #### ID generation fields at a glance
@@ -1478,6 +1480,8 @@ Core / system endpoints:
 | `GET /roles` | List roles. |
 | `GET /healthz` | Health check: `{ "status": "ok", "db": "up\|down", "db_type": "…" }`. Returns `503` if the DB is unreachable. |
 | `GET /metrics` | Prometheus‑format metrics. |
+| `POST /mcp` | MCP Streamable HTTP endpoint (see [§18](#18-mcp-server-model-context-protocol)). |
+| `GET /.well-known/oauth-protected-resource[/mcp]` | MCP Protected Resource Metadata (RFC 9728), public. |
 | `GET /static/...` | Static files from `LOC_STATIC` (directory listing in debug mode). |
 
 ---
@@ -1517,13 +1521,106 @@ When `routes.json` defines a non‑default `converter_token` mapping, JWTs are i
 
 ---
 
-## 18. Column encryption
+## 18. MCP server (Model Context Protocol)
+
+Flexurio ships a built‑in [MCP](https://modelcontextprotocol.io) server so AI clients (Claude Desktop, Claude Code, Cursor, MCP Inspector, …) can discover your entities and read or write data through the same engine, validation and authorization as the REST API. It uses the official Rust SDK (`rmcp`) and supports protocol revisions `2024-11-05` through `2026-07-28`.
+
+### 18.1 Transports
+
+| Transport | How to use | Notes |
+|-----------|------------|-------|
+| Streamable HTTP | `POST {MCP_PATH}` (default `/mcp`) on the API port | Stateless (no `Mcp-Session-Id`), safe with many Actix workers. JSON responses, SSE when the server streams. |
+| stdio | `flx-nocode-api mcp --stdio [--token <jwt> \| --email <user>]` | For clients that spawn a local process. Boot logs go to stderr; stdout carries JSON‑RPC only. |
+
+### 18.2 Capabilities
+
+**Tools** (each maps to the REST call shown and goes through the same service layer):
+
+| Tool | REST equivalent | Annotations |
+|------|-----------------|-------------|
+| `list_entities` | — | read‑only; lists entities, enabled operations and the operations **the caller** is allowed by `rules.json` |
+| `describe_entity` | — | read‑only; columns, PK/FK, indexes, master‑detail, per‑operation columns & filter parameters, locks, state machine |
+| `query_records` | `GET /<route>` | read‑only; filters use declared `get.parameters` keys, undeclared keys are reported in `ignored_parameters`; capped at `MCP_MAX_ROWS` |
+| `create_record` | `POST /<route>` | additive |
+| `update_record` | `PUT /<route>/{id}` | destructive, idempotent |
+| `patch_record` | `PATCH /<route>/{id}` | destructive |
+| `delete_record` | `DELETE /<route>/{id}` | destructive (soft/hard per `type_delete`) |
+| `run_procedure` | `PATCH /<route>` | destructive |
+| `validate_entity` | `GET /validate/<route>` | read‑only |
+| `health` | `GET /healthz` | read‑only |
+
+Every tool publishes an `inputSchema` (JSON Schema 2020‑12, `entity` restricted to valid names), an `outputSchema`, and returns `structuredContent`. Mistakes the model can fix (unknown entity, bad arguments, validation or authorization failures) come back as results with `isError: true` plus a hint; only unknown tool names are JSON‑RPC errors. Write tools are hidden when `MCP_WRITE_TOOLS_ENABLED=false`, and a tool is hidden when no entity enables its operation.
+
+**Resources:** `flexurio://guide` (usage guide), `flexurio://entities` (catalogue), `flexurio://entity/{name}` (template, one per entity), `flexurio://rules` (`rules.json`, only for roles in `MCP_ADMIN_ROLES`).
+
+**Prompts:** `explore_entity`, `safe_write` (inspect → propose → confirm → execute → verify), `data_quality_report`. **Completions** suggest entity names for prompt arguments and the resource template.
+
+### 18.3 Authentication & authorization
+
+* `/mcp` is protected by the normal JWT middleware. Get a token with `POST /login` (or use an externally issued JWT in converter‑token mode) and send `Authorization: Bearer <token>`.
+* An unauthenticated request receives `401` with `WWW-Authenticate: Bearer resource_metadata="…/.well-known/oauth-protected-resource/mcp"`, and the Protected Resource Metadata document (RFC 9728) is served at `/.well-known/oauth-protected-resource[/mcp]`. List your OAuth authorization server(s) in `MCP_OAUTH_AUTHORIZATION_SERVERS` and verify their tokens with the `CONVERTER_JWT_*` variables to enable the full MCP OAuth flow.
+* Each tool call is authorized against `rules.json` exactly like the equivalent REST method + path (e.g. `delete_record` → `DELETE /<route>/{id}`). There is no MCP‑only bypass.
+* `Host` headers are validated against `MCP_ALLOWED_HOSTS` (DNS‑rebinding protection) and, optionally, `Origin` against `MCP_ALLOWED_ORIGINS`.
+* Values of sensitive‑looking fields (`MCP_REDACT_FIELDS`, default `password,secret,token,api_key,apikey`) are replaced with `***REDACTED***` before results reach the model.
+
+### 18.4 Client configuration
+
+Claude Code (HTTP):
+
+```bash
+TOKEN=$(curl -s -X POST http://localhost:8080/login \
+  -H "Authorization: Basic $(printf 'admin:<password>' | base64)" | jq -r .data)
+claude mcp add --transport http flexurio http://localhost:8080/mcp \
+  --header "Authorization: Bearer $TOKEN"
+```
+
+Claude Desktop / any stdio client (`claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "flexurio": {
+      "command": "/usr/local/bin/flx-nocode-api",
+      "args": ["mcp", "--stdio"],
+      "cwd": "/path/to/folder/with/.env",
+      "env": { "MCP_STDIO_EMAIL": "admin" }
+    }
+  }
+}
+```
+
+MCP Inspector: `make mcp-inspect` (HTTP) or `npx @modelcontextprotocol/inspector flx-nocode-api mcp --stdio`.
+
+### 18.5 Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MCP_ENABLED` | `true` | Mount the Streamable HTTP endpoint. |
+| `MCP_PATH` | `/mcp` | Endpoint path (takes precedence over an entity with the same name). |
+| `MCP_WRITE_TOOLS_ENABLED` | `true` | Expose create/update/patch/delete/run_procedure tools. |
+| `MCP_MAX_ROWS` | `200` | Max rows returned by one `query_records` call. |
+| `MCP_REDACT_FIELDS` | `password,secret,token,api_key,apikey` | Field names masked in tool output (`none` disables). |
+| `MCP_ADMIN_ROLES` | `admin,Super Admin,Administrator` | Roles (JWT `rl`) allowed to read `flexurio://rules`. |
+| `MCP_ALLOWED_HOSTS` | `localhost,127.0.0.1,::1` + host of `BASE_URL` | Accepted `Host` headers; `*` disables the check (only behind a trusted proxy). |
+| `MCP_ALLOWED_ORIGINS` | — | Accepted browser `Origin`s (empty = not enforced). |
+| `MCP_RESOURCE_URL` | `BASE_URL` + `MCP_PATH` | Canonical resource URL advertised in the metadata. |
+| `MCP_OAUTH_AUTHORIZATION_SERVERS` | — | Authorization server issuer URLs (comma‑separated). |
+| `MCP_OAUTH_SCOPES` | — | Scopes advertised in metadata and the `WWW-Authenticate` challenge. |
+| `MCP_WORKERS` | CPU count (2–16) | Threads executing tool calls. |
+| `RATE_LIMIT_MCP_PER_SEC` | `30` | Per‑IP limit for `/mcp` (overridden by `RATE_LIMIT_ALL_PER_SEC`). |
+| `MCP_STDIO_TOKEN` / `MCP_STDIO_EMAIL` | — | Identity for `mcp --stdio` (token wins). Not needed when `REQUIRE_AUTH=false`. |
+
+Metrics: `flx_mcp_requests`, `flx_mcp_tool_calls`, `flx_mcp_tool_errors` on `/metrics`. Build without MCP: `cargo build --release --no-default-features --features "mysql postgres sqlite mssql mongodb"`.
+
+---
+
+## 19. Column encryption
 
 Set `"encrypt": true` on a column to store its value encrypted at rest using `ENCRYPT_KEY` (AES‑GCM). The engine encrypts on write and decrypts on read transparently. Keep `ENCRYPT_KEY` secret and stable — rotating it requires re‑encrypting existing data.
 
 ---
 
-## 19. Logging & observability
+## 20. Logging & observability
 
 * Structured logs cover endpoint registration and query execution; control verbosity with the `LOG_*`, `DEBUG`, and `LOGGING` variables ([§5](#5-environment-variables-env)).
 * `GET /healthz` for liveness/readiness probes.
@@ -1533,18 +1630,19 @@ Set `"encrypt": true` on a column to store its value encrypted at rest using `EN
 
 ---
 
-## 20. Database feature flags (compile‑time)
+## 21. Database feature flags (compile‑time)
 
 Database backends are gated behind Cargo features so you can build a lean binary with only what you need.
 
 ```toml
 [features]
-default  = ["mysql", "postgres", "sqlite", "mssql", "mongodb"]
+default  = ["mysql", "postgres", "sqlite", "mssql", "mongodb", "mcp"]
 mysql    = ["sqlx/mysql", "sqlx/chrono"]
 postgres = ["sqlx/postgres", "sqlx/chrono"]
 sqlite   = ["sqlx/sqlite", "sqlx/chrono"]
 mssql    = ["tiberius/chrono", "bb8"]
 mongodb  = ["dep:mongodb"]
+mcp      = ["dep:rmcp", ...]   # MCP server, see §18
 ```
 
 If you disable a backend but set `DB_TYPE` to it at runtime, the app exits with an error (e.g. `mysql feature disabled`).
@@ -1567,7 +1665,7 @@ Smaller builds compile faster, produce smaller binaries, and remove unused code 
 
 ---
 
-## 21. Multi‑target build script (`build.sh`)
+## 22. Multi‑target build script (`build.sh`)
 
 `build.sh` produces per‑database, per‑OS binaries with feature‑gated builds, and optionally signs/notarizes macOS artifacts when Apple credentials are present.
 
@@ -1603,7 +1701,7 @@ For each driver the script runs `cargo build --release --target <triple> --no-de
 
 ---
 
-## 22. Troubleshooting
+## 23. Troubleshooting
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
@@ -1613,13 +1711,13 @@ For each driver the script runs `cargo build --release --target <triple> --no-de
 | Duplicate table error | Two schemas share the same `table` value | Rename one. |
 | `401 Unauthorized` | Missing/invalid `Authorization` header | Re‑login and send `Bearer <token>`. |
 | Table not found | Table never created | `POST /generate/table/<route>` (needs `auto_generate: true`) or create it manually. |
-| `<backend> feature disabled` | `DB_TYPE` points to a backend not compiled in | Rebuild with that feature, or change `DB_TYPE` ([§20](#20-database-feature-flags-compile-time)). |
+| `<backend> feature disabled` | `DB_TYPE` points to a backend not compiled in | Rebuild with that feature, or change `DB_TYPE` ([§21](#21-database-feature-flags-compile-time)). |
 | Hooks not running | Used `before`/`after` keys | Use `pre_process` / `post_process` with the `SQL:` prefix ([§13](#13-hooks--validation)). |
 | Custom id insert fails | `function_endpoint` unreachable / bad response | Endpoint must return 2xx JSON with the configured field; or clear `function_endpoint` to use `MAX(id)+1` ([§8](#8-custom-id-generation-function)). |
 
 ---
 
-## 23. Security checklist
+## 24. Security checklist
 
 * Use long, random `SECRET_KEY` and `ENCRYPT_KEY`; keep them out of version control.
 * Rotate keys periodically (reissue tokens; re‑encrypt data if `ENCRYPT_KEY` changes).
@@ -1628,10 +1726,11 @@ For each driver the script runs `cargo build --release --target <triple> --no-de
 * Terminate TLS at a reverse proxy (nginx / traefik / Caddy).
 * In converter‑token mode, always configure signature verification — avoid `CONVERTER_JWT_INSECURE_SKIP_VERIFY=true` in production.
 * Validate any externally‑supplied formula inputs.
+* MCP: set `MCP_ALLOWED_HOSTS` to your public hostname(s), keep `MCP_WRITE_TOOLS_ENABLED=false` for read‑only assistants, and give AI clients a dedicated low‑privilege user whose `rules.json` rules grant only what they need.
 
 ---
 
-## 24. Contributing & license
+## 25. Contributing & license
 
 **Contributing**
 
