@@ -288,6 +288,12 @@ async fn main() -> anyhow::Result<()> {
     let _ = &*CONFIG;
     let _ = &*SCHEMAS;
 
+    // ── Configuration lint (fail-fast; CONFIG_LINT=strict|warn|off) ─────────
+    if let Err(e) = startup::run_config_lint() {
+        eprintln!("{}", format!("CONFIG-LINT: {}", e).on_red());
+        std::process::exit(3);
+    }
+
     // ── Write-queue consumer ──────────────────────────────────────────────────
     if app_state.write_queue_enabled {
         match crate::database::redis::get_manager().await {

@@ -12,6 +12,7 @@ use std::env;
 use std::fs;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::sync::Mutex;
 
 // ── Consolidated config location ─────────────────────────────────────────────
 
@@ -115,7 +116,22 @@ pub static SCHEMAS: Lazy<(
             }
         };
 
-        let schema: TableSchema = match serde_json::from_str(&content) {
+        // Parse to a generic Value first so the startup linter can report
+        // unknown/misspelled keys that serde would otherwise ignore silently.
+        let raw: serde_json::Value = match serde_json::from_str(&content) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!(
+                    "Sorry, content of /{}/entity/{}.json is not valid JSON, \
+                     with ERROR Message : {}",
+                    CONFIG_LOCATION.as_str(),
+                    route,
+                    e
+                );
+                panic!("Invalid entity JSON");
+            }
+        };
+        let schema: TableSchema = match serde_json::from_value(raw.clone()) {
             Ok(s) => s,
             Err(e) => {
                 eprintln!(
@@ -191,6 +207,9 @@ pub static SCHEMAS: Lazy<(
             });
         }
 
+        if let Ok(mut raw_map) = RAW_ENTITIES.lock() {
+            raw_map.insert(route.clone(), raw);
+        }
         schemas_map.insert(route.clone(), Arc::new(schema));
     }
 
@@ -205,6 +224,23 @@ pub static SCHEMAS: Lazy<(
     schemas_map.shrink_to_fit();
     (Arc::new(schemas_map), Arc::new(ref_foreign_keys))
 });
+
+// ── Raw entity JSON (for the startup linter only) ────────────────────────────
+
+/// Raw `serde_json::Value` of every entity file, keyed by route. Filled while
+/// `SCHEMAS` initialises; `take_raw_entities()` drains it after the startup
+/// lint so the duplicate copy does not stay resident.
+pub static RAW_ENTITIES: Lazy<Mutex<HashMap<String, serde_json::Value>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
+/// Drain the raw entity JSON captured during `SCHEMAS` initialisation.
+pub fn take_raw_entities() -> HashMap<String, serde_json::Value> {
+    let _ = &*SCHEMAS; // make sure the capture has happened
+    RAW_ENTITIES
+        .lock()
+        .map(|mut m| std::mem::take(&mut *m))
+        .unwrap_or_default()
+}
 
 // ── Debug flag ────────────────────────────────────────────────────────────────
 

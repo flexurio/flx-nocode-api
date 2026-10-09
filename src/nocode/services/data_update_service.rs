@@ -11,8 +11,10 @@ use crate::crypt::{encrypt, is_encrypted_string};
 use crate::database::state::DbParam;
 use crate::helpers::get_client_ip;
 use crate::model::{ReferenceForeignKey, TableSchema, WebResponse};
+use crate::nocode::field_rules;
 use crate::nocode::pk_utils::{
-    dbparam_from_str_and_type, json_value_from_str_and_type, validate_pk_path,
+    bool_kind, dbparam_from_str_and_type, is_bool_type, json_value_from_str_and_type,
+    json_value_from_value_and_type, validate_pk_path, dbparam_from_value_and_type,
 };
 use crate::nocode::repositories::data_update_repo;
 use crate::storage::sql_store::InsertValue;
@@ -55,10 +57,27 @@ pub async fn process_update_request(
         if let Err(e) = check_access(&claims, req) {
             return unauthorized(format!("Unauthorized: {}", e));
         }
+        // rules.json `allowed_fields`: reject keys this role may not write (before any injection).
+        if let Err(e) = crate::auth::enforce_allowed_fields(&claims, req, &mut body) {
+            return HttpResponse::Forbidden().json(web_err(format!("Forbidden: {}", e)));
+        }
         actor_id_opt = Some(claims.id.clone());
     } else {
         claims.id = "0".to_string();
         actor_id_opt = Some("0".to_string());
+    }
+
+    // Optimistic locking: `If-Match: <version>` (or body.version) must equal the
+    // row's current `version` column, when the entity has one.
+    if let Some(v) = req
+        .headers()
+        .get("if-match")
+        .and_then(|h| h.to_str().ok())
+        .map(|h| h.trim().trim_start_matches("W/").trim_matches('"').to_string())
+        && !v.is_empty()
+        && let Some(map) = body.as_object_mut()
+    {
+        map.insert("__expected_version__".to_string(), Value::String(v));
     }
 
     // Queue Handling
@@ -143,9 +162,30 @@ pub async fn process_update_request(
                 continue;
             };
 
-            // Typed string extraction (avoid "null" leaking from Value::Null).
+            // Metadata Check (ahead of null/FK handling so col.nullable/type_data are available)
+            let Some(col) = table_schema.columns.iter().find(|c| c.name == clean_column) else {
+                return bad_request(format!(
+                    "Unknown column '{}' for route '{}'",
+                    clean_column, route
+                ));
+            };
+
+            // Explicit JSON null: clear a nullable column, reject on NOT NULL.
+            // (Empty strings from form posts keep the old "skip" behaviour below.)
+            if raw_value.is_null() {
+                if !col.nullable {
+                    return bad_request(format!(
+                        "Field '{}' cannot be null (column is NOT NULL)",
+                        clean_column
+                    ));
+                }
+                update_fields.push((clean_column.to_string(), InsertValue::Param(DbParam::Null)));
+                patch_fields.insert(clean_column.to_string(), Value::Null);
+                continue;
+            }
+
+            // Typed string extraction.
             let str_value: String = match raw_value {
-                Value::Null => String::new(),
                 Value::String(s) => s.trim().to_string(),
                 v => v.to_string().trim().to_string(),
             };
@@ -154,13 +194,27 @@ pub async fn process_update_request(
                 continue;
             }
 
-            // Metadata Check (moved ahead of FK checks so col.type_data is available below)
-            let Some(col) = table_schema.columns.iter().find(|c| c.name == clean_column) else {
-                return bad_request(format!(
-                    "Unknown column '{}' for route '{}'",
-                    clean_column, route
-                ));
-            };
+            // Declarative column rules (enum/pattern/min/max/length/email/url).
+            if let Err(e) = field_rules::validate_field_message(col, raw_value) {
+                return bad_request(e);
+            }
+
+            // Boolean columns: bind a real boolean (bool/boolean) or 0/1 (bit/tinyint(1)).
+            if is_bool_type(&col.type_data) {
+                let dbparam = dbparam_from_value_and_type(raw_value, &col.type_data);
+                if matches!(dbparam, DbParam::Str(_)) {
+                    return bad_request(format!(
+                        "Invalid field '{}': must be a boolean (true/false, 1/0, yes/no)",
+                        clean_column
+                    ));
+                }
+                update_fields.push((clean_column.to_string(), InsertValue::Param(dbparam)));
+                patch_fields.insert(
+                    clean_column.to_string(),
+                    json_value_from_value_and_type(raw_value, &col.type_data),
+                );
+                continue;
+            }
 
             // Collect FK Checks
             for fk in table_schema.foreign_keys.iter() {
@@ -261,6 +315,9 @@ pub async fn process_update_request(
                     let Some(item_obj) = item.as_object() else {
                         return bad_request(format!("Detail item #{} in '{}' must be an object", idx + 1, detail.field));
                     };
+                    if let Err(e) = field_rules::validate_body(&detail_schema.columns, item_obj) {
+                        return bad_request(format!("Item #{} in '{}': {}", idx + 1, detail.field, e));
+                    }
 
                     let mut row_values: Vec<InsertValue> = Vec::with_capacity(detail_insert_cols.len());
                     let mut item_resp_map = serde_json::Map::with_capacity(detail_insert_cols.len());
@@ -296,10 +353,28 @@ pub async fn process_update_request(
                         };
 
                         let type_lower = col_def_opt.map(|c| c.type_data.to_lowercase()).unwrap_or_default();
-                        let is_int = type_lower.contains("int");
-                        let is_float = type_lower.contains("float") || type_lower.contains("decimal");
+                        let bool_col = col_def_opt.and_then(|c| bool_kind(&c.type_data));
+                        let is_int = bool_col.is_none() && type_lower.contains("int");
+                        let is_float = type_lower.contains("float")
+                            || type_lower.contains("double")
+                            || type_lower.contains("decimal")
+                            || type_lower.contains("numeric")
+                            || type_lower.contains("money")
+                            || type_lower.contains("real");
 
-                        if is_int {
+                        if bool_col.is_some() {
+                            let td = col_def_opt.map(|c| c.type_data.as_str()).unwrap_or("bool");
+                            let raw = raw_val.cloned().unwrap_or(Value::Null);
+                            let param = if str_val.is_empty() { DbParam::Null } else { dbparam_from_value_and_type(&raw, td) };
+                            if matches!(param, DbParam::Str(_)) {
+                                return bad_request(format!(
+                                    "Item #{} in '{}': Invalid field '{}': must be a boolean (true/false, 1/0, yes/no)",
+                                    idx + 1, detail.field, col_name
+                                ));
+                            }
+                            item_resp_map.insert(col_name.clone(), if str_val.is_empty() { Value::Null } else { json_value_from_value_and_type(&raw, td) });
+                            row_values.push(InsertValue::Param(param));
+                        } else if is_int {
                             if let Ok(n) = value_for_db.parse::<i64>() {
                                 item_resp_map.insert(col_name.clone(), serde_json::json!(n));
                                 row_values.push(InsertValue::Param(DbParam::I64(n)));
@@ -426,6 +501,9 @@ pub async fn process_update_request(
         }
         Err(e) if e.starts_with(data_update_repo::NOT_FOUND_PREFIX) => {
             HttpResponse::NotFound().json(web_err(e))
+        }
+        Err(e) if e.starts_with(data_update_repo::CONFLICT_PREFIX) => {
+            HttpResponse::Conflict().json(web_err(e))
         }
         Err(e) => server_error(e),
     }

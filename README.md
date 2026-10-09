@@ -364,7 +364,7 @@ Each HTTP method is only registered when its section sets `"enable_method": true
   "function_endpoint": "",
   "function_endpoint_path": "data",
   "encrypt": false,
-  "default": null
+  "default": null          // alias: "default_value"
 }
 ```
 
@@ -403,7 +403,7 @@ The three `function*` fields work together to auto‑generate an id; they only a
   "column_groups": [],
   "having": [],
   "order_by": ["banks.id"],
-  "where_clause": []
+  "where_clause": []       // alias: "where_clauses"
 }
 ```
 
@@ -536,7 +536,7 @@ Configure one or more detail relationships inside `LOC_CONFIG/entity/<parent_rou
 | `foreign_key_column` | *(required)* | Column in the child table referencing the parent header's primary key (e.g. `"po_id"`). |
 | `parent_key_column` | `"id"` | Column on the parent table whose value is injected into child records. |
 | `columns` | `[]` | *(optional)* Column whitelist for child records. If specified, any extra keys in detail items are safely ignored. |
-| `update_strategy` | `"replace"` | Strategy on `PUT /<route>/{id}`: `"replace"` (delete old & insert new), `"upsert"` (update existing / insert new), or `"append"` (keep existing & insert new). |
+| `update_strategy` | `"replace"` | Strategy on `PUT /<route>/{id}`. Only `"replace"` (delete old & insert new) is implemented today; `"upsert"` and `"append"` are accepted by the parser but behave as `"replace"`. |
 | `cascade_delete` | `true` | When `true`, deleting the parent via `DELETE /<route>/{id}` automatically deletes child records in the same transaction. |
 
 ### 9.2 Creating Master‑Detail Records (`POST`)
@@ -755,7 +755,7 @@ Add an `"action_triggers"` (or `"triggers"`) array to `LOC_CONFIG/entity/<route>
 | Field | Type | Description |
 |-------|------|-------------|
 | `name` | `string` | Human-readable identifier for the trigger (appears in logs and audit trails). |
-| `event` | `string` | Lifecycle event to listen for: `"on_create"` (or `"create"`), `"on_update"` (or `"update"`), `"on_delete"` (or `"delete"`). |
+| `event` | `string` | Lifecycle event to listen for: `"on_create"` (or `"create"` / `"insert"`), `"on_update"` (or `"update"`), `"on_delete"` (or `"delete"`), `"on_status_change"`, `"any"`. Names are case-insensitive and the `on_` prefix is optional; unknown names fail the startup config lint. |
 | `condition` | `object` | *(optional)* Filter specifying when the trigger activates. |
 | `condition.field` | `string` | Column name to monitor for changes (e.g. `"status"`). |
 | `condition.from` | `string` / `array` | Required previous value(s) (e.g. `"CONFIRMED"` or `["CONFIRMED", "APPROVED"]`). Supports `"*"` for any. |
@@ -1730,7 +1730,78 @@ For each driver the script runs `cargo build --release --target <triple> --no-de
 
 ---
 
-## 25. Contributing & license
+## 25. Query language, validation rules & hardening (v0.4.9)
+
+### 25.1 Startup config lint (`CONFIG_LINT`)
+
+Every entity file is linted before the server binds. Errors (invalid identifiers, unknown columns in `get.columns` / `post.columns` / `order_by` / `parameters`, unknown filter operators, unknown trigger events, `details[]` pointing at a missing table or column, duplicate tables, `state_machine.field` not a column) stop the process with exit code 3. Warnings (unknown JSON keys, empty `get.parameters`, foreign key to a table that is not a route, bare text defaults) are logged only.
+
+| `CONFIG_LINT` | Behaviour |
+|---------------|-----------|
+| `strict` (default) | errors abort startup |
+| `warn` | errors are logged, startup continues |
+| `off` | lint skipped |
+
+### 25.2 GET query syntax
+
+All of the following work even when `get.parameters` is empty; filters still require the column to be declared there.
+
+| Parameter | Meaning |
+|-----------|---------|
+| `?<col>.<op>=<v>` | Filter. `op` ∈ `eq` (comma list ⇒ IN), `ne`/`neq`, `lt`, `lte`, `gt`, `gte`, `in`, `nin`, `between` (`a,b`), `is` (`NULL`/`NOT NULL`), `isnull`, `notnull`, `like`/`ilike` (case-insensitive, `%v%`), `nlike`, `startswith`, `endswith`, `contains` (user `%`/`_` escaped). |
+| `?<col>->path.<op>=<v>` | JSON column filter. Declare `col->path.op` or `col->*.op`. Compiles to `->>` (Postgres), `JSON_EXTRACT` (MySQL), `json_extract` (SQLite), `JSON_VALUE` (MSSQL). |
+| `?filter=<json>` | Nested boolean groups: `{"or":[{"status.eq":"open"},{"and":[{"qty.gt":5},{"name.like":"a"}]}]}`. Max depth 5, max 50 leaves. Columns must appear in `get.parameters` with any operator. |
+| `?fields=a,b` | Client projection, intersected with `get.columns`; primary key always included. |
+| `?search=term` | ILIKE on text columns only; numeric columns use `=` when the term is numeric. |
+| `?sort=a,-b` | Multi-column sort (allow-listed). |
+| `?page=&limit=` | Offset paging (`LIMIT_DEFAULT` / `LIMIT_MAX`). |
+| `?after=<cursor>` | Keyset paging. The response header `X-Next-Cursor` carries the cursor for the next page (only on uncached responses and only when the page is full). `page` is ignored when `after` is set. Sort on real columns, not aliases. |
+| `?count=true` | Adds a `COUNT(*)` total (ignores the cursor). |
+
+### 25.3 Column validation rules
+
+Keys live directly on the column object and are checked on `POST`, `PUT`, `PATCH` and detail items. Violations return `400 Invalid field '<col>': <reason>`.
+
+```json
+{ "name": "status", "type_data": "varchar(20)", "enum": ["DRAFT", "APPROVED"], "message": "Status tidak dikenal" },
+{ "name": "qty",    "type_data": "int", "min": 0, "max": 1000 },
+{ "name": "code",   "type_data": "varchar(10)", "pattern": "^[A-Z]{3}-[0-9]+$", "min_length": 5, "max_length": 10 },
+{ "name": "email",  "type_data": "varchar(100)", "email": true },
+{ "name": "site",   "type_data": "text", "url": true }
+```
+
+Related behaviour changes:
+
+* `POST`: a `NOT NULL` column with a `default`, `auto_increment` or `function` is no longer required, and absent columns are omitted from the `INSERT` so database defaults apply. `*` in `post.columns` still forces a field.
+* `PUT`/`PATCH`: JSON `null` clears a nullable column; on a `NOT NULL` column it returns 400. An empty form string still means "skip".
+* Booleans: JSON `true`/`false` (and `1/0`, `yes/no`) bind natively on `bool`/`boolean` and as `0/1` on `bit`/`tinyint(1)`.
+* `PUT` on a missing or soft-deleted id returns `404`.
+
+### 25.4 Field-level authorization (`allowed_fields`)
+
+`rules.json` → `allows[].allowed_fields` is now enforced. For `POST`/`PUT`/`PATCH` any body key outside the list (except `id`) returns `403`. For `GET` the response objects are trimmed to the list; such responses bypass the shared cache. An empty list means no restriction.
+
+### 25.5 Optimistic locking
+
+If an entity has an integer column named `version`, every `PUT`/`PATCH` increments it and the `UPDATE` is guarded with `AND version = <current>`. Send `If-Match: <version>` (or `version` in the body) to assert the version you read; a mismatch or a concurrent write returns `409 Conflict`.
+
+### 25.6 Write queue & cache semantics
+
+* `202 Accepted` is returned only after the job is durably `LPUSH`ed to Redis. `WRITE_QUEUE_FAST_ACK` is deprecated and ignored.
+* Workers use `BLMOVE` into a per-worker processing list and acknowledge after execution; in-flight jobs from a crashed process are re-queued at the next boot. Unparseable payloads go to `flx:wq:dlq`.
+* Read-cache operations against Redis are bounded by `REDIS_CACHE_TIMEOUT_MS` (default 100 ms) and the connection reconnects automatically.
+* L1 cache capacity is a byte budget (`L1_CACHE_MAX_BYTES`, default 256 MB) and is invalidated per route on writes.
+* Exports: `EXPORT_LIMIT_DEFAULT`, `EXPORT_LIMIT_MAX`, `EXPORT_CONCURRENCY` (excess requests get `503` + `Retry-After`).
+
+### 25.7 Not implemented (documented for clarity)
+
+* `details[].update_strategy` values other than `"replace"`.
+* `action_triggers[].condition.expression` (use `field`/`operator`/`value`).
+* Row-level security / multi-tenancy, config hot reload, schema migrations beyond `CREATE TABLE IF NOT EXISTS`, OpenAPI generation, webhooks and scheduled triggers.
+
+---
+
+## 26. Contributing & license
 
 **Contributing**
 

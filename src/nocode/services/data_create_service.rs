@@ -9,6 +9,8 @@ use std::sync::Arc;
 use super::web_err as err;
 use crate::crypt::{encrypt, is_encrypted_string};
 use crate::database::state::DbParam;
+use crate::nocode::field_rules;
+use crate::nocode::pk_utils::{bool_kind, parse_bool_value, BoolKind};
 use crate::nocode::repositories::data_create_repo;
 use crate::storage::sql_store::InsertValue;
 use chrono::Local;
@@ -32,6 +34,42 @@ fn audit_actor_value(col: &Column, actor_id: &str) -> (InsertValue, Value) {
     )
 }
 
+/// A column must be supplied on POST only when nothing else can fill it: NOT NULL, no
+/// `default`, not auto-increment, no generator `function`. Explicit `*` markers in
+/// `post.columns` are handled by the caller and always win.
+fn column_is_mandatory(col: &Column) -> bool {
+    !col.nullable && col.default.is_none() && !col.auto_increment && col.function.is_empty()
+}
+
+/// Presence check used for required fields: absent, JSON null, "" and "null" count as missing.
+fn value_is_present(v: Option<&Value>) -> bool {
+    match v {
+        None | Some(Value::Null) => false,
+        Some(Value::String(s)) => {
+            let t = s.trim();
+            !t.is_empty() && !t.eq_ignore_ascii_case("null")
+        }
+        Some(_) => true,
+    }
+}
+
+/// Bind a boolean-like column (`bool`/`boolean` -> Bool, `bit`/`tinyint(1)` -> 0/1).
+fn bind_bool(col: &Column, raw: &Value, kind: BoolKind) -> Result<(InsertValue, Value), WebResponse> {
+    let Some(b) = parse_bool_value(raw) else {
+        return Err(err(format!(
+            "Invalid field '{}': must be a boolean (true/false, 1/0, yes/no)",
+            col.name
+        )));
+    };
+    Ok(match kind {
+        BoolKind::Native => (InsertValue::Param(DbParam::Bool(b)), Value::Bool(b)),
+        BoolKind::Int01 => (
+            InsertValue::Param(DbParam::I64(b as i64)),
+            serde_json::json!(b as i64),
+        ),
+    })
+}
+
 #[allow(clippy::collapsible_if)]
 pub async fn process_insert_request(
     state: &web::Data<AppState>,
@@ -48,6 +86,9 @@ pub async fn process_insert_request(
         let claims =
             get_user_info_from_token(req, state.clone()).map_err(|_| err("Invalid token"))?;
         check_access(&claims, req).map_err(|e| err(format!("Unauthorized: {}", e)))?;
+        // rules.json `allowed_fields`: reject keys this role may not write (before any injection).
+        crate::auth::enforce_allowed_fields(&claims, req, &mut body)
+            .map_err(|e| err(format!("Forbidden: {}", e)))?;
         actor_id_opt = Some(claims.id.clone());
     }
 
@@ -146,23 +187,18 @@ pub async fn process_insert_request(
                 }
             }
         }
-        // Check if field is mandatory: either marked with * or column is not nullable and not auto_increment
-        let is_mandatory = is_required_marker || (!col_def.nullable && !col_def.auto_increment);
+        // Mandatory when marked with `*`, or when the DB cannot fill it itself
+        // (NOT NULL without default / auto_increment / generator function).
+        let is_mandatory = is_required_marker || column_is_mandatory(col_def);
 
-        if is_mandatory {
-            let present = match body.get(clean_col_name) {
-                None | Some(Value::Null) => false,
-                Some(Value::String(s)) => {
-                    let t = s.trim();
-                    !t.is_empty() && !t.eq_ignore_ascii_case("null")
-                }
-                Some(_) => true,
-            };
-
-            if !present {
-                return Err(err(format!("Missing required field: {}", clean_col_name)));
-            }
+        if is_mandatory && !value_is_present(body.get(clean_col_name)) {
+            return Err(err(format!("Missing required field: {}", clean_col_name)));
         }
+    }
+
+    // 4b. Declarative column rules (enum/pattern/min/max/length/email/url) on provided fields.
+    if let Some(body_obj) = body.as_object() {
+        field_rules::validate_body(&table_schema.columns, body_obj).map_err(err)?;
     }
 
     // 5. Prepare Logic (Filter Columns, Encrypt, Build Insert Lists)
@@ -241,12 +277,32 @@ pub async fn process_insert_request(
         }
 
         let raw_value = body.get(&col.name);
+
+        // Absent from the body (or explicit null on a NOT NULL column that has a default):
+        // leave the column out of the INSERT so the DB default applies. Required
+        // columns were already enforced in step 4, so nothing mandatory is skipped here.
+        let absent = match raw_value {
+            None => true,
+            Some(Value::Null) => !col.nullable && col.default.is_some(),
+            Some(_) => false,
+        };
+        if absent {
+            continue;
+        }
+        let raw_value_ref = raw_value.expect("checked above");
+
         let type_lower = col.type_data.to_lowercase();
         let is_datetime = type_lower.contains("datetime")
             || type_lower.contains("timestamp")
             || type_lower.contains("date");
-        let is_int = type_lower.contains("int");
-        let is_float = type_lower.contains("float") || type_lower.contains("decimal");
+        let is_bool = bool_kind(&col.type_data);
+        let is_int = is_bool.is_none() && type_lower.contains("int");
+        let is_float = type_lower.contains("float")
+            || type_lower.contains("double")
+            || type_lower.contains("decimal")
+            || type_lower.contains("numeric")
+            || type_lower.contains("money")
+            || type_lower.contains("real");
 
         // Typed string extraction (avoids "null" leaking from Value::Null via to_string()).
         let str_value: String = match raw_value {
@@ -254,6 +310,19 @@ pub async fn process_insert_request(
             Some(Value::String(s)) => s.trim().to_string(),
             Some(v) => v.to_string().trim().to_string(),
         };
+
+        // Boolean columns: JSON true/false (or "yes"/"1"/...) bind as a real boolean / 0|1.
+        if let Some(kind) = is_bool {
+            if str_value.is_empty() {
+                doc_map.insert(col.name.clone(), Value::Null);
+                insert_fields.push((col.name.clone(), InsertValue::Param(DbParam::Null)));
+                continue;
+            }
+            let (param, json_val) = bind_bool(col, raw_value_ref, kind)?;
+            doc_map.insert(col.name.clone(), json_val);
+            insert_fields.push((col.name.clone(), param));
+            continue;
+        }
 
         // Datetime null/empty -> bind NULL.
         if is_datetime && (str_value.is_empty() || str_value.eq_ignore_ascii_case("null")) {
@@ -440,24 +509,19 @@ pub async fn process_insert_request(
                         let is_mandatory = is_required_marker
                             || (!col_def.nullable && !col_def.auto_increment);
 
-                        if is_mandatory {
-                            let present = match item_obj.get(clean_col_name) {
-                                None | Some(Value::Null) => false,
-                                Some(Value::String(s)) => {
-                                    let t = s.trim();
-                                    !t.is_empty() && !t.eq_ignore_ascii_case("null")
-                                }
-                                Some(_) => true,
-                            };
-                            if !present {
-                                return Err(err(format!(
-                                    "Item #{}: Missing required field '{}' in detail '{}'",
-                                    idx + 1,
-                                    clean_col_name,
-                                    detail.field
-                                )));
-                            }
+                        if is_mandatory && !value_is_present(item_obj.get(clean_col_name)) {
+                            return Err(err(format!(
+                                "Item #{}: Missing required field '{}' in detail '{}'",
+                                idx + 1,
+                                clean_col_name,
+                                detail.field
+                            )));
                         }
+                    }
+
+                    // Declarative column rules on the detail item's provided fields.
+                    if let Err(e) = field_rules::validate_body(&detail_schema.columns, item_obj) {
+                        return Err(err(format!("Item #{} in '{}': {}", idx + 1, detail.field, e)));
                     }
 
                     let mut row_values: Vec<InsertValue> =
@@ -514,11 +578,29 @@ pub async fn process_insert_request(
                         let type_lower = col_def_opt
                             .map(|c| c.type_data.to_lowercase())
                             .unwrap_or_default();
-                        let is_int = type_lower.contains("int");
-                        let is_float =
-                            type_lower.contains("float") || type_lower.contains("decimal");
+                        let bool_col = col_def_opt.and_then(|c| bool_kind(&c.type_data));
+                        let is_int = bool_col.is_none() && type_lower.contains("int");
+                        let is_float = type_lower.contains("float")
+                            || type_lower.contains("double")
+                            || type_lower.contains("decimal")
+                            || type_lower.contains("numeric")
+                            || type_lower.contains("money")
+                            || type_lower.contains("real");
 
-                        if is_int {
+                        if let Some(kind) = bool_col {
+                            if str_val.is_empty() {
+                                item_resp_map.insert(col_name.clone(), Value::Null);
+                                row_values.push(InsertValue::Param(DbParam::Null));
+                            } else {
+                                let (param, json_val) = bind_bool(
+                                    col_def_opt.expect("bool_col implies col_def"),
+                                    raw_val.expect("non-empty implies present"),
+                                    kind,
+                                )?;
+                                item_resp_map.insert(col_name.clone(), json_val);
+                                row_values.push(param);
+                            }
+                        } else if is_int {
                             if let Ok(n) = value_for_db.parse::<i64>() {
                                 item_resp_map.insert(col_name.clone(), serde_json::json!(n));
                                 row_values.push(InsertValue::Param(DbParam::I64(n)));

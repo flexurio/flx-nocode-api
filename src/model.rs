@@ -413,8 +413,65 @@ pub struct Column {
     #[serde(default)]
     pub collate: String,
     /// Column default for DDL. Entity files may spell this `default` or `default_value`.
+    /// A NOT NULL column with a default is no longer mandatory on POST: when the key is
+    /// absent from the body the column is omitted from the INSERT so the DB default applies.
     #[serde(default, alias = "default_value")]
     pub default: Option<String>,
+    /// Declarative validation rules written directly on the column object:
+    /// `enum` (alias `values`), `pattern`, `min`, `max`, `min_length`, `max_length`,
+    /// `email`, `url`, `message`. See `nocode::field_rules::validate_field`.
+    #[serde(flatten)]
+    pub rules: FieldRules,
+}
+
+/// Declarative per-column validation rules. All keys are optional and live directly on the
+/// column object (flattened), e.g.
+/// `{ "name": "status", "type_data": "varchar(20)", "enum": ["DRAFT", "APPROVED"] }`
+/// `{ "name": "qty", "type_data": "int", "min": 0, "max": 1000 }`
+/// `{ "name": "email", "type_data": "varchar(100)", "email": true, "message": "Email tidak valid" }`
+#[derive(Debug, Default, Serialize, Deserialize, Clone, PartialEq)]
+pub struct FieldRules {
+    /// Allowed values. Compared loosely: `1` and `"1"` are equal.
+    #[serde(default, rename = "enum", alias = "values", alias = "enum_values", skip_serializing_if = "Option::is_none")]
+    pub enum_values: Option<Vec<serde_json::Value>>,
+    /// Regex the string form of the value must match (compiled once and cached).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pattern: Option<String>,
+    /// Minimum numeric value (numbers or numeric strings).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min: Option<f64>,
+    /// Maximum numeric value (numbers or numeric strings).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max: Option<f64>,
+    /// Minimum string length in characters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_length: Option<usize>,
+    /// Maximum string length in characters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_length: Option<usize>,
+    /// Require a syntactically valid e-mail address.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<bool>,
+    /// Require a syntactically valid absolute URL (`scheme://...`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<bool>,
+    /// Custom error message returned instead of the generated reason.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+impl FieldRules {
+    /// True when no rule is configured.
+    pub fn is_empty(&self) -> bool {
+        self.enum_values.is_none()
+            && self.pattern.is_none()
+            && self.min.is_none()
+            && self.max.is_none()
+            && self.min_length.is_none()
+            && self.max_length.is_none()
+            && self.email.is_none()
+            && self.url.is_none()
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -680,6 +737,39 @@ mod tests {
         assert!(!col.nullable);
         assert!(col.type_data.is_empty());
         assert!(!col.encrypt);
+    }
+
+    #[test]
+    fn test_column_rules_flattened_keys() {
+        let json = r#"{
+            "name": "status",
+            "type_data": "varchar(20)",
+            "nullable": false,
+            "default": "DRAFT",
+            "enum": ["DRAFT", "APPROVED", 1],
+            "pattern": "^[A-Z]+$",
+            "min": 0, "max": 10,
+            "min_length": 1, "max_length": 20,
+            "email": false, "url": false,
+            "message": "custom"
+        }"#;
+        let col: Column = serde_json::from_str(json).unwrap();
+        assert_eq!(col.default.as_deref(), Some("DRAFT"));
+        assert_eq!(col.rules.enum_values.as_ref().unwrap().len(), 3);
+        assert_eq!(col.rules.pattern.as_deref(), Some("^[A-Z]+$"));
+        assert_eq!(col.rules.min, Some(0.0));
+        assert_eq!(col.rules.max, Some(10.0));
+        assert_eq!(col.rules.min_length, Some(1));
+        assert_eq!(col.rules.max_length, Some(20));
+        assert_eq!(col.rules.email, Some(false));
+        assert_eq!(col.rules.message.as_deref(), Some("custom"));
+        assert!(!col.rules.is_empty());
+
+        // `values` alias and no rules at all
+        let col2: Column = serde_json::from_str(r#"{"name":"a","values":["x"]}"#).unwrap();
+        assert_eq!(col2.rules.enum_values.as_ref().unwrap().len(), 1);
+        let col3: Column = serde_json::from_str(r#"{"name":"a","type_data":"int"}"#).unwrap();
+        assert!(col3.rules.is_empty());
     }
 
     // --- WebResponse ---

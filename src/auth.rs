@@ -459,12 +459,12 @@ pub struct Rule {
 #[derive(Deserialize, Debug, Clone)]
 pub struct AllowDef {
     pub method: String,
-    #[allow(dead_code)]
-    pub permission_id: String,
+        #[allow(dead_code)] // parsed for config validation; not consulted at runtime yet
+        pub permission_id: String,
     #[serde(rename = "if")]
     pub condition: Option<Conditions>,
     #[serde(default)]
-    #[allow(dead_code)]
+    #[allow(dead_code)] // read by `allowed_fields_in`; flagged until services are wired
     pub allowed_fields: Vec<String>,
 }
 
@@ -535,45 +535,58 @@ fn evaluate_condition(condition: &Conditions, claims: &Claims) -> bool {
     }
 }
 
-pub fn evaluate_access(rules: &[Rule], claims: &Claims, current_path: &str, current_method: &str) -> Result<(), String> {
-    // Find matching rule
-    // Simple matching for now: exact match or parameter match {id}
-    let matched_rule = rules.iter().find(|r| {
-        let route_parts: Vec<&str> = r.endpoint.split('/').filter(|s| !s.is_empty()).collect();
-        let path_parts: Vec<&str> = current_path.split('/').filter(|s| !s.is_empty()).collect();
+/// Normalise a route pattern or request path into its non-empty segments.
+/// Trailing/duplicate slashes are ignored, so `/banks/1/` == `/banks/1`.
+fn path_segments(path: &str) -> impl Iterator<Item = &str> {
+    path.split('/').filter(|s| !s.is_empty())
+}
 
-        if route_parts.len() != path_parts.len() {
-            return false;
-        }
-
-        route_parts.iter().zip(path_parts.iter()).all(|(r_part, p_part)| {
-            r_part.starts_with('{') && r_part.ends_with('}') || r_part == p_part
-        })
-    });
-
-    match matched_rule {
-        Some(rule) => {
-            // Check method
-            let allow = rule.allows.iter().find(|a| a.method.eq_ignore_ascii_case(current_method));
-            
-            match allow {
-                Some(a) => {
-                    // Check condition
-                    if let Some(cond) = &a.condition {
-                        if evaluate_condition(cond, claims) {
-                            Ok(())
-                        } else {
-                            Err("Access denied by rule condition".to_string())
-                        }
-                    } else {
-                        Ok(())
-                    }
-                },
-                None => Err(format!("Method {} not allowed for this rule", current_method)),
-            }
-        },
-        None => Err(format!("Rule not defined for endpoint: {}", current_path)),
+/// `true` when `pattern` (e.g. `/banks/{id}`) matches `path` (e.g. `/banks/42`).
+/// A `{param}` segment matches any single segment; other segments must be equal.
+fn route_matches(pattern: &str, path: &str) -> bool {
+    let route_parts: Vec<&str> = path_segments(pattern).collect();
+    let path_parts: Vec<&str> = path_segments(path).collect();
+    if route_parts.len() != path_parts.len() {
+        return false;
     }
+    route_parts
+        .iter()
+        .zip(path_parts.iter())
+        .all(|(r, p)| (r.starts_with('{') && r.ends_with('}')) || r == p)
+}
+
+/// Shared rule-matching core used by both `check_access` and the
+/// `allowed_fields` enforcement helpers. Finds the rule whose `match` pattern
+/// fits `current_path`, then the `allows[]` entry for `current_method`
+/// (case-insensitive), then evaluates its `if` condition against `claims`.
+/// Returns the matched allow entry on success.
+fn match_allow<'a>(
+    rules: &'a [Rule],
+    claims: &Claims,
+    current_path: &str,
+    current_method: &str,
+) -> Result<&'a AllowDef, String> {
+    let rule = rules
+        .iter()
+        .find(|r| route_matches(&r.endpoint, current_path))
+        .ok_or_else(|| format!("Rule not defined for endpoint: {}", current_path))?;
+
+    let allow = rule
+        .allows
+        .iter()
+        .find(|a| a.method.trim().eq_ignore_ascii_case(current_method.trim()))
+        .ok_or_else(|| format!("Method {} not allowed for this rule", current_method))?;
+
+    if let Some(cond) = &allow.condition
+        && !evaluate_condition(cond, claims)
+    {
+        return Err("Access denied by rule condition".to_string());
+    }
+    Ok(allow)
+}
+
+pub fn evaluate_access(rules: &[Rule], claims: &Claims, current_path: &str, current_method: &str) -> Result<(), String> {
+    match_allow(rules, claims, current_path, current_method).map(|_| ())
 }
 
 pub fn check_access(claims: &Claims, req: &actix_web::HttpRequest) -> Result<(), String> {
@@ -587,6 +600,123 @@ pub fn check_access(claims: &Claims, req: &actix_web::HttpRequest) -> Result<(),
 
     evaluate_access(rules, claims, current_path, current_method)
 }
+
+// ---------------------------------------------------------------------------
+// allowed_fields enforcement
+// ---------------------------------------------------------------------------
+
+// NOTE: the `#[allow(dead_code)]` markers below can be dropped once the
+// services call `enforce_allowed_fields` / `retain_fields_on`.
+
+/// Keys that are never subject to `allowed_fields` filtering (primary key).
+const ALWAYS_ALLOWED_FIELDS: &[&str] = &["id"];
+
+fn is_always_allowed(key: &str) -> bool {
+    ALWAYS_ALLOWED_FIELDS.iter().any(|k| k.eq_ignore_ascii_case(key))
+}
+
+/// Pure variant of [`allowed_fields_for`] over an explicit rule set, so tests can
+/// inject rules without touching the on-disk `rules.json`.
+/// `None` = no restriction (no matching rule/allow, or `allowed_fields` empty).
+pub fn allowed_fields_in(
+    rules: &[Rule],
+    claims: &Claims,
+    current_path: &str,
+    current_method: &str,
+) -> Option<Vec<String>> {
+    match match_allow(rules, claims, current_path, current_method) {
+        Ok(allow) if !allow.allowed_fields.is_empty() => Some(allow.allowed_fields.clone()),
+        _ => None,
+    }
+}
+
+/// Return the `allowed_fields` of the `rules.json` allow entry that matched this
+/// request (same matching as [`check_access`]: path pattern with `{param}`
+/// segments, trailing slashes ignored, method case-insensitive, `if` condition).
+///
+/// `None` means **no restriction applies**: converter tokens, no matching rule,
+/// access denied (callers must still run `check_access` first), or an empty
+/// `allowed_fields` list. `Some(fields)` means only those fields (plus `id`)
+/// may be written or returned.
+pub fn allowed_fields_for(claims: &Claims, req: &actix_web::HttpRequest) -> Option<Vec<String>> {
+    if claims.cs == "converter_token" {
+        return None;
+    }
+    allowed_fields_in(load_rules(), claims, req.path(), req.method().as_str())
+}
+
+/// Strict write-side check over an already-resolved restriction.
+/// `body` may be an object or an array of objects (bulk insert).
+fn enforce_fields_on(allowed: &[String], body: &Value) -> Result<(), String> {
+    let check_obj = |map: &serde_json::Map<String, Value>| -> Result<(), String> {
+        for key in map.keys() {
+            if is_always_allowed(key) || allowed.iter().any(|f| f == key) {
+                continue;
+            }
+            return Err(format!("field '{}' is not permitted for this role", key));
+        }
+        Ok(())
+    };
+    match body {
+        Value::Object(map) => check_obj(map),
+        Value::Array(items) => items
+            .iter()
+            .filter_map(Value::as_object)
+            .try_for_each(check_obj),
+        _ => Ok(()),
+    }
+}
+
+/// Enforce `allowed_fields` on a POST/PUT/PATCH request body (403 semantics).
+///
+/// If a restriction applies to this request (see [`allowed_fields_for`]), any
+/// top-level key of the body object (or of each object in a body array) that is
+/// neither in `allowed_fields` nor the primary key `id` yields
+/// `Err("field '<k>' is not permitted for this role")`. The body is not
+/// modified. Returns `Ok(())` for other methods or when no restriction applies.
+/// Call it right after `check_access` and before the service adds audit fields
+/// such as `created_by_id`.
+pub fn enforce_allowed_fields(
+    claims: &Claims,
+    req: &actix_web::HttpRequest,
+    body: &mut Value,
+) -> Result<(), String> {
+    let method = req.method().as_str();
+    if !(method.eq_ignore_ascii_case("POST")
+        || method.eq_ignore_ascii_case("PUT")
+        || method.eq_ignore_ascii_case("PATCH"))
+    {
+        return Ok(());
+    }
+    match allowed_fields_for(claims, req) {
+        Some(allowed) => enforce_fields_on(&allowed, body),
+        None => Ok(()),
+    }
+}
+
+/// Read-side projection over an already-resolved restriction.
+pub fn retain_fields_on(allowed: &[String], data: &mut Value) {
+    let keep = |key: &str| is_always_allowed(key) || allowed.iter().any(|f| f == key);
+    match data {
+        Value::Object(map) => map.retain(|k, _| keep(k)),
+        Value::Array(items) => {
+            for item in items.iter_mut() {
+                if let Value::Object(map) = item {
+                    map.retain(|k, _| keep(k));
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Project a GET response down to the `allowed_fields` of the matched rule.
+///
+/// If a restriction applies (see [`allowed_fields_for`]), every object in
+/// `data` (a single object or an array of objects) keeps only the allowed
+/// fields plus `id`; everything else is removed in place. No-op when no
+/// restriction applies. Because the result is role-specific, a filtered
+/// response must not be written to or served from the shared response cache.
 
 
 #[cfg(test)]
@@ -712,6 +842,162 @@ mod tests {
         let claims_fail = create_claims("user", "999");
         let result_fail = evaluate_access(&rules, &claims_fail, "/api/items/888", "DELETE");
         assert!(result_fail.is_err());
+    }
+
+    // --- allowed_fields ---
+
+    fn field_rules() -> Vec<Rule> {
+        let json = serde_json::json!({
+            "role": ["admin"],
+            "rule": [
+                {
+                    "match": "/banks/{id}",
+                    "allows": [
+                        {
+                            "method": "put",
+                            "permission_id": "banks_edit",
+                            "allowed_fields": ["name", "bank_type_id", "foto"],
+                            "if": { "or": [
+                                { "eq": ["$user.role", "admin"] },
+                                { "eq": ["$user.role", "manager"] }
+                            ] }
+                        },
+                        {
+                            "method": "GET",
+                            "permission_id": "banks_get_one",
+                            "allowed_fields": []
+                        }
+                    ]
+                },
+                {
+                    "match": "/banks",
+                    "allows": [
+                        {
+                            "method": "GET",
+                            "permission_id": "banks_get",
+                            "allowed_fields": ["name", "foto"]
+                        },
+                        {
+                            "method": "POST",
+                            "permission_id": "banks_add",
+                            "allowed_fields": ["name"]
+                        }
+                    ]
+                }
+            ]
+        });
+        serde_json::from_value::<RulesFile>(json).unwrap().rule
+    }
+
+    #[test]
+    fn test_allowed_fields_in_matched_rule() {
+        let rules = field_rules();
+        let claims = create_claims("admin", "1");
+        assert_eq!(
+            allowed_fields_in(&rules, &claims, "/banks/7", "PUT"),
+            Some(vec!["name".to_string(), "bank_type_id".to_string(), "foto".to_string()])
+        );
+    }
+
+    #[test]
+    fn test_allowed_fields_in_method_case_insensitive_and_trailing_slash() {
+        let rules = field_rules();
+        let claims = create_claims("manager", "1");
+        // rule method is lowercase "put"; request method uppercase; trailing slash on path
+        assert!(allowed_fields_in(&rules, &claims, "/banks/7/", "PUT").is_some());
+        assert!(allowed_fields_in(&rules, &claims, "/banks//7", "Put").is_some());
+        assert!(allowed_fields_in(&rules, &claims, "/banks/", "get").is_some());
+    }
+
+    #[test]
+    fn test_allowed_fields_in_param_matches_single_segment_only() {
+        let rules = field_rules();
+        let claims = create_claims("admin", "1");
+        // `{id}` must not swallow two segments
+        assert_eq!(allowed_fields_in(&rules, &claims, "/banks/7/extra", "PUT"), None);
+        assert!(evaluate_access(&rules, &claims, "/banks/7/extra", "PUT").is_err());
+    }
+
+    #[test]
+    fn test_allowed_fields_in_none_when_empty_list_or_no_rule_or_denied() {
+        let rules = field_rules();
+        let claims = create_claims("admin", "1");
+        // empty allowed_fields → no restriction
+        assert_eq!(allowed_fields_in(&rules, &claims, "/banks/7", "GET"), None);
+        // no rule for endpoint → no restriction
+        assert_eq!(allowed_fields_in(&rules, &claims, "/accounts", "GET"), None);
+        // method not in allows → no restriction
+        assert_eq!(allowed_fields_in(&rules, &claims, "/banks/7", "DELETE"), None);
+        // condition fails → None (check_access is the one that denies)
+        let user = create_claims("user", "1");
+        assert_eq!(allowed_fields_in(&rules, &user, "/banks/7", "PUT"), None);
+        assert!(evaluate_access(&rules, &user, "/banks/7", "PUT").is_err());
+    }
+
+    #[test]
+    fn test_enforce_fields_rejects_unlisted_key() {
+        let allowed = vec!["name".to_string(), "foto".to_string()];
+        let body = serde_json::json!({ "id": 3, "name": "BCA", "balance": 100 });
+        let err = enforce_fields_on(&allowed, &body).unwrap_err();
+        assert_eq!(err, "field 'balance' is not permitted for this role");
+    }
+
+    #[test]
+    fn test_enforce_fields_accepts_listed_keys_and_id() {
+        let allowed = vec!["name".to_string(), "foto".to_string()];
+        let body = serde_json::json!({ "id": 3, "name": "BCA", "foto": null });
+        assert!(enforce_fields_on(&allowed, &body).is_ok());
+        // bulk array body: each object checked
+        let bulk = serde_json::json!([{ "name": "a" }, { "name": "b", "secret": 1 }]);
+        assert_eq!(
+            enforce_fields_on(&allowed, &bulk).unwrap_err(),
+            "field 'secret' is not permitted for this role"
+        );
+        // non-object body: nothing to enforce
+        assert!(enforce_fields_on(&allowed, &Value::String("x".into())).is_ok());
+    }
+
+    #[test]
+    fn test_retain_fields_filters_array_and_object() {
+        let allowed = vec!["name".to_string()];
+        let mut arr = serde_json::json!([
+            { "id": 1, "name": "BCA", "balance": 5 },
+            { "id": 2, "name": "BNI", "balance": 9, "owner": "x" }
+        ]);
+        retain_fields_on(&allowed, &mut arr);
+        assert_eq!(arr, serde_json::json!([{ "id": 1, "name": "BCA" }, { "id": 2, "name": "BNI" }]));
+
+        let mut obj = serde_json::json!({ "id": 1, "name": "BCA", "balance": 5 });
+        retain_fields_on(&allowed, &mut obj);
+        assert_eq!(obj, serde_json::json!({ "id": 1, "name": "BCA" }));
+
+        let mut scalar = Value::Null;
+        retain_fields_on(&allowed, &mut scalar);
+        assert_eq!(scalar, Value::Null);
+    }
+
+    #[test]
+    fn test_enforce_allowed_fields_skips_non_write_methods() {
+        // Even with a body full of unknown keys, GET/DELETE are never field-enforced.
+        let req = actix_web::test::TestRequest::get().uri("/banks").to_http_request();
+        let claims = create_claims("admin", "1");
+        let mut body = serde_json::json!({ "anything": 1 });
+        assert!(enforce_allowed_fields(&claims, &req, &mut body).is_ok());
+        assert_eq!(body, serde_json::json!({ "anything": 1 }));
+    }
+
+    #[test]
+    fn test_converter_token_has_no_field_restriction() {
+        let req = actix_web::test::TestRequest::put().uri("/banks/1").to_http_request();
+        let claims = Claims { cs: "converter_token".to_string(), ..Claims::default() };
+        assert_eq!(allowed_fields_for(&claims, &req), None);
+        let mut body = serde_json::json!({ "secret": 1 });
+        assert!(enforce_allowed_fields(&claims, &req, &mut body).is_ok());
+        let mut data = serde_json::json!([{ "id": 1, "secret": 1 }]);
+        if let Some(allowed) = allowed_fields_for(&claims, &req) {
+            retain_fields_on(&allowed, &mut data);
+        }
+        assert_eq!(data, serde_json::json!([{ "id": 1, "secret": 1 }]));
     }
 
     // --- Claims ---

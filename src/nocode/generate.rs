@@ -631,6 +631,7 @@ mod tests {
             function_endpoint_path: "".to_string(),
             encrypt: false,
             collate: "".to_string(),
+            rules: Default::default(),
         });
         schema.primary_key = PrimaryKey { columns: vec![] }; // No PK for simple test
 

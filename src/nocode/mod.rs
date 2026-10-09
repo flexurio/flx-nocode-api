@@ -1,6 +1,7 @@
 pub mod foreign_key;
 pub mod generate;
 pub mod pk_utils;
+pub mod field_rules;
 pub mod seed;
 pub mod validate;
 pub mod consumer;

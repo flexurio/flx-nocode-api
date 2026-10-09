@@ -157,10 +157,45 @@ pub fn operator_query(symbol: &str) -> String {
         // new operators
         "nin" => "nin",
         "between" => "between",
+        "ne" | "neq" => "<>",
+        "in" => "in",
+        "isnull" => "isnull",
+        "notnull" | "isnotnull" => "notnull",
+        "nlike" | "notlike" => "nlike",
+        "ilike" => "ilike",
+        "startswith" => "startswith",
+        "endswith" => "endswith",
+        "contains" => "contains",
         _ => "",
     };
 
     operator.to_string()
+}
+
+/// Every operator suffix accepted in `get.parameters` declarations, request query
+/// params and `?filter=` JSON leaves. Kept in sync with `operator_query`.
+pub const SUPPORTED_OPERATORS: &[&str] = &[
+    "eq", "ne", "neq", "lt", "lte", "gt", "gte", "like", "ilike", "nlike", "notlike",
+    "startswith", "endswith", "contains", "is", "isnull", "notnull", "isnotnull",
+    "in", "nin", "between",
+];
+
+/// True when `symbol` (e.g. `"gte"`) is a known filter operator suffix.
+pub fn is_supported_operator(symbol: &str) -> bool {
+    SUPPORTED_OPERATORS.contains(&symbol)
+}
+
+/// Escape SQL LIKE metacharacters (`%`, `_`, `\`) in a user value so it matches
+/// literally when embedded into a pattern built by the server.
+pub fn escape_like(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() + 4);
+    for c in value.chars() {
+        match c {
+            '\\' | '%' | '_' => { out.push('\\'); out.push(c); }
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
 // create function convert MultiPart to Json with security and memory optimizations

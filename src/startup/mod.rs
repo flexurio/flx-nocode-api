@@ -11,7 +11,110 @@ use crate::database::state::AppState;
 use crate::log::log_output;
 use crate::model::DbType;
 use crate::nocode::generate::{execute_generate_table, generate_table};
+use crate::nocode::validate::{lint_raw_entity, lint_schemas};
 use crate::storage::sql_store::SqlStore;
+
+// ── Configuration lint ────────────────────────────────────────────────────────
+
+/// `CONFIG_LINT` env: `strict` (default: errors abort startup), `warn`
+/// (errors are logged but startup continues) or `off` (lint is skipped).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LintMode {
+    Strict,
+    Warn,
+    Off,
+}
+
+impl LintMode {
+    pub fn from_env() -> Self {
+        match std::env::var("CONFIG_LINT")
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "off" | "0" | "false" | "none" => LintMode::Off,
+            "warn" | "warning" | "lenient" => LintMode::Warn,
+            _ => LintMode::Strict,
+        }
+    }
+}
+
+/// Run the fail-fast configuration linter over every loaded entity schema.
+///
+/// Warnings are logged as `WARN CONFIG-LINT`, errors as `ERROR CONFIG-LINT`.
+/// In strict mode any error makes this return `Err`, so `main` can exit with
+/// a non-zero status before the HTTP server binds.
+pub fn run_config_lint() -> anyhow::Result<()> {
+    let mode = LintMode::from_env();
+    if mode == LintMode::Off {
+        log_output("BOOT", "CONFIG-LINT", "mode", "off (CONFIG_LINT=off)".to_string(), false);
+        return Ok(());
+    }
+
+    let mut report = lint_schemas(&SCHEMAS.0, &CONFIG.routes);
+    let raw_entities = crate::config::take_raw_entities();
+    let mut raw_routes: Vec<&String> = raw_entities.keys().collect();
+    raw_routes.sort();
+    for route in raw_routes {
+        report.merge(lint_raw_entity(route, &raw_entities[route]));
+    }
+
+    for w in &report.warnings {
+        let (route, msg) = split_route(w);
+        log_output("WARN", "CONFIG-LINT", route, msg.to_string(), true);
+    }
+    for e in &report.errors {
+        let (route, msg) = split_route(e);
+        log_output("ERROR", "CONFIG-LINT", route, msg.to_string(), true);
+    }
+
+    let summary = format!(
+        "{} route(s) checked: {} error(s), {} warning(s)",
+        CONFIG.routes.len(),
+        report.errors.len(),
+        report.warnings.len()
+    );
+
+    if report.is_clean() {
+        log_output("BOOT", "CONFIG-LINT", "ok", summary, false);
+        return Ok(());
+    }
+
+    match mode {
+        LintMode::Strict => {
+            log_output(
+                "ERROR",
+                "CONFIG-LINT",
+                "FAILED",
+                format!("{} — fix the entity JSON or start with CONFIG_LINT=warn", summary),
+                true,
+            );
+            Err(anyhow!("configuration lint failed: {}", summary))
+        }
+        LintMode::Warn => {
+            log_output(
+                "WARN",
+                "CONFIG-LINT",
+                "continuing",
+                format!("{} (CONFIG_LINT=warn)", summary),
+                true,
+            );
+            Ok(())
+        }
+        LintMode::Off => Ok(()),
+    }
+}
+
+/// Lint messages are formatted `[route] message`; split for log columns.
+fn split_route(line: &str) -> (&str, &str) {
+    if let Some(rest) = line.strip_prefix('[') {
+        if let Some((route, msg)) = rest.split_once("] ") {
+            return (route, msg);
+        }
+    }
+    ("-", line)
+}
 
 // ── Table generation ──────────────────────────────────────────────────────────
 

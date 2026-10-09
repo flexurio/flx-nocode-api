@@ -17,6 +17,8 @@ pub async fn process_get_request(
     req: &HttpRequest,
 ) -> HttpResponse {
     let cache_tenant = String::from("public");
+    // Role-specific projection from rules.json `allowed_fields` (None = no restriction).
+    let mut field_filter: Option<Vec<String>> = None;
     
     // Auth Check
     if state.require_auth && !state.route_publics.contains(route) {
@@ -46,6 +48,7 @@ pub async fn process_get_request(
                 data: Value::Null,
             });
         }
+        field_filter = crate::auth::allowed_fields_for(&claims, req);
     }
 
     // Schema Validations
@@ -121,7 +124,8 @@ pub async fn process_get_request(
     // log isredis 
     log_output_lazy("DEBUG", "ISREDIS", route, || format!("isredis: {}", isredis), true);
 
-    let use_cache = isredis || table_schema.redis.ttl > 0;
+    // A role-specific projection must never be served from, or written to, the shared cache.
+    let use_cache = (isredis || table_schema.redis.ttl > 0) && field_filter.is_none();
     if use_cache {
         let prefix = build_key_prefix(&cache_tenant, route);
         let mut keys: Vec<_> = params_map
@@ -162,12 +166,16 @@ pub async fn process_get_request(
 
     // Call Repository
     match data_read_repo::fetch_dynamic_data(state, route, table_schema, &params_map).await {
-        Ok((rows, total)) => {            
+        Ok((rows, total, next_cursor)) => {
+            let mut data = Value::Array(rows);
+            if let Some(allowed) = field_filter.as_deref() {
+                crate::auth::retain_fields_on(allowed, &mut data);
+            }
             let result = WebResponse {
                 success: true,
                 message: "Data found".to_string(),
                 total_data: total as i32,
-                data: Value::Array(rows),
+                data,
             };
 
             // Cache Write (both L1 in-memory and L2 Redis)
@@ -199,7 +207,9 @@ pub async fn process_get_request(
                 }
             }
 
-            HttpResponse::Ok().json(result)
+            let mut resp = HttpResponse::Ok();
+            if let Some(c) = next_cursor { resp.insert_header(("X-Next-Cursor", c)); }
+            resp.json(result)
         }
         Err(e) => {
             HttpResponse::InternalServerError().json(WebResponse {

@@ -109,6 +109,16 @@ async fn validate_foreign_keys_batch_put(
 /// Prefix of repository error strings that mean "no row matched the id";
 /// the service layer maps these to HTTP 404 instead of 500.
 pub const NOT_FOUND_PREFIX: &str = "Record not found: ";
+/// Prefix of repository error strings for optimistic-locking failures; mapped to HTTP 409.
+pub const CONFLICT_PREFIX: &str = "Version conflict: ";
+
+fn json_to_i64(v: &Value) -> Option<i64> {
+    match v {
+        Value::Number(n) => n.as_i64().or_else(|| n.as_f64().map(|f| f as i64)),
+        Value::String(s) => s.trim().parse::<i64>().ok(),
+        _ => None,
+    }
+}
 
 pub async fn validate_unique_constraints_batch_put(
     state: &web::Data<AppState>,
@@ -221,7 +231,7 @@ pub async fn perform_update(
     route: &str,
     id_raw: &str,
     update_fields: Vec<(String, InsertValue)>,
-    patch_fields: serde_json::Map<String, Value>,
+    mut patch_fields: serde_json::Map<String, Value>,
     fk_checks: Vec<(String, String, String, String, String)>,
     password_override: Option<String>,
     mut prepared_details: Vec<crate::nocode::repositories::data_create_repo::PreparedDetailBatch>,
@@ -281,6 +291,34 @@ pub async fn perform_update(
             Err(e) => {
                 let _ = tx.rollback().await;
                 return Err(format!("Error reading current record: {}", e));
+            }
+        }
+
+        // 0. Optimistic locking on a `version` column (if the entity has one).
+        //    - client may send `If-Match: <n>` (service copies it to body.__expected_version__)
+        //      or `version` in the body; mismatch with the current row -> 409.
+        //    - the UPDATE itself is guarded with `AND version = <current>` and bumps it,
+        //      so two writers racing after the same read cannot both succeed.
+        let mut version_guard: Option<(String, i64)> = None;
+        if let Some(vc) = table_schema.columns.iter().find(|c| c.name.eq_ignore_ascii_case("version")).map(|c| c.name.clone()) {
+            let current = old_record.get(&vc).and_then(json_to_i64);
+            let expected = body
+                .get("__expected_version__")
+                .or_else(|| body.get(&vc))
+                .and_then(json_to_i64);
+            if let (Some(exp), Some(cur)) = (expected, current)
+                && exp != cur
+            {
+                let _ = tx.rollback().await;
+                return Err(format!(
+                    "{}record {} is at version {}, request expected {}",
+                    CONFLICT_PREFIX, id_raw, cur, exp
+                ));
+            }
+            let next = current.unwrap_or(0) + 1;
+            patch_fields.insert(vc.clone(), Value::from(next));
+            if let Some(cur) = current {
+                version_guard = Some((vc, cur));
             }
         }
 
@@ -463,11 +501,18 @@ pub async fn perform_update(
         if table_schema.columns.iter().any(|c| c.name == "deleted_at") {
             filter = QF::And(vec![filter, QF::IsNull("deleted_at".to_string())]);
         }
+        if let Some((vc, cur)) = &version_guard {
+            filter = QF::And(vec![filter, QF::Eq(vc.clone(), QV::I64(*cur))]);
+        }
         
         // Convert Map to json Value for DB update
         let doc_json = Value::Object(patch_fields.clone()); 
         
         match tx.update(&table_schema.table, Some(filter), doc_json).await {
+             Ok(0) if version_guard.is_some() => {
+                 let _ = tx.rollback().await;
+                 Err(format!("{}record {} was modified concurrently, reload and retry", CONFLICT_PREFIX, id_raw))
+             }
              Ok(0) => {
                  let _ = tx.rollback().await;
                  Err(format!("{}{} not found or already deleted", NOT_FOUND_PREFIX, id_raw))
