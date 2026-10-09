@@ -16,7 +16,7 @@ pub async fn process_get_request(
     table_schema: &Arc<TableSchema>,
     req: &HttpRequest,
 ) -> HttpResponse {
-    let mut cache_tenant = String::from("public");
+    let cache_tenant = String::from("public");
     
     // Auth Check
     if state.require_auth && !state.route_publics.contains(route) {
@@ -32,9 +32,11 @@ pub async fn process_get_request(
             }
         };
 
-        if !claims.id.is_empty() {
-            cache_tenant = claims.id.clone();
-        }
+        // NOTE: the cache key is intentionally NOT scoped to the user. Read results
+        // are not user-specific (rules.json only gates route+method), and every
+        // writer invalidates `flx:public:<route>*`; a per-user key was never
+        // invalidated and served stale rows until the Redis TTL expired.
+        let _ = &claims.id;
 
         if let Err(e) = check_access(&claims, req) {
             return HttpResponse::Unauthorized().json(WebResponse {

@@ -72,6 +72,13 @@ pub trait DbTransaction: Send + Sync {
         sql: &str,
         params: Vec<DbParam>,
     ) -> Result<Vec<Value>, anyhow::Error>;
+    /// Run a statement that returns no rows (UPDATE/DELETE/INSERT) and report
+    /// the number of rows the database actually touched.
+    async fn execute(
+        &mut self,
+        sql: &str,
+        params: Vec<DbParam>,
+    ) -> Result<u64, anyhow::Error>;
     async fn commit(self: Box<Self>) -> Result<(), anyhow::Error>;
     async fn rollback(self: Box<Self>) -> Result<(), anyhow::Error>;
 }

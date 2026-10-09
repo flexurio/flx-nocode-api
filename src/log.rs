@@ -78,9 +78,26 @@ fn truncate_log_body(body: String) -> String {
     truncated
 }
 
+/// Messages that must reach the log even when `DEBUG=false`.
+///
+/// Production used to run with the whole logger disabled, which silently dropped
+/// queue DLQ pushes, email send failures, worker exits and import/seed errors.
+/// Anything that signals a failure is always printed; chatty QUERY/PARAM/BODY
+/// output stays behind `DEBUG` (and `LOG_VERBOSE` for params).
+fn is_always_logged(tipe: &str, title: &str) -> bool {
+    let t = tipe.to_ascii_uppercase();
+    if t == "ERROR" || t == "WARN" || t == "FATAL" {
+        return true;
+    }
+    let ti = title.to_ascii_uppercase();
+    ["ERR", "DLQ", "FAIL", "EXIT", "PANIC"]
+        .iter()
+        .any(|needle| ti.contains(needle))
+}
+
 pub fn log_output(tipe: &str, title: &str, ssubtitle: &str, body: String, print_datetime: bool) {
     let mut subtitle = ssubtitle.to_string();
-    if *ISDEBUG {
+    if *ISDEBUG || is_always_logged(tipe, title) {
         let verbose = is_verbose_enabled();
         if !verbose {
             let t = tipe.to_ascii_uppercase();
@@ -217,5 +234,17 @@ mod tests {
         assert!(!parse_verbose_val("false"));
         assert!(!parse_verbose_val("no"));
         assert!(!parse_verbose_val(""));
+    }
+
+    #[test]
+    fn failures_are_logged_without_debug() {
+        assert!(is_always_logged("ERROR", "anything"));
+        assert!(is_always_logged("WARN", "anything"));
+        assert!(is_always_logged("QUEUE", "DLQ-PUSH"));
+        assert!(is_always_logged("EMAIL", "WORKER-EXIT"));
+        assert!(is_always_logged("QUEUE", "EXEC-ERR"));
+        assert!(!is_always_logged("QUERY", "PUT(AST)"));
+        assert!(!is_always_logged("REDIS", "CACHE HIT"));
+        assert!(!is_always_logged("QUEUE", "START"));
     }
 }

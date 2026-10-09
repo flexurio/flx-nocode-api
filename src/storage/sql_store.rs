@@ -893,14 +893,12 @@ impl TxStore for SqlTxStore {
 
     async fn update(&mut self, collection: &str, filter: Option<Filter>, patch: serde_json::Value) -> anyhow::Result<u64> {
         let (sql, params) = build_update_with_dialect(&self.db_type, collection, filter.as_ref(), &patch)?;
-        let _ = self.tx.query_with_params(&sql, params).await?;
-        Ok(1)
+        self.tx.execute(&sql, params).await
     }
 
     async fn delete(&mut self, collection: &str, filter: Option<Filter>) -> anyhow::Result<u64> {
         let (sql, params) = build_delete_with_dialect(&self.db_type, collection, filter.as_ref())?;
-        let _ = self.tx.query_with_params(&sql, params).await?;
-        Ok(1)
+        self.tx.execute(&sql, params).await
     }
 
     async fn raw_sql(&mut self, sql: &str, params: Vec<DbParam>) -> anyhow::Result<Vec<serde_json::Value>> {

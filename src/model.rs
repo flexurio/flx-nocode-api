@@ -412,7 +412,8 @@ pub struct Column {
     pub encrypt: bool,
     #[serde(default)]
     pub collate: String,
-    #[serde(default)]
+    /// Column default for DDL. Entity files may spell this `default` or `default_value`.
+    #[serde(default, alias = "default_value")]
     pub default: Option<String>,
 }
 
@@ -451,7 +452,8 @@ pub struct OperationGet {
     pub having: Vec<String>,
     #[serde(default)]
     pub order_by: Vec<String>,
-    #[serde(default)]
+    /// Static WHERE fragments. Entity files may spell this `where_clause` or `where_clauses`.
+    #[serde(default, alias = "where_clauses")]
     pub where_clause: Vec<String>,
     
 }

@@ -686,7 +686,7 @@ pub async fn perform_insert(
                 Ok((built_sql, params)) => match tx.raw_sql(&built_sql, params).await {
                     Ok(row) => {
                         if !row.is_empty() {
-                            let is_valid = row[0].get(0).and_then(|v| v.as_bool()).unwrap_or(true);
+                            let is_valid = crate::helpers::validation_row_is_truthy(&row[0]).unwrap_or(false);
                             if !is_valid {
                                 let _ = tx.rollback().await;
                                 return Err("Validation data from table is not valid. Please contact your administrator".to_string());

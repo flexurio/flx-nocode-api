@@ -21,3 +21,8 @@ seed*
 .claude
 data.db*
 audit
+
+# Secrets / runtime junk (never commit)
+env
+server.log
+.venv

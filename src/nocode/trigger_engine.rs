@@ -1053,6 +1053,20 @@ async fn ensure_sequences<'a>(
     Ok(())
 }
 
+/// Canonical form of a trigger event name.
+///
+/// Accepts `on_update` / `update` / `ON_UPDATE`, `on_create` / `create` / `insert`,
+/// `on_delete` / `delete`, `on_status_change` / `status_change`, and `any` / `*`.
+pub fn normalize_trigger_event(raw: &str) -> String {
+    let e = raw.trim().to_ascii_lowercase();
+    let e = e.strip_prefix("on_").unwrap_or(&e);
+    match e {
+        "insert" => "create".to_string(),
+        "*" => "any".to_string(),
+        other => other.to_string(),
+    }
+}
+
 /// Execute all matching triggers within the current transaction scope.
 pub async fn execute_triggers<'a>(
     db_type: DbType,
@@ -1067,11 +1081,12 @@ pub async fn execute_triggers<'a>(
 
     let mut executed_triggers = Vec::new();
 
+    let event_norm = normalize_trigger_event(event_name);
     for trigger in &table_schema.action_triggers {
-        // Match event name (e.g. "on_update", "on_status_change")
-        let trigger_event = trigger.event.to_lowercase();
-        let matches_event = trigger_event == event_name
-            || (event_name == "on_update" && trigger_event == "on_status_change")
+        // Match event name; "update", "on_update" and "ON_UPDATE" are all the same event.
+        let trigger_event = normalize_trigger_event(&trigger.event);
+        let matches_event = trigger_event == event_norm
+            || (event_norm == "update" && trigger_event == "status_change")
             || trigger_event == "any";
 
         if !matches_event {
@@ -1655,6 +1670,17 @@ fn execute_action<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn trigger_event_names_are_normalized() {
+        assert_eq!(normalize_trigger_event("on_update"), "update");
+        assert_eq!(normalize_trigger_event("update"), "update");
+        assert_eq!(normalize_trigger_event("ON_UPDATE "), "update");
+        assert_eq!(normalize_trigger_event("insert"), "create");
+        assert_eq!(normalize_trigger_event("on_create"), "create");
+        assert_eq!(normalize_trigger_event("*"), "any");
+        assert_eq!(normalize_trigger_event("on_status_change"), "status_change");
+    }
     use crate::model::ActionTrigger;
 
     #[test]

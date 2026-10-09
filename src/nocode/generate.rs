@@ -580,6 +580,13 @@ mod tests {
         ) -> Result<Vec<Value>, anyhow::Error> {
             Ok(vec![])
         }
+        async fn execute(
+            &mut self,
+            _sql: &str,
+            _params: Vec<DbParam>,
+        ) -> Result<u64, anyhow::Error> {
+            Ok(0)
+        }
         async fn commit(self: Box<Self>) -> Result<(), anyhow::Error> { Ok(()) }
         async fn rollback(self: Box<Self>) -> Result<(), anyhow::Error> { Ok(()) }
     }

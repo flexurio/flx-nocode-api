@@ -271,6 +271,28 @@ impl DbTransaction for PostgresTransaction {
         }
     }
 
+    async fn execute(
+        &mut self,
+        sql: &str,
+        params: Vec<DbParam>,
+    ) -> Result<u64, anyhow::Error> {
+        // SAFETY: same as `query_with_params` — internal SQL text, bound params.
+        let mut q = sqlx::query(sqlx::AssertSqlSafe(rehydrate_placeholders(sql, "postgres")));
+        for p in params {
+            q = match p {
+                DbParam::I64(v) => q.bind(v),
+                DbParam::F64(v) => q.bind(v),
+                DbParam::Str(v) => q.bind(v),
+                DbParam::Bool(v) => q.bind(v),
+                DbParam::Null => q.bind(Option::<i32>::None),
+            };
+        }
+        match q.execute(&mut *self.tx).await {
+            Ok(res) => Ok(res.rows_affected()),
+            Err(e) => Err(anyhow::anyhow!("Error executing statement: {}", e)),
+        }
+    }
+
     async fn commit(self: Box<Self>) -> Result<(), anyhow::Error> {
         self.tx
             .commit()

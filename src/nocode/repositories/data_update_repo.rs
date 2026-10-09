@@ -106,6 +106,10 @@ async fn validate_foreign_keys_batch_put(
     Ok(())
 }
 
+/// Prefix of repository error strings that mean "no row matched the id";
+/// the service layer maps these to HTTP 404 instead of 500.
+pub const NOT_FOUND_PREFIX: &str = "Record not found: ";
+
 pub async fn validate_unique_constraints_batch_put(
     state: &web::Data<AppState>,
     tx: &mut dyn crate::storage::traits::TxStore,
@@ -266,9 +270,18 @@ pub async fn perform_update(
         let mut old_record: serde_json::Map<String, Value> = serde_json::Map::new();
         let select_current_sql = format!("SELECT * FROM {} WHERE {} = ?", table_schema.table, pk_col_first);
         let built_select_current = crate::database::state::rehydrate_placeholders(&select_current_sql, state.db_type.as_str());
-        if let Ok(rows) = tx.raw_sql(&built_select_current, vec![pk_param.clone()]).await
-            && let Some(Value::Object(map)) = rows.into_iter().next() {
-            old_record = map;
+        // A failed fetch must not be ignored: an empty `old_record` makes the
+        // state-machine and `locked_when` guards below pass vacuously.
+        match tx.raw_sql(&built_select_current, vec![pk_param.clone()]).await {
+            Ok(rows) => {
+                if let Some(Value::Object(map)) = rows.into_iter().next() {
+                    old_record = map;
+                }
+            }
+            Err(e) => {
+                let _ = tx.rollback().await;
+                return Err(format!("Error reading current record: {}", e));
+            }
         }
 
         // 1. Check state machine transition guards
@@ -416,7 +429,7 @@ pub async fn perform_update(
                  Ok((built_sql, params)) => {
                      match tx.raw_sql(&built_sql, params).await {
                          Ok(row) => {
-                             if row.is_empty() || !row[0].get(0).and_then(|v| v.as_bool()).unwrap_or(true) {
+                             if row.is_empty() || !crate::helpers::validation_row_is_truthy(&row[0]).unwrap_or(false) {
                                  let _ = tx.rollback().await;
                                  return Err("Validation data from table is not valid/empty".to_string());
                              }
@@ -455,6 +468,10 @@ pub async fn perform_update(
         let doc_json = Value::Object(patch_fields.clone()); 
         
         match tx.update(&table_schema.table, Some(filter), doc_json).await {
+             Ok(0) => {
+                 let _ = tx.rollback().await;
+                 Err(format!("{}{} not found or already deleted", NOT_FOUND_PREFIX, id_raw))
+             }
              Ok(_) => {
                  let mut final_patch = patch_fields;
 
@@ -566,7 +583,9 @@ pub async fn perform_update(
                      }
                  }
 
-                 let _ = tx.commit().await;
+                 tx.commit()
+                     .await
+                     .map_err(|e| format!("Error committing transaction: {}", e))?;
                  Ok(("Data updated successfully".to_string(), 1, Value::Object(final_patch)))
              }
              Err(e) => {
@@ -652,8 +671,14 @@ pub async fn perform_update(
         }
         
         match tx.update(&table_schema.table, Some(filter), doc_json.clone()).await {
+            Ok(0) => {
+                 let _ = tx.rollback().await;
+                 Err(format!("{}{} not found or already deleted", NOT_FOUND_PREFIX, id_raw))
+            }
             Ok(modified) => {
-                 let _ = tx.commit().await;
+                 tx.commit()
+                     .await
+                     .map_err(|e| format!("Error committing transaction: {}", e))?;
                  Ok(("Data updated successfully".to_string(), modified as i32, doc_json))
             },
             Err(e) => {

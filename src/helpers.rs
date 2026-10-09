@@ -592,3 +592,48 @@ mod tests {
         assert_eq!(map.get("ANOTHER_KEY").map(String::as_str), Some("quoted$val"));
     }
 }
+
+
+/// Interpret the first column of a `validate_data` SQL result row as a boolean.
+///
+/// Rows from every backend are JSON objects (`{"col": value}`), so the first
+/// *value* is inspected regardless of its column name. Returns `None` when the
+/// row is empty or the value cannot be read as a boolean, which callers treat
+/// as a failed validation instead of silently passing.
+pub fn validation_row_is_truthy(row: &serde_json::Value) -> Option<bool> {
+    use serde_json::Value;
+    let first = match row {
+        Value::Object(map) => map.values().next()?,
+        Value::Array(arr) => arr.first()?,
+        other => other,
+    };
+    match first {
+        Value::Bool(b) => Some(*b),
+        Value::Number(n) => Some(n.as_f64().map(|f| f != 0.0).unwrap_or(false)),
+        Value::String(s) => match s.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "t" | "yes" | "y" => Some(true),
+            "0" | "false" | "f" | "no" | "n" | "" => Some(false),
+            _ => None,
+        },
+        Value::Null => Some(false),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod validation_row_tests {
+    use super::validation_row_is_truthy;
+    use serde_json::json;
+
+    #[test]
+    fn reads_first_value_of_object_row() {
+        assert_eq!(validation_row_is_truthy(&json!({"ok": true})), Some(true));
+        assert_eq!(validation_row_is_truthy(&json!({"ok": false})), Some(false));
+        assert_eq!(validation_row_is_truthy(&json!({"cnt": 0})), Some(false));
+        assert_eq!(validation_row_is_truthy(&json!({"cnt": 3})), Some(true));
+        assert_eq!(validation_row_is_truthy(&json!({"v": "1"})), Some(true));
+        assert_eq!(validation_row_is_truthy(&json!({"v": "nope"})), None);
+        assert_eq!(validation_row_is_truthy(&json!({})), None);
+        assert_eq!(validation_row_is_truthy(&json!([false])), Some(false));
+    }
+}

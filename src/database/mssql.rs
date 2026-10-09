@@ -243,16 +243,19 @@ impl DbRepository for MssqlRepo {
     }
 
     async fn begin_transaction(&self) -> Result<Box<dyn DbTransaction>, anyhow::Error> {
-        // Start transaction on a pooled connection
+        // Check out ONE connection and keep it for the whole transaction.
+        // Previously the connection was returned to the pool right after
+        // `BEGIN TRAN`, so every later statement (and COMMIT) ran on a different
+        // connection: writes were never atomic and the original connection sat
+        // in the pool with an open transaction.
         let mut conn = self
             .pool
-            .get()
+            .get_owned()
             .await
             .map_err(|e| anyhow::anyhow!("Pool error: {:?}", e))?;
         conn.simple_query("BEGIN TRAN").await?;
         Ok(Box::new(MssqlTransaction {
-            pool: self.pool.clone(),
-            in_transaction: true,
+            conn: Some(conn),
         }))
     }
 }
@@ -327,8 +330,32 @@ impl DbRepository for MssqlRepo {
 
 #[cfg(feature = "bb8")]
 pub struct MssqlTransaction {
-    pool: Pool<MssqlConnectionManager>,
-    in_transaction: bool,
+    /// The dedicated connection for this transaction. `None` once committed or
+    /// rolled back. Dropping it returns the connection to the pool.
+    conn: Option<bb8::PooledConnection<'static, MssqlConnectionManager>>,
+}
+
+#[cfg(feature = "bb8")]
+fn bind_mssql_params(q: &mut Query<'_>, params: Vec<DbParam>) {
+    for p in params {
+        match p {
+            DbParam::I64(v) => {
+                q.bind(v);
+            }
+            DbParam::F64(v) => {
+                q.bind(v);
+            }
+            DbParam::Str(v) => {
+                q.bind(v);
+            }
+            DbParam::Bool(v) => {
+                q.bind(v);
+            }
+            DbParam::Null => {
+                q.bind(Option::<i32>::None);
+            }
+        }
+    }
 }
 
 #[cfg(not(feature = "bb8"))]
@@ -345,63 +372,46 @@ impl DbTransaction for MssqlTransaction {
         sql: &str,
         params: Vec<DbParam>,
     ) -> Result<Vec<Value>, anyhow::Error> {
-        if !self.in_transaction {
-            return Err(anyhow::anyhow!("Transaction already committed/rolled back"));
-        }
-        let mut conn = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| anyhow::anyhow!("Pool error: {:?}", e))?;
+        let conn = self
+            .conn
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("Transaction already committed/rolled back"))?;
         let converted = rehydrate_placeholders(sql, "mssql");
         let norm = normalize_mssql_booleans(&converted);
         let mut q = Query::new(norm);
-        for p in params {
-            match p {
-                DbParam::I64(v) => {
-                    q.bind(v);
-                }
-                DbParam::F64(v) => {
-                    q.bind(v);
-                }
-                DbParam::Str(v) => {
-                    q.bind(v);
-                }
-                DbParam::Bool(v) => {
-                    q.bind(v);
-                }
-                DbParam::Null => {
-                    q.bind(Option::<i32>::None);
-                }
-            }
-        }
-        let stream = q.query(&mut *conn).await?;
+        bind_mssql_params(&mut q, params);
+        let stream = q.query(&mut **conn).await?;
         let rows: Vec<Row> = stream.into_first_result().await?;
         Ok(mssql_rows_to_json(&rows))
     }
 
+    async fn execute(
+        &mut self,
+        sql: &str,
+        params: Vec<DbParam>,
+    ) -> Result<u64, anyhow::Error> {
+        let conn = self
+            .conn
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("Transaction already committed/rolled back"))?;
+        let converted = rehydrate_placeholders(sql, "mssql");
+        let norm = normalize_mssql_booleans(&converted);
+        let mut q = Query::new(norm);
+        bind_mssql_params(&mut q, params);
+        let res = q.execute(&mut **conn).await?;
+        Ok(res.rows_affected().iter().sum())
+    }
+
     async fn commit(mut self: Box<Self>) -> Result<(), anyhow::Error> {
-        if self.in_transaction {
-            let mut conn = self
-                .pool
-                .get()
-                .await
-                .map_err(|e| anyhow::anyhow!("Pool error: {:?}", e))?;
+        if let Some(mut conn) = self.conn.take() {
             conn.simple_query("COMMIT TRAN").await?;
-            self.in_transaction = false;
         }
         Ok(())
     }
 
     async fn rollback(mut self: Box<Self>) -> Result<(), anyhow::Error> {
-        if self.in_transaction {
-            let mut conn = self
-                .pool
-                .get()
-                .await
-                .map_err(|e| anyhow::anyhow!("Pool error: {:?}", e))?;
+        if let Some(mut conn) = self.conn.take() {
             conn.simple_query("ROLLBACK TRAN").await?;
-            self.in_transaction = false;
         }
         Ok(())
     }
@@ -442,6 +452,38 @@ impl DbTransaction for MssqlTransaction {
         let stream = q.query(&mut *client).await?;
         let rows: Vec<Row> = stream.into_first_result().await?;
         Ok(mssql_rows_to_json(&rows))
+    }
+
+    async fn execute(
+        &mut self,
+        sql: &str,
+        params: Vec<DbParam>,
+    ) -> Result<u64, anyhow::Error> {
+        let mut client = self.client.lock().await;
+        let converted = rehydrate_placeholders(sql, "mssql");
+        let norm = normalize_mssql_booleans(&converted);
+        let mut q = Query::new(norm);
+        for p in params {
+            match p {
+                DbParam::I64(v) => {
+                    q.bind(v);
+                }
+                DbParam::F64(v) => {
+                    q.bind(v);
+                }
+                DbParam::Str(v) => {
+                    q.bind(v);
+                }
+                DbParam::Bool(v) => {
+                    q.bind(v);
+                }
+                DbParam::Null => {
+                    q.bind(Option::<i32>::None);
+                }
+            }
+        }
+        let res = q.execute(&mut *client).await?;
+        Ok(res.rows_affected().iter().sum())
     }
 
     async fn commit(self: Box<Self>) -> Result<(), anyhow::Error> {

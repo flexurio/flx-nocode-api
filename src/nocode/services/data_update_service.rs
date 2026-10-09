@@ -432,6 +432,9 @@ pub async fn process_update_request(
                 data: updated_data,
             })
         }
+        Err(e) if e.starts_with(data_update_repo::NOT_FOUND_PREFIX) => {
+            HttpResponse::NotFound().json(web_err(e))
+        }
         Err(e) => server_error(e),
     }
 }
