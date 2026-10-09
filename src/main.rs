@@ -215,12 +215,13 @@ async fn main() -> anyhow::Result<()> {
         }
     }
     let mut write_queue_enabled = false;
-    let mut write_queue_fast_ack = true;
     if let Ok(val) = env::var("WRITE_QUEUE_ENABLED") {
         write_queue_enabled = matches!(val.to_lowercase().as_str(), "1" | "true" | "yes");
     }
-    if let Ok(val) = env::var("WRITE_QUEUE_FAST_ACK") {
-        write_queue_fast_ack = matches!(val.to_lowercase().as_str(), "1" | "true" | "yes");
+    // WRITE_QUEUE_FAST_ACK is accepted but ignored: the handler always waits for
+    // the LPUSH to succeed before replying 202 (fire-and-forget lost writes).
+    if env::var("WRITE_QUEUE_FAST_ACK").is_ok() {
+        eprintln!("WRITE_QUEUE_FAST_ACK is deprecated and ignored; writes are acknowledged after enqueue.");
     }
     let require_auth = env::var("REQUIRE_AUTH")
         .map(|v| matches!(v.to_lowercase().as_str(), "1" | "true" | "yes"))
@@ -236,9 +237,22 @@ async fn main() -> anyhow::Result<()> {
         .and_then(|s| s.parse().ok())
         .unwrap_or(50_000);
 
+    // Capacity is a BYTE budget (approximate serialized size per entry), not an
+    // entry count: 50 000 entries x 2 000 rows each could reach gigabytes.
+    let l1_cache_max_bytes: u64 = env::var("L1_CACHE_MAX_BYTES")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(256 * 1024 * 1024);
+    let _ = l1_cache_max_capacity; // kept for env compatibility; bytes win
     let l1_cache = moka::future::Cache::builder()
-        .max_capacity(l1_cache_max_capacity)
+        .max_capacity(l1_cache_max_bytes)
+        .weigher(|_k: &String, v: &crate::model::WebResponse| {
+            crate::database::state::approx_json_bytes(&v.data)
+                .saturating_add(64)
+                .min(u32::MAX as usize) as u32
+        })
         .time_to_live(Duration::from_secs(l1_cache_ttl_secs))
+        .support_invalidation_closures()
         .build();
 
     // ── AppState ──────────────────────────────────────────────────────────────
@@ -255,7 +269,6 @@ async fn main() -> anyhow::Result<()> {
         store: store_adapter,
         is_cachedb,
         write_queue_enabled,
-        write_queue_fast_ack,
         default_collate: env::var("DEFAULT_COLLATE").unwrap_or_else(|_| "utf8mb4_bin".to_string()),
         rules: {
             let rules_path = format!("{}/rules.json", CONFIG_LOCATION.as_str());
@@ -480,8 +493,10 @@ async fn main() -> anyhow::Result<()> {
                         .into()
                     })
             })
-            .wrap(GlobalRateLimit)
+            // actix applies the LAST `.wrap` first. Rate limiting must run
+            // before JWT verification so an auth-fail flood is rejected cheaply.
             .wrap(AuthMiddleware)
+            .wrap(GlobalRateLimit)
             .wrap(Condition::new(
                 env::var("ALLOW_ANY_ORIGINS")
                     .map(|v| matches!(v.to_lowercase().as_str(), "1" | "true" | "yes"))

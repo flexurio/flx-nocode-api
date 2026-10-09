@@ -95,28 +95,20 @@ pub enum RateOp { Get, Post, Put, Patch, Delete, Trace, Import }
 
 impl RateOp { #[inline] fn as_str(self) -> &'static str { match self { RateOp::Get=>"get", RateOp::Post=>"post", RateOp::Put=>"put", RateOp::Patch=>"patch", RateOp::Delete=>"delete", RateOp::Trace=>"trace", RateOp::Import=>"import"} } }
 
-static PREFIX_CACHE: Lazy<dashmap::DashMap<String, Arc<String>>> = Lazy::new(|| dashmap::DashMap::with_capacity(256));
-
-#[inline]
-fn cache_key(op: RateOp, route: &str) -> String {
-    if route.is_empty() { op.as_str().to_string() } else { let op_s=op.as_str(); let mut s=String::with_capacity(op_s.len()+route.len()+1); s.push_str(op_s); s.push('|'); s.push_str(route); s }
-}
-
+// NOTE: there used to be a process-wide DashMap memoizing `op:route:` prefixes,
+// keyed by the raw first path segment of every request (404s included). A path
+// scanner could grow it without bound. Two `push_str`s are cheaper than a map
+// lookup anyway, so the prefix is now built inline.
 pub fn prefix(op: RateOp, route: &str) -> Arc<String> {
-    let ck = cache_key(op, route);
-    if let Some(p) = PREFIX_CACHE.get(&ck) {
-        return p.value().clone();
-    }
-    let mut base = String::new();
-    base.push_str(op.as_str());
+    let op_s = op.as_str();
+    let mut base = String::with_capacity(op_s.len() + route.len() + 2);
+    base.push_str(op_s);
     base.push(':');
     if !route.is_empty() {
         base.push_str(route);
         base.push(':');
     }
-    let arc = Arc::new(base);
-    PREFIX_CACHE.insert(ck, arc.clone());
-    arc
+    Arc::new(base)
 }
 
 #[inline]
@@ -234,10 +226,15 @@ mod tests {
     }
 
     #[test]
-    fn test_prefix_caching_returns_same_arc() {
+    fn test_prefix_is_deterministic_and_uncached() {
+        // The former process-wide memo keyed by raw path segments grew without
+        // bound under a path scanner; prefixes are now built inline.
         let p1 = prefix(RateOp::Delete, "items");
         let p2 = prefix(RateOp::Delete, "items");
-        assert!(Arc::ptr_eq(&p1, &p2), "Cached prefix should return the same Arc");
+        assert_eq!(*p1, *p2);
+        assert_eq!(p1.as_str(), "delete:items:");
+        assert!(!Arc::ptr_eq(&p1, &p2), "no global cache must retain per-route prefixes");
+        assert_eq!(prefix(RateOp::Get, "").as_str(), "get:");
     }
 
     #[test]

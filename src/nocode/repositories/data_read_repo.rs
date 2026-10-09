@@ -3,7 +3,7 @@ use std::sync::Arc;
 use once_cell::sync::Lazy;
 use serde_json::Value;
 
-use crate::log::log_output;
+use crate::log::{log_output, log_output_lazy};
 use crate::model::{ParamJoin, TableSchema};
 use crate::AppState;
 use crate::storage::ast::{Filter as QF, Query as QQ, Val as QV, Expr as QE, Join as QJ, JoinKind as QJK};
@@ -478,7 +478,7 @@ pub async fn fetch_dynamic_data(
     q = q.limit(i_limit_ast as u32).offset(offset_ast.max(0) as u32);
 
     // log query
-    log_output("DEBUG", "DATA READ", route, format!("Query: {:?}", q), true);
+    log_output_lazy("DEBUG", "DATA READ", route, || format!("Query: {:?}", q), true);
 
     let rows = match state.store.query(&q).await {
         Ok(rs) => rs,

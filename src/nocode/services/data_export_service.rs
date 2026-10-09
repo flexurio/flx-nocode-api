@@ -15,6 +15,38 @@ use crate::nocode::repositories::data_export_repo;
 use crate::storage::ast::{Filter as QF, Query as QQ, Val as QV, Expr as QE}; // Removed Join import if unused
 // JoinKind unused
 
+use once_cell::sync::Lazy;
+
+/// Default and maximum row counts for an export (env `EXPORT_LIMIT_DEFAULT`,
+/// `EXPORT_LIMIT_MAX`). Exports are fully materialised in memory, so the hard
+/// cap is what bounds a single request's footprint.
+static EXPORT_LIMIT_DEFAULT: Lazy<i32> = Lazy::new(|| {
+    std::env::var("EXPORT_LIMIT_DEFAULT").ok().and_then(|s| s.parse().ok()).unwrap_or(10_000)
+});
+static EXPORT_LIMIT_MAX: Lazy<i32> = Lazy::new(|| {
+    std::env::var("EXPORT_LIMIT_MAX").ok().and_then(|s| s.parse().ok()).unwrap_or(100_000).max(1)
+});
+/// How many exports may build at the same time (env `EXPORT_CONCURRENCY`).
+/// Extra requests get 503 instead of stacking hundreds of MB of buffers.
+static EXPORT_SLOTS: Lazy<tokio::sync::Semaphore> = Lazy::new(|| {
+    let n: usize = std::env::var("EXPORT_CONCURRENCY").ok().and_then(|s| s.parse().ok()).unwrap_or(2);
+    tokio::sync::Semaphore::new(n.max(1))
+});
+
+/// Make a client-supplied base filename safe for `Content-Disposition`.
+fn safe_filename_base(raw: &str, fallback: &str) -> String {
+    let cleaned: String = sanitize_filename::sanitize(raw)
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ' '))
+        .collect();
+    let trimmed = cleaned.trim().trim_matches('.');
+    if trimmed.is_empty() {
+        fallback.to_string()
+    } else {
+        trimmed.chars().take(100).collect()
+    }
+}
+
 // Helper to parse primitive to QV (Same as get, maybe verify if we can share this?)
 // Leaving here to decouple from get service details.
 fn to_val(s: &str) -> QV {
@@ -103,10 +135,10 @@ pub async fn process_export_request(
         .to_lowercase();
     if export_type != "xlsx" && export_type != "csv" { export_type = "csv".to_string(); }
     
-    let filename_base = body_json
-        .get("filename")
-        .and_then(|v| v.as_str())
-        .unwrap_or(route);
+    let filename_base = safe_filename_base(
+        body_json.get("filename").and_then(|v| v.as_str()).unwrap_or(route),
+        route,
+    );
 
     // Schema Check
     if table_schema.table.is_empty() {
@@ -126,8 +158,23 @@ pub async fn process_export_request(
             Value::String(s) => s.parse::<i32>().ok(),
             _ => None,
         })
-        .map(|v| v.clamp(1, 100_000))
-        .unwrap_or(10_000);
+        .map(|v| v.clamp(1, *EXPORT_LIMIT_MAX))
+        .unwrap_or((*EXPORT_LIMIT_DEFAULT).clamp(1, *EXPORT_LIMIT_MAX));
+
+    // Bound concurrent exports; each one materialises its full result set.
+    let _export_slot = match EXPORT_SLOTS.try_acquire() {
+        Ok(permit) => permit,
+        Err(_) => {
+            return HttpResponse::ServiceUnavailable()
+                .insert_header(("retry-after", "5"))
+                .json(WebResponse {
+                    success: false,
+                    message: "Too many exports in progress, retry shortly".to_string(),
+                    total_data: 0,
+                    data: Value::Null,
+                });
+        }
+    };
 
     let mut is_deleted_at = true;
     let params_map = body_json.as_object().cloned().unwrap_or_default();
@@ -675,6 +722,15 @@ pub fn flatten_records_for_export(rows: &[Value]) -> (Vec<String>, Vec<Vec<Strin
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn export_filename_is_sanitized() {
+        assert_eq!(super::safe_filename_base("orders", "r"), "orders");
+        assert_eq!(super::safe_filename_base("a\"b;c", "r"), "abc");
+        assert_eq!(super::safe_filename_base("../../etc/passwd", "r"), "etcpasswd");
+        assert_eq!(super::safe_filename_base("   ", "route"), "route");
+        assert_eq!(super::safe_filename_base("\r\nX-Evil: 1", "r"), "X-Evil 1");
+    }
+
     use super::*;
     use serde_json::json;
 

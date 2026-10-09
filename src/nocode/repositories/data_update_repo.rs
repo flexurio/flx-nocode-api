@@ -5,7 +5,7 @@ use crate::model::{TableSchema, Column, Index};
 use crate::storage::ast::{Filter as QF, Val as QV};
 use crate::storage::sql_store::{SqlStore, InsertValue, UniqueCheck};
 use crate::database::state::DbParam;
-use crate::log::log_output;
+use crate::log::{log_output, log_output_lazy};
 use crate::nocode::pk_utils::{build_pk_filter, parse_pk_values};
 
 pub fn dbparam_from_value_and_type(val: &Value, meta: Option<&Column>) -> DbParam {
@@ -250,7 +250,7 @@ pub async fn perform_update(
             Ok((s_sql, params_compiled)) => {
                 if *crate::ISDEBUG {
                     log_output("QUERY", "PUT(AST)", route, s_sql.clone(), true);
-                    log_output("PARAM", "PUT(AST)", route, format!("{:?}", params_compiled), true);
+                    log_output_lazy("PARAM", "PUT(AST)", route, || format!("{:?}", params_compiled), true);
                 }
             },
             Err(e) => return Err(format!("Error compiling AST UPDATE: {}", e)),

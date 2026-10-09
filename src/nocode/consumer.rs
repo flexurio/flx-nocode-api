@@ -37,6 +37,11 @@ pub struct WriteJob {
 impl WriteJob {
     pub fn queue_key() -> String { "flx:wq:default".into() }
     pub fn dlq_key() -> String { "flx:wq:dlq".into() }
+    /// Per-worker "in flight" list. A job is moved here atomically (BLMOVE) when
+    /// picked up and removed (LREM) only after it was executed or dead-lettered,
+    /// so a crash between pop and DB write no longer loses the job.
+    pub fn processing_key(worker: &str) -> String { format!("flx:wq:processing:{}", worker) }
+    pub fn processing_pattern() -> &'static str { "flx:wq:processing:*" }
 }
 
 fn op_name(op: &WriteOpKind) -> &'static str {
@@ -76,8 +81,8 @@ pub async fn enqueue_job(job: &WriteJob) -> Result<i64> {
     let retry_count: usize = *WRITE_QUEUE_ENQUEUE_RETRY;
 
     let payload = serde_json::to_string(job)?;
-    let client = crate::database::redis::get_manager().await?;
-    let mut conn = client.get_multiplexed_async_connection().await?;
+    // Shared auto-reconnecting connection: no TCP connect + AUTH per request.
+    let mut conn = crate::database::redis::get_connection().await?;
     for attempt in 0..=retry_count {
         if max_len > 0 {
             let cur_len: i64 = conn.llen(WriteJob::queue_key()).await?;
@@ -126,10 +131,72 @@ async fn push_dlq(job: WriteJob, worker: &str, error: &str) -> Result<i64> {
         job,
     };
     let payload = serde_json::to_string(&record)?;
-    let client = crate::database::redis::get_manager().await?;
-    let mut conn = client.get_multiplexed_async_connection().await?;
+    let mut conn = crate::database::redis::get_connection().await?;
     let len: i64 = conn.lpush(WriteJob::dlq_key(), payload).await?;
     Ok(len)
+}
+
+/// Dead-letter a payload that could not even be parsed as a `WriteJob`.
+async fn push_dlq_raw(raw: &str, worker: &str, error: &str) -> Result<i64> {
+    let record = serde_json::json!({
+        "failed_at": Utc::now().to_rfc3339(),
+        "worker": worker,
+        "error": error,
+        "raw": raw,
+    });
+    let mut conn = crate::database::redis::get_connection().await?;
+    let len: i64 = conn.lpush(WriteJob::dlq_key(), record.to_string()).await?;
+    Ok(len)
+}
+
+/// Acknowledge a job: remove its raw payload from the worker's processing list.
+async fn ack_job(conn: &mut MultiplexedConnection, worker: &str, raw: &str) {
+    let res: redis::RedisResult<i64> = redis::cmd("LREM")
+        .arg(WriteJob::processing_key(worker))
+        .arg(1)
+        .arg(raw)
+        .query_async(conn)
+        .await;
+    if let Err(e) = res {
+        log_output("QUEUE", "ACK-ERR", worker, format!("{}", e), false);
+    }
+}
+
+/// Move jobs left in any processing list (from a previous crash/restart) back
+/// to the main queue so they are executed instead of being lost.
+async fn requeue_orphaned_processing(conn: &mut MultiplexedConnection) -> Result<usize> {
+    let mut cursor: u64 = 0;
+    let mut moved = 0usize;
+    loop {
+        let (next, keys): (u64, Vec<String>) = redis::cmd("SCAN")
+            .arg(cursor)
+            .arg("MATCH")
+            .arg(WriteJob::processing_pattern())
+            .arg("COUNT")
+            .arg(100)
+            .query_async(&mut *conn)
+            .await?;
+        for key in keys {
+            loop {
+                let item: Option<String> = redis::cmd("LMOVE")
+                    .arg(&key)
+                    .arg(WriteJob::queue_key())
+                    .arg("RIGHT")
+                    .arg("LEFT")
+                    .query_async(&mut *conn)
+                    .await?;
+                if item.is_none() {
+                    break;
+                }
+                moved += 1;
+            }
+        }
+        cursor = next;
+        if cursor == 0 {
+            break;
+        }
+    }
+    Ok(moved)
 }
 
 async fn execute_with_retry(
@@ -155,109 +222,48 @@ async fn execute_with_retry(
     Err(last_err.unwrap_or_else(|| anyhow!("execution failed")))
 }
 
-/// Fire-and-forget enqueue with explicit success/error observability.
-pub fn enqueue_job_background(job: WriteJob, source: &str) {
-    let source = source.to_string();
-    tokio::spawn(async move {
-        let op = op_name(&job.op);
-        let route = job.route.clone();
-        match enqueue_job(&job).await {
-            Ok(queue_len) => {
-                log_output(
-                    "QUEUE",
-                    "ENQUEUE-OK",
-                    source.as_str(),
-                    format!("{} {} queued (len={})", op, route, queue_len),
-                    true,
-                );
-            }
-            Err(e) => {
-                log_output(
-                    "QUEUE",
-                    "ENQUEUE-ERR",
-                    source.as_str(),
-                    format!("{} {} failed: {}", op, route, e),
-                    false,
-                );
-            }
-        }
-    });
-}
-
-/// Batch variant for fast-ack flows to preserve visibility and reduce log spam.
-pub fn enqueue_jobs_background(jobs: Vec<WriteJob>, source: &str) {
-    let source = source.to_string();
-    tokio::spawn(async move {
-        let total = jobs.len();
-        let mut ok_count = 0usize;
-        let mut err_count = 0usize;
-        for job in jobs {
-            if enqueue_job(&job).await.is_ok() {
-                ok_count += 1;
-            } else {
-                err_count += 1;
-            }
-        }
-        if err_count == 0 {
-            log_output(
-                "QUEUE",
-                "ENQUEUE-BATCH-OK",
-                source.as_str(),
-                format!("queued {} jobs", ok_count),
-                true,
-            );
-        } else {
-            log_output(
-                "QUEUE",
-                "ENQUEUE-BATCH-ERR",
-                source.as_str(),
-                format!("queued={}, failed={}, total={}", ok_count, err_count, total),
-                false,
-            );
-        }
-    });
-}
-
-
-/// Dequeue a batch of jobs. Blocks on BRPOP for the first item, then drains up to `max_batch - 1` additional items with RPOP count.
+/// Dequeue a batch of raw payloads with at-least-once semantics.
+///
+/// Blocks on `BLMOVE queue processing RIGHT LEFT` for the first item, then
+/// drains up to `max_batch - 1` more with non-blocking `LMOVE`. Every payload
+/// stays in the worker's processing list until `ack_job` removes it.
 async fn dequeue_batch_with_conn(
     conn: &mut MultiplexedConnection,
+    worker: &str,
     max_batch: usize,
-) -> Result<Vec<WriteJob>> {
-    let mut jobs = Vec::with_capacity(max_batch.min(64));
-    // 1. Wait for at least one job
-    let res: Option<(String, String)> = redis::cmd("BRPOP")
+) -> Result<Vec<String>> {
+    let processing = WriteJob::processing_key(worker);
+    let mut items: Vec<String> = Vec::with_capacity(max_batch.min(64));
+
+    // 1. Wait for at least one job (5 s timeout -> idle tick)
+    let first: Option<String> = redis::cmd("BLMOVE")
         .arg(WriteJob::queue_key())
-        .arg(5) // seconds
-        .query_async(conn)
+        .arg(&processing)
+        .arg("RIGHT")
+        .arg("LEFT")
+        .arg(5)
+        .query_async(&mut *conn)
         .await?;
-
-    if let Some((_k, v)) = res {
-        if let Ok(job) = serde_json::from_str::<WriteJob>(&v) {
-            jobs.push(job);
-        }
-    } else {
-        return Ok(jobs);
+    match first {
+        Some(v) => items.push(v),
+        None => return Ok(items),
     }
 
-    // 2. If additional jobs are waiting, batch pop without blocking
-    let remaining = max_batch.saturating_sub(jobs.len());
-    if remaining > 0 {
-        let batch_raw: Result<Vec<String>, _> = redis::cmd("RPOP")
+    // 2. Drain additional waiting jobs without blocking
+    while items.len() < max_batch {
+        let next: Option<String> = redis::cmd("LMOVE")
             .arg(WriteJob::queue_key())
-            .arg(remaining)
-            .query_async(conn)
-            .await;
-        if let Ok(items) = batch_raw {
-            for item in items {
-                if let Ok(job) = serde_json::from_str::<WriteJob>(&item) {
-                    jobs.push(job);
-                }
-            }
+            .arg(&processing)
+            .arg("RIGHT")
+            .arg("LEFT")
+            .query_async(&mut *conn)
+            .await?;
+        match next {
+            Some(v) => items.push(v),
+            None => break,
         }
     }
-
-    Ok(jobs)
+    Ok(items)
 }
 
 /// Start N concurrent workers to pull from queue and execute writes.
@@ -265,6 +271,19 @@ pub async fn start_consumer(state: Data<AppState>, schemas_map: Arc<HashMap<Stri
     let concurrency: usize = std::env::var("WRITE_CONCURRENCY").ok().and_then(|s| s.parse().ok()).unwrap_or(4);
     let batch_size: usize = std::env::var("WRITE_BATCH_SIZE").ok().and_then(|s| s.parse().ok()).unwrap_or(32);
     log_output("QUEUE", "START", "consumer", format!("Workers={}, BatchSize={}", concurrency, batch_size), true);
+
+    // Recover jobs that were in flight when the previous process died.
+    match crate::database::redis::get_manager().await {
+        Ok(client) => match client.get_multiplexed_async_connection().await {
+            Ok(mut conn) => match requeue_orphaned_processing(&mut conn).await {
+                Ok(0) => {}
+                Ok(n) => log_output("QUEUE", "REQUEUE", "consumer", format!("re-queued {} in-flight jobs from previous run", n), true),
+                Err(e) => log_output("QUEUE", "REQUEUE-ERR", "consumer", format!("{}", e), false),
+            },
+            Err(e) => log_output("QUEUE", "REQUEUE-ERR", "consumer", format!("{}", e), false),
+        },
+        Err(e) => log_output("QUEUE", "REQUEUE-ERR", "consumer", format!("{}", e), false),
+    }
 
     let mut set = JoinSet::new();
     for idx in 0..concurrency {
@@ -320,25 +339,43 @@ pub async fn start_consumer(state: Data<AppState>, schemas_map: Arc<HashMap<Stri
                 }
             };
             
+            let worker_name = format!("worker-{}", idx);
             loop {
-                match dequeue_batch_with_conn(&mut conn, batch_size).await {
-                    Ok(jobs) if !jobs.is_empty() => {
+                match dequeue_batch_with_conn(&mut conn, worker_name.as_str(), batch_size).await {
+                    Ok(items) if !items.is_empty() => {
                         // Reset error counter on success
                         consecutive_errors = 0;
                         backoff_ms = 250;
-                        
-                        let worker_name = format!("worker-{}", idx);
+
                         let retry_max: usize = *WRITE_EXEC_RETRY_MAX;
 
-                        for job in jobs {
+                        for raw in items {
+                            let job = match serde_json::from_str::<WriteJob>(&raw) {
+                                Ok(j) => j,
+                                Err(e) => {
+                                    // Unparseable payload: dead-letter it instead of dropping silently.
+                                    match push_dlq_raw(&raw, worker_name.as_str(), &format!("invalid job payload: {}", e)).await {
+                                        Ok(dlq_len) => log_output("QUEUE", "DLQ-PUSH", worker_name.as_str(), format!("malformed payload, len={}", dlq_len), false),
+                                        Err(dlq_err) => log_output("QUEUE", "DLQ-ERR", worker_name.as_str(), format!("{}", dlq_err), false),
+                                    }
+                                    ack_job(&mut conn, worker_name.as_str(), &raw).await;
+                                    continue;
+                                }
+                            };
                             let job_for_dlq = job.clone();
                             if let Err(e) = execute_with_retry(state_cl.clone(), schemas_map_cl.clone(), job, retry_max).await {
                                 log_output("QUEUE", "EXEC-ERR", worker_name.as_str(), format!("{}", e), false);
                                 match push_dlq(job_for_dlq, worker_name.as_str(), &e.to_string()).await {
                                     Ok(dlq_len) => log_output("QUEUE", "DLQ-PUSH", worker_name.as_str(), format!("len={}", dlq_len), false),
-                                    Err(dlq_err) => log_output("QUEUE", "DLQ-ERR", worker_name.as_str(), format!("{}", dlq_err), false),
+                                    Err(dlq_err) => {
+                                        // Could not dead-letter: leave it in the processing list so the
+                                        // next boot re-queues it rather than losing the write.
+                                        log_output("QUEUE", "DLQ-ERR", worker_name.as_str(), format!("{} (job kept in processing list)", dlq_err), false);
+                                        continue;
+                                    }
                                 }
                             }
+                            ack_job(&mut conn, worker_name.as_str(), &raw).await;
                         }
                     }
                     Ok(_) => {
@@ -526,7 +563,7 @@ async fn exec_post(state: Data<AppState>, route: String, schemas_map: Arc<HashMa
     match state.store.insert(&schema.table, Value::Object(doc_map)).await {
         Ok(_) => {
             // Invalidate cached GET results for this route (L1 & L2 Redis)
-            state.l1_cache.invalidate_all();
+            crate::database::state::invalidate_l1_route(&state.l1_cache, &route);
             let cache_prefix = crate::database::redis::build_key_prefix("public", &route);
             let _ = crate::database::redis::redis_delete_by_prefix(&cache_prefix).await;
             Ok(())
@@ -604,7 +641,7 @@ async fn exec_put(state: Data<AppState>, route: String, schemas_map: Arc<HashMap
 
     match state.store.update(&schema.table, filter, Value::Object(doc_map)).await {
         Ok(_) => {
-            state.l1_cache.invalidate_all();
+            crate::database::state::invalidate_l1_route(&state.l1_cache, &route);
             let cache_prefix = crate::database::redis::build_key_prefix("public", &route);
             let _ = crate::database::redis::redis_delete_by_prefix(&cache_prefix).await;
             Ok(())
@@ -631,7 +668,7 @@ async fn exec_delete(state: Data<AppState>, route: String, schemas_map: Arc<Hash
 
         match state.store.update(&schema.table, filter, Value::Object(patch)).await {
             Ok(_) => {
-                state.l1_cache.invalidate_all();
+                crate::database::state::invalidate_l1_route(&state.l1_cache, &route);
                 let cache_prefix = crate::database::redis::build_key_prefix("public", &route);
                 if let Ok(n) = crate::database::redis::redis_delete_by_prefix(&cache_prefix).await {
                     log_output("REDIS", "INVALIDATE", route.as_str(), format!("prefix={}, deleted={}", cache_prefix, n), true);
@@ -646,7 +683,7 @@ async fn exec_delete(state: Data<AppState>, route: String, schemas_map: Arc<Hash
     } else {
         match state.store.delete(&schema.table, filter).await {
             Ok(_) => {
-                state.l1_cache.invalidate_all();
+                crate::database::state::invalidate_l1_route(&state.l1_cache, &route);
                 let cache_prefix = crate::database::redis::build_key_prefix("public", &route);
                 if let Ok(n) = crate::database::redis::redis_delete_by_prefix(&cache_prefix).await {
                     log_output("REDIS", "INVALIDATE", route.as_str(), format!("prefix={}, deleted={}", cache_prefix, n), true);

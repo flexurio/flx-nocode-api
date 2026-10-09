@@ -7,7 +7,7 @@ use crate::database::state::DbParam;
 use crate::model::{Column, DbType, Index, TableSchema};
 use crate::storage::sql_store::{InsertValue, SqlStore, UniqueCheck};
 // use crate::helpers::extract_expressions;
-use crate::log::log_output;
+use crate::log::{log_output, log_output_lazy};
 use crate::storage::ast::{Filter as F, Query as Q};
 // use crate::crypt::{encrypt, is_encrypted_string};
 
@@ -86,7 +86,7 @@ pub(crate) async fn validate_foreign_keys_batch(
         .map_err(|e| format!("Error building FK check query: {}", e))?;
 
     log_output("QUERY", "FK BATCH", "POST", union_sql.clone(), true);
-    log_output("PARAMS", "FK BATCH", "POST", format!("{:?}", params), true);
+    log_output_lazy("PARAMS", "FK BATCH", "POST", || format!("{:?}", params), true);
 
     let results = state
         .db
@@ -728,7 +728,7 @@ pub async fn perform_insert(
             Ok((sql, params)) => {
                 if *crate::ISDEBUG {
                     log_output("QUERY", "POST(AST)", route, sql.clone(), true);
-                    log_output("PARAMS", "POST(AST)", route, format!("{:?}", params), true);
+                    log_output_lazy("PARAMS", "POST(AST)", route, || format!("{:?}", params), true);
                 }
 
                 match tx.raw_sql(&sql, params).await {
@@ -793,7 +793,7 @@ pub async fn perform_insert(
 
                                 if *crate::ISDEBUG {
                                     log_output("QUERY", "POST DETAIL BULK", route, bulk_sql.clone(), true);
-                                    log_output("PARAMS", "POST DETAIL BULK", route, format!("{:?}", bulk_params), true);
+                                    log_output_lazy("PARAMS", "POST DETAIL BULK", route, || format!("{:?}", bulk_params), true);
                                 }
 
                                 let built_bulk = crate::database::state::rehydrate_placeholders(&bulk_sql, state.db_type.as_str());

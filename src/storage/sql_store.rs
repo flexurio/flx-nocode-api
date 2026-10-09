@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use crate::database::state::{DbParam, DbRepository};
-use crate::log::log_output;
+use crate::log::{log_output, log_output_lazy};
 use crate::storage::ast::{Filter, Query, Val, JoinKind, Expr, Agg, AggFunc};
 use crate::storage::traits::{BackendCapabilities, DataStore, TxStore};
 use crate::storage::ddl::*;
@@ -837,7 +837,7 @@ impl DataStore for SqlStore {
 
     async fn query(&self, q: &Query) -> anyhow::Result<Vec<Value>> {
         let (sql, params) = compile_query_with_dialect(&self.db_type, q);
-        log_output("DEBUG", "DATA READ", "query", format!("Query: {}", sql), true);
+        log_output_lazy("DEBUG", "DATA READ", "query", || format!("Query: {}", sql), true);
         self.inner.query_with_params(&sql, params).await
     }
 

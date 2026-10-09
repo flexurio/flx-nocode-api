@@ -59,25 +59,15 @@ pub async fn process_delete_request(
             actor_id: actor_id_opt,
         };
 
-        if state.write_queue_fast_ack {
-            crate::nocode::consumer::enqueue_job_background(job, "DELETE-HANDLER");
-            log_output("QUEUE", "DELETE-HANDLER", &route, format!("queued (async) in {} ms", t0.elapsed().as_millis()), true);
-            return Ok(WebResponse {
-                success: true,
-                message: "Enqueued".to_string(),
-                total_data: 0,
-                data: Value::Null,
-            }); 
-        } else {
-             crate::nocode::consumer::enqueue_job(&job).await.map_err(|e| format!("Queue error: {}", e))?;
-             log_output("QUEUE", "DELETE-HANDLER", &route, format!("queued in {} ms", t0.elapsed().as_millis()), true);
-             return Ok(WebResponse {
-                success: true,
-                message: "Enqueued".to_string(),
-                total_data: 0,
-                data: Value::Null,
-            });
-        }
+        // Acknowledge only after the job is durably in Redis (see create service).
+        crate::nocode::consumer::enqueue_job(&job).await.map_err(|e| format!("Queue error: {}", e))?;
+        log_output("QUEUE", "DELETE-HANDLER", &route, format!("queued in {} ms", t0.elapsed().as_millis()), true);
+        return Ok(WebResponse {
+            success: true,
+            message: "Enqueued".to_string(),
+            total_data: 0,
+            data: Value::Null,
+        });
     }
 
     // 3. Schema Check
@@ -120,7 +110,7 @@ pub async fn process_delete_request(
     }
 
     // 5. Invalidate L1 & Redis Cache
-    state.l1_cache.invalidate_all();
+    crate::database::state::invalidate_l1_route(&state.l1_cache, &route);
     if state.is_cachedb {
         let cache_prefix = crate::database::redis::build_key_prefix("public", &route);
         let _ = crate::database::redis::redis_delete_by_prefix(&cache_prefix).await;

@@ -82,25 +82,17 @@ pub async fn process_insert_request(
             actor_id: actor_id_opt.clone(),
         };
 
-        if state.write_queue_fast_ack {
-            crate::nocode::consumer::enqueue_job_background(job, "CREATE-HANDLER");
-            return Ok(WebResponse {
+        // Acknowledge only after the job is durably in Redis. The old "fast ack"
+        // replied before LPUSH, so an enqueue failure silently lost the write.
+        return match crate::nocode::consumer::enqueue_job(&job).await {
+            Ok(_) => Ok(WebResponse {
                 success: true,
                 message: "Enqueued".to_string(),
                 total_data: 0,
                 data: Value::Null,
-            });
-        } else {
-            return match crate::nocode::consumer::enqueue_job(&job).await {
-                Ok(_) => Ok(WebResponse {
-                    success: true,
-                    message: "Enqueued".to_string(),
-                    total_data: 0,
-                    data: Value::Null,
-                }),
-                Err(e) => Err(err(format!("Queue error: {}", e))),
-            };
-        }
+            }),
+            Err(e) => Err(err(format!("Queue error: {}", e))),
+        };
     }
 
     // 3. Validate Table Existence
@@ -600,7 +592,7 @@ pub async fn process_insert_request(
     {
         Ok((msg, _count, inserted_data)) => {
             // Invalidate L1 in-memory cache and L2 Redis cache
-            state.l1_cache.invalidate_all();
+            crate::database::state::invalidate_l1_route(&state.l1_cache, route);
             if state.is_cachedb {
                 let cache_prefix = crate::database::redis::build_key_prefix("public", route);
                 let _ = crate::database::redis::redis_delete_by_prefix(&cache_prefix).await;

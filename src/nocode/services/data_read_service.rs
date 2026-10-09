@@ -5,7 +5,7 @@ use std::sync::Arc;
 use crate::AppState;
 use crate::auth::{check_access, get_user_info_from_token};
 use crate::database::redis::{build_key_prefix, redis_get_json, redis_set_json};
-use crate::log::log_output;
+use crate::log::{log_output, log_output_lazy};
 use crate::model::{TableSchema, WebResponse};
 use crate::nocode::repositories::data_read_repo;
 
@@ -119,7 +119,7 @@ pub async fn process_get_request(
     }
 
     // log isredis 
-    log_output("DEBUG", "ISREDIS", route, format!("isredis: {}", isredis), true);
+    log_output_lazy("DEBUG", "ISREDIS", route, || format!("isredis: {}", isredis), true);
 
     let use_cache = isredis || table_schema.redis.ttl > 0;
     if use_cache {
@@ -136,7 +136,7 @@ pub async fn process_get_request(
         if let Some(ref k) = cache_key {
             // Tier 1: L1 In-Memory Cache (sub-microsecond latency)
             if let Some(cached) = state.l1_cache.get(k).await {
-                log_output("L1_CACHE", "CACHE HIT", route, format!("Key: {}, Records: {}", k, cached.total_data), true);
+                log_output_lazy("L1_CACHE", "CACHE HIT", route, || format!("Key: {}, Records: {}", k, cached.total_data), true);
                 return HttpResponse::Ok().json(cached);
             }
 
@@ -144,13 +144,13 @@ pub async fn process_get_request(
             if state.is_cachedb {
                 match redis_get_json::<WebResponse>(k.as_str()).await {
                     Ok(Some(cached)) => {
-                        log_output("REDIS", "CACHE HIT", route, format!("Key: {}, Records: {}", k, cached.total_data), true);
+                        log_output_lazy("REDIS", "CACHE HIT", route, || format!("Key: {}, Records: {}", k, cached.total_data), true);
                         // Populate L1 cache from L2 hit
                         state.l1_cache.insert(k.clone(), cached.clone()).await;
                         return HttpResponse::Ok().json(cached);
                     }
                     Ok(None) => {
-                        log_output("REDIS", "CACHE MISS", route, format!("Key: {}", k), true);
+                        log_output_lazy("REDIS", "CACHE MISS", route, || format!("Key: {}", k), true);
                     }
                     Err(e) => {
                         log_output("ERROR", "CACHE READ", route, format!("Redis error: {} - falling back to DB", e), false);
@@ -185,11 +185,17 @@ pub async fn process_get_request(
                     } else {
                         300
                     };
-                    if let Err(e) = redis_set_json(k, &result, Some(ttl)).await {
-                        log_output("ERROR", "CACHE WRITE", route, format!("Failed to cache: {}", e), false);
-                    } else {
-                        log_output("REDIS", "CACHE WRITE", route, format!("Key: {}, TTL: {}s, Records: {}", k, ttl, total), true);
-                    }
+                    // Do not make the client wait for the Redis round-trip.
+                    let k2 = k.clone();
+                    let route2 = route.to_string();
+                    let payload = result.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = redis_set_json(&k2, &payload, Some(ttl)).await {
+                            log_output("ERROR", "CACHE WRITE", &route2, format!("Failed to cache: {}", e), false);
+                        } else {
+                            log_output_lazy("REDIS", "CACHE WRITE", &route2, || format!("Key: {}, TTL: {}s, Records: {}", k2, ttl, total), true);
+                        }
+                    });
                 }
             }
 

@@ -95,6 +95,21 @@ fn is_always_logged(tipe: &str, title: &str) -> bool {
         .any(|needle| ti.contains(needle))
 }
 
+/// Lazy variant for hot paths: the body closure (usually a `format!` of a
+/// query AST or SQL text) runs only when the line will actually be printed.
+#[inline]
+pub fn log_output_lazy(
+    tipe: &str,
+    title: &str,
+    subtitle: &str,
+    body: impl FnOnce() -> String,
+    print_datetime: bool,
+) {
+    if *ISDEBUG || is_always_logged(tipe, title) {
+        log_output(tipe, title, subtitle, body(), print_datetime);
+    }
+}
+
 pub fn log_output(tipe: &str, title: &str, ssubtitle: &str, body: String, print_datetime: bool) {
     let mut subtitle = ssubtitle.to_string();
     if *ISDEBUG || is_always_logged(tipe, title) {

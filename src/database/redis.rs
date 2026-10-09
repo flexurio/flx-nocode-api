@@ -1,17 +1,39 @@
 use anyhow::{anyhow, Result};
-use once_cell::sync::OnceCell;
-use redis::{aio::MultiplexedConnection, AsyncCommands, Client, IntoConnectionInfo};
+use once_cell::sync::{Lazy, OnceCell};
+use redis::{aio::ConnectionManager, AsyncCommands, Client, IntoConnectionInfo};
 use std::env;
 use std::sync::Arc;
+use std::time::Duration;
 
-// Use connection pool instead of single ConnectionManager for better concurrency
 static REDIS_CLIENT: OnceCell<Arc<Client>> = OnceCell::new();
 
-// A `MultiplexedConnection` is designed to be cheaply cloned and shared across
-// concurrent callers (it multiplexes all requests over one underlying TCP
-// connection via an internal task), so we initialize it once and clone it on
-// every call instead of paying a fresh TCP connect + handshake per operation.
-static REDIS_CONN: tokio::sync::OnceCell<MultiplexedConnection> = tokio::sync::OnceCell::const_new();
+// A `ConnectionManager` multiplexes all callers over one TCP connection (cheap
+// to clone) AND transparently reconnects with backoff when the socket breaks.
+// The previous `MultiplexedConnection` never reconnected: once Redis restarted,
+// every cache operation failed for the rest of the process lifetime.
+//
+// NOTE: never run blocking commands (BRPOP/BLMOVE) on this shared connection;
+// they would stall every other caller. Queue workers open their own connection.
+static REDIS_CONN: tokio::sync::OnceCell<ConnectionManager> = tokio::sync::OnceCell::const_new();
+
+/// Upper bound for a single read-cache operation (GET/SET). A stalled Redis
+/// must degrade to "cache miss", never hold an HTTP request hostage.
+static CACHE_OP_TIMEOUT: Lazy<Duration> = Lazy::new(|| {
+    let ms: u64 = env::var("REDIS_CACHE_TIMEOUT_MS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(100);
+    Duration::from_millis(ms.max(5))
+});
+
+/// Timeout for establishing the shared connection on first use.
+static CONNECT_TIMEOUT: Lazy<Duration> = Lazy::new(|| {
+    let ms: u64 = env::var("REDIS_CONNECT_TIMEOUT_MS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1000);
+    Duration::from_millis(ms.max(50))
+});
 
 /// Sanitize a key component to allow only safe characters
 fn sanitize_key_component(s: &str) -> String {
@@ -78,48 +100,60 @@ pub(crate) async fn get_manager() -> Result<Arc<Client>> {
     Ok(arc_client)
 }
 
-// Returns a clone of the shared multiplexed connection, establishing it once
-// on first use. Cloning is cheap (shares the same underlying TCP connection).
-async fn get_connection() -> Result<MultiplexedConnection> {
+/// Returns a clone of the shared, auto-reconnecting connection, establishing it
+/// once on first use. Cloning is cheap (shares the same underlying TCP socket).
+pub(crate) async fn get_connection() -> Result<ConnectionManager> {
     let conn = REDIS_CONN
         .get_or_try_init(|| async {
             let client = get_manager().await?;
-            client
-                .get_multiplexed_async_connection()
+            tokio::time::timeout(*CONNECT_TIMEOUT, client.get_connection_manager())
                 .await
+                .map_err(|_| anyhow!("Redis connect timed out after {:?}", *CONNECT_TIMEOUT))?
                 .map_err(|e| anyhow!("Failed to get Redis connection: {}", e))
         })
         .await?;
     Ok(conn.clone())
 }
 
-/// Set a string value by key with optional TTL seconds (None -> persist)
+/// Set a string value by key with optional TTL seconds (None -> persist).
+/// Bounded by `REDIS_CACHE_TIMEOUT_MS` so a stalled Redis cannot block a request.
 pub async fn redis_set(key: &str, value: &str, ttl_secs: Option<usize>) -> Result<()> {
-    let mut conn = get_connection().await?;
-    if let Some(ttl) = ttl_secs {
-        let mut pipe = redis::pipe();
-        pipe.set(key, value).ignore().expire(key, ttl as i64);
-        let _: () = pipe
-            .query_async(&mut conn)
-            .await
-            .map_err(|e| anyhow!("Redis SET/EXPIRE failed: {}", e))?;
-    } else {
-        let _: () = conn
-            .set(key, value)
-            .await
-            .map_err(|e| anyhow!("Redis SET failed: {}", e))?;
-    }
-    Ok(())
+    let fut = async {
+        let mut conn = get_connection().await?;
+        if let Some(ttl) = ttl_secs {
+            // Single round-trip: SET key value EX ttl
+            let _: () = conn
+                .set_ex(key, value, ttl as u64)
+                .await
+                .map_err(|e| anyhow!("Redis SET EX failed: {}", e))?;
+        } else {
+            let _: () = conn
+                .set(key, value)
+                .await
+                .map_err(|e| anyhow!("Redis SET failed: {}", e))?;
+        }
+        Ok(())
+    };
+    tokio::time::timeout(*CACHE_OP_TIMEOUT, fut)
+        .await
+        .map_err(|_| anyhow!("Redis SET timed out after {:?}", *CACHE_OP_TIMEOUT))?
 }
 
 /// Get a string value by key. Returns Ok(None) if missing.
+/// Bounded by `REDIS_CACHE_TIMEOUT_MS`; a timeout is reported as an error so the
+/// caller falls back to the database.
 pub async fn redis_get(key: &str) -> Result<Option<String>> {
-    let mut conn = get_connection().await?;
-    let val: Option<String> = conn
-        .get(key)
+    let fut = async {
+        let mut conn = get_connection().await?;
+        let val: Option<String> = conn
+            .get(key)
+            .await
+            .map_err(|e| anyhow!("Redis GET failed: {}", e))?;
+        Ok(val)
+    };
+    tokio::time::timeout(*CACHE_OP_TIMEOUT, fut)
         .await
-        .map_err(|e| anyhow!("Redis GET failed: {}", e))?;
-    Ok(val)
+        .map_err(|_| anyhow!("Redis GET timed out after {:?}", *CACHE_OP_TIMEOUT))?
 }
 
 /// Convenience: set JSON value by key (stored as string)

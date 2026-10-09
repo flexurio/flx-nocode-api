@@ -444,27 +444,8 @@ pub async fn process_import_request(
 
         let enq_count = docs.len();
 
-        // Fast ACK or Wait
-        if state.write_queue_fast_ack {
-            let jobs: Vec<crate::nocode::consumer::WriteJob> = docs
-                .into_iter()
-                .map(|body| crate::nocode::consumer::WriteJob {
-                    route: route.clone(),
-                    op: crate::nocode::consumer::WriteOpKind::Post,
-                    body,
-                    headers: vec![],
-                    enqueued_at: chrono::Utc::now().to_rfc3339(),
-                    actor_id: actor_id_opt.clone(),
-                })
-                .collect();
-            crate::nocode::consumer::enqueue_jobs_background(jobs, "IMPORT-HANDLER");
-            return Ok(WebResponse {
-                success: true,
-                message: format!("Enqueued {} rows (async)", enq_count),
-                total_data: enq_count as i32,
-                data: Value::Null,
-            });
-        } else {
+        // Acknowledge only after every row is durably in Redis (no fire-and-forget).
+        {
             for body in docs {
                 let job = crate::nocode::consumer::WriteJob {
                     route: route.clone(),

@@ -29,7 +29,6 @@ pub struct AppState {
     pub store: Arc<dyn crate::storage::traits::DataStore>,
     pub is_cachedb: bool, // whether store supports caching (e.g. Redis)
     pub write_queue_enabled: bool, // enable Redis write queue for POST/PUT/DELETE
-    pub write_queue_fast_ack: bool, // return 202 immediately without awaiting enqueue
     pub default_collate: String, // default collation for tables (e.g. utf8mb4_bin)
     pub rules: Value, // cached rules.json
     pub l1_cache: moka::future::Cache<String, crate::model::WebResponse>,
@@ -83,6 +82,34 @@ pub trait DbTransaction: Send + Sync {
     async fn rollback(self: Box<Self>) -> Result<(), anyhow::Error>;
 }
 
+/// Rough serialized size of a JSON value, used as the L1 cache weight.
+/// Cheaper than serializing: walks the tree once and sums approximate lengths.
+pub fn approx_json_bytes(v: &Value) -> usize {
+    match v {
+        Value::Null => 4,
+        Value::Bool(_) => 5,
+        Value::Number(_) => 12,
+        Value::String(s) => s.len() + 2,
+        Value::Array(a) => 2 + a.iter().map(|x| approx_json_bytes(x) + 1).sum::<usize>(),
+        Value::Object(o) => 2 + o.iter().map(|(k, x)| k.len() + 4 + approx_json_bytes(x)).sum::<usize>(),
+    }
+}
+
+/// Drop every L1 entry cached for `route` (keys `flx:public:<route>` and
+/// `flx:public:<route>:...`). Replaces the old `invalidate_all()`, which wiped
+/// the cache of every route on any single write.
+pub fn invalidate_l1_route(cache: &moka::future::Cache<String, crate::model::WebResponse>, route: &str) {
+    let exact = crate::database::redis::build_key_prefix("public", route);
+    let with_sep = format!("{}:", exact);
+    if cache
+        .invalidate_entries_if(move |k, _| k == &exact || k.starts_with(&with_sep))
+        .is_err()
+    {
+        // Only fails if the cache was built without invalidation-closure support.
+        cache.invalidate_all();
+    }
+}
+
 /// Execute a parameterized SQL formula string within a generic TxStore transaction.
 /// This mirrors `execute_sql_formula_with_transaction` but targets the new storage abstraction.
 pub async fn execute_sql_formula_with_txstore(
@@ -94,8 +121,8 @@ pub async fn execute_sql_formula_with_txstore(
     match build_sql_and_params_from_formula(&sql, body) {
         Ok((built_sql, params)) => {
             log_output("QUERY", "build_sql_and_params_from_formula", route, built_sql.clone(), true);
-            log_output("INFO", "FORMULA_PARAMS", route, format!("Params for formula '{}': {:?}", built_sql, params), true);
-            log_output("BODY", "build_sql_and_params_from_formula", route, format!("{:?}", body), true);
+            crate::log::log_output_lazy("INFO", "FORMULA_PARAMS", route, || format!("Params for formula '{}': {:?}", built_sql, params), true);
+            crate::log::log_output_lazy("BODY", "build_sql_and_params_from_formula", route, || format!("{:?}", body), true);
             // Log params explicitly to verify only placeholders become params
             log_output(
                 "PARAMS",
@@ -268,13 +295,13 @@ pub fn build_sql_and_params_from_formula(
     // Example: {products[{request.product_id}].price}
     while let Some(cap) = RE_NESTED.captures(&sql) {
         // log_output cap
-        log_output("INFO", "CAP", "build_sql_and_params_from_formula", format!("{:?}", cap), true);
+        crate::log::log_output_lazy("INFO", "CAP", "build_sql_and_params_from_formula", || format!("{:?}", cap), true);
         let table = cap.get(1).unwrap().as_str();
         let inner = cap.get(2).unwrap().as_str(); // e.g., request.product_id
         let field = cap.get(3).unwrap().as_str();
 
         // log_output table, inner, field
-        log_output("INFO", "NESTED", "build_sql_and_params_from_formula", format!("table:{}, inner: {} field: {}", table, inner, field), true);
+        crate::log::log_output_lazy("INFO", "NESTED", "build_sql_and_params_from_formula", || format!("table:{}, inner: {} field: {}", table, inner, field), true);
 
         // Validate identifiers strictly
         if !RE_IDENT.is_match(table) || !RE_IDENT.is_match(field) {

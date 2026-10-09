@@ -470,10 +470,10 @@ impl DataStore for MongoStore {
         // Build base prefixes and joins for rewrite context (best-effort: only have collection name here)
         let base_prefixes: Vec<String> = vec![collection.to_string()];
         let join_tables: Vec<String> = vec![];
-        let filt = filter
-            .map(|f| rewrite_filter_keys(&f, &base_prefixes, &join_tables))
-            .map(|f| filter_to_bson(&f))
-            .unwrap_or_default();
+        let filt = match filter {
+            Some(f) => filter_to_bson(&rewrite_filter_keys(&f, &base_prefixes, &join_tables)),
+            None => return Err(anyhow::anyhow!("refusing to update '{}' without a filter", collection)),
+        };
         // Remap 'id' key in patch to '_id' if present, but generally _id shouldn't be updated; keep other fields
         let mut patch_value = patch;
         if let Some(obj) = patch_value.as_object_mut() {
@@ -490,8 +490,15 @@ impl DataStore for MongoStore {
 
     async fn delete(&self, collection: &str, filter: Option<Filter>) -> Result<u64> {
         let coll = self.coll(collection);
-        let filt = filter.map(|f| filter_to_bson(&f)).unwrap_or_default();
-    let res = coll.delete_many(filt).await?;
+        // Without the key rewrite the `id` produced by pk_utils never mapped to
+        // `_id`, so hard deletes matched zero documents and reported success.
+        let base_prefixes: Vec<String> = vec![collection.to_string()];
+        let join_tables: Vec<String> = vec![];
+        let filt = match filter {
+            Some(f) => filter_to_bson(&rewrite_filter_keys(&f, &base_prefixes, &join_tables)),
+            None => return Err(anyhow::anyhow!("refusing to delete from '{}' without a filter", collection)),
+        };
+        let res = coll.delete_many(filt).await?;
         Ok(res.deleted_count as u64)
     }
 

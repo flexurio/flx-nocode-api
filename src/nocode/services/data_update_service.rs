@@ -84,15 +84,7 @@ pub async fn process_update_request(
             actor_id: actor_id_opt,
         };
 
-        if state.write_queue_fast_ack {
-            crate::nocode::consumer::enqueue_job_background(job, "UPDATE-HANDLER");
-            return HttpResponse::Accepted().json(WebResponse {
-                success: true,
-                message: "Enqueued (async)".to_string(),
-                total_data: 0,
-                data: Value::Null,
-            });
-        }
+        // Acknowledge only after the job is durably in Redis (see create service).
         return match crate::nocode::consumer::enqueue_job(&job).await {
             Ok(_) => HttpResponse::Accepted().json(WebResponse {
                 success: true,
@@ -401,7 +393,7 @@ pub async fn process_update_request(
     {
         Ok((msg, count, mut updated_data)) => {
             // Invalidate L1 in-memory cache and L2 Redis cache
-            state.l1_cache.invalidate_all();
+            crate::database::state::invalidate_l1_route(&state.l1_cache, route);
             if state.is_cachedb {
                 let cache_prefix = crate::database::redis::build_key_prefix("public", route);
                 let _ = crate::database::redis::redis_delete_by_prefix(&cache_prefix).await;
