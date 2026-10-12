@@ -78,18 +78,6 @@ jobs:
             binary_name: flx-nocode-api
             experimental: true
 
-          - name: macos-arm64
-            os: macos-latest
-            target: aarch64-apple-darwin
-            binary_name: flx-nocode-api
-            experimental: false
-
-          - name: macos-x86_64
-            os: macos-latest
-            target: x86_64-apple-darwin
-            binary_name: flx-nocode-api
-            experimental: false
-
           - name: windows-x86_64
             os: windows-latest
             target: x86_64-pc-windows-msvc
@@ -128,28 +116,6 @@ jobs:
           cp "$SRC" "$DEST"
           chmod +x "$DEST"
           tar -czf "dist/flx-nocode-${{ matrix.target }}.tar.gz" -C "target/${{ matrix.target }}/release" "${{ matrix.binary_name }}"
-
-      - name: Package macOS Artifacts
-        if: runner.os == 'macOS'
-        run: |
-          mkdir -p dist
-          SRC="target/${{ matrix.target }}/release/${{ matrix.binary_name }}"
-          DEST="dist/flx-nocode-${{ matrix.target }}"
-          cp "$SRC" "$DEST"
-          chmod +x "$DEST"
-          tar -czf "dist/flx-nocode-${{ matrix.target }}.tar.gz" -C "target/${{ matrix.target }}/release" "${{ matrix.binary_name }}"
-
-          # Create .pkg installer
-          PKG_STAGING="pkg-staging-${{ matrix.target }}/root"
-          mkdir -p "$PKG_STAGING/usr/local/bin"
-          cp "$SRC" "$PKG_STAGING/usr/local/bin/flx-nocode-api"
-          chmod 755 "$PKG_STAGING/usr/local/bin/flx-nocode-api"
-
-          pkgbuild --root "$PKG_STAGING" \
-            --install-location "/" \
-            --identifier "com.flexurio.api" \
-            --version "${{ needs.prepare.outputs.version }}" \
-            "dist/flx-nocode-${{ matrix.target }}.pkg"
 
       - name: Package Windows Artifacts
         if: runner.os == 'Windows'
