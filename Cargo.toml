@@ -1,6 +1,6 @@
 [package]
 name = "flx-nocode-api"
-version = "0.4.8"
+version = "0.4.10"
 edition = "2024"
 
 # Optimization settings for performance
@@ -126,4 +126,11 @@ sqlite = ["sqlx/sqlite", "sqlx/chrono"]
 mssql = ["tiberius/chrono", "bb8"]
 mongodb = ["dep:mongodb"]
 # Model Context Protocol server (Streamable HTTP at MCP_PATH + `mcp --stdio`)
-mcp = ["dep:rmcp", "dep:schemars", "dep:http1", "dep:http-body", "dep:http-body-util", "dep:libc"]
+mcp = [
+    "dep:rmcp",
+    "dep:schemars",
+    "dep:http1",
+    "dep:http-body",
+    "dep:http-body-util",
+    "dep:libc",
+]
