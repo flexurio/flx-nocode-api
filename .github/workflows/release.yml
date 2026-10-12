@@ -1,0 +1,232 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+      - '[0-9]+.[0-9]+.[0-9]+*'
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Release tag name (e.g. v0.4.9-release). Leave blank to use Cargo.toml version.'
+        required: false
+        type: string
+        default: ''
+      draft:
+        description: 'Create draft release'
+        required: false
+        type: boolean
+        default: false
+      prerelease:
+        description: 'Mark as pre-release'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    name: Prepare Release Context
+    runs-on: ubuntu-latest
+    outputs:
+      release_tag: ${{ steps.resolve_tag.outputs.tag }}
+      version: ${{ steps.resolve_tag.outputs.version }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Resolve release tag and version
+        id: resolve_tag
+        run: |
+          VERSION=$(grep '^version' Cargo.toml | head -1 | awk -F '"' '{print $2}')
+          if [ -z "$VERSION" ]; then
+            VERSION="1.0.0"
+          fi
+
+          if [ -n "${{ inputs.tag_name }}" ]; then
+            TAG="${{ inputs.tag_name }}"
+          elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            TAG="${{ github.ref_name }}"
+          else
+            TAG="v${VERSION}-release"
+          fi
+
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Target Release Tag: $TAG (Cargo Version: $VERSION)"
+
+  build:
+    name: Build (${{ matrix.name }})
+    needs: prepare
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.experimental || false }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            binary_name: flx-nocode-api
+            experimental: false
+
+          - name: linux-arm64
+            os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            binary_name: flx-nocode-api
+            experimental: true
+
+          - name: macos-arm64
+            os: macos-latest
+            target: aarch64-apple-darwin
+            binary_name: flx-nocode-api
+            experimental: false
+
+          - name: macos-x86_64
+            os: macos-latest
+            target: x86_64-apple-darwin
+            binary_name: flx-nocode-api
+            experimental: false
+
+          - name: windows-x86_64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            binary_name: flx-nocode-api.exe
+            experimental: false
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libssl-dev cmake
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Cargo Build Release
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Package Linux Artifacts
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p dist
+          SRC="target/${{ matrix.target }}/release/${{ matrix.binary_name }}"
+          DEST="dist/flx-nocode-${{ matrix.target }}"
+          cp "$SRC" "$DEST"
+          chmod +x "$DEST"
+          tar -czf "dist/flx-nocode-${{ matrix.target }}.tar.gz" -C "target/${{ matrix.target }}/release" "${{ matrix.binary_name }}"
+
+      - name: Package macOS Artifacts
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p dist
+          SRC="target/${{ matrix.target }}/release/${{ matrix.binary_name }}"
+          DEST="dist/flx-nocode-${{ matrix.target }}"
+          cp "$SRC" "$DEST"
+          chmod +x "$DEST"
+          tar -czf "dist/flx-nocode-${{ matrix.target }}.tar.gz" -C "target/${{ matrix.target }}/release" "${{ matrix.binary_name }}"
+
+          # Create .pkg installer
+          PKG_STAGING="pkg-staging-${{ matrix.target }}/root"
+          mkdir -p "$PKG_STAGING/usr/local/bin"
+          cp "$SRC" "$PKG_STAGING/usr/local/bin/flx-nocode-api"
+          chmod 755 "$PKG_STAGING/usr/local/bin/flx-nocode-api"
+
+          pkgbuild --root "$PKG_STAGING" \
+            --install-location "/" \
+            --identifier "com.flexurio.api" \
+            --version "${{ needs.prepare.outputs.version }}" \
+            "dist/flx-nocode-${{ matrix.target }}.pkg"
+
+      - name: Package Windows Artifacts
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          $src = "target/${{ matrix.target }}/release/${{ matrix.binary_name }}"
+          Copy-Item $src "dist/flx-nocode-x86_64-pc-windows-msvc.exe"
+          Copy-Item $src "dist/flx-nocode-x86_64-pc-windows-gnu.exe"
+          Compress-Archive -Force -Path $src -DestinationPath "dist/flx-nocode-x86_64-pc-windows.zip"
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-artifacts-${{ matrix.name }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish Release
+    runs-on: ubuntu-latest
+    needs: [prepare, build]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-artifacts-*
+          path: dist
+          merge-multiple: true
+
+      - name: Assemble release assets and generate checksums
+        run: |
+          mkdir -p dist
+
+          # Include config.zip if config exists or prebuilt zip exists
+          if [ -d "config" ]; then
+            zip -q -r dist/config.zip config/ -x "*.DS_Store*"
+          elif [ -f "config.zip" ]; then
+            cp config.zip dist/
+          fi
+
+          if [ -f "core_config.zip" ]; then
+            cp core_config.zip dist/
+          fi
+
+          if [ -f "env" ]; then
+            cp env dist/
+          fi
+
+          if [ -f "install-flexurio.sh" ]; then
+            cp install-flexurio.sh dist/
+          fi
+
+          if [ -f "install-flexurio.ps1" ]; then
+            cp install-flexurio.ps1 dist/
+          fi
+
+          # Generate SHA256 checksums
+          cd dist
+          rm -f SHA256SUMS.txt
+          sha256sum * > SHA256SUMS.txt 2>/dev/null || true
+          cd ..
+
+          echo "Final release assets list:"
+          ls -lh dist/
+
+      - name: Create or Update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.prepare.outputs.release_tag }}
+          name: ${{ needs.prepare.outputs.release_tag }}
+          draft: ${{ inputs.draft || false }}
+          prerelease: ${{ inputs.prerelease || false }}
+          generate_release_notes: true
+          files: dist/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
