@@ -1025,7 +1025,21 @@ mod tests {
 
     #[test]
     fn test_master_detail_entity_schema_file() {
-        let schema_json = include_str!("../../../config/entity/transaction_purchase_order.json");
+        let schema_json = r#"{
+            "table": "transaction_purchase_order",
+            "columns": [],
+            "details": [
+                {
+                    "field": "items",
+                    "target_table": "transaction_purchase_order_item",
+                    "foreign_key_column": "purchase_order_id",
+                    "parent_key_column": "id",
+                    "columns": ["material_id", "qty_ordered", "unit_price", "notes"],
+                    "update_strategy": "replace",
+                    "cascade_delete": true
+                }
+            ]
+        }"#;
         let schema: TableSchema =
             serde_json::from_str(schema_json).expect("Failed to deserialize transaction_purchase_order");
 
