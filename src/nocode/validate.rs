@@ -16,7 +16,7 @@ pub async fn check_table_design(
     table_schema_in: Arc<TableSchema>,
     req: actix_web::HttpRequest,
 ) -> impl Responder {
-    if state.require_auth && !state.route_publics.contains(&route){
+    if state.require_auth && !state.is_public_route(&route){
         let claims = match get_user_info_from_token(&req, state.clone()) {
             Ok(c) => c,
             Err(_) => {
@@ -222,7 +222,7 @@ pub const SUPPORTED_TRIGGER_EVENTS: &[&str] = &["update", "create", "delete", "s
 pub const KNOWN_TOP_LEVEL_KEYS: &[&str] = &[
     "table", "primary_key", "foreign_keys", "columns", "indexes", "details",
     "action_triggers", "triggers", "redis", "get", "post", "put", "del", "patch", "trace",
-    "locked_when", "state_machine", "auto_generate", "seed", "collate", "position",
+    "locked_when", "state_machine", "auto_generate", "seed", "collate", "position", "search_columns", "webhooks",
 ];
 
 /// Keys a `columns[]` object may contain (mirrors `model::Column` + aliases).
@@ -447,7 +447,88 @@ fn lint_trigger_actions(
     }
 }
 
+/// Column `col` of this entity is covered by an index (any position) or is the primary key.
+fn is_indexed(schema: &TableSchema, col: &str) -> bool {
+    schema.primary_key.columns.iter().any(|c| c == col)
+        || schema.indexes.iter().any(|ix| ix.columns.iter().any(|c| c == col))
+}
+
+/// Performance advisory: every column a client may filter or sort on should be
+/// indexed, otherwise each such request scans the table.
+fn lint_index_coverage(report: &mut LintReport, route: &str, schema: &TableSchema) {
+    let mut flagged: Vec<String> = Vec::new();
+    let mut consider = |raw: &str, what: &str, flagged: &mut Vec<String>| {
+        let clean = raw.trim_start_matches('*');
+        if clean.is_empty() || clean.contains("paramjoin") || crate::nocode::repositories::data_read_repo::RESERVED_PARAMS.contains(&clean) {
+            return;
+        }
+        for part in clean.split('|') {
+            // `col.op` / `col->path.op` / `table.col.op`
+            let key = part.split("->").next().unwrap_or(part);
+            let col = match key.rsplit_once('.') {
+                Some((c, op)) if crate::helpers::is_supported_operator(op) => c,
+                _ => key,
+            };
+            let bare = col.rsplit('.').next().unwrap_or(col).trim().trim_start_matches('-');
+            let qualifier = col.rsplit_once('.').map(|(q, _)| q);
+            if let Some(q) = qualifier
+                && q != schema.table
+                && q != route
+            {
+                continue; // joined table: cannot judge here
+            }
+            if LintCtx::has_column(schema, bare) && !is_indexed(schema, bare) && !flagged.iter().any(|f| f == bare) {
+                flagged.push(bare.to_string());
+                report.warn(
+                    route,
+                    format!(
+                        "{} '{}' allows filtering/sorting on column '{}' which has no index: every such request scans the table (add it to indexes[])",
+                        what, raw, bare
+                    ),
+                );
+            }
+        }
+    };
+    for p in &schema.get.parameters {
+        consider(p, "get.parameters", &mut flagged);
+    }
+    for o in &schema.get.order_by {
+        consider(o, "get.order_by", &mut flagged);
+    }
+    for c in &schema.search_columns {
+        if !LintCtx::has_column(schema, c) {
+            report.error(route, format!("search_columns references unknown column '{}'", c));
+        }
+    }
+    if !schema.search_columns.is_empty() {
+        let dbt = std::env::var("DB_TYPE").unwrap_or_default().to_ascii_lowercase();
+        if dbt != "postgres" {
+            report.warn(
+                route,
+                format!(
+                    "search_columns is configured but DB_TYPE={} has no transparent trigram index: `?search=` will use LIKE scans",
+                    if dbt.is_empty() { "<unset>" } else { &dbt }
+                ),
+            );
+        }
+    }
+}
+
+fn lint_webhooks(report: &mut LintReport, route: &str, schema: &TableSchema) {
+    for (i, w) in schema.webhooks.iter().enumerate() {
+        if !(w.url.starts_with("http://") || w.url.starts_with("https://")) {
+            report.error(route, format!("webhooks[{}].url '{}' must start with http:// or https://", i, w.url));
+        }
+        if !matches!(w.event.as_str(), "on_create" | "on_update" | "on_delete" | "*") {
+            report.error(route, format!("webhooks[{}].event '{}' must be on_create, on_update, on_delete or *", i, w.event));
+        }
+    }
+}
+
 fn lint_one(ctx: &LintCtx<'_>, report: &mut LintReport, route: &str, schema: &TableSchema) {
+    lint_index_coverage(report, route, schema);
+    lint_webhooks(report, route, schema);
+
     // ── Identifiers (SQL-injection guard) ────────────────────────────────
     check_identifier(report, route, "table", &schema.table);
     for col in &schema.columns {
@@ -1209,7 +1290,14 @@ mod lint_tests {
         let (m, r) = two();
         let rep = lint_schemas(&m, &r);
         assert!(rep.errors.is_empty(), "unexpected errors: {:?}", rep.errors);
-        assert!(rep.warnings.is_empty(), "unexpected warnings: {:?}", rep.warnings);
+        // The fixture filters/sorts on un-indexed columns on purpose: the
+        // index-coverage advisory must fire for exactly those and nothing else.
+        let (index_advice, other): (Vec<_>, Vec<_>) =
+            rep.warnings.iter().partition(|w| w.contains("has no index"));
+        assert!(other.is_empty(), "unexpected warnings: {:?}", other);
+        assert_eq!(index_advice.len(), 3, "{:?}", index_advice);
+        assert!(index_advice.iter().any(|w| w.contains("'status'")));
+        assert!(index_advice.iter().any(|w| w.contains("'created_at'")));
     }
 
     #[test]

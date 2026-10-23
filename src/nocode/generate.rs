@@ -80,7 +80,7 @@ pub async fn create_table(
     table_schema: Arc<TableSchema>,
     req: actix_web::HttpRequest,
 ) -> impl Responder {
-    if state.require_auth && !state.route_publics.contains(&route){
+    if state.require_auth && !state.is_public_route(&route){
         let claims = match get_user_info_from_token(&req, state.clone()) {
             Ok(c) => c,
             Err(_) => {
@@ -500,7 +500,23 @@ pub fn generate_table(ds: &SqlStore, data: &TableSchema) -> (String, Vec<String>
     });
 
     // Compile using SqlStore
-    ds.preview_ddl_separate(&ddl)
+    let (table_sql, mut index_sqls) = ds.preview_ddl_separate(&ddl);
+
+    // `?search=` columns: a trigram GIN index lets `ILIKE '%term%'` use an index
+    // on PostgreSQL. Other dialects have no transparent equivalent (the linter
+    // warns); the plain LIKE path still works there.
+    if db_type == "postgres" && !data.search_columns.is_empty() {
+        index_sqls.insert(0, "CREATE EXTENSION IF NOT EXISTS pg_trgm;".to_string());
+        for col in &data.search_columns {
+            let raw = format!("idx_{}_{}_trgm", data.table, col);
+            let name = crate::storage::sql_store::shorten_identifier(&raw, 63);
+            index_sqls.push(format!(
+                "CREATE INDEX IF NOT EXISTS {} ON {} USING GIN ({} gin_trgm_ops);",
+                name, data.table, col
+            ));
+        }
+    }
+    (table_sql, index_sqls)
 }
 
 fn generate_mongo_indexes(data: &TableSchema) -> Vec<String> {

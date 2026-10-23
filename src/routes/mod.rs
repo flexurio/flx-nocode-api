@@ -1,43 +1,32 @@
 //! Route registration for the Actix-web application.
 //!
-//! All static (core) and dynamic (nocode) endpoints are wired here, keeping
-//! `main.rs` free of route-level detail.
-//!
-//! ## Key pattern — `RouteBundle`
-//!
-//! Rather than cloning `Arc<str>` and `Arc<TableSchema>` separately for every
-//! HTTP-method closure, we pack them into [`RouteBundle`] and derive `Clone`.
-//! Each handler closure only needs `let b = bundle.clone()` — one clone instead
-//! of the previous 10+ per route.
+//! Static (core) endpoints are registered first. Entity endpoints are **not**
+//! registered per entity any more: a handful of catch-all resources
+//! (`/{route}`, `/{route}/{id}`, `/import/{route}`, …) resolve the entity from
+//! the live [`crate::registry`] on every request, which is what makes a hot
+//! reload (`POST /admin/reload`, `SIGHUP`) take effect without a restart.
+//! Resource order matters: actix matches in registration order, so the static
+//! resources above always win over `/{route}`.
 
 use actix_files::Files;
 use actix_multipart::Multipart;
-use actix_web::{HttpResponse, web};
+use actix_web::http::Method;
 use actix_web::web::Path;
+use actix_web::{HttpRequest, HttpResponse, Responder, web};
 use colored::Colorize;
 use serde_json::Value;
 use std::sync::Arc;
 
-use crate::config::{CONFIG, SCHEMAS, ISDEBUG};
-use crate::core::{get_roles, login, register};
+use crate::config::ISDEBUG;
+use crate::core::{get_roles, login, logout, refresh_token, register};
 use crate::database::state::AppState;
 use crate::log::log_output;
 use crate::metrics::METRICS;
-use crate::model::{ReferenceForeignKey, TableSchema};
+use crate::model::{TableSchema, WebResponse};
 use crate::nocode::generate::create_table;
 use crate::nocode::seed::seed_table;
 use crate::nocode::validate::check_table_design;
-
-// ── Route bundle ──────────────────────────────────────────────────────────────
-
-/// Cheaply-clonable bundle of per-route shared handles.
-/// All fields are `Arc`, so `.clone()` is O(1) ref-count increment.
-#[derive(Clone)]
-struct RouteBundle {
-    route:   Arc<str>,
-    schema:  Arc<TableSchema>,
-    ref_fks: Arc<Vec<ReferenceForeignKey>>,
-}
+use crate::registry;
 
 // ── Logging helper ────────────────────────────────────────────────────────────
 
@@ -54,6 +43,291 @@ fn log_ep(do_log: bool, label: &str, method: &str, host: &str, port: &str, path:
         format!("http://{}:{}/{}", host.red(), port.green(), path.purple()),
         false,
     );
+}
+
+fn json_err(status: actix_web::http::StatusCode, msg: impl Into<String>) -> HttpResponse {
+    HttpResponse::build(status).json(WebResponse {
+        success: false,
+        message: msg.into(),
+        total_data: 0,
+        data: Value::Null,
+    })
+}
+
+/// Resolve `route` against the live registry. `flx_users` / `flx_roles` are
+/// hidden when authentication is disabled (they are not generated either).
+fn resolve(state: &AppState, route: &str) -> Result<Arc<TableSchema>, Box<HttpResponse>> {
+    if !state.require_auth && (route == "flx_users" || route == "flx_roles") {
+        return Err(Box::new(json_err(actix_web::http::StatusCode::NOT_FOUND, format!("Route '{}' not found", route))));
+    }
+    registry::schema(route)
+        .ok_or_else(|| Box::new(json_err(actix_web::http::StatusCode::NOT_FOUND, format!("Route '{}' not found", route))))
+}
+
+fn method_disabled(route: &str, method: &Method) -> HttpResponse {
+    json_err(
+        actix_web::http::StatusCode::METHOD_NOT_ALLOWED,
+        format!("{} is not enabled for route '{}'", method, route),
+    )
+}
+
+fn boxed(r: impl Responder, req: &HttpRequest) -> HttpResponse {
+    r.respond_to(req).map_into_boxed_body()
+}
+
+// ── Dynamic entity handlers ───────────────────────────────────────────────────
+
+async fn entity_get(
+    state: web::Data<AppState>,
+    req: HttpRequest,
+    parameters: web::Query<Value>,
+    path: Path<String>,
+) -> HttpResponse {
+    let route = path.into_inner();
+    let schema = match resolve(&state, &route) { Ok(s) => s, Err(r) => return *r };
+    if !schema.get.enable_method {
+        return method_disabled(&route, req.method());
+    }
+    boxed(crate::nocode::handlers::get_handler::select(state, parameters, route, schema, req.clone()).await, &req)
+}
+
+async fn entity_post(
+    state: web::Data<AppState>,
+    req: HttpRequest,
+    parameters: web::Query<Value>,
+    payload: web::Payload,
+    path: Path<String>,
+) -> HttpResponse {
+    let route = path.into_inner();
+    let schema = match resolve(&state, &route) { Ok(s) => s, Err(r) => return *r };
+    if !schema.post.enable_method {
+        return method_disabled(&route, req.method());
+    }
+    boxed(
+        crate::nocode::handlers::post_handler::insert(state, parameters, route, schema, payload, req.clone()).await,
+        &req,
+    )
+}
+
+async fn entity_trace(
+    state: web::Data<AppState>,
+    req: HttpRequest,
+    parameters: web::Query<Value>,
+    path: Path<String>,
+) -> HttpResponse {
+    let route = path.into_inner();
+    let schema = match resolve(&state, &route) { Ok(s) => s, Err(r) => return *r };
+    if !schema.trace.enable_method {
+        return method_disabled(&route, req.method());
+    }
+    boxed(crate::nocode::handlers::trace_handler::process(state, parameters, route, schema, req.clone()).await, &req)
+}
+
+async fn entity_patch(
+    state: web::Data<AppState>,
+    req: HttpRequest,
+    parameters: web::Query<Value>,
+    path: Path<String>,
+) -> HttpResponse {
+    let route = path.into_inner();
+    let schema = match resolve(&state, &route) { Ok(s) => s, Err(r) => return *r };
+    if !schema.patch.enable_method {
+        return method_disabled(&route, req.method());
+    }
+    boxed(crate::nocode::handlers::patch_handler::process_sp(state, parameters, route, schema, req.clone()).await, &req)
+}
+
+async fn entity_delete(
+    state: web::Data<AppState>,
+    req: HttpRequest,
+    parameters: web::Query<Value>,
+    path: Path<(String, String)>,
+) -> HttpResponse {
+    let (route, id) = path.into_inner();
+    let schema = match resolve(&state, &route) { Ok(s) => s, Err(r) => return *r };
+    if !schema.del.enable_method {
+        return method_disabled(&route, req.method());
+    }
+    let ref_fks = registry::current().ref_foreign_keys.clone();
+    boxed(
+        crate::nocode::handlers::delete_handler::delete(
+            state, parameters, route, schema, ref_fks, Path::from(id), req.clone(),
+        )
+        .await,
+        &req,
+    )
+}
+
+/// PUT and PATCH on `/{route}/{id}` share the update handler (PATCH = partial / status update).
+async fn entity_put(
+    state: web::Data<AppState>,
+    req: HttpRequest,
+    parameters: web::Query<Value>,
+    payload: web::Payload,
+    path: Path<(String, String)>,
+) -> HttpResponse {
+    let (route, id) = path.into_inner();
+    let schema = match resolve(&state, &route) { Ok(s) => s, Err(r) => return *r };
+    if !schema.put.enable_method {
+        return method_disabled(&route, req.method());
+    }
+    let ref_fks = registry::current().ref_foreign_keys.clone();
+    boxed(
+        crate::nocode::handlers::put_handler::update(
+            state, parameters, route, schema, ref_fks, payload, Path::from(id), req.clone(),
+        )
+        .await,
+        &req,
+    )
+}
+
+async fn entity_import(
+    state: web::Data<AppState>,
+    req: HttpRequest,
+    parameters: web::Query<Value>,
+    multipart: Multipart,
+    path: Path<String>,
+) -> HttpResponse {
+    let route = path.into_inner();
+    let schema = match resolve(&state, &route) { Ok(s) => s, Err(r) => return *r };
+    if !schema.post.enable_method {
+        return method_disabled(&route, req.method());
+    }
+    boxed(
+        crate::nocode::handlers::import_handler::import(state, parameters, route, schema, multipart, req.clone()).await,
+        &req,
+    )
+}
+
+async fn entity_export_get(
+    state: web::Data<AppState>,
+    req: HttpRequest,
+    parameters: web::Query<Value>,
+    path: Path<String>,
+) -> HttpResponse {
+    let route = path.into_inner();
+    let schema = match resolve(&state, &route) { Ok(s) => s, Err(r) => return *r };
+    if !schema.get.enable_method {
+        return method_disabled(&route, req.method());
+    }
+    boxed(
+        crate::nocode::handlers::export_handler::export_get(state, parameters, route, schema, req.clone()).await,
+        &req,
+    )
+}
+
+async fn entity_export_post(
+    state: web::Data<AppState>,
+    req: HttpRequest,
+    parameters: web::Query<Value>,
+    multipart: Multipart,
+    path: Path<String>,
+) -> HttpResponse {
+    let route = path.into_inner();
+    let schema = match resolve(&state, &route) { Ok(s) => s, Err(r) => return *r };
+    if !schema.get.enable_method {
+        return method_disabled(&route, req.method());
+    }
+    boxed(
+        crate::nocode::handlers::export_handler::export_post(state, parameters, route, schema, multipart, req.clone())
+            .await,
+        &req,
+    )
+}
+
+async fn entity_validate(state: web::Data<AppState>, req: HttpRequest, path: Path<String>) -> HttpResponse {
+    let route = path.into_inner();
+    let schema = match resolve(&state, &route) { Ok(s) => s, Err(r) => return *r };
+    boxed(check_table_design(state, route, schema, req.clone()).await, &req)
+}
+
+async fn entity_generate_table(state: web::Data<AppState>, req: HttpRequest, path: Path<String>) -> HttpResponse {
+    let route = path.into_inner();
+    let schema = match resolve(&state, &route) { Ok(s) => s, Err(r) => return *r };
+    if !schema.auto_generate || route == "flx_users" || route == "flx_roles" {
+        return json_err(
+            actix_web::http::StatusCode::NOT_FOUND,
+            format!("Table generation is not enabled for route '{}'", route),
+        );
+    }
+    boxed(create_table(state, route, schema, req.clone()).await, &req)
+}
+
+async fn entity_seed(state: web::Data<AppState>, req: HttpRequest, path: Path<String>) -> HttpResponse {
+    let route = path.into_inner();
+    let schema = match resolve(&state, &route) { Ok(s) => s, Err(r) => return *r };
+    if !schema.seed || route == "flx_users" || route == "flx_roles" {
+        return json_err(
+            actix_web::http::StatusCode::NOT_FOUND,
+            format!("Seeding is not enabled for route '{}'", route),
+        );
+    }
+    boxed(seed_table(state, route, schema, req.clone()).await, &req)
+}
+
+// ── Admin: hot reload ─────────────────────────────────────────────────────────
+
+/// Roles allowed to call `/admin/*`. Matched against the part before `/` of
+/// each JWT role entry (`flx_roles/127` → `flx_roles`). Env `ADMIN_ROLES`.
+fn admin_roles() -> Vec<String> {
+    std::env::var("ADMIN_ROLES")
+        .unwrap_or_else(|_| "admin,Super Admin,Administrator,flx_roles".to_string())
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+fn is_admin(state: &AppState, req: &HttpRequest) -> bool {
+    if !state.require_auth {
+        return true;
+    }
+    use actix_web::HttpMessage;
+    let Some(claims) = req.extensions().get::<crate::auth::Claims>().cloned() else { return false };
+    if claims.id == "1" {
+        return true;
+    }
+    let allowed = admin_roles();
+    claims
+        .get_roles()
+        .iter()
+        .any(|r| allowed.iter().any(|a| r.split('/').next().unwrap_or("") == a))
+}
+
+async fn admin_reload(state: web::Data<AppState>, req: HttpRequest) -> HttpResponse {
+    if !is_admin(&state, &req) {
+        return json_err(actix_web::http::StatusCode::FORBIDDEN, "Admin role required");
+    }
+    match registry::reload(&state).await {
+        Ok(report) => HttpResponse::Ok().json(WebResponse {
+            success: true,
+            message: format!("Configuration reloaded (generation {})", report.generation),
+            total_data: report.routes as i32,
+            data: serde_json::to_value(report).unwrap_or(Value::Null),
+        }),
+        Err(e) => {
+            log_output("ERROR", "CONFIG-RELOAD", "admin", e.clone(), true);
+            json_err(actix_web::http::StatusCode::UNPROCESSABLE_ENTITY, format!("Reload rejected, previous configuration kept: {}", e))
+        }
+    }
+}
+
+async fn admin_registry(state: web::Data<AppState>, req: HttpRequest) -> HttpResponse {
+    if !is_admin(&state, &req) {
+        return json_err(actix_web::http::StatusCode::FORBIDDEN, "Admin role required");
+    }
+    let reg = registry::current();
+    HttpResponse::Ok().json(WebResponse {
+        success: true,
+        message: "Live configuration".to_string(),
+        total_data: reg.routes.len() as i32,
+        data: serde_json::json!({
+            "generation": reg.generation,
+            "loaded_at": reg.loaded_at.to_rfc3339(),
+            "routes": reg.routes,
+            "route_publics": reg.route_publics,
+        }),
+    })
 }
 
 // ── Public registration function ──────────────────────────────────────────────
@@ -73,8 +347,7 @@ pub fn configure_routes(
 
     // ── Static files ─────────────────────────────────────────────────────────
     {
-        let static_loc =
-            std::env::var("LOC_STATIC").unwrap_or_else(|_| "static".to_string());
+        let static_loc = std::env::var("LOC_STATIC").unwrap_or_else(|_| "static".to_string());
         let static_files = Files::new("/static", static_loc);
         if *ISDEBUG {
             cfg.service(static_files.show_files_listing());
@@ -87,7 +360,7 @@ pub fn configure_routes(
     // ── Auth endpoints ────────────────────────────────────────────────────────
     if require_auth {
         cfg.service(web::resource("/login").route(web::post().to(
-            move |state: web::Data<AppState>, req: actix_web::HttpRequest| login(state, req),
+            move |state: web::Data<AppState>, req: HttpRequest| login(state, req),
         )));
         log_ep(do_log, "CORE ENDPOINT", "POST", host, &port_str, "login");
 
@@ -95,36 +368,42 @@ pub fn configure_routes(
             move |state: web::Data<AppState>, multipart: Multipart| register(state, multipart),
         )));
         log_ep(do_log, "CORE ENDPOINT", "POST", host, &port_str, "register");
+
+        cfg.service(web::resource("/token/refresh").route(web::post().to(refresh_token)));
+        cfg.service(web::resource("/logout").route(web::post().to(logout)));
+        log_ep(do_log, "CORE ENDPOINT", "POST", host, &port_str, "token/refresh | logout");
     }
 
     // ── Roles ─────────────────────────────────────────────────────────────────
-    cfg.service(
-        web::resource("/roles")
-            .route(web::get().to(move |state: web::Data<AppState>| get_roles(state))),
-    );
+    cfg.service(web::resource("/roles").route(web::get().to(move |state: web::Data<AppState>| get_roles(state))));
     log_ep(do_log, "CORE ENDPOINT", "GET", host, &port_str, "roles");
 
-    // ── Health check ──────────────────────────────────────────────────────────
-    cfg.service(web::resource("/healthz").route(web::get().to({
+    // ── Health: liveness (process up) and readiness (database reachable) ─────
+    cfg.service(web::resource("/livez").route(web::get().to(|| async {
+        HttpResponse::Ok().json(serde_json::json!({ "status": "ok" }))
+    })));
+    let readiness = {
         let state = app_state.clone();
         move || {
             let state = state.clone();
             async move {
-                let db_ok = state.db.query("SELECT 1").await.is_ok();
+                let db_ok = tokio::time::timeout(std::time::Duration::from_secs(2), state.db.query("SELECT 1"))
+                    .await
+                    .map(|r| r.is_ok())
+                    .unwrap_or(false);
                 let body = serde_json::json!({
-                    "status": "ok",
-                    "db":      if db_ok { "up" } else { "down" },
+                    "status": if db_ok { "ok" } else { "degraded" },
+                    "db": if db_ok { "up" } else { "down" },
                     "db_type": state.db_type,
+                    "config_generation": registry::current().generation,
                 });
-                if db_ok {
-                    HttpResponse::Ok().json(body)
-                } else {
-                    HttpResponse::ServiceUnavailable().json(body)
-                }
+                if db_ok { HttpResponse::Ok().json(body) } else { HttpResponse::ServiceUnavailable().json(body) }
             }
         }
-    })));
-    log_ep(do_log, "CORE ENDPOINT", "GET", host, &port_str, "healthz");
+    };
+    cfg.service(web::resource("/healthz").route(web::get().to(readiness.clone())));
+    cfg.service(web::resource("/readyz").route(web::get().to(readiness)));
+    log_ep(do_log, "CORE ENDPOINT", "GET", host, &port_str, "healthz | livez | readyz");
 
     // ── Prometheus metrics ────────────────────────────────────────────────────
     cfg.service(web::resource("/metrics").route(web::get().to({
@@ -142,379 +421,58 @@ pub fn configure_routes(
     log_ep(do_log, "CORE ENDPOINT", "GET", host, &port_str, "metrics");
 
     // ── Email queue: POST /email/send ─────────────────────────────────────────
-    cfg.service(web::resource("/email/send").route(
-        web::post().to(crate::nocode::handlers::email_handler::send),
-    ));
+    cfg.service(web::resource("/email/send").route(web::post().to(crate::nocode::handlers::email_handler::send)));
     log_ep(do_log, "CORE ENDPOINT", "POST", host, &port_str, "email/send");
 
-    // ── Dynamic nocode routes ─────────────────────────────────────────────────
-    for route in CONFIG.routes.iter() {
-        // Build the bundle for this route (skips routes with no schema).
-        let bundle = {
-            let route_arc: Arc<str> = Arc::from(route.as_str());
+    // ── Admin: live configuration ─────────────────────────────────────────────
+    cfg.service(web::resource("/admin/reload").route(web::post().to(admin_reload)));
+    cfg.service(web::resource("/admin/registry").route(web::get().to(admin_registry)));
+    log_ep(do_log, "CORE ENDPOINT", "POST", host, &port_str, "admin/reload");
 
-            // Skip auth-only tables when auth is disabled.
-            if !require_auth
-                && (route_arc.as_ref() == "flx_users" || route_arc.as_ref() == "flx_roles")
-            {
+    // ── Dynamic nocode routes (resolved per request from the registry) ────────
+    // Specific prefixes first, then the two catch-alls.
+    cfg.service(web::resource("/import/{route}").route(web::post().to(entity_import)));
+    cfg.service(
+        web::resource("/export/{route}")
+            .route(web::get().to(entity_export_get))
+            .route(web::post().to(entity_export_post)),
+    );
+    cfg.service(web::resource("/validate/{route}").route(web::get().to(entity_validate)));
+    cfg.service(web::resource("/generate/table/{route}").route(web::post().to(entity_generate_table)));
+    cfg.service(web::resource("/generate/seed/{route}").route(web::post().to(entity_seed)));
+    cfg.service(web::resource("/seed/{route}").route(web::post().to(entity_seed)));
+    cfg.service(
+        web::resource("/{route}")
+            .route(web::get().to(entity_get))
+            .route(web::post().to(entity_post))
+            .route(web::trace().to(entity_trace))
+            .route(web::patch().to(entity_patch)),
+    );
+    cfg.service(
+        web::resource("/{route}/{id}")
+            .route(web::delete().to(entity_delete))
+            .route(web::put().to(entity_put))
+            .route(web::patch().to(entity_put)),
+    );
+
+    if do_log {
+        let reg = registry::current();
+        for route in reg.routes.iter() {
+            if !require_auth && (route == "flx_users" || route == "flx_roles") {
                 continue;
             }
-
-            let schema_arc = match SCHEMAS.0.get(route) {
-                Some(s) => s.clone(),
-                None => continue,
-            };
-
-            RouteBundle {
-                route:   route_arc,
-                schema:  schema_arc,
-                ref_fks: SCHEMAS.1.clone(),
-            }
-        };
-
-        let schema = bundle.schema.as_ref();
-
-        // ── Base resource: GET / POST / TRACE / PATCH ─────────────────────
-        let mut base_res = web::resource(bundle.route.as_ref());
-        let mut has_base = false;
-
-        if schema.get.enable_method {
-            log_ep(do_log, "ENDPOINT", "GET", host, &port_str, bundle.route.as_ref());
-            let b = bundle.clone();
-            base_res = base_res.route(web::get().to(
-                move |state: web::Data<AppState>,
-                      req: actix_web::HttpRequest,
-                      parameters: web::Query<Value>| {
-                    crate::nocode::handlers::get_handler::select(
-                        state,
-                        parameters,
-                        b.route.to_string(),
-                        b.schema.clone(),
-                        req,
-                    )
-                },
-            ));
-            has_base = true;
+            let Some(schema) = reg.schemas.get(route) else { continue };
+            let mut methods: Vec<&str> = Vec::new();
+            if schema.get.enable_method { methods.push("GET"); methods.push("GET /export"); }
+            if schema.post.enable_method { methods.push("POST"); methods.push("POST /import"); }
+            if schema.put.enable_method { methods.push("PUT /{id}"); methods.push("PATCH /{id}"); }
+            if schema.patch.enable_method { methods.push("PATCH"); }
+            if schema.del.enable_method { methods.push("DELETE /{id}"); }
+            if schema.trace.enable_method { methods.push("TRACE"); }
+            if schema.auto_generate { methods.push("POST /generate/table"); }
+            if schema.seed { methods.push("POST /seed"); }
+            log_ep(true, "ENDPOINT", &methods.join(", "), host, &port_str, route);
         }
-
-        if schema.post.enable_method {
-            log_ep(do_log, "ENDPOINT", "POST", host, &port_str, bundle.route.as_ref());
-            let b = bundle.clone();
-            base_res = base_res.route(web::post().to(
-                move |state: web::Data<AppState>,
-                      parameters: web::Query<Value>,
-                      payload: web::Payload,
-                      req: actix_web::HttpRequest| {
-                    crate::nocode::handlers::post_handler::insert(
-                        state,
-                        parameters,
-                        b.route.to_string(),
-                        b.schema.clone(),
-                        payload,
-                        req,
-                    )
-                },
-            ));
-            has_base = true;
-        }
-
-        if schema.trace.enable_method {
-            log_ep(do_log, "ENDPOINT", "TRACE", host, &port_str, bundle.route.as_ref());
-            let b = bundle.clone();
-            base_res = base_res.route(web::trace().to(
-                move |state: web::Data<AppState>,
-                      parameters: web::Query<Value>,
-                      req: actix_web::HttpRequest| {
-                    crate::nocode::handlers::trace_handler::process(
-                        state,
-                        parameters,
-                        b.route.to_string(),
-                        b.schema.clone(),
-                        req,
-                    )
-                },
-            ));
-            has_base = true;
-        }
-
-        if schema.patch.enable_method {
-            log_ep(do_log, "ENDPOINT", "PATCH", host, &port_str, bundle.route.as_ref());
-            let b = bundle.clone();
-            base_res = base_res.route(web::patch().to(
-                move |state: web::Data<AppState>,
-                      parameters: web::Query<Value>,
-                      req: actix_web::HttpRequest| {
-                    crate::nocode::handlers::patch_handler::process_sp(
-                        state,
-                        parameters,
-                        b.route.to_string(),
-                        b.schema.clone(),
-                        req,
-                    )
-                },
-            ));
-            has_base = true;
-        }
-
-        if has_base {
-            cfg.service(base_res);
-        }
-
-        // ── ID resource: DELETE / PUT ─────────────────────────────────────
-        let mut id_res = web::resource(format!("{}/{{id}}", bundle.route.as_ref()));
-        let mut has_id = false;
-
-        if schema.del.enable_method {
-            log_ep(do_log, "ENDPOINT", "DELETE", host, &port_str, bundle.route.as_ref());
-            let b = bundle.clone();
-            id_res = id_res.route(web::delete().to(
-                move |state: web::Data<AppState>,
-                      parameters: web::Query<Value>,
-                      path: Path<String>,
-                      req: actix_web::HttpRequest| {
-                    crate::nocode::handlers::delete_handler::delete(
-                        state,
-                        parameters,
-                        b.route.to_string(),
-                        b.schema.clone(),
-                        b.ref_fks.clone(),
-                        path,
-                        req,
-                    )
-                },
-            ));
-            has_id = true;
-        }
-
-        if schema.put.enable_method {
-            log_ep(do_log, "ENDPOINT", "PUT", host, &port_str, bundle.route.as_ref());
-            let b = bundle.clone();
-            id_res = id_res.route(web::put().to(
-                move |state: web::Data<AppState>,
-                      parameters: web::Query<Value>,
-                      payload: web::Payload,
-                      path: Path<String>,
-                      req: actix_web::HttpRequest| {
-                    crate::nocode::handlers::put_handler::update(
-                        state,
-                        parameters,
-                        b.route.to_string(),
-                        b.schema.clone(),
-                        b.ref_fks.clone(),
-                        payload,
-                        path,
-                        req,
-                    )
-                },
-            ));
-
-            // Also register PATCH on {route}/{id} for status update / partial update support
-            log_ep(do_log, "ENDPOINT", "PATCH", host, &port_str, &format!("{}/{{id}}", bundle.route.as_ref()));
-            let b_patch = bundle.clone();
-            id_res = id_res.route(web::patch().to(
-                move |state: web::Data<AppState>,
-                      parameters: web::Query<Value>,
-                      payload: web::Payload,
-                      path: Path<String>,
-                      req: actix_web::HttpRequest| {
-                    crate::nocode::handlers::put_handler::update(
-                        state,
-                        parameters,
-                        b_patch.route.to_string(),
-                        b_patch.schema.clone(),
-                        b_patch.ref_fks.clone(),
-                        payload,
-                        path,
-                        req,
-                    )
-                },
-            ));
-            has_id = true;
-        }
-
-        if has_id {
-            cfg.service(id_res);
-        }
-
-        // ── Import  POST /import/<route> ──────────────────────────────────
-        if schema.post.enable_method {
-            let b = bundle.clone();
-            log_ep(
-                do_log,
-                "ENDPOINT",
-                "POST",
-                host,
-                &port_str,
-                &format!("import/{}", b.route.as_ref()),
-            );
-            cfg.service(
-                web::resource(format!("/import/{}", b.route.as_ref())).route(web::post().to(
-                    move |state: web::Data<AppState>,
-                          parameters: web::Query<Value>,
-                          multipart: Multipart,
-                          req: actix_web::HttpRequest| {
-                        crate::nocode::handlers::import_handler::import(
-                            state,
-                            parameters,
-                            b.route.to_string(),
-                            b.schema.clone(),
-                            multipart,
-                            req,
-                        )
-                    },
-                )),
-            );
-        }
-
-        // ── Export  GET /export/<route> & POST /export/<route> ────────────
-        if schema.get.enable_method {
-            let b = bundle.clone();
-            log_ep(
-                do_log,
-                "ENDPOINT",
-                "GET",
-                host,
-                &port_str,
-                &format!("export/{}", b.route.as_ref()),
-            );
-            let b_post = bundle.clone();
-            cfg.service(
-                web::resource(format!("/export/{}", b.route.as_ref()))
-                    .route(web::get().to(
-                        move |state: web::Data<AppState>,
-                              parameters: web::Query<Value>,
-                              req: actix_web::HttpRequest| {
-                            crate::nocode::handlers::export_handler::export_get(
-                                state,
-                                parameters,
-                                b.route.to_string(),
-                                b.schema.clone(),
-                                req,
-                            )
-                        },
-                    ))
-                    .route(web::post().to(
-                        move |state: web::Data<AppState>,
-                              parameters: web::Query<Value>,
-                              multipart: Multipart,
-                              req: actix_web::HttpRequest| {
-                            crate::nocode::handlers::export_handler::export_post(
-                                state,
-                                parameters,
-                                b_post.route.to_string(),
-                                b_post.schema.clone(),
-                                multipart,
-                                req,
-                            )
-                        },
-                    )),
-            );
-        }
-
-        // ── Validate  GET /validate/<route> ──────────────────────────────
-        {
-            let b = bundle.clone();
-            if do_log {
-                log_output(
-                    "ENDPOINT",
-                    "METHOD",
-                    "GET",
-                    format!(
-                        "http://{}:{}/{}/{}",
-                        host.red(),
-                        port_str.green(),
-                        "validate".yellow(),
-                        b.route.as_ref().purple()
-                    ),
-                    false,
-                );
-            }
-            cfg.service(
-                web::resource(format!("validate/{}", b.route.as_ref())).route(web::get().to(
-                    move |state: web::Data<AppState>, req: actix_web::HttpRequest| {
-                        check_table_design(state, b.route.to_string(), b.schema.clone(), req)
-                    },
-                )),
-            );
-        }
-
-        // ── Generate table  POST /generate/table/<route> ──────────────────
-        if bundle.schema.auto_generate
-            && bundle.route.as_ref() != "flx_users"
-            && bundle.route.as_ref() != "flx_roles"
-        {
-            let b = bundle.clone();
-            if do_log {
-                log_output(
-                    "ENDPOINT",
-                    "METHOD",
-                    "POST",
-                    format!(
-                        "http://{}:{}/{}/{}",
-                        host.red(),
-                        port_str.green(),
-                        "generate/table".yellow(),
-                        b.route.as_ref().purple()
-                    ),
-                    false,
-                );
-            }
-            cfg.service(
-                web::resource(format!("generate/table/{}", b.route.as_ref())).route(
-                    web::post().to(
-                        move |state: web::Data<AppState>, req: actix_web::HttpRequest| {
-                            create_table(state, b.route.to_string(), b.schema.clone(), req)
-                        },
-                    ),
-                ),
-            );
-        }
-
-        // ── Seed table  POST /seed/<route> & POST /generate/seed/<route> ──
-        if bundle.schema.seed
-            && bundle.route.as_ref() != "flx_users"
-            && bundle.route.as_ref() != "flx_roles"
-        {
-            let b = bundle.clone();
-            if do_log {
-                log_output(
-                    "ENDPOINT",
-                    "METHOD",
-                    "POST",
-                    format!(
-                        "http://{}:{}/{}/{}",
-                        host.red(),
-                        port_str.green(),
-                        "seed".yellow(),
-                        b.route.as_ref().purple()
-                    ),
-                    false,
-                );
-            }
-            let b1 = bundle.clone();
-            cfg.service(
-                web::resource(format!("seed/{}", b.route.as_ref())).route(
-                    web::post().to(
-                        move |state: web::Data<AppState>, req: actix_web::HttpRequest| {
-                            seed_table(state, b1.route.to_string(), b1.schema.clone(), req)
-                        },
-                    ),
-                ),
-            );
-            let b2 = bundle.clone();
-            cfg.service(
-                web::resource(format!("generate/seed/{}", b.route.as_ref())).route(
-                    web::post().to(
-                        move |state: web::Data<AppState>, req: actix_web::HttpRequest| {
-                            seed_table(state, b2.route.to_string(), b2.schema.clone(), req)
-                        },
-                    ),
-                ),
-            );
-        }
-
-        if do_log {
-            println!("\n");
-        }
+        println!("\n");
     }
 }

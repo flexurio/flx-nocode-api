@@ -24,7 +24,7 @@ pub async fn process_delete_request(
 
     // 1. Auth Check
     let mut claims = Claims::default();
-    if state.require_auth && !state.route_publics.contains(&route) {
+    if state.require_auth && !state.is_public_route(&route) {
         claims = get_user_info_from_token(&req, state.clone())
             .map_err(|_| "Invalid token".to_string())?;
 
@@ -44,7 +44,7 @@ pub async fn process_delete_request(
     if state.write_queue_enabled && isqueue {
         let t0 = std::time::Instant::now();
         // actor_id logic
-        let actor_id_opt = if state.require_auth && !state.route_publics.contains(&route) {
+        let actor_id_opt = if state.require_auth && !state.is_public_route(&route) {
              Some(claims.id.clone())
         } else {
              None

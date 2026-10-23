@@ -195,6 +195,16 @@ pub async fn perform_delete_sql(
                     }
                 }
 
+                if !table_schema.webhooks.is_empty() {
+                    let empty = serde_json::Map::new();
+                    if let Err(e) = crate::nocode::outbox::enqueue_in_tx(
+                        &mut *tx, table_schema, route, "on_delete", id_raw, Some(actor_id), &empty, Some(&old_record),
+                    ).await {
+                        let _ = tx.rollback().await;
+                        return Err(format!("Error queueing webhook: {}", e));
+                    }
+                }
+
                 tx.commit().await.map_err(|e| format!("Error committing transaction: {}", e))?;
                 Ok(())
             } else {

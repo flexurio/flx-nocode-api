@@ -203,3 +203,50 @@ pub async fn reset_password(args: &[String]) -> anyhow::Result<()> {
 
     Ok(())
 }
+
+
+/// `flx-nocode-api init [--dir <path>] [--force]`
+///
+/// Creates a runnable installation offline: `.env` (with fresh random
+/// SECRET_KEY / ENCRYPT_KEY), `config/routes.json`, `config/rules.json`,
+/// `config/entity/flx_users.json`, `config/entity/flx_roles.json`, plus the
+/// `static/` and `seed/` directories. Existing files are kept unless `--force`.
+pub fn init(args: &[String]) -> anyhow::Result<()> {
+    let dir = arg_value(args, "--dir").unwrap_or_else(|| ".".to_string());
+    let force = args.iter().any(|a| a == "--force");
+    let root = std::path::Path::new(&dir);
+    std::fs::create_dir_all(root)?;
+
+    let env_path = root.join(".env");
+    if force || !env_path.exists() {
+        let env = crate::embedded::ENV_TEMPLATE
+            .replace("__SECRET_KEY__", &crate::embedded::random_secret(48))
+            .replace("__ENCRYPT_KEY__", &crate::embedded::random_secret(32));
+        std::fs::write(&env_path, env)?;
+        println!("{} {}", "created".green(), env_path.display());
+    } else {
+        println!("{} {} (kept)", "exists ".yellow(), env_path.display());
+    }
+
+    let conf = root.join("config");
+    if force {
+        for f in ["routes.json", "rules.json", "entity/flx_users.json", "entity/flx_roles.json"] {
+            let _ = std::fs::remove_file(conf.join(f));
+        }
+    }
+    for created in crate::embedded::ensure_core_config(conf.to_str().unwrap_or("config"))? {
+        println!("{} {}", "created".green(), created);
+    }
+    for d in ["static", "seed", "data"] {
+        let p = root.join(d);
+        if !p.exists() {
+            std::fs::create_dir_all(&p)?;
+            println!("{} {}/", "created".green(), p.display());
+        }
+    }
+    println!();
+    println!("Next: review {} then run `flx-nocode-api`.", env_path.display());
+    println!("Add entities under {}/entity and list them in routes.json;", conf.display());
+    println!("the running server picks them up with `POST /admin/reload` (or SIGHUP).");
+    Ok(())
+}

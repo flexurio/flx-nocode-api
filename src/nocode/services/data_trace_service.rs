@@ -16,7 +16,7 @@ pub async fn process_trace_request(
 ) -> Result<WebResponse, String> {
 
     // 1. Auth Check
-    if state.require_auth && !state.route_publics.contains(&route) {
+    if state.require_auth && !state.is_public_route(&route) {
         let claims = get_user_info_from_token(&req, state.clone())
             .map_err(|_| "Invalid token".to_string())?;
 

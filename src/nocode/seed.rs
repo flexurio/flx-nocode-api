@@ -671,60 +671,80 @@ mod tests {
     #[test]
     fn test_is_admin_role() {
         let admin_claims1 = Claims {
+            jti: None,
+            typ: None,
             rl: "admin/1".to_string(),
             ..Claims::default()
         };
         assert!(is_admin_role(&admin_claims1));
 
         let admin_claims2 = Claims {
+            jti: None,
+            typ: None,
             rl: "Admin".to_string(),
             ..Claims::default()
         };
         assert!(is_admin_role(&admin_claims2));
 
         let admin_claims3 = Claims {
+            jti: None,
+            typ: None,
             rl: "ADMIN/99".to_string(),
             ..Claims::default()
         };
         assert!(is_admin_role(&admin_claims3));
 
         let admin_claims4 = Claims {
+            jti: None,
+            typ: None,
             rl: "127".to_string(),
             ..Claims::default()
         };
         assert!(is_admin_role(&admin_claims4));
 
         let admin_claims5 = Claims {
+            jti: None,
+            typ: None,
             rl: "*/127".to_string(),
             ..Claims::default()
         };
         assert!(is_admin_role(&admin_claims5));
 
         let admin_claims6 = Claims {
+            jti: None,
+            typ: None,
             rl: "user/2,admin/1".to_string(),
             ..Claims::default()
         };
         assert!(is_admin_role(&admin_claims6));
 
         let admin_claims7 = Claims {
+            jti: None,
+            typ: None,
             rl: "Administrator".to_string(),
             ..Claims::default()
         };
         assert!(is_admin_role(&admin_claims7));
 
         let admin_claims8 = Claims {
+            jti: None,
+            typ: None,
             rl: "user/2,administrator/1".to_string(),
             ..Claims::default()
         };
         assert!(is_admin_role(&admin_claims8));
 
         let non_admin = Claims {
+            jti: None,
+            typ: None,
             rl: "user/1,viewer/2".to_string(),
             ..Claims::default()
         };
         assert!(!is_admin_role(&non_admin));
 
         let empty_claims = Claims {
+            jti: None,
+            typ: None,
             rl: "".to_string(),
             ..Claims::default()
         };

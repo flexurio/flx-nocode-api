@@ -140,6 +140,18 @@ pub struct AppMetrics {
     pub cache_misses: AtomicU64,
     pub rate_limit_hits: AtomicU64,
     pub db_timeouts: AtomicU64,
+    /// Write-queue: stream length, pending (delivered, unacked), processed, failed (dead-lettered).
+    pub write_queue_len: AtomicU64,
+    pub write_queue_pending: AtomicU64,
+    pub write_queue_processed: AtomicU64,
+    pub write_queue_failed: AtomicU64,
+    /// Email queue: stream length and pending.
+    pub email_queue_len: AtomicU64,
+    pub email_queue_pending: AtomicU64,
+    /// Transactional outbox: pending rows, deliveries, permanent failures.
+    pub outbox_pending: AtomicU64,
+    pub outbox_sent: AtomicU64,
+    pub outbox_failed: AtomicU64,
     /// MCP HTTP requests received on `MCP_PATH` (JSON-RPC envelopes, any method)
     pub mcp_requests: AtomicU64,
     /// MCP `tools/call` invocations
@@ -162,6 +174,15 @@ impl AppMetrics {
             cache_misses: AtomicU64::new(0),
             rate_limit_hits: AtomicU64::new(0),
             db_timeouts: AtomicU64::new(0),
+            write_queue_len: AtomicU64::new(0),
+            write_queue_pending: AtomicU64::new(0),
+            write_queue_processed: AtomicU64::new(0),
+            write_queue_failed: AtomicU64::new(0),
+            email_queue_len: AtomicU64::new(0),
+            email_queue_pending: AtomicU64::new(0),
+            outbox_pending: AtomicU64::new(0),
+            outbox_sent: AtomicU64::new(0),
+            outbox_failed: AtomicU64::new(0),
             mcp_requests: AtomicU64::new(0),
             mcp_tool_calls: AtomicU64::new(0),
             mcp_tool_errors: AtomicU64::new(0),
@@ -200,6 +221,22 @@ impl AppMetrics {
 
     pub fn record_db_timeout(&self) {
         self.db_timeouts.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_queue_processed(&self) {
+        self.write_queue_processed.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_queue_failure(&self) {
+        self.write_queue_failed.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_outbox_sent(&self) {
+        self.outbox_sent.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_outbox_failed(&self) {
+        self.outbox_failed.fetch_add(1, Ordering::Relaxed);
     }
 
     #[allow(dead_code)]
@@ -264,6 +301,10 @@ impl AppMetrics {
         counter("flx_cache_misses", "Total cache misses (served from the database)", self.cache_misses.load(Ordering::Relaxed));
         counter("flx_rate_limit_hits", "Total rate limit rejections", self.rate_limit_hits.load(Ordering::Relaxed));
         counter("flx_db_timeouts", "Database statements aborted by the client-side timeout", self.db_timeouts.load(Ordering::Relaxed));
+        counter("flx_write_queue_processed", "Write-queue jobs applied to the database", self.write_queue_processed.load(Ordering::Relaxed));
+        counter("flx_write_queue_failed", "Write-queue jobs dead-lettered after retries", self.write_queue_failed.load(Ordering::Relaxed));
+        counter("flx_outbox_sent", "Webhook deliveries that succeeded", self.outbox_sent.load(Ordering::Relaxed));
+        counter("flx_outbox_failed", "Webhook deliveries abandoned after OUTBOX_MAX_ATTEMPTS", self.outbox_failed.load(Ordering::Relaxed));
         counter("flx_mcp_requests", "Total MCP HTTP requests", self.mcp_requests.load(Ordering::Relaxed));
         counter("flx_mcp_tool_calls", "Total MCP tool invocations", self.mcp_tool_calls.load(Ordering::Relaxed));
         counter("flx_mcp_tool_errors", "Total MCP tool invocations that returned an error result", self.mcp_tool_errors.load(Ordering::Relaxed));
@@ -279,6 +320,11 @@ impl AppMetrics {
         gauge("flx_db_pool_idle", "Idle database connections", idle as f64);
         gauge("flx_db_pool_max", "Configured maximum database connections", max as f64);
         gauge("flx_db_pool_active", "Database connections currently executing", size.saturating_sub(idle) as f64);
+        gauge("flx_write_queue_len", "Entries in the write stream (XLEN)", self.write_queue_len.load(Ordering::Relaxed) as f64);
+        gauge("flx_write_queue_pending", "Write entries delivered but not yet acknowledged (XPENDING)", self.write_queue_pending.load(Ordering::Relaxed) as f64);
+        gauge("flx_email_queue_len", "Entries in the email stream (XLEN)", self.email_queue_len.load(Ordering::Relaxed) as f64);
+        gauge("flx_email_queue_pending", "Email entries delivered but not yet acknowledged", self.email_queue_pending.load(Ordering::Relaxed) as f64);
+        gauge("flx_outbox_pending", "Webhook events waiting for delivery", self.outbox_pending.load(Ordering::Relaxed) as f64);
 
         self.http_duration.render(&mut out);
         self.db_duration.render(&mut out);

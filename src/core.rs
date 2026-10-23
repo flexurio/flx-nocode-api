@@ -1,4 +1,4 @@
-use std::{error::Error, fs::File, io, path::Path};
+use std::error::Error;
 
 use actix_multipart::Multipart;
 use actix_web::{
@@ -7,9 +7,7 @@ use actix_web::{
 };
 use base64::{self, Engine};
 use rand::RngExt;
-use reqwest::Client;
 use serde_json::{Value, json};
-use zip::ZipArchive;
 
 use crate::rate_limit::{RL_WINDOW_LOGIN, RL_WINDOW_LOGIN_FAIL};
 use crate::storage::ast::{Filter as QF, Query as QQ, Val as QV};
@@ -327,79 +325,115 @@ pub async fn login(state: web::Data<AppState>, req: actix_web::HttpRequest) -> i
         }
     }
 
-    // Cross-DB: fetch endpoint & role and join in Rust via DataStore
-    // Build roles query using id_users type that matches id_user_str (numeric vs string)
+    let roles_data = roles_for_user(&state, &id_user_str).await;
+
+    let (refresh, _refresh_exp) = crate::auth::create_refresh_token(&id_user_str, &name);
+    let token = create_token(id_user_str, name, state.clone(), roles_data).await;
+    HttpResponse::Ok()
+        // Access token stays in `data` (unchanged contract); the refresh token
+        // travels in a header so existing clients keep working.
+        .insert_header(("X-Refresh-Token", refresh))
+        .insert_header(("X-Token-Expires-In", crate::auth::JWT_ACCESS_TTL_SECS.to_string()))
+        .json(WebResponse {
+            success: true,
+            message: "Login Success".to_string(),
+            total_data: 1,
+            data: json!(token),
+        })
+}
+
+/// Comma-separated `flx_roles.role` entries of a user, as embedded in the JWT.
+pub async fn roles_for_user(state: &AppState, id_user_str: &str) -> String {
     let id_roles_filter = if let Ok(n) = id_user_str.parse::<i64>() {
         QV::I64(n)
     } else {
-        QV::Str(id_user_str.clone())
+        QV::Str(id_user_str.to_string())
     };
     let q_roles = QQ::from("flx_roles")
         .select(["role"])
-        .r#where(QF::Eq("id_users".into(), id_roles_filter.clone()));
-    log_output(
-        "QUERY",
-        "core.rs/login",
-        "flx_roles",
-        format!(
-            "AST id_users=? ~ {}",
-            match id_roles_filter {
-                QV::I64(n) => n.to_string(),
-                QV::Str(s) => s,
-                _ => String::new(),
-            }
-        ),
-        true,
-    );
+        .r#where(QF::Eq("id_users".into(), id_roles_filter));
     let roles_rows = state.store.query(&q_roles).await.unwrap_or_default();
 
-    if *crate::ISDEBUG {
-        log_output(
-            "DEBUG",
-            "core.rs/login",
-            "roles_rows data ",
-            format!("{:?}", roles_rows),
-            true,
-        );
-    }
-
-    // Optimized: reduce string allocations by pre-allocating and avoiding multiple clones
-    let roles_data = {
-        let mut result = String::with_capacity(roles_rows.len() * 20); // Pre-allocate
-        let mut first = true;
-
-        for v in roles_rows {
-            if let Some(obj) = v.as_object() {
-                let rl_opt = obj.get("role");
-                if let Some(rl) = rl_opt {
-                    if !first {
-                        result.push(',');
-                    }
-                    first = false;
-
-                    match rl {
-                        serde_json::Value::Number(n) if n.is_i64() => {
-                            if let Some(i) = n.as_i64() {
-                                use std::fmt::Write;
-                                let _ = write!(result, "{}", i);
-                            }
-                        }
-                        serde_json::Value::String(s) => result.push_str(s),
-                        _ => continue,
-                    }
-                }
+    let mut result = String::with_capacity(roles_rows.len() * 20);
+    let mut first = true;
+    for v in roles_rows {
+        if let Some(rl) = v.as_object().and_then(|o| o.get("role")) {
+            let piece = match rl {
+                serde_json::Value::Number(n) => n.to_string(),
+                serde_json::Value::String(s) => s.clone(),
+                _ => continue,
+            };
+            if !first {
+                result.push(',');
             }
+            first = false;
+            result.push_str(&piece);
         }
-        result
-    };
+    }
+    result
+}
 
-    let token = create_token(id_user_str, name, state.clone(), roles_data);
-    HttpResponse::Ok().json(WebResponse {
-        success: true,
-        message: "Login Success".to_string(),
-        total_data: 1,
-        data: json!(token.await),
-    })
+/// `POST /token/refresh` — `Authorization: Bearer <refresh token>`.
+/// Issues a new access token (roles re-read from the database, so role changes
+/// apply) and rotates the refresh token (the presented one is revoked).
+pub async fn refresh_token(state: web::Data<AppState>, req: actix_web::HttpRequest) -> impl Responder {
+    let Some(hdr) = req.headers().get("Authorization").and_then(|h| h.to_str().ok()) else {
+        return HttpResponse::Unauthorized().json(WebResponse { success: false, message: "Missing Authorization".into(), total_data: 0, data: Value::Null });
+    };
+    let claims = match crate::auth::verify_refresh_token(hdr) {
+        Ok(c) => c,
+        Err(msg) => {
+            return HttpResponse::Unauthorized().json(WebResponse { success: false, message: msg.into(), total_data: 0, data: Value::Null });
+        }
+    };
+    // The user must still exist and be enabled.
+    let q_user = QQ::from("flx_users")
+        .select(["id", "name"])
+        .r#where(QF::And(vec![
+            QF::Eq("id".into(), if let Ok(n) = claims.id.parse::<i64>() { QV::I64(n) } else { QV::Str(claims.id.clone()) }),
+            QF::Eq("enabled".into(), QV::Bool(true)),
+        ]))
+        .limit(1);
+    let rows = match state.store.query(&q_user).await {
+        Ok(r) => r,
+        Err(_) => {
+            return HttpResponse::ServiceUnavailable().json(WebResponse { success: false, message: "Service temporarily unavailable".into(), total_data: 0, data: Value::Null });
+        }
+    };
+    if rows.is_empty() {
+        crate::auth::revoke(&claims);
+        return HttpResponse::Unauthorized().json(WebResponse { success: false, message: "User disabled or removed".into(), total_data: 0, data: Value::Null });
+    }
+    let name = rows[0].get("name").and_then(|v| v.as_str()).unwrap_or(&claims.nm).to_string();
+    let roles = roles_for_user(&state, &claims.id).await;
+    // Rotate: the old refresh token is dead from now on.
+    crate::auth::revoke(&claims);
+    let (new_refresh, _) = crate::auth::create_refresh_token(&claims.id, &name);
+    let access = create_token(claims.id.clone(), name, state.clone(), roles).await;
+    HttpResponse::Ok()
+        .insert_header(("X-Refresh-Token", new_refresh))
+        .insert_header(("X-Token-Expires-In", crate::auth::JWT_ACCESS_TTL_SECS.to_string()))
+        .json(WebResponse { success: true, message: "Token refreshed".into(), total_data: 1, data: json!(access) })
+}
+
+/// `POST /logout` — revokes the presented access token; an optional
+/// `X-Refresh-Token` header revokes the matching refresh token too.
+pub async fn logout(req: actix_web::HttpRequest) -> impl Responder {
+    use actix_web::HttpMessage;
+    let mut revoked = 0;
+    if let Some(claims) = req.extensions().get::<crate::auth::Claims>().cloned()
+        && claims.jti.is_some()
+    {
+        crate::auth::revoke(&claims);
+        revoked += 1;
+    }
+    if let Some(rt) = req.headers().get("X-Refresh-Token").and_then(|h| h.to_str().ok())
+        && let Ok(rc) = crate::auth::verify_refresh_token(rt)
+    {
+        crate::auth::revoke(&rc);
+        revoked += 1;
+    }
+    HttpResponse::Ok().json(WebResponse { success: true, message: "Logged out".into(), total_data: revoked, data: Value::Null })
 }
 
 // NCO-POST
@@ -507,7 +541,8 @@ pub async fn register(state: Data<AppState>, multipart: Multipart) -> impl Respo
 
 // Handler to get all roles from state.rules
 pub async fn get_roles(state: Data<AppState>) -> impl Responder {
-    let roles = state.rules["role"].as_array().unwrap_or(&vec![]).clone();
+    let rules = state.rules();
+    let roles = rules["role"].as_array().cloned().unwrap_or_default();
 
     HttpResponse::Ok().json(WebResponse {
         success: true,
@@ -994,173 +1029,5 @@ pub async fn generate_role_admin(
             );
         }
     }
-    Ok(())
-}
-
-#[derive(serde::Deserialize)]
-struct Release {
-    tag_name: String,
-}
-
-async fn get_latest_release() -> Result<String, Box<dyn Error + Send + Sync>> {
-    let url = "https://api.github.com/repos/flexurio/flx-nocode-api/releases/latest";
-
-    let client = Client::new();
-    let resp = client
-        .get(url)
-        .header("User-Agent", "flexurio-client") // GitHub butuh user-agent
-        .send()
-        .await?
-        .error_for_status()?
-        .json::<Release>()
-        .await?;
-
-    Ok(resp.tag_name)
-}
-
-/// Download file zip dari URL dan simpan ke file lokal
-async fn download_file(url: String, output: &str) -> Result<(), Box<dyn Error + Send + Sync>> {
-    let client = Client::new();
-    let mut resp = client.get(url).send().await?.error_for_status()?;
-    let mut out = File::create(output)?;
-    while let Some(chunk) = resp.chunk().await? {
-        use std::io::Write;
-        out.write_all(&chunk)?;
-    }
-    Ok(())
-}
-
-/// Ekstrak file zip ke folder tujuan
-fn extract_zip(zip_path: &str, target_dir: &str) -> Result<(), Box<dyn Error + Send + Sync>> {
-    let file = File::open(zip_path)?;
-    let mut archive = ZipArchive::new(file)?;
-
-    for i in 0..archive.len() {
-        let mut file = archive.by_index(i)?;
-        // `enclosed_name()` rejects absolute paths and `..` components, preventing a
-        // malicious/corrupt archive entry from writing outside `target_dir` (zip-slip).
-        let Some(safe_name) = file.enclosed_name() else {
-            return Err(format!("Unsafe path in zip entry: {}", file.name()).into());
-        };
-        let out_path = Path::new(target_dir).join(safe_name);
-
-        if file.is_dir() {
-            std::fs::create_dir_all(&out_path)?;
-        } else {
-            if let Some(parent) = out_path.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            let mut outfile = File::create(&out_path)?;
-            io::copy(&mut file, &mut outfile)?;
-        }
-    }
-
-    Ok(())
-}
-
-// Function create directory & get config
-pub async fn create_dir_and_get_config(conf: &str) -> Result<(), std::io::Error> {
-    // If db directory already exists, skip
-    if Path::new(conf).exists() {
-        return Ok(());
-    }
-
-    // get latest version from github release
-    let latest_version = get_latest_release()
-        .await
-        .unwrap_or_else(|_| "v1.0.0".to_string());
-    let url = format!(
-        "https://github.com/flexurio/flx-nocode-api/releases/download/{}/config.zip",
-        latest_version
-    );
-    let zip_path = "config.zip";
-    let extract_to = "."; // current working directory
-
-    println!("Downloading...");
-    download_file(url, zip_path)
-        .await
-        .map_err(std::io::Error::other)?;
-
-    println!("Extracting...");
-    extract_zip(zip_path, extract_to).map_err(std::io::Error::other)?;
-
-    // move config to <conf>
-    std::fs::rename(format!("{}/config", extract_to), conf)?;
-
-    // Ensure config directory now exists
-    if !Path::new(conf).exists() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            "config directory not found after extraction",
-        ));
-    }
-
-    // Clean up zip file
-    let _ = std::fs::remove_file(zip_path);
-
-    Ok(())
-}
-
-// function to add flx_roles and flx_users if not exist. Download from github latest release file core_config.zip.
-// Extract and move to config directory
-pub async fn create_core_config_if_not_exists(
-    conf: &str,
-) -> Result<(), Box<dyn Error + Send + Sync>> {
-    // If db directory already exists, skip
-    if Path::new(conf).exists() {
-        // check if flx_roles.json and flx_users.json exist
-        if Path::new(&format!("{}/entity/flx_roles.json", conf)).exists()
-            && Path::new(&format!("{}/entity/flx_users.json", conf)).exists()
-        {
-            return Ok(());
-        }
-    } else {
-        std::fs::create_dir_all(conf)?;
-    }
-
-    // get latest version from github release
-    let latest_version = get_latest_release()
-        .await
-        .unwrap_or_else(|_| "v1.0.0".to_string());
-    let url = format!(
-        "https://github.com/flexurio/flx-nocode-api/releases/download/{}/core_config.zip",
-        latest_version
-    );
-    let zip_path = "core_config.zip";
-    let extract_to = "."; // current working directory
-    download_file(url, zip_path).await?;
-
-    extract_zip(zip_path, extract_to)?;
-
-    // copy core_config/flx_roles.json to conf/flx_roles.json and flx_users.json to conf/flx_users.json
-    std::fs::copy(
-        format!("{}/core_config/flx_roles.json", extract_to),
-        format!("{}/entity/flx_roles.json", conf),
-    )?;
-    std::fs::copy(
-        format!("{}/core_config/flx_users.json", extract_to),
-        format!("{}/entity/flx_users.json", conf),
-    )?;
-
-    // remove old core_config directory
-    let _ = std::fs::remove_dir_all(format!("{}/core_config", extract_to));
-
-    // Clean up zip file
-    let _ = std::fs::remove_file(zip_path);
-    Ok(())
-}
-
-// function download .env from latest release github
-pub async fn download_env_file() -> Result<(), Box<dyn Error + Send + Sync>> {
-    let latest_version = get_latest_release().await?;
-    let url = format!(
-        "https://github.com/flexurio/flx-nocode-api/releases/download/{}/env",
-        latest_version
-    );
-    let output_path = ".env";
-
-    println!("Downloading .env file from {}", url);
-    download_file(url, output_path).await?;
-
     Ok(())
 }

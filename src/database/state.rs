@@ -1,7 +1,6 @@
 use once_cell::sync::Lazy;
 use regex::Regex;
 use serde_json::Value;
-use std::collections::HashSet;
 use std::sync::Arc;
 
 use crate::{auth::ClaimsConverter, log::log_output};
@@ -23,17 +22,28 @@ pub struct AppState {
     pub encrypt_key: String,
     pub query_converter: QueryConverter,
     pub whitelist_ips: Vec<String>,
-    pub route_publics: HashSet<String>,
     pub converter_token: ClaimsConverter,
     /// Backend-agnostic data store adapter (initially SQL-backed). Use this for new code paths.
     pub store: Arc<dyn crate::storage::traits::DataStore>,
     pub is_cachedb: bool, // whether store supports caching (e.g. Redis)
     pub write_queue_enabled: bool, // enable Redis write queue for POST/PUT/DELETE
     pub default_collate: String, // default collation for tables (e.g. utf8mb4_bin)
-    pub rules: Value, // cached rules.json
     /// L1 page cache: key = `flx:c2:<route>:v<version>:<sorted params>`,
     /// value = the already-serialized JSON body (see [`CachedPage`]).
     pub l1_cache: moka::future::Cache<String, CachedPage>,
+}
+
+impl AppState {
+    /// Is `route` public (no JWT required)? Read from the live registry so a
+    /// `routes.json` edit takes effect on reload.
+    pub fn is_public_route(&self, route: &str) -> bool {
+        crate::registry::is_public(route)
+    }
+
+    /// `rules.json` of the configuration currently in service.
+    pub fn rules(&self) -> Value {
+        crate::registry::current().rules_raw.clone()
+    }
 }
 
 /// A cached GET page. The body is stored **serialized** so a cache hit costs one

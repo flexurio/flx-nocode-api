@@ -15,6 +15,7 @@ struct Server {
     child: Child,
     base: String,
     log_path: std::path::PathBuf,
+    config_dir: std::path::PathBuf,
 }
 
 impl Drop for Server {
@@ -91,7 +92,7 @@ async fn start_server() -> Server {
         .spawn()
         .expect("spawn server binary");
     let base = format!("http://127.0.0.1:{}", port);
-    let mut server = Server { child, base: base.clone(), log_path };
+    let mut server = Server { child, base: base.clone(), log_path, config_dir: dir.join("config") };
 
     // Wait for readiness; fail immediately if the process died during boot.
     let client = reqwest::Client::builder().timeout(Duration::from_secs(2)).build().unwrap();
@@ -159,7 +160,97 @@ async fn write_read_cache_etag_metrics() {
         .send().await.unwrap();
     assert!(!r.status().is_success(), "duplicate code must be rejected, got {}", r.status());
 
-    // 7. metrics expose histograms and pool gauges
+    // 7. hot reload: add a brand-new entity on disk, reload, use it immediately
+    let r = c.get(url("/master_position?limit=1")).send().await.unwrap();
+    assert_eq!(r.status(), 404, "unknown route before reload");
+    std::fs::write(
+        srv.config_dir.join("entity").join("master_position.json"),
+        ENTITY.replace("master_department", "master_position").replace("idx_department_code", "idx_position_code"),
+    )
+    .unwrap();
+    std::fs::write(
+        srv.config_dir.join("routes.json"),
+        r#"{"routes":["master_department","master_position"],"route_publics":[]}"#,
+    )
+    .unwrap();
+    let r = c.post(url("/admin/reload")).send().await.unwrap();
+    assert_eq!(r.status(), 200, "reload: {}", r.text().await.unwrap_or_default());
+    let body: serde_json::Value = r.json().await.unwrap();
+    assert_eq!(body["data"]["added"], serde_json::json!(["master_position"]));
+    assert_eq!(body["data"]["tables_generated"], serde_json::json!(["master_position"]));
+    let r = c.post(url("/master_position"))
+        .json(&serde_json::json!({ "code": format!("P{}", suffix), "name": "Manager" }))
+        .send().await.unwrap();
+    assert_eq!(r.status(), 200, "POST new entity: {}", r.text().await.unwrap_or_default());
+    let r = c.get(url("/master_position?limit=10")).send().await.unwrap();
+    assert_eq!(r.status(), 200);
+    let r = c.get(url("/admin/registry")).send().await.unwrap();
+    let body: serde_json::Value = r.json().await.unwrap();
+    assert_eq!(body["data"]["generation"], 2);
+
+    // 7a. webhooks via the transactional outbox: deliver to a local listener
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let hook_port = listener.local_addr().unwrap().port();
+    let (tx_hook, rx_hook) = std::sync::mpsc::channel::<String>();
+    std::thread::spawn(move || {
+        use std::io::{Read, Write};
+        if let Ok((mut sock, _)) = listener.accept() {
+            let _ = sock.set_read_timeout(Some(Duration::from_secs(5)));
+            let mut buf = vec![0u8; 65536];
+            let mut total = 0;
+            // Read headers + body (small payload: one read usually suffices, loop until blank line + body length).
+            loop {
+                match sock.read(&mut buf[total..]) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        total += n;
+                        let text = String::from_utf8_lossy(&buf[..total]).to_string();
+                        if let Some(idx) = text.find("\r\n\r\n") {
+                            let cl = text.lines().find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap_or(0)));
+                            if cl.map(|c| text.len() - (idx + 4) >= c).unwrap_or(true) { break; }
+                        }
+                        if total >= buf.len() { break; }
+                    }
+                    Err(_) => break,
+                }
+            }
+            let _ = sock.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+            let _ = tx_hook.send(String::from_utf8_lossy(&buf[..total]).to_string());
+        }
+    });
+    let hooked_entity = ENTITY
+        .replace("master_department", "master_position")
+        .replace("idx_department_code", "idx_position_code")
+        .replace(
+            "\"auto_generate\": true",
+            &format!("\"auto_generate\": true, \"webhooks\": [{{ \"event\": \"on_create\", \"url\": \"http://127.0.0.1:{}/hook\", \"headers\": {{ \"X-Hook-Secret\": \"s3cr3t\" }} }}]", hook_port),
+        );
+    std::fs::write(srv.config_dir.join("entity").join("master_position.json"), hooked_entity).unwrap();
+    let r = c.post(url("/admin/reload")).send().await.unwrap();
+    assert_eq!(r.status(), 200, "reload with webhook: {}", r.text().await.unwrap_or_default());
+    let r = c.post(url("/master_position"))
+        .json(&serde_json::json!({ "code": format!("W{}", suffix), "name": "Webhooked" }))
+        .send().await.unwrap();
+    assert_eq!(r.status(), 200, "POST with webhook: {}", r.text().await.unwrap_or_default());
+    let delivered = rx_hook.recv_timeout(Duration::from_secs(15)).expect("webhook delivered within 15 s");
+    assert!(delivered.starts_with("POST /hook"), "{}", delivered);
+    assert!(delivered.to_ascii_lowercase().contains("x-hook-secret: s3cr3t"), "{}", delivered);
+    assert!(delivered.contains("\"event\":\"on_create\""), "{}", delivered);
+    assert!(delivered.contains("Webhooked"), "{}", delivered);
+
+    // 7b. a broken edit is rejected and the running configuration survives
+    std::fs::write(srv.config_dir.join("routes.json"), "{ not json").unwrap();
+    let r = c.post(url("/admin/reload")).send().await.unwrap();
+    assert_eq!(r.status(), 422);
+    let r = c.get(url("/master_position?limit=1")).send().await.unwrap();
+    assert_eq!(r.status(), 200, "previous registry still serves");
+    std::fs::write(
+        srv.config_dir.join("routes.json"),
+        r#"{"routes":["master_department","master_position"],"route_publics":[]}"#,
+    )
+    .unwrap();
+
+    // 8. metrics expose histograms and pool gauges
     let txt = c.get(url("/metrics")).send().await.unwrap().text().await.unwrap();
     assert!(txt.contains("flx_http_request_duration_seconds_bucket{route=\"master_department\",method=\"GET\",status=\"200\""), "{}", txt);
     assert!(txt.contains("flx_db_query_duration_seconds_count{kind=\"query\"}"), "{}", txt);

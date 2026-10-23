@@ -36,6 +36,12 @@ pub struct Claims {
     pub at: usize,
     pub rl: String,
     pub cs: String,
+    /// Token id (random); lets `/logout` revoke exactly this token.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jti: Option<String>,
+    /// `"refresh"` for refresh tokens; absent/other for access tokens.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub typ: Option<String>,
 }
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct ClaimsConverter {
@@ -63,6 +69,8 @@ impl Default for Claims {
             at: 0,
             rl: "*/127".to_string(),
             cs: "".to_string(),
+            jti: None,
+            typ: None,
         }
     }
 }
@@ -89,7 +97,7 @@ pub fn validate_token(
 ) -> Result<Claims, Box<HttpResponse>> {
     // Fast path: check IP whitelist and public routes first
     if is_ip_whitelisted(req, &state.whitelist_ips) ||
-        state.route_publics.contains(req.path()) {
+        state.is_public_route(req.path()) {
         return Ok(Claims::default());
     }
 
@@ -124,12 +132,152 @@ pub fn validate_token(
         &JWT_DECODING_KEY,
         &JWT_VALIDATION,
     ) {
-        Ok(token_data) => Ok(token_data.claims),
+        Ok(token_data) => {
+            let claims = token_data.claims;
+            if claims.typ.as_deref() == Some("refresh") {
+                return Err(Box::new(HttpResponse::Unauthorized().json("Refresh token cannot be used for API access")));
+            }
+            if is_revoked(&claims) {
+                return Err(Box::new(HttpResponse::Unauthorized().json("Token has been revoked")));
+            }
+            Ok(claims)
+        }
         Err(e) => {
-            eprintln!("Token validation failed: {}", e);
+            tracing::debug!(error = %e, "token validation failed");
             Err(Box::new(HttpResponse::Unauthorized().json("Invalid or expired token")))
         }
     }
+}
+
+// ---------------- Token lifetimes, ids and revocation ----------------
+
+/// Access-token lifetime in seconds (`JWT_ACCESS_TTL_SECS`, default 86 400 = 24 h,
+/// the historical value; 900 s is recommended together with refresh tokens).
+pub static JWT_ACCESS_TTL_SECS: Lazy<i64> = Lazy::new(|| {
+    env::var("JWT_ACCESS_TTL_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(86_400)
+});
+/// Refresh-token lifetime in seconds (`JWT_REFRESH_TTL_SECS`, default 7 days).
+pub static JWT_REFRESH_TTL_SECS: Lazy<i64> = Lazy::new(|| {
+    env::var("JWT_REFRESH_TTL_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(7 * 86_400)
+});
+
+pub fn new_jti() -> String {
+    use rand::RngExt;
+    let mut rng = rand::rng();
+    let bytes: [u8; 16] = rng.random();
+    URL_SAFE_NO_PAD.encode(bytes)
+}
+
+/// Revoked token ids with their expiry (unix seconds). Process-local; when
+/// Redis is enabled every revocation is also written to `flx:jwt:deny:<jti>`
+/// and the background sync task pulls other replicas' revocations every few
+/// seconds, so a logout propagates cluster-wide within that window.
+static DENYLIST: Lazy<dashmap::DashMap<String, i64>> = Lazy::new(dashmap::DashMap::new);
+static DENYLIST_REDIS: AtomicBool = AtomicBool::new(false);
+
+pub fn is_revoked(claims: &Claims) -> bool {
+    match &claims.jti {
+        Some(j) => DENYLIST.contains_key(j),
+        None => false,
+    }
+}
+
+/// Revoke a token until it expires anyway.
+pub fn revoke(claims: &Claims) {
+    let Some(jti) = claims.jti.clone() else { return };
+    let exp = claims.exp as i64;
+    let now = Utc::now().timestamp();
+    if exp <= now {
+        return;
+    }
+    DENYLIST.insert(jti.clone(), exp);
+    if DENYLIST_REDIS.load(Ordering::Relaxed) {
+        tokio::spawn(async move {
+            if let Ok(mut conn) = crate::database::redis::get_connection().await {
+                let ttl = (exp - now).max(1) as u64;
+                let _: redis::RedisResult<()> = redis::cmd("SET")
+                    .arg(format!("flx:jwt:deny:{}", jti))
+                    .arg(exp)
+                    .arg("EX")
+                    .arg(ttl)
+                    .query_async(&mut conn)
+                    .await;
+            }
+        });
+    }
+}
+
+/// Start the cross-replica denylist sync (call once at boot when Redis is on).
+pub fn spawn_denylist_sync(use_redis: bool) {
+    DENYLIST_REDIS.store(use_redis, Ordering::Relaxed);
+    let every = env::var("JWT_DENYLIST_SYNC_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(5u64).max(1);
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(every)).await;
+            let now = Utc::now().timestamp();
+            DENYLIST.retain(|_, exp| *exp > now);
+            if !use_redis {
+                continue;
+            }
+            let Ok(mut conn) = crate::database::redis::get_connection().await else { continue };
+            let mut cursor: u64 = 0;
+            loop {
+                let res: redis::RedisResult<(u64, Vec<String>)> = redis::cmd("SCAN")
+                    .arg(cursor)
+                    .arg("MATCH")
+                    .arg("flx:jwt:deny:*")
+                    .arg("COUNT")
+                    .arg(200)
+                    .query_async(&mut conn)
+                    .await;
+                let Ok((next, keys)) = res else { break };
+                if !keys.is_empty() {
+                    let vals: redis::RedisResult<Vec<Option<i64>>> =
+                        redis::cmd("MGET").arg(&keys).query_async(&mut conn).await;
+                    if let Ok(vals) = vals {
+                        for (k, v) in keys.iter().zip(vals) {
+                            if let (Some(jti), Some(exp)) = (k.strip_prefix("flx:jwt:deny:"), v) {
+                                DENYLIST.insert(jti.to_string(), exp);
+                            }
+                        }
+                    }
+                }
+                cursor = next;
+                if cursor == 0 {
+                    break;
+                }
+            }
+        }
+    });
+}
+
+/// Issue a refresh token (no roles, `typ = "refresh"`). Returns `(token, exp)`.
+pub fn create_refresh_token(id_user: &str, name: &str) -> (String, usize) {
+    let exp = (Utc::now().timestamp() + *JWT_REFRESH_TTL_SECS) as usize;
+    let claims = Claims {
+        id: id_user.to_string(),
+        nm: name.to_string(),
+        exp,
+        at: Utc::now().timestamp() as usize,
+        rl: String::new(),
+        cs: String::new(),
+        jti: Some(new_jti()),
+        typ: Some("refresh".to_string()),
+    };
+    (encode(&Header::default(), &claims, &JWT_ENCODING_KEY).unwrap_or_default(), exp)
+}
+
+/// Verify a refresh token presented as `Bearer …` (signature, expiry, type, revocation).
+pub fn verify_refresh_token(auth_header: &str) -> Result<Claims, &'static str> {
+    let token = auth_header.trim_start_matches("Bearer ").trim();
+    let data = decode::<Claims>(token, &JWT_DECODING_KEY, &JWT_VALIDATION).map_err(|_| "Invalid or expired refresh token")?;
+    if data.claims.typ.as_deref() != Some("refresh") {
+        return Err("Not a refresh token");
+    }
+    if is_revoked(&data.claims) {
+        return Err("Refresh token has been revoked");
+    }
+    Ok(data.claims)
 }
 
 // ---------------- Converter (external IDP) JWT verification ----------------
@@ -315,7 +463,7 @@ pub async fn create_token(
     roles: String,
 ) -> String {
     let expiration = Utc::now()
-        .checked_add_signed(Duration::days(1))
+        .checked_add_signed(Duration::seconds(*JWT_ACCESS_TTL_SECS))
         .expect("valid timestamp")
         .timestamp() as usize;
 
@@ -352,6 +500,8 @@ pub async fn create_token(
     }
 
     let claims = Claims {
+        jti: Some(new_jti()),
+        typ: None,
         id: id_user,
         nm: name,
         exp: expiration,
@@ -375,6 +525,9 @@ fn extract_token_claims(token: &str) -> Result<Claims, jsonwebtoken::errors::Err
 
     // Decode token dan ekstrak claims
     let token_data = decode::<Claims>(token, &JWT_DECODING_KEY, &JWT_VALIDATION)?;
+    if token_data.claims.typ.as_deref() == Some("refresh") || is_revoked(&token_data.claims) {
+        return Err(jsonwebtoken::errors::ErrorKind::InvalidToken.into());
+    }
 
     Ok(token_data.claims)
 }
@@ -395,6 +548,8 @@ fn extract_token_claims_no_validation(token: &str, state: web::Data<AppState>) -
     // read converter_token from state
     let converter = &state.converter_token;
     Some(Claims {
+        jti: None,
+        typ: None,
         id: json.get(&converter.id).and_then(|v| v.as_str()).unwrap_or("").to_string(),
         nm: json.get(&converter.nm).and_then(|v| v.as_str()).unwrap_or("").to_string(),
         exp: json.get(&converter.exp).and_then(|v| v.as_u64()).unwrap_or(0) as usize,
@@ -482,33 +637,31 @@ struct RulesFile {
     rule: Vec<Rule>,
 }
 
-fn load_rules() -> &'static [Rule] {
-    use once_cell::sync::Lazy;
-    // Cache rules at first access; the file is read once for the process lifetime.
-    // Supports three on-disk shapes (most-current first):
-    //   1) `{ "role": [...], "rule": [Rule, ...] }`  (current schema)
-    //   2) `[Rule, ...]`                              (legacy flat list)
-    //   3) `Rule`                                     (legacy single rule)
-    static RULES: Lazy<Vec<Rule>> = Lazy::new(|| {
-        // Reuse the single CONFIG_LOCATION source of truth (also backed by LOC_CONFIG)
-        // instead of re-reading the env var here, so both never risk diverging.
-        let path = format!("{}/rules.json", crate::config::CONFIG_LOCATION.as_str());
-        let content = match std::fs::read_to_string(&path) {
-            Ok(c) => c,
-            Err(_) => return Vec::new(),
-        };
-        if let Ok(file) = serde_json::from_str::<RulesFile>(&content) {
-            return file.rule;
-        }
-        if let Ok(rules) = serde_json::from_str::<Vec<Rule>>(&content) {
-            return rules;
-        }
-        if let Ok(rule) = serde_json::from_str::<Rule>(&content) {
-            return vec![rule];
-        }
-        Vec::new()
-    });
-    &RULES
+/// Parse the JSON of `rules.json`. Supports three shapes (most-current first):
+///   1) `{ "role": [...], "rule": [Rule, ...] }`  (current schema)
+///   2) `[Rule, ...]`                              (legacy flat list)
+///   3) `Rule`                                     (legacy single rule)
+pub fn parse_rules_value(v: &Value) -> Vec<Rule> {
+    if v.is_null() {
+        return Vec::new();
+    }
+    if let Ok(file) = serde_json::from_value::<RulesFile>(v.clone())
+        && (!file.rule.is_empty() || v.get("rule").is_some())
+    {
+        return file.rule;
+    }
+    if let Ok(rules) = serde_json::from_value::<Vec<Rule>>(v.clone()) {
+        return rules;
+    }
+    if let Ok(rule) = serde_json::from_value::<Rule>(v.clone()) {
+        return vec![rule];
+    }
+    Vec::new()
+}
+
+/// Access rules of the configuration currently in service (hot-reloadable).
+fn load_rules() -> std::sync::Arc<Vec<Rule>> {
+    crate::registry::current().rules.clone()
 }
 
 fn evaluate_condition(condition: &Conditions, claims: &Claims) -> bool {
@@ -598,7 +751,7 @@ pub fn check_access(claims: &Claims, req: &actix_web::HttpRequest) -> Result<(),
     let current_path = req.path();
     let current_method = req.method().as_str();
 
-    evaluate_access(rules, claims, current_path, current_method)
+    evaluate_access(&rules, claims, current_path, current_method)
 }
 
 // ---------------------------------------------------------------------------
@@ -642,7 +795,7 @@ pub fn allowed_fields_for(claims: &Claims, req: &actix_web::HttpRequest) -> Opti
     if claims.cs == "converter_token" {
         return None;
     }
-    allowed_fields_in(load_rules(), claims, req.path(), req.method().as_str())
+    allowed_fields_in(&load_rules(), claims, req.path(), req.method().as_str())
 }
 
 /// Strict write-side check over an already-resolved restriction.
@@ -721,6 +874,25 @@ pub fn retain_fields_on(allowed: &[String], data: &mut Value) {
 mod tests {
     use super::*;
 
+    #[test]
+    fn refresh_token_roundtrip_and_revocation() {
+        // SECRET_KEY may be unset in tests: keys derive from an empty secret, still consistent.
+        let (rt, exp) = create_refresh_token("42", "Alice");
+        assert!(exp > Utc::now().timestamp() as usize);
+        let claims = verify_refresh_token(&format!("Bearer {}", rt)).expect("valid refresh token");
+        assert_eq!(claims.id, "42");
+        assert_eq!(claims.typ.as_deref(), Some("refresh"));
+        assert!(claims.jti.is_some());
+        // A refresh token is never accepted as an access token.
+        assert!(extract_token_claims(&rt).is_err());
+        // Revocation is immediate and idempotent.
+        assert!(!is_revoked(&claims));
+        revoke(&claims);
+        assert!(is_revoked(&claims));
+        assert!(verify_refresh_token(&rt).is_err());
+        revoke(&claims);
+    }
+
     fn create_test_rules() -> Vec<Rule> {
         vec![
             Rule {
@@ -759,6 +931,8 @@ mod tests {
 
     fn create_claims(role: &str, id: &str) -> Claims {
         let mut claims = Claims {
+            jti: None,
+            typ: None,
             id: id.to_string(),
             ..Claims::default()
         };
@@ -1003,6 +1177,8 @@ mod tests {
     #[test]
     fn test_claims_get_roles_single() {
         let claims = Claims {
+            jti: None,
+            typ: None,
             rl: "admin/1".to_string(),
             ..Claims::default()
         };
@@ -1013,6 +1189,8 @@ mod tests {
     #[test]
     fn test_claims_get_roles_multiple() {
         let claims = Claims {
+            jti: None,
+            typ: None,
             rl: "admin/1,editor/2,viewer/3".to_string(),
             ..Claims::default()
         };
@@ -1023,6 +1201,8 @@ mod tests {
     #[test]
     fn test_claims_get_roles_empty() {
         let claims = Claims {
+            jti: None,
+            typ: None,
             rl: "".to_string(),
             ..Claims::default()
         };

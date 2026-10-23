@@ -21,7 +21,7 @@ pub async fn process_patch_request(
     // Auth Check
     let mut actor_id_opt: Option<String> = None;
 
-    if state.require_auth && !state.route_publics.contains(route) {
+    if state.require_auth && !state.is_public_route(route) {
         let claims = match get_user_info_from_token(req, state.clone()) {
              Ok(c) => c,
              Err(_) => {

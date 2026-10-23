@@ -82,7 +82,7 @@ pub async fn process_insert_request(
     // 1. Auth Check (Early)
     let mut actor_id_opt: Option<String> = None;
 
-    if state.require_auth && !state.route_publics.contains(route) {
+    if state.require_auth && !state.is_public_route(route) {
         let claims =
             get_user_info_from_token(req, state.clone()).map_err(|_| err("Invalid token"))?;
         check_access(&claims, req).map_err(|e| err(format!("Unauthorized: {}", e)))?;
@@ -434,7 +434,8 @@ pub async fn process_insert_request(
                 _ => return Err(err(format!("Field '{}' must be an array of objects", detail.field))),
             };
 
-            let target_schema_opt = crate::config::SCHEMAS.0.get(&detail.target_table);
+            let registry = crate::registry::current();
+            let target_schema_opt = registry.schemas.get(&detail.target_table);
 
             if let Some(detail_schema) = target_schema_opt {
                 let detail_post_cols: HashSet<&str> = detail_schema

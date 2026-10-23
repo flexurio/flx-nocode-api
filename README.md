@@ -310,6 +310,53 @@ Cached GET responses also return an `ETag`; a request with a matching `If-None-M
 
 ---
 
+## 5b. Operations: offline init, hot reload, queues, webhooks, tokens
+
+### Offline install
+
+```bash
+flx-nocode-api init            # writes .env (random keys), config/{routes,rules}.json, config/entity/flx_*.json, static/, seed/
+flx-nocode-api                 # start
+```
+
+The server never downloads anything at boot: the core entities are compiled into the binary and written to `LOC_CONFIG` when missing.
+
+### Hot reload (no restart)
+
+Edit or add entity files under `LOC_CONFIG/entity`, list them in `routes.json`, then:
+
+```bash
+curl -X POST -H "Authorization: Bearer <admin jwt>" http://localhost:8080/admin/reload
+# or
+kill -HUP $(pidof flx-nocode-api)
+```
+
+The reload re-reads the directory, runs the configuration lint, creates tables/indexes for **new or changed** entities (`CREATE … IF NOT EXISTS`; existing columns are never altered), swaps the in-memory registry atomically and drops every cached page. A rejected reload (`422`) leaves the running configuration untouched. `GET /admin/registry` shows the live generation. Admins are users whose JWT roles match `ADMIN_ROLES` (default `admin,Super Admin,Administrator,flx_roles`) or user id `1`.
+
+### Queues on Redis Streams
+
+`WRITE_QUEUE_ENABLED` and `EMAIL_CONSUMER_ENABLED` now use Redis Streams with consumer groups: every job is delivered to one consumer, acknowledged with `XACK` only after it is applied (or dead-lettered), and jobs of a crashed worker are re-delivered by `XAUTOCLAIM` after `WRITE_CLAIM_IDLE_MS`. Lag is exported as `flx_write_queue_len`, `flx_write_queue_pending`, `flx_email_queue_*`. Jobs still sitting in the pre-Streams lists are migrated at boot.
+
+### Webhooks via transactional outbox
+
+```json
+"webhooks": [
+  { "event": "on_create", "url": "https://erp.example.com/hooks/so", "headers": { "X-Hook-Secret": "..." } }
+]
+```
+
+`event` is `on_create`, `on_update`, `on_delete` or `*`. The event row is written to `flx_outbox` **in the same transaction** as the record, so it exists exactly when the write committed; a background worker POSTs `{event, entity, table, id, actor_id, at, record, old_record}` with exponential backoff (`OUTBOX_MAX_ATTEMPTS`, then `status = failed`). The user's request never waits for the receiver. Metrics: `flx_outbox_pending`, `flx_outbox_sent`, `flx_outbox_failed`.
+
+### Access + refresh tokens, revocation
+
+`POST /login` returns the access token in `data` (unchanged) and a refresh token in the `X-Refresh-Token` header (`X-Token-Expires-In` gives the access TTL). `POST /token/refresh` with `Authorization: Bearer <refresh token>` returns a new access token (roles re-read from the database) and rotates the refresh token. `POST /logout` revokes the presented access token and, if sent in `X-Refresh-Token`, the refresh token. Revocations propagate to other replicas through Redis within `JWT_DENYLIST_SYNC_SECS`. Set `JWT_ACCESS_TTL_SECS=900` for short-lived access tokens.
+
+### Search indexes
+
+`"search_columns": ["name", "code"]` makes `?search=` look only at those columns and, on PostgreSQL, creates a `pg_trgm` GIN index so `ILIKE '%term%'` is index-backed. The startup lint also warns about any filterable or sortable column that has no index.
+
+---
+
 ## 6. Configuration layout (`LOC_CONFIG`)
 
 ```

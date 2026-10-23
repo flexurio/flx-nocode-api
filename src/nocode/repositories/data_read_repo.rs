@@ -270,8 +270,13 @@ pub fn build_search_filter(table_schema: &TableSchema, term: &str) -> Option<QF>
     let term = term.trim();
     if term.is_empty() { return None; }
     let mut cols: Vec<String> = Vec::new();
-    for c in table_schema.primary_key.columns.iter() { cols.push(c.clone()); }
-    for idx in table_schema.indexes.iter() { for c in idx.columns.iter() { cols.push(c.clone()); } }
+    if !table_schema.search_columns.is_empty() {
+        // Explicit, indexed (pg_trgm) search set configured on the entity.
+        cols.extend(table_schema.search_columns.iter().cloned());
+    } else {
+        for c in table_schema.primary_key.columns.iter() { cols.push(c.clone()); }
+        for idx in table_schema.indexes.iter() { for c in idx.columns.iter() { cols.push(c.clone()); } }
+    }
 
     let mut seen: HashSet<String> = HashSet::new();
     let mut ors: Vec<QF> = Vec::with_capacity(cols.len());

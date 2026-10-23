@@ -36,7 +36,6 @@ use serde_json::{Map, Value, json};
 
 use super::McpConfig;
 use super::ctx::{CallerIdentity, ServiceOutcome, ServiceRequest, outcome_from_response};
-use crate::config::{CONFIG, SCHEMAS};
 use crate::database::state::AppState;
 use crate::log::log_output;
 use crate::metrics::METRICS;
@@ -143,11 +142,12 @@ impl Op {
 
 /// Entities exposed over MCP, in `routes.json` order.
 pub fn exposed_entities(require_auth: bool) -> Vec<(String, Arc<TableSchema>)> {
-    CONFIG
+    let registry = crate::registry::current();
+    registry
         .routes
         .iter()
         .filter(|r| require_auth || !CORE_AUTH_TABLES.contains(&r.as_str()))
-        .filter_map(|r| SCHEMAS.0.get(r).map(|s| (r.clone(), s.clone())))
+        .filter_map(|r| registry.schemas.get(r).map(|s| (r.clone(), s.clone())))
         .collect()
 }
 
@@ -921,7 +921,7 @@ pub async fn call_tool(
 
 /// Evaluate `rules.json` for `op` exactly like the REST services do.
 fn caller_may(state: &AppState, identity: &CallerIdentity, entity: &str, op: Op) -> Option<bool> {
-    if !state.require_auth || state.route_publics.contains(entity) {
+    if !state.require_auth || state.is_public_route(entity) {
         return None;
     }
     let claims = identity.claims.as_ref()?;
@@ -1303,7 +1303,7 @@ async fn update_record(
         &sr.query_value(),
         &a.entity,
         &schema,
-        &SCHEMAS.1,
+        &crate::registry::current().ref_foreign_keys,
         Value::Object(a.data),
         web::Path::from(id.clone()),
         &req,
@@ -1334,7 +1334,7 @@ async fn delete_record(
         sr.query_value(),
         a.entity.clone(),
         schema.clone(),
-        SCHEMAS.1.clone(),
+        crate::registry::current().ref_foreign_keys.clone(),
         id.clone(),
         req,
     )

@@ -5,7 +5,6 @@ use lettre::message::{Attachment, Mailbox, Message, MultiPart, SinglePart};
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{AsyncSmtpTransport, AsyncTransport, Tokio1Executor};
 use rand::RngExt;
-use redis::AsyncCommands;
 use redis::aio::MultiplexedConnection;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -63,14 +62,27 @@ pub struct EmailJob {
 
 #[allow(dead_code)] // builder helpers are public producer API, called from feature code
 impl EmailJob {
-    /// Redis list key the email workers consume from.
+    /// Legacy Redis list key (pre-Streams); drained into the stream at boot.
     pub fn queue_key() -> String {
         std::env::var("EMAIL_QUEUE_KEY").unwrap_or_else(|_| "flx:email:default".into())
     }
 
-    /// Dead-letter queue key for permanently failed email jobs.
+    /// Redis Stream the email workers consume from (`EMAIL_QUEUE_STREAM`).
+    pub fn stream_key() -> String {
+        std::env::var("EMAIL_QUEUE_STREAM").unwrap_or_else(|_| "flx:email:stream".into())
+    }
+
+    pub fn group() -> String {
+        "flx-mailers".into()
+    }
+
+    /// Dead-letter stream key for permanently failed email jobs.
     pub fn dlq_key() -> String {
         std::env::var("EMAIL_QUEUE_DLQ_KEY").unwrap_or_else(|_| "flx:email:dlq".into())
+    }
+
+    pub fn queue() -> crate::nocode::stream_queue::StreamQueue {
+        crate::nocode::stream_queue::StreamQueue::new(Self::stream_key(), Self::group(), Self::dlq_key())
     }
 
     /// Convenience constructor for a simple email with no attachments.
@@ -132,12 +144,12 @@ pub async fn enqueue_email(job: &EmailJob) -> Result<i64> {
         .unwrap_or(2);
 
     let payload = serde_json::to_string(job)?;
-    let client = crate::database::redis::get_manager().await?;
-    let mut conn = client.get_multiplexed_async_connection().await?;
+    let q = EmailJob::queue();
+    let mut conn = crate::database::redis::get_connection().await?;
 
     for attempt in 0..=retry_count {
         if max_len > 0 {
-            let cur_len: i64 = conn.llen(EmailJob::queue_key()).await?;
+            let cur_len: i64 = redis::cmd("XLEN").arg(EmailJob::stream_key()).query_async(&mut conn).await?;
             if cur_len >= max_len {
                 return Err(anyhow!(
                     "Email queue backpressure: len={} reached max={}",
@@ -147,8 +159,18 @@ pub async fn enqueue_email(job: &EmailJob) -> Result<i64> {
             }
         }
 
-        match conn.lpush(EmailJob::queue_key(), payload.clone()).await {
-            Ok(len) => return Ok(len),
+        let res: redis::RedisResult<String> = redis::cmd("XADD")
+            .arg(&q.key)
+            .arg("*")
+            .arg("payload")
+            .arg(&payload)
+            .query_async(&mut conn)
+            .await;
+        match res {
+            Ok(_) => {
+                let len: i64 = redis::cmd("XLEN").arg(&q.key).query_async(&mut conn).await.unwrap_or(0);
+                return Ok(len);
+            }
             Err(e) => {
                 if attempt >= retry_count {
                     return Err(anyhow!(e));
@@ -336,24 +358,68 @@ async fn push_email_dlq(job: EmailJob, worker: &str, error: &str) -> Result<i64>
         job,
     };
     let payload = serde_json::to_string(&record)?;
-    let client = crate::database::redis::get_manager().await?;
-    let mut conn = client.get_multiplexed_async_connection().await?;
-    let len: i64 = conn.lpush(EmailJob::dlq_key(), payload).await?;
-    Ok(len)
+    let mut conn = crate::database::redis::get_connection().await?;
+    EmailJob::queue().dead_letter(&mut conn, &payload).await
 }
 
-/// BRPOP one email job off the queue. Returns None on timeout.
-async fn dequeue_email(conn: &mut MultiplexedConnection) -> Result<Option<EmailJob>> {
-    let res: Option<(String, String)> = redis::cmd("BRPOP")
-        .arg(EmailJob::queue_key())
-        .arg(10)
-        .query_async(conn)
-        .await?;
-    if let Some((_k, v)) = res {
-        let job: EmailJob = serde_json::from_str(&v)?;
-        Ok(Some(job))
-    } else {
-        Ok(None)
+async fn open_email_connection(worker: &str) -> MultiplexedConnection {
+    loop {
+        match crate::database::redis::get_manager().await {
+            Ok(client) => match client.get_multiplexed_async_connection().await {
+                Ok(c) => return c,
+                Err(e) => log_output("EMAIL", "DEQUEUE-ERR", worker, format!("{}", e), false),
+            },
+            Err(e) => log_output("EMAIL", "DEQUEUE-ERR", worker, format!("{}", e), false),
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    }
+}
+
+/// Deliver one stream entry: parse → SMTP (with retries) → DLQ on failure → XACK.
+async fn handle_email_entry(
+    transport: &SmtpTransport,
+    conn: &mut MultiplexedConnection,
+    q: &crate::nocode::stream_queue::StreamQueue,
+    worker: &str,
+    entry: crate::nocode::stream_queue::Entry,
+) {
+    let retry_max: usize = std::env::var("EMAIL_EXEC_RETRY_MAX")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(2);
+    let job = match serde_json::from_str::<EmailJob>(&entry.payload) {
+        Ok(j) => j,
+        Err(e) => {
+            let record = serde_json::json!({"failed_at": Utc::now().to_rfc3339(), "worker": worker, "error": format!("invalid email payload: {}", e), "raw": entry.payload});
+            match q.dead_letter(conn, &record.to_string()).await {
+                Ok(n) => log_output("EMAIL", "DLQ-PUSH", worker, format!("malformed payload, dlq_len={}", n), false),
+                Err(dlq_err) => {
+                    log_output("EMAIL", "DLQ-ERR", worker, format!("{} (entry kept pending)", dlq_err), false);
+                    return;
+                }
+            }
+            let _ = q.ack(conn, &entry.id).await;
+            return;
+        }
+    };
+    let to = job.to.join(",");
+    let subject = job.subject.clone();
+    let job_for_dlq = job.clone();
+    match send_with_retry(transport, &job, retry_max).await {
+        Ok(_) => log_output("EMAIL", "SEND-OK", worker, format!("to=[{}] subject='{}'", to, subject), true),
+        Err(e) => {
+            log_output("EMAIL", "SEND-ERR", worker, format!("to=[{}] subject='{}': {}", to, subject, e), false);
+            match push_email_dlq(job_for_dlq, worker, &e.to_string()).await {
+                Ok(n) => log_output("EMAIL", "DLQ-PUSH", worker, format!("dlq_len={}", n), false),
+                Err(dlq_err) => {
+                    log_output("EMAIL", "DLQ-ERR", worker, format!("{} (entry kept pending)", dlq_err), false);
+                    return;
+                }
+            }
+        }
+    }
+    if let Err(e) = q.ack(conn, &entry.id).await {
+        log_output("EMAIL", "ACK-ERR", worker, format!("{}", e), false);
     }
 }
 
@@ -379,98 +445,60 @@ pub async fn start_email_consumer() {
         .unwrap_or(2);
     log_output("EMAIL", "START", "email-consumer", format!("Workers={}", concurrency), true);
 
+    let q = EmailJob::queue();
+    let host = std::env::var("HOSTNAME").unwrap_or_else(|_| format!("pid{}", std::process::id()));
+    {
+        let mut conn = open_email_connection("email-boot").await;
+        if let Err(e) = q.ensure_group(&mut conn).await {
+            log_output("EMAIL", "BOOT-ERR", "email-consumer", format!("{}", e), false);
+        }
+        match q.migrate_legacy_lists(&mut conn, &EmailJob::queue_key(), None).await {
+            Ok(0) => {}
+            Ok(n) => log_output("EMAIL", "MIGRATE", "email-consumer", format!("moved {} job(s) from the legacy list into the stream", n), true),
+            Err(e) => log_output("EMAIL", "MIGRATE-ERR", "email-consumer", format!("{}", e), false),
+        }
+    }
+
     let mut set = JoinSet::new();
     for idx in 0..concurrency {
         let transport_cl = transport.clone();
+        let q = q.clone();
+        let worker_name = format!("{}-mail{}", host, idx);
         set.spawn(async move {
-            let worker_name = format!("email-worker-{}", idx);
             log_output("EMAIL", "WORKER-START", worker_name.as_str(), "ready".to_string(), true);
-
             let mut consecutive_errors = 0u32;
             let max_consecutive_errors = 10u32;
             let mut backoff_ms = 250u64;
-
-            // Dedicated Redis connection per worker, reconnecting as needed.
-            let client = loop {
-                match crate::database::redis::get_manager().await {
-                    Ok(c) => break c,
-                    Err(e) => {
-                        log_output("EMAIL", "DEQUEUE-ERR", worker_name.as_str(), format!("{}", e), false);
-                        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                    }
-                }
-            };
-            let mut conn = loop {
-                match client.get_multiplexed_async_connection().await {
-                    Ok(c) => break c,
-                    Err(e) => {
-                        log_output("EMAIL", "DEQUEUE-ERR", worker_name.as_str(), format!("{}", e), false);
-                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                    }
-                }
-            };
+            let mut conn = open_email_connection(&worker_name).await;
+            let mut last_claim = std::time::Instant::now();
 
             loop {
-                match dequeue_email(&mut conn).await {
-                    Ok(Some(job)) => {
-                        consecutive_errors = 0;
-                        backoff_ms = 250;
-
-                        let retry_max: usize = std::env::var("EMAIL_EXEC_RETRY_MAX")
-                            .ok()
-                            .and_then(|s| s.parse().ok())
-                            .unwrap_or(2);
-                        let to = job.to.join(",");
-                        let subject = job.subject.clone();
-                        let job_for_dlq = job.clone();
-                        match send_with_retry(&transport_cl, &job, retry_max).await {
-                            Ok(_) => log_output(
-                                "EMAIL",
-                                "SEND-OK",
-                                worker_name.as_str(),
-                                format!("to=[{}] subject='{}'", to, subject),
-                                true,
-                            ),
-                            Err(e) => {
-                                log_output(
-                                    "EMAIL",
-                                    "SEND-ERR",
-                                    worker_name.as_str(),
-                                    format!("to=[{}] subject='{}': {}", to, subject, e),
-                                    false,
-                                );
-                                match push_email_dlq(job_for_dlq, worker_name.as_str(), &e.to_string()).await {
-                                    Ok(dlq_len) => log_output("EMAIL", "DLQ-PUSH", worker_name.as_str(), format!("len={}", dlq_len), false),
-                                    Err(dlq_err) => log_output("EMAIL", "DLQ-ERR", worker_name.as_str(), format!("{}", dlq_err), false),
-                                }
-                            }
+                if last_claim.elapsed() >= std::time::Duration::from_secs(30) {
+                    last_claim = std::time::Instant::now();
+                    if let Ok(stale) = q.claim_stale(&mut conn, &worker_name, 120_000, 16).await {
+                        for entry in stale {
+                            handle_email_entry(&transport_cl, &mut conn, &q, &worker_name, entry).await;
                         }
                     }
-                    Ok(None) => {
+                }
+                match q.read_batch(&mut conn, &worker_name, 8, 10_000).await {
+                    Ok(items) if !items.is_empty() => {
                         consecutive_errors = 0;
+                        backoff_ms = 250;
+                        for entry in items {
+                            handle_email_entry(&transport_cl, &mut conn, &q, &worker_name, entry).await;
+                        }
                     }
+                    Ok(_) => consecutive_errors = 0,
                     Err(e) => {
                         consecutive_errors += 1;
                         if consecutive_errors == 1 || consecutive_errors.is_multiple_of(10) {
-                            log_output(
-                                "EMAIL",
-                                "DEQUEUE-ERR",
-                                worker_name.as_str(),
-                                format!("{} (count: {})", e, consecutive_errors),
-                                false,
-                            );
+                            log_output("EMAIL", "DEQUEUE-ERR", worker_name.as_str(), format!("{} (count: {})", e, consecutive_errors), false);
                         }
-                        if let Ok(c) = client.get_multiplexed_async_connection().await {
-                            conn = c;
-                        }
+                        conn = open_email_connection(&worker_name).await;
+                        let _ = q.ensure_group(&mut conn).await;
                         if consecutive_errors >= max_consecutive_errors {
-                            log_output(
-                                "EMAIL",
-                                "CIRCUIT-BREAKER",
-                                worker_name.as_str(),
-                                format!("Too many errors ({}), sleeping 30s", consecutive_errors),
-                                false,
-                            );
+                            log_output("EMAIL", "CIRCUIT-BREAKER", worker_name.as_str(), format!("Too many errors ({}), sleeping 30s", consecutive_errors), false);
                             tokio::time::sleep(std::time::Duration::from_secs(30)).await;
                             consecutive_errors = 0;
                             backoff_ms = 250;
@@ -479,6 +507,23 @@ pub async fn start_email_consumer() {
                             backoff_ms = (backoff_ms * 2).min(5000);
                         }
                     }
+                }
+            }
+        });
+    }
+
+    {
+        let q = q.clone();
+        tokio::spawn(async move {
+            let mut conn = open_email_connection("email-metrics").await;
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                match (q.len(&mut conn).await, q.pending(&mut conn).await) {
+                    (Ok(len), Ok(pending)) => {
+                        crate::metrics::METRICS.email_queue_len.store(len.max(0) as u64, std::sync::atomic::Ordering::Relaxed);
+                        crate::metrics::METRICS.email_queue_pending.store(pending.max(0) as u64, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    _ => conn = open_email_connection("email-metrics").await,
                 }
             }
         });

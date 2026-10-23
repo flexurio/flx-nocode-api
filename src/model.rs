@@ -116,6 +116,18 @@ pub struct DetailSchema {
     pub cascade_delete: Option<bool>,
 }
 
+/// Outbound webhook fired through the transactional outbox (`flx_outbox`).
+#[derive(Debug, Default, Serialize, Deserialize, Clone, PartialEq)]
+pub struct Webhook {
+    /// `on_create` | `on_update` | `on_delete` | `*`
+    #[serde(default)]
+    pub event: String,
+    pub url: String,
+    /// Extra HTTP headers (e.g. a shared secret) sent with every delivery.
+    #[serde(default)]
+    pub headers: std::collections::BTreeMap<String, String>,
+}
+
 #[derive(Debug, Default, Serialize, Deserialize, Clone, PartialEq)]
 pub struct ActionTrigger {
     #[serde(default)]
@@ -307,6 +319,15 @@ pub struct TableSchema {
     pub seed: bool,
     #[serde(default)]
     pub collate: String,
+    /// Columns searched by `?search=`. When set they replace the legacy
+    /// "primary key + indexed columns" rule, and the generator creates a
+    /// trigram index for them (PostgreSQL, `pg_trgm`) so `ILIKE '%term%'`
+    /// uses an index instead of scanning the table.
+    #[serde(default)]
+    pub search_columns: Vec<String>,
+    /// Webhooks delivered asynchronously via the transactional outbox.
+    #[serde(default)]
+    pub webhooks: Vec<Webhook>,
     /// Allow-list of filterable column identities (`table.col`, `table.col->path`,
     /// `table.col->*`) derived from `get.parameters`. Computed once per schema on
     /// first use instead of on every GET request.
@@ -381,6 +402,8 @@ impl Default for TableSchema {
             auto_generate: false,
             seed: false,
             collate: "".to_string(),
+            search_columns: vec![],
+            webhooks: vec![],
             declared_cols: std::sync::OnceLock::new(),
         }
     }

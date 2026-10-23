@@ -47,7 +47,7 @@ pub async fn process_update_request(
     // Auth Check — single mutable `claims` so the id propagates out of the if-block.
     let mut claims = Claims::default();
     let actor_id_opt: Option<String>;
-    let auth_required = state.require_auth && !state.route_publics.contains(route);
+    let auth_required = state.require_auth && !state.is_public_route(route);
 
     if auth_required {
         claims = match get_user_info_from_token(req, state.clone()) {
@@ -269,7 +269,8 @@ pub async fn process_update_request(
                 _ => return bad_request(format!("Field '{}' must be an array of objects", detail.field)),
             };
 
-            let target_schema_opt = crate::config::SCHEMAS.0.get(&detail.target_table);
+            let registry = crate::registry::current();
+            let target_schema_opt = registry.schemas.get(&detail.target_table);
 
             if let Some(detail_schema) = target_schema_opt {
                 let detail_post_cols: std::collections::HashSet<&str> = detail_schema

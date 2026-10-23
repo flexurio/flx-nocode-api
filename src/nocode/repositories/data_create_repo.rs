@@ -900,6 +900,21 @@ pub async fn perform_insert(
                             }
                         }
 
+                        // Transactional outbox: webhook rows commit together with the record.
+                        if !table_schema.webhooks.is_empty() {
+                            let id_str = doc_map
+                                .get("id")
+                                .map(|v| match v { Value::String(s) => s.clone(), Value::Number(n) => n.to_string(), _ => v.to_string() })
+                                .unwrap_or_default();
+                            let actor = body.get("__actor_id__").and_then(|v| v.as_str()).map(|s| s.to_string());
+                            if let Err(e) = crate::nocode::outbox::enqueue_in_tx(
+                                &mut *tx, table_schema, route, "on_create", &id_str, actor.as_deref(), &doc_map, None,
+                            ).await {
+                                let _ = tx.rollback().await;
+                                return Err(format!("Error queueing webhook: {}", e));
+                            }
+                        }
+
                         if let Err(e) = tx.commit().await {
                             return Err(format!("Error committing transaction: {}", e));
                         }

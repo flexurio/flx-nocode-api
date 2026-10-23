@@ -146,7 +146,7 @@ where
 
 pub struct AuthMiddlewareImpl<S> { service: Rc<S> }
 
-const AUTH_WHITELIST: [&str; 3] = ["/login", "/register", "/healthz"];
+const AUTH_WHITELIST: [&str; 6] = ["/login", "/register", "/healthz", "/livez", "/readyz", "/token/refresh"];
 
 impl<S> Service<ServiceRequest> for AuthMiddlewareImpl<S>
 where
@@ -177,7 +177,7 @@ where
             .app_data::<web::Data<AppState>>()
             .map(|st| {
                 let route = req.path().trim_start_matches('/');
-                st.route_publics.contains(route)
+                st.is_public_route(route)
             })
             .unwrap_or(false);
         if is_public {
@@ -235,7 +235,7 @@ fn route_label(path: &str) -> String {
     if seg.is_empty() {
         return "root".to_string();
     }
-    if crate::config::SCHEMAS.0.contains_key(seg)
+    if crate::registry::current().schemas.contains_key(seg)
         || matches!(seg, "login" | "register" | "roles" | "healthz" | "livez" | "readyz" | "metrics" | "static" | "email" | "import" | "export" | "validate" | "generate" | "seed" | "mcp")
     {
         seg.to_string()

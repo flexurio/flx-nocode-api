@@ -162,7 +162,7 @@ pub fn read(
                     None,
                 ));
             }
-            Ok(json_contents(uri, &state.rules))
+            Ok(json_contents(uri, &state.rules()))
         }
         _ => {
             let name = uri.strip_prefix(URI_ENTITY_PREFIX).map(|n| {

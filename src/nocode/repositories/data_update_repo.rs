@@ -628,6 +628,19 @@ pub async fn perform_update(
                      }
                  }
 
+                 if !table_schema.webhooks.is_empty() {
+                     let mut new_record = old_record.clone();
+                     for (k, v) in &final_patch {
+                         new_record.insert(k.clone(), v.clone());
+                     }
+                     if let Err(e) = crate::nocode::outbox::enqueue_in_tx(
+                         &mut *tx, table_schema, route, "on_update", id_raw, actor_id, &new_record, Some(&old_record),
+                     ).await {
+                         let _ = tx.rollback().await;
+                         return Err(format!("Error queueing webhook: {}", e));
+                     }
+                 }
+
                  tx.commit()
                      .await
                      .map_err(|e| format!("Error committing transaction: {}", e))?;

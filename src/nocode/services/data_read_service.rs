@@ -23,7 +23,7 @@ pub async fn process_get_request(
     let mut field_filter: Option<Vec<String>> = None;
     
     // Auth Check
-    if state.require_auth && !state.route_publics.contains(route) {
+    if state.require_auth && !state.is_public_route(route) {
         let claims = match get_user_info_from_token(req, state.clone()) {
             Ok(c) => c,
             Err(_) => {

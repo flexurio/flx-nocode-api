@@ -173,6 +173,14 @@ Skala: **Dampak** (ke user) dan **Usaha** (hari kerja 1 engineer) · S = kecil (
 > | 1 | `panic = "unwind"` | ✅ | lint `unwrap_used`/`expect_used` dipasang sebagai **warn** di handlers/services/repositories (±50 situs tersisa; `deny` di Fase 2) |
 > | 1 | Pre-compute allow-list kolom per entity | ✅ sebagian | `declared_cols` di-cache via `OnceLock`; satu clone param map dihapus. Allow-list ORDER BY masih dibangun per request |
 > | 1 | SQLite writer pool = 1 | ✅ | reader pool WAL + writer pool 1; PRAGMA kini per koneksi (dulu hanya 1 koneksi yang kena) |
+> | **2** | `flx_sequences`, `FOR UPDATE` di PUT, FK+unique di dalam tx, 409, `ApiError`, graceful shutdown, parity consumer | ⏳ **dilewati atas permintaan** (Fase 3 dikerjakan lebih dulu) | Item kebenaran transaksi masih terbuka |
+> | 3 | Hot reload schema (`ArcSwap` registry + router catch-all, `POST /admin/reload`, SIGHUP, DDL untuk entity baru, reload rusak → 422 & konfigurasi lama tetap) | ✅ | `src/registry.rs`, `src/routes/mod.rs`, `config::load_config_from`; diuji e2e |
+> | 3 | Redis Streams untuk write-queue & email (`XADD`/`XREADGROUP`/`XACK`/`XAUTOCLAIM`, migrasi list lama, gauge lag) | ✅ | `src/nocode/stream_queue.rs`, `consumer.rs`, `email_queue.rs`; belum diuji terhadap Redis nyata di CI |
+> | 3 | Transactional outbox + `webhooks[]` per entity | ✅ | `src/nocode/outbox.rs`, tabel `flx_outbox`, hook di create/update/delete; diuji e2e dengan receiver lokal |
+> | 3 | `search_columns` + index trigram (Postgres) + lint "kolom filter/sort tanpa index" | ✅ | planner memakai `search_columns`; dialek lain hanya LIKE + peringatan lint |
+> | 3 | `flx init` offline + core config embedded; tidak ada download saat boot | ✅ | `src/embedded/`, `cli::init`; fungsi download dihapus, dependensi `zip` dilepas |
+> | 3 | JWT `jti`, refresh token + rotasi, `/logout`, denylist lintas replika via Redis | ✅ | TTL akses default tetap 24 jam (kompatibel); set `JWT_ACCESS_TTL_SECS=900` |
+> | 3 | Serialisasi langsung row → buffer (R-4) | ❌ belum | Nilai tambah kecil setelah cache `Bytes`; dikerjakan setelah Fase 2 |
 
 
 Setiap fase punya **kriteria selesai yang terukur**. Urutan dibuat agar yang berisiko rendah dan berdampak tinggi jalan dulu, dan setiap perubahan performa dibuktikan dengan angka.

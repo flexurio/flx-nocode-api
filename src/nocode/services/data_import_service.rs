@@ -182,7 +182,7 @@ pub async fn process_import_request(
 ) -> Result<WebResponse, WebResponse> {
     // 1. Auth Check
     let mut claims = Claims::default();
-    if state.require_auth && !state.route_publics.contains(&route) {
+    if state.require_auth && !state.is_public_route(&route) {
         claims = get_user_info_from_token(&req, state.clone()).map_err(|_| WebResponse {
             success: false,
             message: "Invalid token".to_string(),
@@ -402,7 +402,7 @@ pub async fn process_import_request(
         // queue implementation is mostly cloning rows into jobs.
         // For simplicity and correctness with original file, I will replicate it.
         let _t0 = std::time::Instant::now();
-        let actor_id_opt = if state.require_auth && !state.route_publics.contains(&route) {
+        let actor_id_opt = if state.require_auth && !state.is_public_route(&route) {
             Some(claims.id.clone())
         } else {
             None

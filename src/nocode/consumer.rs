@@ -4,7 +4,6 @@ use actix_web::web::Data;
 use anyhow::{anyhow, Result};
 use chrono::Utc;
 use rand::RngExt;
-use redis::AsyncCommands;
 use redis::aio::MultiplexedConnection;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -13,6 +12,7 @@ use tokio::task::JoinSet;
 use std::collections::HashMap;
 
 use crate::log::log_output;
+use crate::metrics::METRICS;
 use crate::model::TableSchema;
 use crate::storage::ast::{Filter as QF, Val as QV};
 use crate::AppState;
@@ -35,13 +35,17 @@ pub struct WriteJob {
 }
 
 impl WriteJob {
-    pub fn queue_key() -> String { "flx:wq:default".into() }
+    /// Redis Stream carrying write jobs (`XADD` / `XREADGROUP`).
+    pub fn stream_key() -> String { "flx:wq:stream".into() }
+    pub fn group() -> String { "flx-writers".into() }
     pub fn dlq_key() -> String { "flx:wq:dlq".into() }
-    /// Per-worker "in flight" list. A job is moved here atomically (BLMOVE) when
-    /// picked up and removed (LREM) only after it was executed or dead-lettered,
-    /// so a crash between pop and DB write no longer loses the job.
-    pub fn processing_key(worker: &str) -> String { format!("flx:wq:processing:{}", worker) }
-    pub fn processing_pattern() -> &'static str { "flx:wq:processing:*" }
+    /// Legacy list keys (pre-Streams); drained into the stream once at boot.
+    pub fn legacy_queue_key() -> String { "flx:wq:default".into() }
+    pub fn legacy_processing_pattern() -> &'static str { "flx:wq:processing:*" }
+
+    pub fn queue() -> crate::nocode::stream_queue::StreamQueue {
+        crate::nocode::stream_queue::StreamQueue::new(Self::stream_key(), Self::group(), Self::dlq_key())
+    }
 }
 
 fn op_name(op: &WriteOpKind) -> &'static str {
@@ -75,17 +79,25 @@ static WRITE_EXEC_RETRY_MAX: Lazy<usize> = Lazy::new(|| {
         .unwrap_or(2)
 });
 
-/// Push a job to the Redis list (LPUSH) and return queue length.
+/// Idle time after which another consumer may claim a pending entry
+/// (`WRITE_CLAIM_IDLE_MS`, default 60 000). Must exceed the longest expected job.
+static WRITE_CLAIM_IDLE_MS: Lazy<u64> = Lazy::new(|| {
+    std::env::var("WRITE_CLAIM_IDLE_MS").ok().and_then(|s| s.parse().ok()).unwrap_or(60_000)
+});
+
+/// Publish a job to the stream (`XADD`) and return the queue length.
+/// The HTTP handler replies 202 only after this succeeds.
 pub async fn enqueue_job(job: &WriteJob) -> Result<i64> {
     let max_len: i64 = *WRITE_QUEUE_MAX_LEN;
     let retry_count: usize = *WRITE_QUEUE_ENQUEUE_RETRY;
+    let q = WriteJob::queue();
 
     let payload = serde_json::to_string(job)?;
     // Shared auto-reconnecting connection: no TCP connect + AUTH per request.
     let mut conn = crate::database::redis::get_connection().await?;
     for attempt in 0..=retry_count {
         if max_len > 0 {
-            let cur_len: i64 = conn.llen(WriteJob::queue_key()).await?;
+            let cur_len: i64 = redis::cmd("XLEN").arg(WriteJob::stream_key()).query_async(&mut conn).await?;
             if cur_len >= max_len {
                 return Err(anyhow!(
                     "Queue backpressure: len={} reached max={}",
@@ -95,8 +107,19 @@ pub async fn enqueue_job(job: &WriteJob) -> Result<i64> {
             }
         }
 
-        match conn.lpush(WriteJob::queue_key(), payload.clone()).await {
-            Ok(len) => return Ok(len),
+        let res: redis::RedisResult<String> = redis::cmd("XADD")
+            .arg(WriteJob::stream_key())
+            .arg("*")
+            .arg("payload")
+            .arg(&payload)
+            .query_async(&mut conn)
+            .await;
+        match res {
+            Ok(_) => {
+                let len: i64 = redis::cmd("XLEN").arg(WriteJob::stream_key()).query_async(&mut conn).await.unwrap_or(0);
+                METRICS.write_queue_len.store(len.max(0) as u64, std::sync::atomic::Ordering::Relaxed);
+                return Ok(len);
+            }
             Err(e) => {
                 if attempt >= retry_count {
                     return Err(anyhow!(e));
@@ -107,7 +130,7 @@ pub async fn enqueue_job(job: &WriteJob) -> Result<i64> {
             }
         }
     }
-
+    let _ = q;
     Err(anyhow!("enqueue failed unexpectedly"))
 }
 
@@ -121,7 +144,7 @@ struct FailedJobRecord {
     job: WriteJob,
 }
 
-async fn push_dlq(job: WriteJob, worker: &str, error: &str) -> Result<i64> {
+async fn push_dlq(conn: &mut MultiplexedConnection, job: WriteJob, worker: &str, error: &str) -> Result<i64> {
     let record = FailedJobRecord {
         failed_at: Utc::now().to_rfc3339(),
         worker: worker.to_string(),
@@ -130,84 +153,28 @@ async fn push_dlq(job: WriteJob, worker: &str, error: &str) -> Result<i64> {
         op: op_name(&job.op).to_string(),
         job,
     };
-    let payload = serde_json::to_string(&record)?;
-    let mut conn = crate::database::redis::get_connection().await?;
-    let len: i64 = conn.lpush(WriteJob::dlq_key(), payload).await?;
-    Ok(len)
+    WriteJob::queue().dead_letter(conn, &serde_json::to_string(&record)?).await
 }
 
 /// Dead-letter a payload that could not even be parsed as a `WriteJob`.
-async fn push_dlq_raw(raw: &str, worker: &str, error: &str) -> Result<i64> {
+async fn push_dlq_raw(conn: &mut MultiplexedConnection, raw: &str, worker: &str, error: &str) -> Result<i64> {
     let record = serde_json::json!({
         "failed_at": Utc::now().to_rfc3339(),
         "worker": worker,
         "error": error,
         "raw": raw,
     });
-    let mut conn = crate::database::redis::get_connection().await?;
-    let len: i64 = conn.lpush(WriteJob::dlq_key(), record.to_string()).await?;
-    Ok(len)
-}
-
-/// Acknowledge a job: remove its raw payload from the worker's processing list.
-async fn ack_job(conn: &mut MultiplexedConnection, worker: &str, raw: &str) {
-    let res: redis::RedisResult<i64> = redis::cmd("LREM")
-        .arg(WriteJob::processing_key(worker))
-        .arg(1)
-        .arg(raw)
-        .query_async(conn)
-        .await;
-    if let Err(e) = res {
-        log_output("QUEUE", "ACK-ERR", worker, format!("{}", e), false);
-    }
-}
-
-/// Move jobs left in any processing list (from a previous crash/restart) back
-/// to the main queue so they are executed instead of being lost.
-async fn requeue_orphaned_processing(conn: &mut MultiplexedConnection) -> Result<usize> {
-    let mut cursor: u64 = 0;
-    let mut moved = 0usize;
-    loop {
-        let (next, keys): (u64, Vec<String>) = redis::cmd("SCAN")
-            .arg(cursor)
-            .arg("MATCH")
-            .arg(WriteJob::processing_pattern())
-            .arg("COUNT")
-            .arg(100)
-            .query_async(&mut *conn)
-            .await?;
-        for key in keys {
-            loop {
-                let item: Option<String> = redis::cmd("LMOVE")
-                    .arg(&key)
-                    .arg(WriteJob::queue_key())
-                    .arg("RIGHT")
-                    .arg("LEFT")
-                    .query_async(&mut *conn)
-                    .await?;
-                if item.is_none() {
-                    break;
-                }
-                moved += 1;
-            }
-        }
-        cursor = next;
-        if cursor == 0 {
-            break;
-        }
-    }
-    Ok(moved)
+    WriteJob::queue().dead_letter(conn, &record.to_string()).await
 }
 
 async fn execute_with_retry(
     state: Data<AppState>,
-    schemas_map: Arc<HashMap<String, Arc<TableSchema>>>,
     job: WriteJob,
     retry_max: usize,
 ) -> Result<()> {
     let mut last_err: Option<anyhow::Error> = None;
     for attempt in 0..=retry_max {
-        match execute_job(state.clone(), schemas_map.clone(), job.clone()).await {
+        match execute_job(state.clone(), job.clone()).await {
             Ok(_) => return Ok(()),
             Err(e) => {
                 last_err = Some(e);
@@ -222,210 +189,141 @@ async fn execute_with_retry(
     Err(last_err.unwrap_or_else(|| anyhow!("execution failed")))
 }
 
-/// Dequeue a batch of raw payloads with at-least-once semantics.
-///
-/// Blocks on `BLMOVE queue processing RIGHT LEFT` for the first item, then
-/// drains up to `max_batch - 1` more with non-blocking `LMOVE`. Every payload
-/// stays in the worker's processing list until `ack_job` removes it.
-async fn dequeue_batch_with_conn(
+/// Process one delivered entry end-to-end: parse → execute (with retries) →
+/// dead-letter on failure → `XACK`. Nothing is acknowledged before it is
+/// either applied to the database or safely stored in the DLQ.
+async fn handle_entry(
+    state: &Data<AppState>,
     conn: &mut MultiplexedConnection,
+    q: &crate::nocode::stream_queue::StreamQueue,
     worker: &str,
-    max_batch: usize,
-) -> Result<Vec<String>> {
-    let processing = WriteJob::processing_key(worker);
-    let mut items: Vec<String> = Vec::with_capacity(max_batch.min(64));
-
-    // 1. Wait for at least one job (5 s timeout -> idle tick)
-    let first: Option<String> = redis::cmd("BLMOVE")
-        .arg(WriteJob::queue_key())
-        .arg(&processing)
-        .arg("RIGHT")
-        .arg("LEFT")
-        .arg(5)
-        .query_async(&mut *conn)
-        .await?;
-    match first {
-        Some(v) => items.push(v),
-        None => return Ok(items),
-    }
-
-    // 2. Drain additional waiting jobs without blocking
-    while items.len() < max_batch {
-        let next: Option<String> = redis::cmd("LMOVE")
-            .arg(WriteJob::queue_key())
-            .arg(&processing)
-            .arg("RIGHT")
-            .arg("LEFT")
-            .query_async(&mut *conn)
-            .await?;
-        match next {
-            Some(v) => items.push(v),
-            None => break,
+    entry: crate::nocode::stream_queue::Entry,
+) {
+    let retry_max: usize = *WRITE_EXEC_RETRY_MAX;
+    let job = match serde_json::from_str::<WriteJob>(&entry.payload) {
+        Ok(j) => j,
+        Err(e) => {
+            match push_dlq_raw(conn, &entry.payload, worker, &format!("invalid job payload: {}", e)).await {
+                Ok(n) => log_output("QUEUE", "DLQ-PUSH", worker, format!("malformed payload, dlq_len={}", n), false),
+                Err(dlq_err) => {
+                    // Keep it pending: it will be re-delivered via XAUTOCLAIM.
+                    log_output("QUEUE", "DLQ-ERR", worker, format!("{} (entry kept pending)", dlq_err), false);
+                    return;
+                }
+            }
+            if let Err(e) = q.ack(conn, &entry.id).await {
+                log_output("QUEUE", "ACK-ERR", worker, format!("{}", e), false);
+            }
+            return;
         }
+    };
+    let job_for_dlq = job.clone();
+    if let Err(e) = execute_with_retry(state.clone(), job, retry_max).await {
+        log_output("QUEUE", "EXEC-ERR", worker, format!("{}", e), false);
+        METRICS.record_queue_failure();
+        match push_dlq(conn, job_for_dlq, worker, &e.to_string()).await {
+            Ok(n) => log_output("QUEUE", "DLQ-PUSH", worker, format!("dlq_len={}", n), false),
+            Err(dlq_err) => {
+                log_output("QUEUE", "DLQ-ERR", worker, format!("{} (entry kept pending)", dlq_err), false);
+                return;
+            }
+        }
+    } else {
+        METRICS.record_queue_processed();
     }
-    Ok(items)
+    if let Err(e) = q.ack(conn, &entry.id).await {
+        log_output("QUEUE", "ACK-ERR", worker, format!("{}", e), false);
+    }
 }
 
-/// Start N concurrent workers to pull from queue and execute writes.
-pub async fn start_consumer(state: Data<AppState>, schemas_map: Arc<HashMap<String, Arc<TableSchema>>>) {
+async fn open_connection(worker: &str) -> MultiplexedConnection {
+    loop {
+        match crate::database::redis::get_manager().await {
+            Ok(client) => match client.get_multiplexed_async_connection().await {
+                Ok(c) => return c,
+                Err(e) => log_output("QUEUE", "DEQUEUE-ERR", worker, format!("{}", e), false),
+            },
+            Err(e) => log_output("QUEUE", "DEQUEUE-ERR", worker, format!("{}", e), false),
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    }
+}
+
+/// Start N concurrent workers that consume the write stream and execute writes.
+pub async fn start_consumer(state: Data<AppState>) {
     let concurrency: usize = std::env::var("WRITE_CONCURRENCY").ok().and_then(|s| s.parse().ok()).unwrap_or(4);
     let batch_size: usize = std::env::var("WRITE_BATCH_SIZE").ok().and_then(|s| s.parse().ok()).unwrap_or(32);
-    log_output("QUEUE", "START", "consumer", format!("Workers={}, BatchSize={}", concurrency, batch_size), true);
+    let host = std::env::var("HOSTNAME").unwrap_or_else(|_| format!("pid{}", std::process::id()));
+    log_output("QUEUE", "START", "consumer", format!("Workers={}, BatchSize={}, stream={}, group={}", concurrency, batch_size, WriteJob::stream_key(), WriteJob::group()), true);
 
-    // Recover jobs that were in flight when the previous process died.
-    match crate::database::redis::get_manager().await {
-        Ok(client) => match client.get_multiplexed_async_connection().await {
-            Ok(mut conn) => match requeue_orphaned_processing(&mut conn).await {
-                Ok(0) => {}
-                Ok(n) => log_output("QUEUE", "REQUEUE", "consumer", format!("re-queued {} in-flight jobs from previous run", n), true),
-                Err(e) => log_output("QUEUE", "REQUEUE-ERR", "consumer", format!("{}", e), false),
-            },
-            Err(e) => log_output("QUEUE", "REQUEUE-ERR", "consumer", format!("{}", e), false),
-        },
-        Err(e) => log_output("QUEUE", "REQUEUE-ERR", "consumer", format!("{}", e), false),
+    let q = WriteJob::queue();
+
+    // Group + one-off migration of jobs left in the pre-Streams lists.
+    {
+        let mut conn = open_connection("consumer-boot").await;
+        if let Err(e) = q.ensure_group(&mut conn).await {
+            log_output("QUEUE", "BOOT-ERR", "consumer", format!("{}", e), false);
+        }
+        match q.migrate_legacy_lists(&mut conn, &WriteJob::legacy_queue_key(), Some(WriteJob::legacy_processing_pattern())).await {
+            Ok(0) => {}
+            Ok(n) => log_output("QUEUE", "MIGRATE", "consumer", format!("moved {} job(s) from legacy lists into the stream", n), true),
+            Err(e) => log_output("QUEUE", "MIGRATE-ERR", "consumer", format!("{}", e), false),
+        }
     }
 
     let mut set = JoinSet::new();
     for idx in 0..concurrency {
         let state_cl = state.clone();
-        let schemas_map_cl = schemas_map.clone();
+        let q = q.clone();
+        let worker_name = format!("{}-w{}", host, idx);
         set.spawn(async move {
-            log_output(
-                "QUEUE",
-                "WORKER-START",
-                format!("worker-{}", idx).as_str(),
-                "ready".to_string(),
-                true,
-            );
-            
-            // Error tracking for circuit breaker
+            log_output("QUEUE", "WORKER-START", worker_name.as_str(), "ready".to_string(), true);
             let mut consecutive_errors = 0u32;
-            let max_consecutive_errors = 10; // Circuit breaker threshold
-            let mut backoff_ms = 250u64; // Initial backoff
-            
-            // Establish a dedicated Redis connection for this worker and reuse it
-            let client = match crate::database::redis::get_manager().await {
-                Ok(c) => c,
-                Err(e) => {
-                    log_output(
-                        "QUEUE",
-                        "DEQUEUE-ERR",
-                        format!("worker-{}", idx).as_str(),
-                        format!("{}", e),
-                        false,
-                    );
-                    // If we cannot even get a client, enter a slow retry loop
-                    loop {
-                        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                        if let Ok(c2) = crate::database::redis::get_manager().await {
-                            break c2;
-                        }
-                    }
-                }
-            };
-            let mut conn = loop {
-                match client.get_multiplexed_async_connection().await {
-                    Ok(c) => break c,
-                    Err(e) => {
-                        log_output(
-                            "QUEUE",
-                            "DEQUEUE-ERR",
-                            format!("worker-{}", idx).as_str(),
-                            format!("{}", e),
-                            false,
-                        );
-                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                    }
-                }
-            };
-            
-            let worker_name = format!("worker-{}", idx);
+            let max_consecutive_errors = 10;
+            let mut backoff_ms = 250u64;
+            let mut conn = open_connection(&worker_name).await;
+            let mut last_claim = std::time::Instant::now();
+
             loop {
-                match dequeue_batch_with_conn(&mut conn, worker_name.as_str(), batch_size).await {
+                // Periodically adopt entries a dead consumer left pending.
+                if last_claim.elapsed() >= std::time::Duration::from_secs(30) {
+                    last_claim = std::time::Instant::now();
+                    match q.claim_stale(&mut conn, &worker_name, *WRITE_CLAIM_IDLE_MS, batch_size).await {
+                        Ok(stale) if !stale.is_empty() => {
+                            log_output("QUEUE", "RECLAIM", worker_name.as_str(), format!("re-delivering {} stale entr(y/ies)", stale.len()), true);
+                            for entry in stale {
+                                handle_entry(&state_cl, &mut conn, &q, &worker_name, entry).await;
+                            }
+                        }
+                        Ok(_) => {}
+                        Err(e) => log_output("QUEUE", "RECLAIM-ERR", worker_name.as_str(), format!("{}", e), false),
+                    }
+                }
+
+                match q.read_batch(&mut conn, &worker_name, batch_size, 5_000).await {
                     Ok(items) if !items.is_empty() => {
-                        // Reset error counter on success
                         consecutive_errors = 0;
                         backoff_ms = 250;
-
-                        let retry_max: usize = *WRITE_EXEC_RETRY_MAX;
-
-                        for raw in items {
-                            let job = match serde_json::from_str::<WriteJob>(&raw) {
-                                Ok(j) => j,
-                                Err(e) => {
-                                    // Unparseable payload: dead-letter it instead of dropping silently.
-                                    match push_dlq_raw(&raw, worker_name.as_str(), &format!("invalid job payload: {}", e)).await {
-                                        Ok(dlq_len) => log_output("QUEUE", "DLQ-PUSH", worker_name.as_str(), format!("malformed payload, len={}", dlq_len), false),
-                                        Err(dlq_err) => log_output("QUEUE", "DLQ-ERR", worker_name.as_str(), format!("{}", dlq_err), false),
-                                    }
-                                    ack_job(&mut conn, worker_name.as_str(), &raw).await;
-                                    continue;
-                                }
-                            };
-                            let job_for_dlq = job.clone();
-                            if let Err(e) = execute_with_retry(state_cl.clone(), schemas_map_cl.clone(), job, retry_max).await {
-                                log_output("QUEUE", "EXEC-ERR", worker_name.as_str(), format!("{}", e), false);
-                                match push_dlq(job_for_dlq, worker_name.as_str(), &e.to_string()).await {
-                                    Ok(dlq_len) => log_output("QUEUE", "DLQ-PUSH", worker_name.as_str(), format!("len={}", dlq_len), false),
-                                    Err(dlq_err) => {
-                                        // Could not dead-letter: leave it in the processing list so the
-                                        // next boot re-queues it rather than losing the write.
-                                        log_output("QUEUE", "DLQ-ERR", worker_name.as_str(), format!("{} (job kept in processing list)", dlq_err), false);
-                                        continue;
-                                    }
-                                }
-                            }
-                            ack_job(&mut conn, worker_name.as_str(), &raw).await;
+                        for entry in items {
+                            handle_entry(&state_cl, &mut conn, &q, &worker_name, entry).await;
                         }
                     }
                     Ok(_) => {
-                        // idle tick - queue empty
-                        consecutive_errors = 0; // Reset on successful poll
+                        consecutive_errors = 0; // idle tick
                     }
                     Err(e) => {
                         consecutive_errors += 1;
-                        
-                        // Log only first error and every 10th error to avoid spam
                         if consecutive_errors == 1 || consecutive_errors.is_multiple_of(10) {
-                            log_output(
-                                "QUEUE", 
-                                "DEQUEUE-ERR", 
-                                format!("worker-{}", idx).as_str(), 
-                                format!("{} (count: {})", e, consecutive_errors), 
-                                false
-                            );
+                            log_output("QUEUE", "DEQUEUE-ERR", worker_name.as_str(), format!("{} (count: {})", e, consecutive_errors), false);
                         }
-
-                        // Attempt to re-establish the connection on error
-                        match client.get_multiplexed_async_connection().await {
-                            Ok(c) => {
-                                conn = c;
-                            }
-                            Err(e2) => {
-                                log_output(
-                                    "QUEUE",
-                                    "DEQUEUE-ERR",
-                                    format!("worker-{}", idx).as_str(),
-                                    format!("reconnect failed: {}", e2),
-                                    false,
-                                );
-                            }
-                        }
-                        
-                        // Circuit breaker: if too many errors, sleep longer
+                        conn = open_connection(&worker_name).await;
+                        let _ = q.ensure_group(&mut conn).await;
                         if consecutive_errors >= max_consecutive_errors {
-                            log_output(
-                                "QUEUE",
-                                "CIRCUIT-BREAKER",
-                                format!("worker-{}", idx).as_str(),
-                                format!("Too many errors ({}), entering long sleep (30s)", consecutive_errors),
-                                false,
-                            );
+                            log_output("QUEUE", "CIRCUIT-BREAKER", worker_name.as_str(), format!("Too many errors ({}), entering long sleep (30s)", consecutive_errors), false);
                             tokio::time::sleep(std::time::Duration::from_secs(30)).await;
-                            consecutive_errors = 0; // Reset after long sleep
-                            backoff_ms = 250; // Reset backoff
+                            consecutive_errors = 0;
+                            backoff_ms = 250;
                         } else {
-                            // Exponential backoff with max 5 seconds
                             tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
                             backoff_ms = (backoff_ms * 2).min(5000);
                         }
@@ -435,23 +333,38 @@ pub async fn start_consumer(state: Data<AppState>, schemas_map: Arc<HashMap<Stri
         });
     }
 
+    // Lag sampler: XLEN / XPENDING -> Prometheus gauges every 5 s.
+    {
+        let q = q.clone();
+        tokio::spawn(async move {
+            let mut conn = open_connection("queue-metrics").await;
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                match (q.len(&mut conn).await, q.pending(&mut conn).await) {
+                    (Ok(len), Ok(pending)) => {
+                        METRICS.write_queue_len.store(len.max(0) as u64, std::sync::atomic::Ordering::Relaxed);
+                        METRICS.write_queue_pending.store(pending.max(0) as u64, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    _ => conn = open_connection("queue-metrics").await,
+                }
+            }
+        });
+    }
+
     // detach in background
     tokio::spawn(async move {
         while let Some(res) = set.join_next().await {
             match res {
-                Ok(_) => {
-                    log_output("QUEUE", "WORKER-EXIT", "consumer-supervisor", "worker exited unexpectedly".to_string(), false);
-                }
-                Err(e) => {
-                    log_output("QUEUE", "WORKER-PANIC", "consumer-supervisor", format!("worker join error: {}", e), false);
-                }
+                Ok(_) => log_output("QUEUE", "WORKER-EXIT", "consumer-supervisor", "worker exited unexpectedly".to_string(), false),
+                Err(e) => log_output("QUEUE", "WORKER-PANIC", "consumer-supervisor", format!("worker join error: {}", e), false),
             }
         }
     });
 }
 
-async fn execute_job(state: Data<AppState>, schemas_map: Arc<HashMap<String, Arc<TableSchema>>>, job: WriteJob) -> Result<()> {
-    // schemas_map lookup is O(1)
+async fn execute_job(state: Data<AppState>, job: WriteJob) -> Result<()> {
+    // Always resolve against the live registry so a hot reload applies to queued jobs too.
+    let schemas_map = crate::registry::snapshot().schemas.clone();
 
 
     // Build a fake HttpRequest headers for auth reuse if needed in future. For now handlers do their own auth when route not public.

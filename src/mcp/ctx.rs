@@ -297,6 +297,8 @@ mod tests {
     #[test]
     fn test_build_injects_validated_claims() {
         let claims = Claims {
+            jti: None,
+            typ: None,
             id: "7".into(),
             nm: "tester".into(),
             exp: 0,

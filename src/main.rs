@@ -10,7 +10,7 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use flx_nocode_api::config::{CONFIG, CONFIG_LOCATION, ENDPOINT_LOG_ONCE, ISDEBUG, SCHEMAS, SEED_LOCATION};
-use flx_nocode_api::core::{self, generate_users};
+use flx_nocode_api::core::generate_users;
 use flx_nocode_api::database::{self, state::{AppState, QueryConverter}};
 use flx_nocode_api::helpers::cetak_label;
 use flx_nocode_api::log::log_output;
@@ -71,8 +71,11 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // ── CLI: reset-password ───────────────────────────────────────────────────
+    // ── CLI: init / reset-password ────────────────────────────────────────────
     let args: Vec<String> = env::args().collect();
+    if args.get(1).map(|a| a == "init").unwrap_or(false) {
+        return cli::init(&args);
+    }
     let is_reset_cmd = args.iter().any(|arg| arg == "reset-password");
 
     if is_reset_cmd {
@@ -96,32 +99,25 @@ async fn main() -> anyhow::Result<()> {
         None
     };
 
-    // ── Ensure .env exists ────────────────────────────────────────────────────
-    if !std::path::Path::new(".env").exists() {
-        match core::download_env_file().await {
-            Err(e) => {
-                eprintln!("Failed to download .env file: {}", e);
-                return Err(anyhow::anyhow!("Failed to download .env file: {}", e));
-            }
-            Ok(_) => {
-                println!(".env file downloaded successfully.");
-                println!("Please configure your .env file with the required settings.");
-                return Err(anyhow::anyhow!("Please configure your .env file"));
-            }
-        }
+    // ── Ensure .env exists (never downloaded: run `flx-nocode-api init`) ────
+    if !std::path::Path::new(".env").exists() && env::var("SECRET_KEY").is_err() {
+        eprintln!("No .env file found and SECRET_KEY is not set.");
+        eprintln!("Run `flx-nocode-api init` to create .env and the core config offline.");
+        return Err(anyhow::anyhow!("missing .env (run `flx-nocode-api init`)"));
     }
 
     let secret_key = env::var("SECRET_KEY").expect("SECRET_KEY must be set");
     let encrypt_key = env::var("ENCRYPT_KEY").expect("ENCRYPT_KEY must be set");
 
-    // ── Ensure config directory ───────────────────────────────────────────────
+    // ── Ensure config directory + core entities (embedded, no network) ───────
     let config_location = CONFIG_LOCATION.as_str();
-    if !std::path::Path::new(config_location).exists() {
-        if let Err(e) = core::create_dir_and_get_config(config_location).await {
-            eprintln!("Failed to initialize config directory: {}", e);
+    match flx_nocode_api::embedded::ensure_core_config(config_location) {
+        Ok(created) => {
+            for f in created {
+                println!("config: created {}", f);
+            }
         }
-    } else {
-        let _ = core::create_core_config_if_not_exists(config_location).await;
+        Err(e) => eprintln!("Failed to initialize config directory {}: {}", config_location, e),
     }
 
     // ── Ensure static & image directories ────────────────────────────────────
@@ -264,19 +260,11 @@ async fn main() -> anyhow::Result<()> {
         encrypt_key,
         query_converter,
         whitelist_ips,
-        route_publics: CONFIG.route_publics.clone(),
         converter_token: CONFIG.converter_token.clone(),
         store: store_adapter,
         is_cachedb,
         write_queue_enabled,
         default_collate: env::var("DEFAULT_COLLATE").unwrap_or_else(|_| "utf8mb4_bin".to_string()),
-        rules: {
-            let rules_path = format!("{}/rules.json", CONFIG_LOCATION.as_str());
-            match std::fs::read_to_string(&rules_path) {
-                Ok(c) => serde_json::from_str(&c).unwrap_or_else(|_| serde_json::json!({})),
-                Err(_) => serde_json::json!({}),
-            }
-        },
         l1_cache,
     });
 
@@ -299,7 +287,7 @@ async fn main() -> anyhow::Result<()> {
         match flx_nocode_api::database::redis::get_manager().await {
             Err(e) => eprintln!("WRITE QUEUE enabled but Redis not available: {}", e),
             Ok(_) => {
-                start_consumer(app_state.clone(), Arc::clone(&SCHEMAS.0)).await;
+                start_consumer(app_state.clone()).await;
                 log_output(
                     "QUEUE",
                     "BOOT",
@@ -333,6 +321,27 @@ async fn main() -> anyhow::Result<()> {
 
     // ── Table generation (blocks until done; fatal on error) ─────────────────
     startup::run_table_generation(&app_state).await?;
+
+    // ── Transactional outbox (webhooks) ──────────────────────────────────────
+    if app_state.db_type != flx_nocode_api::model::DbType::Mongodb
+        && env::var("OUTBOX_ENABLED").map(|v| !matches!(v.to_lowercase().as_str(), "0" | "false" | "no" | "off")).unwrap_or(true)
+    {
+        let ds = flx_nocode_api::storage::sql_store::SqlStore::new(app_state.db.clone(), app_state.db_type.as_str().to_string());
+        let (sql_t, sql_i) = flx_nocode_api::nocode::generate::generate_table(&ds, &flx_nocode_api::nocode::outbox::table_schema());
+        let (ok, msg) = flx_nocode_api::nocode::generate::execute_generate_table("flx_outbox".into(), &app_state, sql_t, sql_i).await;
+        if ok {
+            flx_nocode_api::nocode::outbox::start_worker(app_state.clone().into_inner());
+        } else {
+            eprintln!("OUTBOX disabled: could not create flx_outbox: {}", msg);
+        }
+    }
+
+    // ── JWT revocation list (cross-replica via Redis when available) ─────────
+    flx_nocode_api::auth::spawn_denylist_sync(app_state.is_cachedb);
+
+    // ── Live registry (hot reload via POST /admin/reload or SIGHUP) ──────────
+    let _ = &*flx_nocode_api::registry::current();
+    flx_nocode_api::registry::spawn_sighup_listener(app_state.clone());
 
     // // ── Role seeding (background task) ────────────────────────────────────────
     // if app_state.db_type != flx_nocode_api::model::DbType::Mongodb {
