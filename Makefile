@@ -10,7 +10,7 @@ DEBUG_DIR = target/debug
 BLUE = \033[1;34m
 NC = \033[0m
 
-.PHONY: all build release release-version run test test-e2e bench perf-baseline clean check fmt lint doc help docker-build docker-up docker-down mcp-stdio mcp-inspect mcp-inspect-stdio
+.PHONY: all build release release-version release-sync run test test-e2e bench perf-baseline clean check fmt lint doc help docker-build docker-up docker-down mcp-stdio mcp-inspect mcp-inspect-stdio
 
 all: build
 
@@ -21,6 +21,7 @@ help:
 	@echo "  build            Build the project in debug mode"
 	@echo "  release          Build the project in release mode"
 	@echo "  release-version  Create release tag & push (e.g. make release-version VERSION=patch)"
+	@echo "  release-sync     Sync VERSION -> Cargo.toml, tag & push (ARGS=--dry-run|--retag)"
 	@echo "  run              Run the project in debug mode"
 	@echo "  test             Run unit tests"
 	@echo "  test-e2e         Boot the binary (SQLite) and run the HTTP end-to-end test"
@@ -47,6 +48,10 @@ release:
 release-version:
 	@chmod +x scripts/release.sh
 	@./scripts/release.sh $(VERSION)
+
+release-sync:
+	@chmod +x scripts/sync-version.sh
+	@./scripts/sync-version.sh $(ARGS)
 
 run:
 	$(CARGO) run
