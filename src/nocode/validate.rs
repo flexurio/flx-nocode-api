@@ -367,6 +367,20 @@ impl<'a> LintCtx<'a> {
     }
 }
 
+/// True when `raw` (a post/put column entry) is not a stored column but is read
+/// by a column generator through `{request.<name>}`.
+fn is_request_input(schema: &TableSchema, raw: &str) -> bool {
+    let name = raw.trim().trim_end_matches('*').trim();
+    if name.is_empty() || schema.columns.iter().any(|c| c.name == name) {
+        return false;
+    }
+    let token = format!("{{request.{}}}", name);
+    schema
+        .columns
+        .iter()
+        .any(|c| c.function.contains(&token) || c.function_endpoint.contains(&token))
+}
+
 fn check_identifier(report: &mut LintReport, route: &str, what: &str, value: &str) {
     if !is_valid_identifier(value) {
         report.error(
@@ -582,11 +596,18 @@ fn lint_one(ctx: &LintCtx<'_>, report: &mut LintReport, route: &str, schema: &Ta
     for c in &schema.get.columns {
         ctx.check_col(report, route, schema, "get.columns", c);
     }
+    // post/put columns may also be request-only inputs (not stored) that a column
+    // generator consumes, e.g. `"function": "{request.code}/%Y/%m/000ID"`. The
+    // create/update path skips them on insert, so they are not errors.
     for c in &schema.post.columns {
-        ctx.check_col(report, route, schema, "post.columns", c);
+        if !is_request_input(schema, c) {
+            ctx.check_col(report, route, schema, "post.columns", c);
+        }
     }
     for c in &schema.put.columns {
-        ctx.check_col(report, route, schema, "put.columns", c);
+        if !is_request_input(schema, c) {
+            ctx.check_col(report, route, schema, "put.columns", c);
+        }
     }
     for c in &schema.get.order_by {
         ctx.check_col(report, route, schema, "get.order_by", c);
@@ -1308,6 +1329,25 @@ mod lint_tests {
         assert_eq!(index_advice.len(), 3, "{:?}", index_advice);
         assert!(index_advice.iter().any(|w| w.contains("'status'")));
         assert!(index_advice.iter().any(|w| w.contains("'created_at'")));
+    }
+
+    #[test]
+    fn post_column_used_as_request_input_is_not_error() {
+        let mut v = order_json();
+        v["columns"][0] = json!({"name": "id", "type_data": "varchar(50)", "function": "{request.code}/%Y/%m/000ID"});
+        v["post"]["columns"] = json!(["so_number*", "status", "code"]);
+        let mut m = HashMap::new();
+        m.insert("sales_order".to_string(), schema(v.clone()));
+        m.insert("sales_order_item".to_string(), schema(item_json()));
+        let r = ["sales_order".to_string(), "sales_order_item".to_string()];
+        let rep = lint_schemas(&m, &r);
+        assert!(rep.errors.is_empty(), "unexpected errors: {:?}", rep.errors);
+
+        // A post column that nothing reads is still a typo → error.
+        v["post"]["columns"] = json!(["so_number*", "status", "cdoe"]);
+        m.insert("sales_order".to_string(), schema(v));
+        let rep = lint_schemas(&m, &r);
+        assert!(rep.errors.iter().any(|e| e.contains("'cdoe'")), "{:?}", rep.errors);
     }
 
     #[test]
