@@ -222,7 +222,7 @@ pub const SUPPORTED_TRIGGER_EVENTS: &[&str] = &["update", "create", "delete", "s
 pub const KNOWN_TOP_LEVEL_KEYS: &[&str] = &[
     "table", "primary_key", "foreign_keys", "columns", "indexes", "details",
     "action_triggers", "triggers", "redis", "get", "post", "put", "del", "patch", "trace",
-    "locked_when", "state_machine", "auto_generate", "seed", "collate", "position", "search_columns", "webhooks",
+    "locked_when", "state_machine", "auto_generate", "seed", "collate", "position", "search_columns", "webhooks", "http_cache_secs",
 ];
 
 /// Keys a `columns[]` object may contain (mirrors `model::Column` + aliases).

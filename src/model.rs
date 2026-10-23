@@ -328,6 +328,12 @@ pub struct TableSchema {
     /// Webhooks delivered asynchronously via the transactional outbox.
     #[serde(default)]
     pub webhooks: Vec<Webhook>,
+    /// Browser/proxy cache lifetime for GET responses in seconds
+    /// (`Cache-Control: private, max-age=N`). 0 (default) sends `no-cache`:
+    /// the client may keep the page but must revalidate with `If-None-Match`,
+    /// which the server answers with a cheap `304`.
+    #[serde(default)]
+    pub http_cache_secs: u64,
     /// Allow-list of filterable column identities (`table.col`, `table.col->path`,
     /// `table.col->*`) derived from `get.parameters`. Computed once per schema on
     /// first use instead of on every GET request.
@@ -404,6 +410,7 @@ impl Default for TableSchema {
             collate: "".to_string(),
             search_columns: vec![],
             webhooks: vec![],
+            http_cache_secs: 0,
             declared_cols: std::sync::OnceLock::new(),
         }
     }

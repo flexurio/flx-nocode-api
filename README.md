@@ -359,6 +359,16 @@ The reload re-reads the directory, runs the configuration lint, creates tables/i
 * `SIGTERM`/`SIGINT`: HTTP drains for up to 30 s, queue and outbox workers stop after the entry they are processing, and the audit log is flushed before exit.
 * Queued writes (`?isqueue=true`) are executed by the consumer through the very same service code as a direct request (rules.json, allowed fields, formulas, details, triggers, audit), using the caller's validated claims stored with the job.
 
+### HTTP caching hints (`http_cache_secs`, `Link: rel="next"`)
+
+Every GET list response carries `ETag`, `Vary` and `Cache-Control`. By default the policy is `private, no-cache`: the browser keeps the body but revalidates with `If-None-Match`, which the server answers with a `304` without touching cache or database. Master data that rarely changes can opt into a real lifetime:
+
+```json
+"http_cache_secs": 300
+```
+
+→ `Cache-Control: private, max-age=300, must-revalidate`; the browser does not even ask for five minutes. When a page is full, the response also includes `X-Next-Cursor` and a `Link: </route?…&after=<cursor>>; rel="next"` header so clients can prefetch the next page while the user is still reading the current one.
+
 ### Search indexes
 
 `"search_columns": ["name", "code"]` makes `?search=` look only at those columns and, on PostgreSQL, creates a `pg_trgm` GIN index so `ILIKE '%term%'` is index-backed. The startup lint also warns about any filterable or sortable column that has no index.

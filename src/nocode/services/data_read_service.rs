@@ -12,6 +12,40 @@ use crate::log::{log_output, log_output_lazy};
 use crate::model::{TableSchema, WebResponse};
 use crate::nocode::repositories::data_read_repo;
 
+/// `Cache-Control` for a GET page of `schema`: an explicit lifetime when the
+/// entity opts in (`http_cache_secs`), otherwise `no-cache` so clients keep the
+/// body but revalidate with `If-None-Match` (answered with 304).
+pub fn cache_control_for(schema: &TableSchema) -> String {
+    if schema.http_cache_secs > 0 {
+        format!("private, max-age={}, must-revalidate", schema.http_cache_secs)
+    } else {
+        "private, no-cache".to_string()
+    }
+}
+
+/// `Link: </route?…&after=<cursor>>; rel="next"` so clients can prefetch the
+/// next page while the user is still reading this one. `page` is dropped
+/// (cursor pagination ignores it) and any previous `after` is replaced.
+pub fn next_page_link(path: &str, query: &str, cursor: &str) -> String {
+    let mut pairs: Vec<(String, String)> = url::form_urlencoded::parse(query.as_bytes())
+        .filter(|(k, _)| k != "after" && k != "page")
+        .map(|(k, v)| (k.into_owned(), v.into_owned()))
+        .collect();
+    pairs.push(("after".to_string(), cursor.to_string()));
+    let qs = url::form_urlencoded::Serializer::new(String::new()).extend_pairs(pairs).finish();
+    format!("<{}?{}>; rel=\"next\"", path, qs)
+}
+
+fn apply_page_headers(resp: &mut actix_web::HttpResponseBuilder, req: &HttpRequest, schema: &TableSchema, etag: &str, next_cursor: Option<&str>) {
+    resp.insert_header((header::ETAG, etag.to_string()));
+    resp.insert_header((header::CACHE_CONTROL, cache_control_for(schema)));
+    resp.insert_header((header::VARY, "Authorization, Accept-Encoding"));
+    if let Some(c) = next_cursor {
+        resp.insert_header(("X-Next-Cursor", c.to_string()));
+        resp.insert_header((header::LINK, next_page_link(req.path(), req.query_string(), c)));
+    }
+}
+
 pub async fn process_get_request(
     state: &web::Data<AppState>,
     parameters: &web::Query<Value>,
@@ -184,15 +218,12 @@ pub async fn process_get_request(
             Ok(page) => {
                 if if_none_match.as_deref() == Some(page.etag.as_str()) {
                     let mut resp = HttpResponse::NotModified();
-                    resp.insert_header((header::ETAG, page.etag.clone()));
+                    apply_page_headers(&mut resp, req, table_schema, &page.etag, page.next_cursor.as_deref());
                     return resp.finish();
                 }
                 let mut resp = HttpResponse::Ok();
                 resp.insert_header((header::CONTENT_TYPE, "application/json"));
-                resp.insert_header((header::ETAG, page.etag.clone()));
-                if let Some(c) = &page.next_cursor {
-                    resp.insert_header(("X-Next-Cursor", c.clone()));
-                }
+                apply_page_headers(&mut resp, req, table_schema, &page.etag, page.next_cursor.as_deref());
                 // `Bytes` clone is a ref-count increment: no copy, no re-serialization.
                 resp.body(page.body.clone())
             }
@@ -218,9 +249,19 @@ pub async fn process_get_request(
                 total_data: total as i32,
                 data,
             };
+            // Same conditional-request contract as the cached path: ETag + 304.
+            let body = serde_json::to_vec(&result).unwrap_or_default();
+            let etag = CachedPage::etag_for(&body);
+            let if_none_match = req.headers().get(header::IF_NONE_MATCH).and_then(|v| v.to_str().ok());
+            if if_none_match == Some(etag.as_str()) {
+                let mut resp = HttpResponse::NotModified();
+                apply_page_headers(&mut resp, req, table_schema, &etag, next_cursor.as_deref());
+                return resp.finish();
+            }
             let mut resp = HttpResponse::Ok();
-            if let Some(c) = next_cursor { resp.insert_header(("X-Next-Cursor", c)); }
-            resp.json(result)
+            resp.insert_header((header::CONTENT_TYPE, "application/json"));
+            apply_page_headers(&mut resp, req, table_schema, &etag, next_cursor.as_deref());
+            resp.body(body)
         }
         Err(e) => {
             HttpResponse::InternalServerError().json(WebResponse {
@@ -230,5 +271,26 @@ pub async fn process_get_request(
                 data: Value::Null,
             })
         }
+    }
+}
+
+#[cfg(test)]
+mod http_cache_tests {
+    use super::*;
+
+    #[test]
+    fn cache_control_reflects_entity_setting() {
+        let mut t = TableSchema::default();
+        assert_eq!(cache_control_for(&t), "private, no-cache");
+        t.http_cache_secs = 300;
+        assert_eq!(cache_control_for(&t), "private, max-age=300, must-revalidate");
+    }
+
+    #[test]
+    fn next_link_replaces_cursor_and_drops_page() {
+        let l = next_page_link("/orders", "limit=50&page=3&after=OLD&sort=-id", "NEW");
+        assert_eq!(l, "</orders?limit=50&sort=-id&after=NEW>; rel=\"next\"");
+        let l = next_page_link("/orders", "", "c/1+2");
+        assert_eq!(l, "</orders?after=c%2F1%2B2>; rel=\"next\"");
     }
 }

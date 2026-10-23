@@ -186,7 +186,9 @@ Skala: **Dampak** (ke user) dan **Usaha** (hari kerja 1 engineer) · S = kecil (
 > | 3 | `search_columns` + index trigram (Postgres) + lint "kolom filter/sort tanpa index" | ✅ | planner memakai `search_columns`; dialek lain hanya LIKE + peringatan lint |
 > | 3 | `flx init` offline + core config embedded; tidak ada download saat boot | ✅ | `src/embedded/`, `cli::init`; fungsi download dihapus, dependensi `zip` dilepas |
 > | 3 | JWT `jti`, refresh token + rotasi, `/logout`, denylist lintas replika via Redis | ✅ | TTL akses default tetap 24 jam (kompatibel); set `JWT_ACCESS_TTL_SECS=900` |
-> | 3 | Serialisasi langsung row → buffer (R-4) | ❌ belum | Nilai tambah kecil setelah cache `Bytes`; dikerjakan setelah Fase 2 |
+> | 3 | Serialisasi langsung row → buffer (R-4) | ❌ belum | Nilai tambah kecil setelah cache `Bytes` |
+> | 4 | `Cache-Control` per entity (`http_cache_secs`), ETag + 304 di semua jalur GET, `Link: rel="next"` untuk prefetch | ✅ | `data_read_service.rs`; diuji e2e |
+> | 4 | SSE push, `version` otomatis + optimistic UI, PGO/target-cpu | ❌ belum | menunggu keputusan sisi klien / pipeline rilis |
 
 
 Setiap fase punya **kriteria selesai yang terukur**. Urutan dibuat agar yang berisiko rendah dan berdampak tinggi jalan dulu, dan setiap perubahan performa dibuktikan dengan angka.

@@ -48,6 +48,7 @@ const ENTITY: &str = r#"{
   ],
   "indexes": [ { "name": "idx_department_code", "columns": ["code"], "unique": true } ],
   "redis": { "keys": [], "ttl": 3600 },
+  "http_cache_secs": 120,
   "get": { "enable_method": true, "columns": ["id", "code", "name", "is_active"], "parameters": ["code.eq"], "order_by": ["id"] },
   "post": { "enable_method": true, "columns": ["code*", "name*", "is_active"] },
   "put": { "enable_method": true, "columns": ["code", "name", "is_active"] },
@@ -140,6 +141,19 @@ async fn write_read_cache_etag_metrics() {
     let body: serde_json::Value = r.json().await.unwrap();
     let n1 = body["data"].as_array().unwrap().len();
     assert!(n1 >= 1);
+
+    // 3b. HTTP cache hints: Cache-Control from the entity, Link rel=next with the cursor
+    let r = c.get(url("/master_department?limit=1")).send().await.unwrap();
+    assert_eq!(r.status(), 200);
+    assert_eq!(r.headers().get("cache-control").unwrap().to_str().unwrap(), "private, max-age=120, must-revalidate");
+    let cursor = r.headers().get("x-next-cursor").expect("full page carries a cursor").to_str().unwrap().to_string();
+    let link = r.headers().get("link").expect("Link header").to_str().unwrap().to_string();
+    assert!(link.starts_with("</master_department?") && link.ends_with(">; rel=\"next\""), "{}", link);
+    assert!(link.contains("limit=1") && link.contains(&format!("after={}", cursor)), "{}", link);
+    // the advertised link is followable
+    let next = link.trim_start_matches('<').split('>').next().unwrap().to_string();
+    let r = c.get(format!("{}{}", srv.base, next)).send().await.unwrap();
+    assert_eq!(r.status(), 200, "prefetch link must be valid");
 
     // 4. conditional GET -> 304
     let r = c.get(url("/master_department?limit=10")).header("if-none-match", &etag).send().await.unwrap();
