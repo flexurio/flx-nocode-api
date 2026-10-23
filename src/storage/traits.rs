@@ -43,6 +43,16 @@ pub trait TxStore: Send + Sync {
         Err(anyhow::anyhow!("raw_sql unsupported by this backend"))
     }
 
+    /// Raw statement that returns no rows; yields the number of affected rows.
+    /// Used by atomic sequences (`UPDATE … SET last_value = last_value + 1`).
+    async fn raw_execute(
+        &mut self,
+        _sql: &str,
+        _params: Vec<crate::database::state::DbParam>,
+    ) -> anyhow::Result<u64> {
+        Err(anyhow::anyhow!("raw_execute unsupported by this backend"))
+    }
+
     async fn commit(self: Box<Self>) -> anyhow::Result<()>;
     async fn rollback(self: Box<Self>) -> anyhow::Result<()>;
 }

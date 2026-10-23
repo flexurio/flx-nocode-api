@@ -383,6 +383,7 @@ async fn handle_email_entry(
     worker: &str,
     entry: crate::nocode::stream_queue::Entry,
 ) {
+    let _inflight = crate::shutdown::InflightGuard::new();
     let retry_max: usize = std::env::var("EMAIL_EXEC_RETRY_MAX")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -473,6 +474,9 @@ pub async fn start_email_consumer() {
             let mut last_claim = std::time::Instant::now();
 
             loop {
+                if crate::shutdown::is_shutting_down() {
+                    break;
+                }
                 if last_claim.elapsed() >= std::time::Duration::from_secs(30) {
                     last_claim = std::time::Instant::now();
                     if let Ok(stale) = q.claim_stale(&mut conn, &worker_name, 120_000, 16).await {

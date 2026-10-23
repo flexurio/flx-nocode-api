@@ -23,19 +23,20 @@ pub async fn delete(
              HttpResponse::Ok().json(res)
         },
         Err(err) => {
-            let mut status = if err == "Unauthorized" || err == "Invalid token" {
-                HttpResponse::Unauthorized()
-            } else if err.contains("not found") {
-                HttpResponse::FailedDependency()
-            } else if err.contains("mismatch") {
-                HttpResponse::BadRequest()
-            } else {
-                HttpResponse::InternalServerError()
+            let mut status = crate::error::ApiError::from_message(&err);
+            if err.contains("not found") {
+                // Historical contract for DELETE on a missing row.
+                status.status = actix_web::http::StatusCode::FAILED_DEPENDENCY;
+            }
+            let message = status.message.clone();
+            let mut status = {
+                if let Some(d) = &status.detail { tracing::warn!(detail = %d, "delete failed"); }
+                HttpResponse::build(status.status)
             };
-            
+
             status.json(crate::model::WebResponse {
                 success: false,
-                message: err,
+                message,
                 total_data: 0,
                 data: Value::Null,
             })

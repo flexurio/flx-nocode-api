@@ -528,6 +528,14 @@ fn lint_webhooks(report: &mut LintReport, route: &str, schema: &TableSchema) {
 fn lint_one(ctx: &LintCtx<'_>, report: &mut LintReport, route: &str, schema: &TableSchema) {
     lint_index_coverage(report, route, schema);
     lint_webhooks(report, route, schema);
+    if (schema.state_machine.is_some() || schema.locked_when.is_some())
+        && !LintCtx::has_column(schema, "version")
+    {
+        report.warn(
+            route,
+            "state_machine/locked_when without a `version` column: concurrent PUTs are serialised by the row lock, but clients cannot detect lost updates (add `version` int and send If-Match)",
+        );
+    }
 
     // ── Identifiers (SQL-injection guard) ────────────────────────────────
     check_identifier(report, route, "table", &schema.table);
@@ -1294,6 +1302,8 @@ mod lint_tests {
         // index-coverage advisory must fire for exactly those and nothing else.
         let (index_advice, other): (Vec<_>, Vec<_>) =
             rep.warnings.iter().partition(|w| w.contains("has no index"));
+        // The fixture declares a state_machine without a `version` column: expected advisory.
+        let other: Vec<_> = other.into_iter().filter(|w| !w.contains("`version` column")).collect();
         assert!(other.is_empty(), "unexpected warnings: {:?}", other);
         assert_eq!(index_advice.len(), 3, "{:?}", index_advice);
         assert!(index_advice.iter().any(|w| w.contains("'status'")));

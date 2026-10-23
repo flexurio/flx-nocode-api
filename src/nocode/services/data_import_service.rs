@@ -457,6 +457,7 @@ pub async fn process_import_request(
                     headers: vec![],
                     enqueued_at: chrono::Utc::now().to_rfc3339(),
                     actor_id: actor_id_opt.clone(),
+                    claims: None,
                 };
                 if let Err(e) = crate::nocode::consumer::enqueue_job(&job).await {
                     return Err(WebResponse {

@@ -351,6 +351,14 @@ The reload re-reads the directory, runs the configuration lint, creates tables/i
 
 `POST /login` returns the access token in `data` (unchanged) and a refresh token in the `X-Refresh-Token` header (`X-Token-Expires-In` gives the access TTL). `POST /token/refresh` with `Authorization: Bearer <refresh token>` returns a new access token (roles re-read from the database) and rotates the refresh token. `POST /logout` revokes the presented access token and, if sent in `X-Refresh-Token`, the refresh token. Revocations propagate to other replicas through Redis within `JWT_DENYLIST_SYNC_SECS`. Set `JWT_ACCESS_TTL_SECS=900` for short-lived access tokens.
 
+### Transaction correctness (document numbers, locks, conflicts)
+
+* Custom document ids (`"function": "INV/%Y/000ID"`) and trigger `{seq:…}` tokens are served by the `flx_sequences` table: one row-locked `UPDATE … last_value + 1` per number, inside the write transaction. Concurrent inserts get distinct, gap-free numbers; the first use of a prefix is seeded from the existing maximum so numbering continues.
+* `PUT`/`PATCH` read the current row with `FOR UPDATE` (PostgreSQL/MySQL) or `WITH (UPDLOCK, ROWLOCK)` (MSSQL), so `state_machine` / `locked_when` checks of two concurrent requests are serialised. Add a `version` column and send `If-Match` to also detect lost updates on the client side.
+* FK and unique pre-checks run inside the same transaction as the INSERT. A race that still hits the database unique index returns **409 Conflict**; FK violations return **422**; lock/statement timeouts return **503** with `Retry-After`. Driver messages never reach the client; look them up by `x-request-id` in the server log.
+* `SIGTERM`/`SIGINT`: HTTP drains for up to 30 s, queue and outbox workers stop after the entry they are processing, and the audit log is flushed before exit.
+* Queued writes (`?isqueue=true`) are executed by the consumer through the very same service code as a direct request (rules.json, allowed fields, formulas, details, triggers, audit), using the caller's validated claims stored with the job.
+
 ### Search indexes
 
 `"search_columns": ["name", "code"]` makes `?search=` look only at those columns and, on PostgreSQL, creates a `pg_trgm` GIN index so `ILIKE '%term%'` is index-backed. The startup lint also warns about any filterable or sortable column that has no index.

@@ -24,6 +24,7 @@ pub mod nocode;
 pub mod rate_limit;
 pub mod registry;
 pub mod routes;
+pub mod shutdown;
 pub mod startup;
 pub mod storage;
 

@@ -36,20 +36,8 @@ pub async fn insert(
     .await
     {
         Ok(response) => HttpResponse::Ok().json(response),
-        Err(err_response) => {
-            // Map error response to appropriate HTTP status
-            if err_response.message == "Unauthorized" || err_response.message == "Invalid token" {
-                HttpResponse::Unauthorized().json(err_response)
-            } else if err_response.message.contains("not found") {
-                HttpResponse::NotFound().json(err_response)
-            } else if err_response.message.contains("Missing required field")
-                || err_response.message.contains("Invalid")
-                || err_response.message.contains("must be an array")
-            {
-                HttpResponse::BadRequest().json(err_response)
-            } else {
-                HttpResponse::InternalServerError().json(err_response)
-            }
-        }
+        // Status + client-safe text derived centrally (409 for unique violations,
+        // 422 for FK, 503 for contention, SQL never echoed to the client).
+        Err(err_response) => crate::error::ApiError::respond_message(&err_response.message),
     }
 }

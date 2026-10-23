@@ -1,4 +1,3 @@
-use std::sync::Arc;
 
 use actix_web::web::Data;
 use anyhow::{anyhow, Result};
@@ -7,14 +6,10 @@ use rand::RngExt;
 use redis::aio::MultiplexedConnection;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::task::JoinSet;
 
-use std::collections::HashMap;
 
 use crate::log::log_output;
 use crate::metrics::METRICS;
-use crate::model::TableSchema;
-use crate::storage::ast::{Filter as QF, Val as QV};
 use crate::AppState;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -32,6 +27,10 @@ pub struct WriteJob {
     pub headers: Vec<(String, String)>,
     pub enqueued_at: String,
     pub actor_id: Option<String>,
+    /// Validated JWT claims of the caller, so the consumer can run the exact
+    /// same service path (rules.json, allowed_fields, audit) as the HTTP request.
+    #[serde(default)]
+    pub claims: Option<crate::auth::Claims>,
 }
 
 impl WriteJob {
@@ -199,6 +198,7 @@ async fn handle_entry(
     worker: &str,
     entry: crate::nocode::stream_queue::Entry,
 ) {
+    let _inflight = crate::shutdown::InflightGuard::new();
     let retry_max: usize = *WRITE_EXEC_RETRY_MAX;
     let job = match serde_json::from_str::<WriteJob>(&entry.payload) {
         Ok(j) => j,
@@ -271,12 +271,24 @@ pub async fn start_consumer(state: Data<AppState>) {
         }
     }
 
-    let mut set = JoinSet::new();
+    // Each worker owns a thread with a current-thread runtime: the service layer
+    // takes an actix `HttpRequest` (not `Send`), so the job future must stay on
+    // one thread — exactly how actix itself runs its workers.
     for idx in 0..concurrency {
         let state_cl = state.clone();
         let q = q.clone();
         let worker_name = format!("{}-w{}", host, idx);
-        set.spawn(async move {
+        let thread_name = worker_name.clone();
+        let spawned = std::thread::Builder::new().name(format!("flx-queue-{}", idx)).spawn(move || {
+            let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+                Ok(rt) => rt,
+                Err(e) => {
+                    log_output("QUEUE", "WORKER-PANIC", thread_name.as_str(), format!("runtime: {}", e), false);
+                    return;
+                }
+            };
+            let local = tokio::task::LocalSet::new();
+            local.block_on(&rt, async move {
             log_output("QUEUE", "WORKER-START", worker_name.as_str(), "ready".to_string(), true);
             let mut consecutive_errors = 0u32;
             let max_consecutive_errors = 10;
@@ -285,6 +297,10 @@ pub async fn start_consumer(state: Data<AppState>) {
             let mut last_claim = std::time::Instant::now();
 
             loop {
+                if crate::shutdown::is_shutting_down() {
+                    log_output("QUEUE", "WORKER-STOP", worker_name.as_str(), "shutdown requested".to_string(), true);
+                    break;
+                }
                 // Periodically adopt entries a dead consumer left pending.
                 if last_claim.elapsed() >= std::time::Duration::from_secs(30) {
                     last_claim = std::time::Instant::now();
@@ -330,7 +346,12 @@ pub async fn start_consumer(state: Data<AppState>) {
                     }
                 }
             }
+            });
+            log_output("QUEUE", "WORKER-EXIT", thread_name.as_str(), "worker thread finished".to_string(), false);
         });
+        if let Err(e) = spawned {
+            log_output("QUEUE", "WORKER-PANIC", "consumer", format!("cannot spawn worker thread: {}", e), false);
+        }
     }
 
     // Lag sampler: XLEN / XPENDING -> Prometheus gauges every 5 s.
@@ -351,249 +372,90 @@ pub async fn start_consumer(state: Data<AppState>) {
         });
     }
 
-    // detach in background
-    tokio::spawn(async move {
-        while let Some(res) = set.join_next().await {
-            match res {
-                Ok(_) => log_output("QUEUE", "WORKER-EXIT", "consumer-supervisor", "worker exited unexpectedly".to_string(), false),
-                Err(e) => log_output("QUEUE", "WORKER-PANIC", "consumer-supervisor", format!("worker join error: {}", e), false),
-            }
+}
+
+/// Build the synthetic request the service layer expects: same method/path as
+/// the REST call and the caller's validated claims in the extensions (the
+/// services' fast path), so rules.json, allowed_fields, formulas, details,
+/// triggers, state machine and audit all apply exactly as for a direct call.
+fn synthetic_request(method: actix_web::http::Method, path: &str, job: &WriteJob) -> actix_web::HttpRequest {
+    use actix_web::HttpMessage;
+    let req = actix_web::test::TestRequest::default()
+        .method(method)
+        .uri(path)
+        .insert_header(("content-type", "application/json"))
+        .insert_header(("x-request-id", format!("queue-{}", job.enqueued_at)))
+        .to_http_request();
+    match (&job.claims, &job.actor_id) {
+        (Some(c), _) => {
+            req.extensions_mut().insert(c.clone());
         }
-    });
+        (None, Some(actor)) => {
+            // Legacy job (enqueued before claims were recorded): it was already
+            // authorised when accepted, so run it as that actor with full rights.
+            req.extensions_mut().insert(crate::auth::Claims { id: actor.clone(), ..crate::auth::Claims::default() });
+        }
+        (None, None) => {}
+    }
+    req
+}
+
+async fn response_error(resp: actix_web::HttpResponse) -> String {
+    let status = resp.status();
+    let body = actix_web::body::to_bytes(resp.into_body()).await.map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default();
+    format!("{} {}", status, body)
 }
 
 async fn execute_job(state: Data<AppState>, job: WriteJob) -> Result<()> {
     // Always resolve against the live registry so a hot reload applies to queued jobs too.
-    let schemas_map = crate::registry::snapshot().schemas.clone();
+    let registry = crate::registry::snapshot();
+    let schema = registry
+        .schemas
+        .get(&job.route)
+        .cloned()
+        .ok_or_else(|| anyhow!("Schema not found for {}", job.route))?;
+    let empty_query = actix_web::web::Query(Value::Object(serde_json::Map::new()));
+    let route = job.route.clone();
 
-
-    // Build a fake HttpRequest headers for auth reuse if needed in future. For now handlers do their own auth when route not public.
-    // Execute according to op using existing modules logic but via internal helpers.
-    match job.op {
+    match job.op.clone() {
         WriteOpKind::Post => {
-            // Use existing post::insert logic, but we need to call internal execution path.
-            // For simplicity, we reconstruct a minimal Multipart-equivalent JSON and call a new helper.
-            exec_post(state, job.route, schemas_map.clone(), job.body, job.actor_id.clone()).await
+            let req = synthetic_request(actix_web::http::Method::POST, &format!("/{}", route), &job);
+            crate::nocode::services::data_create_service::process_insert_request(
+                &state, &empty_query, &route, &schema, job.body.clone(), &req,
+            )
+            .await
+            .map(|_| ())
+            .map_err(|e| anyhow!("{}", e.message))
         }
-        WriteOpKind::Put { id } => exec_put(state, job.route, schemas_map.clone(), job.body, id).await,
-        WriteOpKind::Delete { id } => exec_delete(state, job.route, schemas_map.clone(), id).await,
-    }
-}
-
-// Internal execution helpers built from existing code paths without HTTP types
-// Internal execution helpers built from existing code paths without HTTP types
-use crate::crypt::{encrypt, is_encrypted_string};
-use crate::helpers::find_column_match;
-use crate::nocode::pk_utils::json_value_from_str_and_type;
-// use crate::database::state::DbParam;
-use std::collections::HashSet;
-
-/// Extract a column value from JSON body as a trimmed string, returning empty
-/// for `null`/missing values without leaking the literal string `"null"`.
-fn body_value_as_str(body: &Value, col: &str) -> String {
-    match body.get(col) {
-        None | Some(Value::Null) => String::new(),
-        Some(Value::String(s)) => s.trim().to_string(),
-        Some(v) => v.to_string().trim().to_string(),
-    }
-}
-
-async fn exec_post(state: Data<AppState>, route: String, schemas_map: Arc<HashMap<String, Arc<TableSchema>>>, body: Value, actor_id: Option<String>) -> Result<()> {
-    let schema = schemas_map.get(&route).ok_or_else(|| anyhow!("Schema not found for {}", route))?;
-
-    // Logic ported from data_create_service.rs
-    let skip_columns: HashSet<&str> = [
-        "created_at", "created_by_id", "updated_at", "updated_by_id", "deleted_at", "deleted_by_id",
-    ].iter().cloned().collect();
-
-    let mut filtered_columns: Vec<&crate::model::Column> = Vec::with_capacity(schema.post.columns.len());
-    filtered_columns.extend(
-        schema
-            .columns
-            .iter()
-            .filter(|col| !col.auto_increment && !skip_columns.contains(col.name.as_str()) && schema.post.columns.contains(&col.name))
-    );
-     // explicit id check
-    if let Some(col) = schema.columns.iter().find(|c| c.name == "id" && !c.auto_increment) {
-        filtered_columns.push(col);
-    }
-    
-    let mut doc_map = serde_json::Map::new();
-
-    for col in filtered_columns.iter() {
-        if col.auto_increment { continue; }
-
-        let mut isformula = false;
-        let post_columns: Vec<&str> = schema.post.columns.iter().map(|s| s.as_str()).collect();
-        let (exists, matched_string) = find_column_match(&post_columns, &col.name);
-
-        if exists && col.name != "id" {
-             let string_formula = matched_string.unwrap_or("").to_string();
-             if string_formula.contains('=') {
-                 isformula = true;
-                 // Formulas not fully supported in queue yet without major refactor of InsertValue; 
-                 // For now, skip formula calculation in queue or use simpler logic. 
-                 // We will skip formulas for now in consumer to avoid complex dependencies, 
-                 // assuming queue is mostly for raw data.
-                 // If formula is critical, we need to port `build_formula_value_service` too.
-             }
+        WriteOpKind::Put { id } => {
+            let req = synthetic_request(actix_web::http::Method::PUT, &format!("/{}/{}", route, id), &job);
+            let resp = crate::nocode::services::data_update_service::process_update_request(
+                &state,
+                &empty_query,
+                &route,
+                &schema,
+                &registry.ref_foreign_keys,
+                job.body.clone(),
+                actix_web::web::Path::from(id),
+                &req,
+            )
+            .await;
+            if resp.status().is_success() { Ok(()) } else { Err(anyhow!(response_error(resp).await)) }
         }
-        
-        if !isformula && (col.name != "id" || col.function.is_empty()) {
-            let raw_str = body_value_as_str(&body, &col.name);
-            if raw_str.is_empty() {
-                continue;
-            }
-            let value = if col.encrypt && !is_encrypted_string(&raw_str) {
-                encrypt(state.encrypt_key.clone(), raw_str)
-            } else {
-                raw_str
-            };
-            doc_map.insert(col.name.clone(), json_value_from_str_and_type(&value, &col.type_data));
-        }
-    }
-
-    // server-side created_at
-    doc_map.insert("created_at".into(), Value::String(Utc::now().to_rfc3339()));
-    
-    // ensure created_by_id if column exists
-    if !doc_map.contains_key("created_by_id")
-        && let Some(col) = schema.columns.iter().find(|c| c.name == "created_by_id")
-    {
-        let actor_opt = actor_id.or_else(|| {
-            body.get("__actor_id__")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string())
-        });
-        if let Some(actor) = actor_opt {
-            doc_map.insert(
-                "created_by_id".into(),
-                json_value_from_str_and_type(&actor, &col.type_data),
-            );
-        }
-    }
-
-    match state.store.insert(&schema.table, Value::Object(doc_map)).await {
-        Ok(_) => {
-            crate::database::state::invalidate_route(&state, &route).await;
-            Ok(())
-        }
-        Err(e) => {
-            log_output("QUEUE", "INSERT-ERR", route.as_str(), format!("{}", e), false);
-            Err(anyhow!(e))
-        }
-    }
-}
-
-async fn exec_put(state: Data<AppState>, route: String, schemas_map: Arc<HashMap<String, Arc<TableSchema>>>, body: Value, id: String) -> Result<()> {
-    let schema = schemas_map.get(&route).ok_or_else(|| anyhow!("Schema not found for {}", route))?;
-
-    let mut doc_map = serde_json::Map::new();
-    let put_columns = &schema.put.columns;
-
-    // Filter columns that are in schema.put.columns
-    let skip_columns: HashSet<&str> = [
-        "created_at", "created_by_id", "updated_at", "updated_by_id", "deleted_at", "deleted_by_id",
-    ].iter().cloned().collect();
-
-    let mut filtered_columns: Vec<&crate::model::Column> = Vec::with_capacity(put_columns.len());
-    filtered_columns.extend(
-        schema
-            .columns
-            .iter()
-            .filter(|col| !skip_columns.contains(col.name.as_str()) && put_columns.contains(&col.name))
-    );
-
-    for col in filtered_columns.iter() {
-        let mut isformula = false;
-        let put_cols_slice: Vec<&str> = put_columns.iter().map(|s| s.as_str()).collect();
-        let (exists, matched_string) = find_column_match(&put_cols_slice, &col.name);
-        
-        if exists {
-             let string_formula = matched_string.unwrap_or("").to_string();
-             if string_formula.contains('=') {
-                 isformula = true;
-             }
-        }
-
-        if !isformula {
-            let raw_str = body_value_as_str(&body, &col.name);
-            if raw_str.is_empty() {
-                continue;
-            }
-            let value = if col.encrypt && !is_encrypted_string(&raw_str) {
-                encrypt(state.encrypt_key.clone(), raw_str)
-            } else {
-                raw_str
-            };
-            doc_map.insert(col.name.clone(), json_value_from_str_and_type(&value, &col.type_data));
-        }
-    }
-
-    doc_map.insert("updated_at".into(), Value::String(Utc::now().to_rfc3339()));
-
-    // updated_by_id if exists
-    if let Some(col) = schema.columns.iter().find(|c| c.name == "updated_by_id")
-        && let Some(actor) = body
-            .get("__actor_id__")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
-    {
-        doc_map.insert(
-            "updated_by_id".into(),
-            json_value_from_str_and_type(&actor, &col.type_data),
-        );
-    }
-
-    let id_for_filter = id.clone();
-    let filt_val = if let Ok(n) = id_for_filter.parse::<i64>() { QV::I64(n) } else { QV::Str(id_for_filter) };
-    let filter = Some(QF::Eq("id".into(), filt_val));
-
-    match state.store.update(&schema.table, filter, Value::Object(doc_map)).await {
-        Ok(_) => {
-            crate::database::state::invalidate_route(&state, &route).await;
-            Ok(())
-        }
-        Err(e) => {
-            log_output("QUEUE", "UPDATE-ERR", route.as_str(), format!("{}", e), false);
-            Err(anyhow!(e))
-        }
-    }
-}
-
-async fn exec_delete(state: Data<AppState>, route: String, schemas_map: Arc<HashMap<String, Arc<TableSchema>>>, id: String) -> Result<()> {
-    let schema = schemas_map.get(&route).ok_or_else(|| anyhow!("Schema not found for {}", route))?;
-
-    let id_for_filter = id.clone();
-    let filt_val = if let Ok(n) = id_for_filter.parse::<i64>() { QV::I64(n) } else { QV::Str(id_for_filter) };
-    let filter = Some(QF::Eq("id".into(), filt_val));
-
-    if schema.del.type_delete == "soft" {
-        let mut patch = serde_json::Map::new();
-        patch.insert("deleted_at".into(), Value::String(Utc::now().to_rfc3339()));
-        // deleted_by_id from actor if provided
-        // Note: could set deleted_by_id if actor was carried; skipped for now.
-
-        match state.store.update(&schema.table, filter, Value::Object(patch)).await {
-            Ok(_) => {
-                crate::database::state::invalidate_route(&state, &route).await;
-                Ok(())
-            }
-            Err(e) => {
-                log_output("QUEUE", "DELETE-ERR", route.as_str(), format!("{}", e), false);
-                Err(anyhow!(e))
-            }
-        }
-    } else {
-        match state.store.delete(&schema.table, filter).await {
-            Ok(_) => {
-                crate::database::state::invalidate_route(&state, &route).await;
-                Ok(())
-            }
-            Err(e) => {
-                log_output("QUEUE", "DELETE-ERR", route.as_str(), format!("{}", e), false);
-                Err(anyhow!(e))
-            }
+        WriteOpKind::Delete { id } => {
+            let req = synthetic_request(actix_web::http::Method::DELETE, &format!("/{}/{}", route, id), &job);
+            crate::nocode::services::data_delete_service::process_delete_request(
+                state.clone(),
+                empty_query,
+                route,
+                schema,
+                registry.ref_foreign_keys.clone(),
+                id,
+                req,
+            )
+            .await
+            .map(|_| ())
+            .map_err(|e| anyhow!(e))
         }
     }
 }

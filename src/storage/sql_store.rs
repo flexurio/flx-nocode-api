@@ -905,6 +905,10 @@ impl TxStore for SqlTxStore {
     self.tx.query_with_params(sql, params).await
     }
 
+    async fn raw_execute(&mut self, sql: &str, params: Vec<DbParam>) -> anyhow::Result<u64> {
+        self.tx.execute(sql, params).await
+    }
+
     async fn commit(self: Box<Self>) -> anyhow::Result<()> {
     self.tx.commit().await
     }

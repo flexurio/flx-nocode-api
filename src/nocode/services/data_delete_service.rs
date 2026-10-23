@@ -56,7 +56,8 @@ pub async fn process_delete_request(
             body: Value::Null,
             headers: vec![],
             enqueued_at: Local::now().to_rfc3339(),
-            actor_id: actor_id_opt,
+            actor_id: actor_id_opt.clone(),
+            claims: if actor_id_opt.is_some() { Some(claims.clone()) } else { None },
         };
 
         // Acknowledge only after the job is durably in Redis (see create service).

@@ -73,7 +73,8 @@ async fn start_server() -> Server {
     let env_file = format!(
         "DB_TYPE={db}\n{db_env}\nSECRET_KEY=e2e-secret-key-not-for-prod\nENCRYPT_KEY=0123456789abcdef0123456789abcdef\n\
          PORT={port}\nREQUIRE_AUTH=false\nACTIX_WORKERS=2\nCONFIG_LINT=warn\nDEBUG=false\nLOGGING=false\n\
-         LOC_CONFIG={cfgdir}\nLOC_STATIC={st}\nLOC_SEED={seed}\nRUST_LOG=warn\nMCP_ENABLED=false\n",
+         LOC_CONFIG={cfgdir}\nLOC_STATIC={st}\nLOC_SEED={seed}\nRUST_LOG=warn\nMCP_ENABLED=false\n\
+         RATE_LIMIT_MUTATE_PER_SEC=1000\nRATE_LIMIT_GET_PER_SEC=1000\n",
         db = db_type,
         db_env = db_env,
         port = port,
@@ -154,11 +155,68 @@ async fn write_read_cache_etag_metrics() {
     let body: serde_json::Value = r.json().await.unwrap();
     assert_eq!(body["data"].as_array().unwrap().len(), n1 + 1);
 
-    // 6. unique violation is rejected (not a 2xx)
+    // 6. unique violation -> 409 Conflict (typed error mapping)
     let r = c.post(url("/master_department"))
         .json(&serde_json::json!({ "code": format!("A{}", suffix), "name": "Dup" }))
         .send().await.unwrap();
-    assert!(!r.status().is_success(), "duplicate code must be rejected, got {}", r.status());
+    assert_eq!(r.status(), 409, "duplicate code must be a 409, body: {}", r.text().await.unwrap_or_default());
+
+    // 6b. atomic document numbering: 25 concurrent inserts, 25 distinct gap-free numbers
+    std::fs::write(
+        srv.config_dir.join("entity").join("document.json"),
+        r#"{
+          "table": "document",
+          "primary_key": { "columns": ["id"], "auto_increment": false },
+          "columns": [
+            { "name": "id", "nullable": false, "type_data": "varchar(40)", "function": "INV/%Y/000ID" },
+            { "name": "title", "nullable": false, "type_data": "varchar(100)" },
+            { "name": "created_at", "nullable": true, "type_data": "timestamp", "default_value": "CURRENT_TIMESTAMP" }
+          ],
+          "get": { "enable_method": true, "columns": ["id", "title"], "order_by": ["id"] },
+          "post": { "enable_method": true, "columns": ["title*"] },
+          "auto_generate": true
+        }"#,
+    )
+    .unwrap();
+    std::fs::write(
+        srv.config_dir.join("routes.json"),
+        r#"{"routes":["master_department","document"],"route_publics":[]}"#,
+    )
+    .unwrap();
+    let r = c.post(url("/admin/reload")).send().await.unwrap();
+    assert_eq!(r.status(), 200, "reload document: {}", r.text().await.unwrap_or_default());
+    let mut handles = Vec::new();
+    for i in 0..25 {
+        let c2 = c.clone();
+        let u = url("/document");
+        handles.push(tokio::spawn(async move {
+            let r = match c2.post(u).json(&serde_json::json!({ "title": format!("doc {}", i) })).send().await {
+                Ok(r) => r,
+                Err(e) => return (reqwest::StatusCode::BAD_GATEWAY, format!("send error: {}", e)),
+            };
+            let status = r.status();
+            let text = r.text().await.unwrap_or_default();
+            let body: serde_json::Value = serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
+            if !status.is_success() {
+                return (status, text);
+            }
+            (status, body["data"]["id"].as_str().map(|s| s.to_string()).unwrap_or_default())
+        }));
+    }
+    let mut ids = std::collections::BTreeSet::new();
+    for h in handles {
+        let (status, id) = h.await.unwrap();
+        assert_eq!(status, 200, "concurrent custom-id insert failed: {}", id);
+        assert!(id.starts_with("INV/"), "unexpected id {}", id);
+        assert!(ids.insert(id.clone()), "duplicate document number {}", id);
+    }
+    assert_eq!(ids.len(), 25);
+    let nums: Vec<i64> = ids.iter().map(|id| id.rsplit('/').next().unwrap().parse::<i64>().unwrap()).collect();
+    assert_eq!(nums.iter().min(), Some(&1));
+    assert_eq!(nums.iter().max(), Some(&25), "numbers must be gap-free: {:?}", nums);
+    let r = c.get(url("/document?limit=100")).send().await.unwrap();
+    let body: serde_json::Value = r.json().await.unwrap();
+    assert_eq!(body["data"].as_array().unwrap().len(), 25);
 
     // 7. hot reload: add a brand-new entity on disk, reload, use it immediately
     let r = c.get(url("/master_position?limit=1")).send().await.unwrap();
@@ -170,7 +228,7 @@ async fn write_read_cache_etag_metrics() {
     .unwrap();
     std::fs::write(
         srv.config_dir.join("routes.json"),
-        r#"{"routes":["master_department","master_position"],"route_publics":[]}"#,
+        r#"{"routes":["master_department","document","master_position"],"route_publics":[]}"#,
     )
     .unwrap();
     let r = c.post(url("/admin/reload")).send().await.unwrap();
@@ -186,7 +244,7 @@ async fn write_read_cache_etag_metrics() {
     assert_eq!(r.status(), 200);
     let r = c.get(url("/admin/registry")).send().await.unwrap();
     let body: serde_json::Value = r.json().await.unwrap();
-    assert_eq!(body["data"]["generation"], 2);
+    assert_eq!(body["data"]["generation"], 3, "boot=1, +document, +master_position");
 
     // 7a. webhooks via the transactional outbox: deliver to a local listener
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -246,7 +304,7 @@ async fn write_read_cache_etag_metrics() {
     assert_eq!(r.status(), 200, "previous registry still serves");
     std::fs::write(
         srv.config_dir.join("routes.json"),
-        r#"{"routes":["master_department","master_position"],"route_publics":[]}"#,
+        r#"{"routes":["master_department","document","master_position"],"route_publics":[]}"#,
     )
     .unwrap();
 

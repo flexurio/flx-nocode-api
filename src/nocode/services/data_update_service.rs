@@ -28,7 +28,8 @@ fn bad_request(msg: impl Into<String>) -> HttpResponse {
 }
 
 fn server_error(msg: impl Into<String>) -> HttpResponse {
-    HttpResponse::InternalServerError().json(web_err(msg))
+    // Typed mapping: unique violation -> 409, FK -> 422, contention -> 503, SQL hidden.
+    crate::error::ApiError::respond_message(&msg.into())
 }
 
 #[allow(clippy::too_many_arguments, clippy::collapsible_if)]
@@ -101,6 +102,7 @@ pub async fn process_update_request(
             headers: vec![],
             enqueued_at: chrono::Utc::now().to_rfc3339(),
             actor_id: actor_id_opt,
+            claims: if auth_required { Some(claims.clone()) } else { None },
         };
 
         // Acknowledge only after the job is durably in Redis (see create service).

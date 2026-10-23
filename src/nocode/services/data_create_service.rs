@@ -81,6 +81,7 @@ pub async fn process_insert_request(
 ) -> Result<WebResponse, WebResponse> {
     // 1. Auth Check (Early)
     let mut actor_id_opt: Option<String> = None;
+    let mut claims_opt: Option<crate::auth::Claims> = None;
 
     if state.require_auth && !state.is_public_route(route) {
         let claims =
@@ -90,6 +91,7 @@ pub async fn process_insert_request(
         crate::auth::enforce_allowed_fields(&claims, req, &mut body)
             .map_err(|e| err(format!("Forbidden: {}", e)))?;
         actor_id_opt = Some(claims.id.clone());
+        claims_opt = Some(claims);
     }
 
     // 2. Handle Write Queue
@@ -121,6 +123,7 @@ pub async fn process_insert_request(
             headers: vec![],
             enqueued_at: chrono::Utc::now().to_rfc3339(),
             actor_id: actor_id_opt.clone(),
+            claims: claims_opt.clone(),
         };
 
         // Acknowledge only after the job is durably in Redis. The old "fast ack"

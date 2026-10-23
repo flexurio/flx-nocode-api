@@ -173,7 +173,13 @@ Skala: **Dampak** (ke user) dan **Usaha** (hari kerja 1 engineer) · S = kecil (
 > | 1 | `panic = "unwind"` | ✅ | lint `unwrap_used`/`expect_used` dipasang sebagai **warn** di handlers/services/repositories (±50 situs tersisa; `deny` di Fase 2) |
 > | 1 | Pre-compute allow-list kolom per entity | ✅ sebagian | `declared_cols` di-cache via `OnceLock`; satu clone param map dihapus. Allow-list ORDER BY masih dibangun per request |
 > | 1 | SQLite writer pool = 1 | ✅ | reader pool WAL + writer pool 1; PRAGMA kini per koneksi (dulu hanya 1 koneksi yang kena) |
-> | **2** | `flx_sequences`, `FOR UPDATE` di PUT, FK+unique di dalam tx, 409, `ApiError`, graceful shutdown, parity consumer | ⏳ **dilewati atas permintaan** (Fase 3 dikerjakan lebih dulu) | Item kebenaran transaksi masih terbuka |
+> | 2 | `flx_sequences` atomik untuk custom-ID dan `{seq:}` (UPDATE ber-row-lock, seed dari MAX lama, savepoint per dialek) | ✅ | `src/nocode/sequences.rs`; e2e: 25 POST paralel → 25 nomor unik tanpa celah |
+> | 2 | `FOR UPDATE` / `UPDLOCK` saat PUT membaca record lama | ✅ | `data_update_repo.rs`; lint memperingatkan entity ber-state-machine tanpa kolom `version` |
+> | 2 | Validasi FK+unique di dalam transaksi; unique violation DB → 409, FK → 422, kontensi → 503 | ✅ | `error.rs::ApiError`/`classify_db_error`; e2e menguji 409 |
+> | 2 | `ApiError` bertipe menggantikan string-matching; SQL tidak pernah ke klien | ✅ sebagian | Dipakai di handler POST/DELETE dan update service; service lain (import/patch/trace/export) masih memakai pemetaan lama |
+> | 2 | Graceful shutdown: consumer berhenti setelah entry berjalan, outbox/email berhenti, audit di-flush | ✅ | `src/shutdown.rs`, `audit::flush`, `shutdown_timeout(30)` |
+> | 2 | Consumer antrian menjalankan service HTTP yang sama (rules, allowed_fields, formula, detail, trigger, audit) | ✅ | `WriteJob.claims` + request sintetis; worker di thread runtime tunggal |
+> | 2 | `/livez`, `/readyz` | ✅ | dikerjakan di Fase 3 |
 > | 3 | Hot reload schema (`ArcSwap` registry + router catch-all, `POST /admin/reload`, SIGHUP, DDL untuk entity baru, reload rusak → 422 & konfigurasi lama tetap) | ✅ | `src/registry.rs`, `src/routes/mod.rs`, `config::load_config_from`; diuji e2e |
 > | 3 | Redis Streams untuk write-queue & email (`XADD`/`XREADGROUP`/`XACK`/`XAUTOCLAIM`, migrasi list lama, gauge lag) | ✅ | `src/nocode/stream_queue.rs`, `consumer.rs`, `email_queue.rs`; belum diuji terhadap Redis nyata di CI |
 > | 3 | Transactional outbox + `webhooks[]` per entity | ✅ | `src/nocode/outbox.rs`, tabel `flx_outbox`, hook di create/update/delete; diuji e2e dengan receiver lokal |

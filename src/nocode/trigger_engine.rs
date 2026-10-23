@@ -952,7 +952,11 @@ pub fn parse_sequence_pattern(pattern: &str) -> (String, usize, String) {
     (prefix, width, suffix)
 }
 
-/// Queries the latest sequence number matching `prefix` in `table`.`col` and increments by 1.
+/// Next running number for `{seq:…}` on `table`.`col` with `prefix`.
+///
+/// Served by the atomic `flx_sequences` counter (row-locked UPDATE, no scan, no
+/// duplicates under concurrency). The first use of a scope is seeded from the
+/// legacy `MAX(col) LIKE 'prefix%'` lookup so existing numbering continues.
 async fn query_next_sequence<'a>(
     tx: &'a mut (dyn TxStore + 'a),
     table: &str,
@@ -962,6 +966,30 @@ async fn query_next_sequence<'a>(
     if table.is_empty() || col.is_empty() {
         return 1;
     }
+    let scope = crate::nocode::sequences::seq_scope(table, col, prefix);
+    match crate::nocode::sequences::try_increment(tx, &scope).await {
+        Ok(Some(v)) => v,
+        Ok(None) => {
+            let legacy_next = legacy_next_sequence(tx, table, col, prefix).await;
+            // The savepoint syntax is dialect-specific; the generic SAVEPOINT form
+            // covers PostgreSQL/MySQL/SQLite, and on MSSQL a failed seed simply
+            // falls back to the legacy value for this one call.
+            match crate::nocode::sequences::seed_and_take(tx, "generic", &scope, legacy_next - 1).await {
+                Ok(v) => v,
+                Err(_) => legacy_next,
+            }
+        }
+        // Counter table unavailable (e.g. legacy mock stores): fall back.
+        Err(_) => legacy_next_sequence(tx, table, col, prefix).await,
+    }
+}
+
+async fn legacy_next_sequence<'a>(
+    tx: &'a mut (dyn TxStore + 'a),
+    table: &str,
+    col: &str,
+    prefix: &str,
+) -> i64 {
 
     let like_pat = format!("{}%", prefix);
     let q_max = crate::storage::ast::Query::from(table.to_string())

@@ -198,6 +198,10 @@ pub fn start_worker(state: Arc<AppState>) {
         let mut tick: u64 = 0;
         loop {
             tokio::time::sleep(std::time::Duration::from_millis(poll_ms)).await;
+            if crate::shutdown::is_shutting_down() {
+                break;
+            }
+            let _inflight = crate::shutdown::InflightGuard::new();
             tick += 1;
             let due = QQ::from(TABLE)
                 .select(["id", "attempts", "target", "headers", "payload"])

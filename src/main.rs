@@ -322,6 +322,16 @@ async fn main() -> anyhow::Result<()> {
     // ── Table generation (blocks until done; fatal on error) ─────────────────
     startup::run_table_generation(&app_state).await?;
 
+    // ── Atomic sequences table (custom ids / {seq:}) ─────────────────────────
+    if app_state.db_type != flx_nocode_api::model::DbType::Mongodb {
+        let ds = flx_nocode_api::storage::sql_store::SqlStore::new(app_state.db.clone(), app_state.db_type.as_str().to_string());
+        let (sql_t, sql_i) = flx_nocode_api::nocode::generate::generate_table(&ds, &flx_nocode_api::nocode::sequences::table_schema());
+        let (ok, msg) = flx_nocode_api::nocode::generate::execute_generate_table("flx_sequences".into(), &app_state, sql_t, sql_i).await;
+        if !ok {
+            eprintln!("WARNING: could not create flx_sequences ({}); custom ids fall back to MAX+1", msg);
+        }
+    }
+
     // ── Transactional outbox (webhooks) ──────────────────────────────────────
     if app_state.db_type != flx_nocode_api::model::DbType::Mongodb
         && env::var("OUTBOX_ENABLED").map(|v| !matches!(v.to_lowercase().as_str(), "0" | "false" | "no" | "off")).unwrap_or(true)
@@ -457,7 +467,7 @@ async fn main() -> anyhow::Result<()> {
         false,
     );
 
-    HttpServer::new(move || {
+    let server_result = HttpServer::new(move || {
         // CORS policy from env
         let cors = match env::var("CORS_ALLOW_ORIGINS") {
             Ok(val) if !val.trim().is_empty() => {
@@ -557,12 +567,28 @@ async fn main() -> anyhow::Result<()> {
     .backlog(http_backlog)
     .client_request_timeout(std::time::Duration::from_secs(30))
     .client_disconnect_timeout(std::time::Duration::from_secs(5))
+    // Give in-flight HTTP requests up to 30 s to finish after SIGTERM/SIGINT.
+    .shutdown_timeout(30)
     .bind((host, port))
     .map_err(|e| {
         eprintln!("Failed to bind to {}:{} - {}", host, port, e);
         e
     })?
     .run()
-    .await
-    .map_err(Into::into)
+    .await;
+
+    // ── Graceful shutdown of background work ─────────────────────────────────
+    // HTTP has stopped (actix handled the signal). Stop pulling queue entries,
+    // let the ones being processed finish, then flush the audit log.
+    flx_nocode_api::shutdown::begin();
+    let drained = flx_nocode_api::shutdown::drain(Duration::from_secs(30)).await;
+    flx_nocode_api::audit::flush().await;
+    log_output(
+        "BOOT",
+        "SHUTDOWN",
+        "workers",
+        if drained { "all background work finished".to_string() } else { format!("{} unit(s) still in flight after 30 s; left pending for re-delivery", flx_nocode_api::shutdown::inflight()) },
+        true,
+    );
+    server_result.map_err(Into::into)
 }

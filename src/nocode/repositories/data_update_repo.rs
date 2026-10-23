@@ -278,7 +278,14 @@ pub async fn perform_update(
 
         // Fetch pre-update record state for triggers, state machine, and conditional evaluation
         let mut old_record: serde_json::Map<String, Value> = serde_json::Map::new();
-        let select_current_sql = format!("SELECT * FROM {} WHERE {} = ?", table_schema.table, pk_col_first);
+        // Lock the row for the rest of the transaction so two concurrent updates
+        // (status transitions, locked_when checks, version bumps) serialise instead
+        // of both passing their checks against the same stale snapshot.
+        let select_current_sql = match state.db_type.as_str() {
+            "postgres" | "mysql" => format!("SELECT * FROM {} WHERE {} = ? FOR UPDATE", table_schema.table, pk_col_first),
+            "mssql" => format!("SELECT * FROM {} WITH (UPDLOCK, ROWLOCK) WHERE {} = ?", table_schema.table, pk_col_first),
+            _ => format!("SELECT * FROM {} WHERE {} = ?", table_schema.table, pk_col_first),
+        };
         let built_select_current = crate::database::state::rehydrate_placeholders(&select_current_sql, state.db_type.as_str());
         // A failed fetch must not be ignored: an empty `old_record` makes the
         // state-machine and `locked_when` guards below pass vacuously.

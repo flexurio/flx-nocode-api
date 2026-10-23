@@ -28,6 +28,10 @@ pub struct PreparedDetailBatch {
 /// This replaces N sequential DB queries with 1 UNION ALL query
 pub async fn validate_foreign_keys_batch(
     state: &web::Data<AppState>,
+    // Run inside the write transaction when given (SQL backends): the check and
+    // the INSERT then see the same snapshot and no round-trip is spent on a
+    // separate pooled connection.
+    tx: Option<&mut (dyn crate::storage::traits::TxStore + '_)>,
     // (col_name, ref_table, ref_column, value, type_data) — type_data is the FK column's own
     // type so the value can be bound with the correct DbParam variant (avoids comparing an
     // int PK against a TEXT-bound value, which silently fails FK validation on some backends).
@@ -88,11 +92,11 @@ pub async fn validate_foreign_keys_batch(
     log_output("QUERY", "FK BATCH", "POST", union_sql.clone(), true);
     log_output_lazy("PARAMS", "FK BATCH", "POST", || format!("{:?}", params), true);
 
-    let results = state
-        .db
-        .query_with_params(&union_sql, params)
-        .await
-        .map_err(|e| format!("FK batch validation failed: {}", e))?;
+    let results = match tx {
+        Some(t) => t.raw_sql(&union_sql, params).await,
+        None => state.db.query_with_params(&union_sql, params).await,
+    }
+    .map_err(|e| format!("FK batch validation failed: {}", e))?;
 
     for row in results {
         let is_valid = match row.get("_valid") {
@@ -132,6 +136,7 @@ pub async fn validate_foreign_keys_batch(
 /// Batch unique constraint validation to avoid N+1 queries
 async fn validate_unique_constraints_batch(
     state: &web::Data<AppState>,
+    tx: Option<&mut (dyn crate::storage::traits::TxStore + '_)>,
     table: &str,
     indexes: &[Index],
     columns_meta: &[Column],
@@ -292,11 +297,11 @@ async fn validate_unique_constraints_batch(
         true,
     );
 
-    let rows = state
-        .db
-        .query_with_params(&union_sql, params)
-        .await
-        .map_err(|e| format!("Unique batch validation failed: {}", e))?;
+    let rows = match tx {
+        Some(t) => t.raw_sql(&union_sql, params).await,
+        None => state.db.query_with_params(&union_sql, params).await,
+    }
+    .map_err(|e| format!("Unique batch validation failed: {}", e))?;
 
     for r in rows {
         let is_dup = match r.get("_dup") {
@@ -483,27 +488,37 @@ pub async fn perform_insert(
     route: &str,
     auth_token: Option<String>,
 ) -> Result<(String, i64, Value), String> {
-    // Batch validate all foreign keys in one query
-    validate_foreign_keys_batch(state, &fk_checks).await?;
-
-    // Batch validate unique constraints when all indexed columns are present
-    // For MongoDB, we must call this explicitly as well
-    validate_unique_constraints_batch(
-        state,
-        &table_schema.table,
-        &table_schema.indexes,
-        &table_schema.columns,
-        body,
-    )
-    .await?;
-
-    // Begin transaction early for SQL backends so ID generation runs in the same TX
+    // Begin the transaction first (SQL backends): FK/unique validation, id
+    // generation and the INSERT all run on the same connection and snapshot.
     let mut tx_opt: Option<Box<dyn crate::storage::traits::TxStore>> = None;
     if state.db_type != DbType::Mongodb {
         match state.store.begin_tx().await {
             Ok(t) => tx_opt = Some(t),
             Err(err) => return Err(format!("Error starting transaction: {}", err)),
         }
+    }
+
+    // Batch validate all foreign keys in one query (inside the transaction).
+    if let Err(e) = validate_foreign_keys_batch(state, tx_opt.as_deref_mut(), &fk_checks).await {
+        if let Some(tx) = tx_opt { let _ = tx.rollback().await; }
+        return Err(e);
+    }
+
+    // Batch validate unique constraints when all indexed columns are present.
+    // The database unique index remains the final guard (a concurrent insert
+    // between this check and the INSERT surfaces as a 409 via error mapping).
+    if let Err(e) = validate_unique_constraints_batch(
+        state,
+        tx_opt.as_deref_mut(),
+        &table_schema.table,
+        &table_schema.indexes,
+        &table_schema.columns,
+        body,
+    )
+    .await
+    {
+        if let Some(tx) = tx_opt { let _ = tx.rollback().await; }
+        return Err(e);
     }
 
     // Handle Custom ID Generation if needed
@@ -589,8 +604,27 @@ pub async fn perform_insert(
                 auth_token.as_deref(),
             )
             .await?
+        } else if let Some(tx) = tx_opt.as_mut() {
+            // Atomic counter in flx_sequences (row-locked UPDATE). The first use
+            // of a prefix is seeded from the legacy MAX(id) so numbering continues.
+            let scope = crate::nocode::sequences::id_scope(&table_schema.table, &id_prefix);
+            match crate::nocode::sequences::try_increment(&mut **tx, &scope).await {
+                Ok(Some(v)) => v,
+                Ok(None) => {
+                    let legacy_next =
+                        query_next_number_from_max(state, &mut tx_opt, &table_schema.table, &id_prefix, len_id).await?;
+                    let tx = tx_opt.as_mut().ok_or_else(|| "Transaction not available".to_string())?;
+                    crate::nocode::sequences::seed_and_take(&mut **tx, state.db_type.as_str(), &scope, legacy_next - 1)
+                        .await
+                        .map_err(|e| format!("Sequence error: {}", e))?
+                }
+                Err(e) => {
+                    if let Some(tx) = tx_opt { let _ = tx.rollback().await; }
+                    return Err(format!("Sequence error: {}", e));
+                }
+            }
         } else {
-            // No endpoint configured: derive the number from MAX(id)+1.
+            // MongoDB: no transaction, legacy MAX+1 lookup.
             query_next_number_from_max(state, &mut tx_opt, &table_schema.table, &id_prefix, len_id)
                 .await?
         };

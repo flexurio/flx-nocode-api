@@ -3,6 +3,7 @@ use serde::Serialize;
 use std::fs::OpenOptions;
 use std::io::{BufWriter, Write};
 use tokio::sync::mpsc::{channel, Sender};
+use tokio::sync::oneshot;
 
 #[derive(Serialize)]
 pub struct AuditEntry<'a> {
@@ -14,8 +15,14 @@ pub struct AuditEntry<'a> {
     pub ip: Option<&'a str>,
 }
 
-static AUDIT_CHANNEL: Lazy<Sender<String>> = Lazy::new(|| {
-    let (tx, mut rx) = channel::<String>(65536);
+enum AuditMsg {
+    Line(String),
+    /// Flush buffered lines to disk and reply when done (used at shutdown).
+    Flush(oneshot::Sender<()>),
+}
+
+static AUDIT_CHANNEL: Lazy<Sender<AuditMsg>> = Lazy::new(|| {
+    let (tx, mut rx) = channel::<AuditMsg>(65536);
 
     // Spawn background dedicated writer task
     tokio::spawn(async move {
@@ -38,6 +45,12 @@ static AUDIT_CHANNEL: Lazy<Sender<String>> = Lazy::new(|| {
             Ok(f) => f,
             Err(e) => {
                 eprintln!("Failed to open audit log file: {}", e);
+                // Keep draining so senders never block; acknowledge flushes.
+                while let Some(msg) = rx.recv().await {
+                    if let AuditMsg::Flush(done) = msg {
+                        let _ = done.send(());
+                    }
+                }
                 return;
             }
         };
@@ -46,14 +59,24 @@ static AUDIT_CHANNEL: Lazy<Sender<String>> = Lazy::new(|| {
         let mut count = 0;
 
         while let Some(msg) = rx.recv().await {
-            let _ = writeln!(writer, "{}", msg);
-            count += 1;
-            // Flush after every 100 messages or if channel is currently empty
-            if count >= 100 || rx.is_empty() {
-                let _ = writer.flush();
-                count = 0;
+            match msg {
+                AuditMsg::Line(line) => {
+                    let _ = writeln!(writer, "{}", line);
+                    count += 1;
+                    // Flush after every 100 messages or if channel is currently empty
+                    if count >= 100 || rx.is_empty() {
+                        let _ = writer.flush();
+                        count = 0;
+                    }
+                }
+                AuditMsg::Flush(done) => {
+                    let _ = writer.flush();
+                    count = 0;
+                    let _ = done.send(());
+                }
             }
         }
+        let _ = writer.flush();
     });
 
     tx
@@ -61,6 +84,15 @@ static AUDIT_CHANNEL: Lazy<Sender<String>> = Lazy::new(|| {
 
 pub fn write_audit(entry: &AuditEntry<'_>) {
     if let Ok(json) = serde_json::to_string(entry) {
-        let _ = AUDIT_CHANNEL.try_send(json);
+        let _ = AUDIT_CHANNEL.try_send(AuditMsg::Line(json));
+    }
+}
+
+/// Flush every buffered audit line to disk. Resolves once the writer confirms
+/// (or immediately if the writer task is gone).
+pub async fn flush() {
+    let (tx, rx) = oneshot::channel();
+    if AUDIT_CHANNEL.send(AuditMsg::Flush(tx)).await.is_ok() {
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), rx).await;
     }
 }
