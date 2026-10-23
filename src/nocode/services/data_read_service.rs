@@ -4,7 +4,10 @@ use std::sync::Arc;
 
 use crate::AppState;
 use crate::auth::{check_access, get_user_info_from_token};
-use crate::database::redis::{build_key_prefix, redis_get_json, redis_set_json};
+use actix_web::http::header;
+use crate::database::redis::{redis_get, redis_set, route_version};
+use crate::database::state::{build_cache_key, CachedPage};
+use crate::metrics::METRICS;
 use crate::log::{log_output, log_output_lazy};
 use crate::model::{TableSchema, WebResponse};
 use crate::nocode::repositories::data_read_repo;
@@ -16,7 +19,6 @@ pub async fn process_get_request(
     table_schema: &Arc<TableSchema>,
     req: &HttpRequest,
 ) -> HttpResponse {
-    let cache_tenant = String::from("public");
     // Role-specific projection from rules.json `allowed_fields` (None = no restriction).
     let mut field_filter: Option<Vec<String>> = None;
     
@@ -78,11 +80,10 @@ pub async fn process_get_request(
         });
     }
 
-    // Parameter parsing
-    let params_obj = parameters.clone().into_inner();
-    let params_map_awal = match params_obj.as_object() {
-        Some(map) => map,
-        None => {
+    // Parameter parsing (one clone of the extractor; the map is then owned).
+    let mut params_map = match parameters.clone().into_inner() {
+        Value::Object(map) => map,
+        _ => {
             return HttpResponse::BadRequest().json(WebResponse {
                 success: false,
                 message: "Invalid parameters format".to_string(),
@@ -91,7 +92,6 @@ pub async fn process_get_request(
             });
         }
     };
-    let mut params_map = params_map_awal.clone();
     let mut table_schema_get_params = table_schema.get.parameters.clone();
 
     // Required Param Validation
@@ -104,67 +104,108 @@ pub async fn process_get_request(
         )));
     }
 
-    // Cache Logic
-    let mut isredis = false;
-    let mut cache_key: Option<String> = None;
-
-    if let Some(redis_val) = params_map_awal.get("redis") {
-        isredis = match redis_val {
-            Value::Bool(b) => *b,
-            Value::String(s) => {
-                let s_lower = s.to_ascii_lowercase();
-                s_lower == "true" || s_lower == "1" || s_lower == "yes"
-            }
-            Value::Number(n) => n.as_i64().unwrap_or(0) != 0,
-            _ => false,
-        };
-        params_map.remove("redis");
-    }
-
-    // log isredis 
+    // `?redis=` is a control parameter: honoured, then removed before planning.
+    let isredis = match params_map.remove("redis") {
+        Some(Value::Bool(b)) => b,
+        Some(Value::String(s)) => {
+            let s_lower = s.to_ascii_lowercase();
+            s_lower == "true" || s_lower == "1" || s_lower == "yes"
+        }
+        Some(Value::Number(n)) => n.as_i64().unwrap_or(0) != 0,
+        _ => false,
+    };
     log_output_lazy("DEBUG", "ISREDIS", route, || format!("isredis: {}", isredis), true);
 
     // A role-specific projection must never be served from, or written to, the shared cache.
     let use_cache = (isredis || table_schema.redis.ttl > 0) && field_filter.is_none();
+
     if use_cache {
-        let prefix = build_key_prefix(&cache_tenant, route);
-        let mut keys: Vec<_> = params_map
-            .iter()
-            .map(|(k, v)| format!("{}={}", k, v))
-            .collect();
-        keys.sort();
-        let key_suffix = keys.join("&");
-        let full_key = if key_suffix.is_empty() { prefix } else { format!("{}:{}", prefix, key_suffix) };
-        cache_key = Some(full_key);
+        let version = route_version(route, state.is_cachedb).await;
+        let key = build_cache_key(route, version, &params_map);
+        let if_none_match = req
+            .headers()
+            .get(header::IF_NONE_MATCH)
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
 
-        if let Some(ref k) = cache_key {
-            // Tier 1: L1 In-Memory Cache (sub-microsecond latency)
-            if let Some(cached) = state.l1_cache.get(k).await {
-                log_output_lazy("L1_CACHE", "CACHE HIT", route, || format!("Key: {}, Records: {}", k, cached.total_data), true);
-                return HttpResponse::Ok().json(cached);
-            }
-
-            // Tier 2: L2 Redis Distributed Cache
-            if state.is_cachedb {
-                match redis_get_json::<WebResponse>(k.as_str()).await {
-                    Ok(Some(cached)) => {
-                        log_output_lazy("REDIS", "CACHE HIT", route, || format!("Key: {}, Records: {}", k, cached.total_data), true);
-                        // Populate L1 cache from L2 hit
-                        state.l1_cache.insert(k.clone(), cached.clone()).await;
-                        return HttpResponse::Ok().json(cached);
-                    }
-                    Ok(None) => {
-                        log_output_lazy("REDIS", "CACHE MISS", route, || format!("Key: {}", k), true);
-                    }
-                    Err(e) => {
-                        log_output("ERROR", "CACHE READ", route, format!("Redis error: {} - falling back to DB", e), false);
+        // Single-flight: concurrent requests for the same key share ONE loader
+        // (L2 lookup, then DB). No stampede when a hot page expires.
+        let st = state.clone();
+        let route_s = route.to_string();
+        let schema = table_schema.clone();
+        let pm = params_map.clone();
+        let k2 = key.clone();
+        let ttl = if table_schema.redis.ttl > 0 { table_schema.redis.ttl as usize } else { 300 };
+        let loaded = state
+            .l1_cache
+            .try_get_with(key, async move {
+                // Tier 2: Redis (bounded by REDIS_CACHE_TIMEOUT_MS; errors = miss).
+                if st.is_cachedb {
+                    match redis_get(&k2).await {
+                        Ok(Some(raw)) => {
+                            if let Some(page) = CachedPage::decode(raw) {
+                                METRICS.record_cache_hit();
+                                log_output_lazy("REDIS", "CACHE HIT", &route_s, || format!("Key: {}, Records: {}", k2, page.total_data), true);
+                                return Ok::<CachedPage, String>(page);
+                            }
+                        }
+                        Ok(None) => {}
+                        Err(e) => log_output("ERROR", "CACHE READ", &route_s, format!("Redis error: {} - falling back to DB", e), false),
                     }
                 }
+                METRICS.record_cache_miss();
+
+                let (rows, total, next_cursor) =
+                    data_read_repo::fetch_dynamic_data(&st, &route_s, &schema, &pm).await?;
+                let result = WebResponse {
+                    success: true,
+                    message: "Data found".to_string(),
+                    total_data: total as i32,
+                    data: Value::Array(rows),
+                };
+                let page = CachedPage::from_response(&result, next_cursor)
+                    .ok_or_else(|| "Failed to serialize response".to_string())?;
+
+                // Tier 2 write: never make the client wait for the Redis round-trip.
+                if st.is_cachedb {
+                    let payload = page.encode();
+                    let route2 = route_s.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = redis_set(&k2, &payload, Some(ttl)).await {
+                            log_output("ERROR", "CACHE WRITE", &route2, format!("Failed to cache: {}", e), false);
+                        }
+                    });
+                }
+                Ok(page)
+            })
+            .await;
+
+        return match loaded {
+            Ok(page) => {
+                if if_none_match.as_deref() == Some(page.etag.as_str()) {
+                    let mut resp = HttpResponse::NotModified();
+                    resp.insert_header((header::ETAG, page.etag.clone()));
+                    return resp.finish();
+                }
+                let mut resp = HttpResponse::Ok();
+                resp.insert_header((header::CONTENT_TYPE, "application/json"));
+                resp.insert_header((header::ETAG, page.etag.clone()));
+                if let Some(c) = &page.next_cursor {
+                    resp.insert_header(("X-Next-Cursor", c.clone()));
+                }
+                // `Bytes` clone is a ref-count increment: no copy, no re-serialization.
+                resp.body(page.body.clone())
             }
-        }
+            Err(e) => HttpResponse::InternalServerError().json(WebResponse {
+                success: false,
+                message: e.to_string(),
+                total_data: 0,
+                data: Value::Null,
+            }),
+        };
     }
 
-    // Call Repository
+    // Uncached path (role-specific projection, or caching disabled for the entity).
     match data_read_repo::fetch_dynamic_data(state, route, table_schema, &params_map).await {
         Ok((rows, total, next_cursor)) => {
             let mut data = Value::Array(rows);
@@ -177,36 +218,6 @@ pub async fn process_get_request(
                 total_data: total as i32,
                 data,
             };
-
-            // Cache Write (both L1 in-memory and L2 Redis)
-            if let Some(k) = cache_key
-                .as_ref()
-                .filter(|_| use_cache)
-            {
-                // Write to L1 In-Memory Cache
-                state.l1_cache.insert(k.clone(), result.clone()).await;
-
-                // Write to L2 Redis Cache
-                if state.is_cachedb {
-                    let ttl = if table_schema.redis.ttl > 0 {
-                        table_schema.redis.ttl as usize
-                    } else {
-                        300
-                    };
-                    // Do not make the client wait for the Redis round-trip.
-                    let k2 = k.clone();
-                    let route2 = route.to_string();
-                    let payload = result.clone();
-                    tokio::spawn(async move {
-                        if let Err(e) = redis_set_json(&k2, &payload, Some(ttl)).await {
-                            log_output("ERROR", "CACHE WRITE", &route2, format!("Failed to cache: {}", e), false);
-                        } else {
-                            log_output_lazy("REDIS", "CACHE WRITE", &route2, || format!("Key: {}, TTL: {}s, Records: {}", k2, ttl, total), true);
-                        }
-                    });
-                }
-            }
-
             let mut resp = HttpResponse::Ok();
             if let Some(c) = next_cursor { resp.insert_header(("X-Next-Cursor", c)); }
             resp.json(result)

@@ -244,7 +244,7 @@ pub fn take_raw_entities() -> HashMap<String, serde_json::Value> {
 
 // ── Debug flag ────────────────────────────────────────────────────────────────
 
-pub(crate) static ISDEBUG: Lazy<bool> = Lazy::new(|| match env::var("DEBUG") {
+pub static ISDEBUG: Lazy<bool> = Lazy::new(|| match env::var("DEBUG") {
     Ok(val) => matches!(val.to_lowercase().as_str(), "1" | "true" | "yes"),
     Err(_) => false,
 });

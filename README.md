@@ -269,16 +269,21 @@ cp env .env
 |----------|-------------|
 | `ACTIX_WORKERS` | Number of worker threads (match CPU cores). |
 | `HTTP_KEEPALIVE_SECS` / `HTTP_BACKLOG` / `HTTP_MAX_CONN_RATE` / `HTTP_MAX_CONNECTIONS` | HTTP server tuning. |
-| `MAX_POOL` / `MIN_POOL` / `CONNECT_TIMEOUT` / `POOL_MAX_LIFETIME_SECS` / `POOL_IDLE_TIMEOUT_SECS` | DB connection‑pool tuning. |
+| `MAX_POOL` / `MIN_POOL` / `CONNECT_TIMEOUT` / `POOL_MAX_LIFETIME_SECS` / `POOL_IDLE_TIMEOUT_SECS` | DB connection‑pool tuning. Defaults: `MAX_POOL = clamp(cpu*2+4, 8..64)`, `MIN_POOL = clamp(cpu, 2..16)`, `CONNECT_TIMEOUT = 5` s (fail fast). |
+| `DB_STATEMENT_TIMEOUT_MS` / `DB_QUERY_TIMEOUT_SECS` | Server‑side statement/lock timeout applied per connection (default 30 000 ms) and client‑side safety net (default statement + 5 s). A runaway query returns an error instead of pinning a connection. |
+| `ENABLE_COMPRESSION` | Response compression (gzip/br/zstd). **On by default**; set `false` behind a proxy that already compresses. File downloads are never compressed twice. |
+| `ROUTE_VERSION_REFRESH_MS` | How often readers re-check the per‑route cache version in Redis (default 1000). Bounds cross‑replica cache staleness after a write. |
 | `WRITE_QUEUE_ENABLED` / `WRITE_CONCURRENCY` / `WRITE_QUEUE_MAX_LEN` / `WRITE_EXEC_RETRY_MAX` | Write‑queue / concurrency controls for high write throughput. |
 | `DEFAULT_COLLATE` | Default collation for MySQL/MariaDB (e.g. `utf8mb4_bin`). |
 | `MSSQL_ENCRYPTION` / `MSSQL_TRUST_CERT` | TLS options for MSSQL. |
 | `REDIS_HOST` / `REDIS_PORT` / `REDIS_PASSWORD` / `REDIS_DB` | Redis connection (caching / extension). |
 
-### Logging
+### Logging & observability
 
 | Variable | Description |
 |----------|-------------|
+| `RUST_LOG` | `tracing` filter (default `info`). One access line per request is emitted under target `flx::access`; `RUST_LOG=info,flx::access=warn` silences it. |
+| `LOG_FORMAT` | `json` emits one JSON object per line (for Loki/ELK/CloudWatch); default is compact text. |
 | `DEBUG` | `1`/`true`/`yes` enables verbose debug logging. |
 | `LOGGING` | `True` enables extended log output to `LOC_LOGGING`. |
 | `LOG_MIN_LEVEL` | `error\|warn\|info\|debug\|trace` (default `info`). Drops messages below the level. |
@@ -288,6 +293,20 @@ cp env .env
 | `LOG_COLOR` | `0`/`false`/`no` disables ANSI colors. |
 
 Logging runs on a non‑blocking background thread, so it never blocks the request path. In production prefer `LOG_MIN_LEVEL=info` (most SQL/param logs are at `debug`) and consider sampling under high load.
+
+Every response carries an `x-request-id` header (propagated from the request when the client sends one) so a log line, a client error and a trace can be correlated.
+
+`GET /metrics` (Prometheus text format) exposes, besides the counters:
+
+| Metric | Labels | Meaning |
+|--------|--------|---------|
+| `flx_http_request_duration_seconds` (histogram) | `route`, `method`, `status` | End‑to‑end latency per entity route. Unknown first path segments are folded into `route="other"`. |
+| `flx_db_query_duration_seconds` (histogram) | `kind` = `query`, `begin`, `tx_query`, `tx_execute`, `commit`, `rollback` | Time spent in the database driver. |
+| `flx_db_pool_size` / `flx_db_pool_idle` / `flx_db_pool_active` / `flx_db_pool_max` | — | Connection pool occupancy. |
+| `flx_db_timeouts` | — | Statements aborted by the client‑side timeout. |
+| `flx_cache_hits` / `flx_cache_misses` | — | GET pages served from L1/L2 vs. the database. |
+
+Cached GET responses also return an `ETag`; a request with a matching `If-None-Match` gets `304 Not Modified` without touching cache or database. Load‑test scenarios with latency thresholds live in [`perf/`](perf/README.md).
 
 ---
 

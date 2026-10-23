@@ -3,50 +3,50 @@ use actix_web::middleware::{Compress, Condition};
 use actix_web::{App, HttpServer, web};
 use colored::Colorize;
 use dotenv::EnvLoader;
-use helpers::cetak_label;
-use log::log_output;
 use std::collections::HashSet;
 use std::env;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+use flx_nocode_api::config::{CONFIG, CONFIG_LOCATION, ENDPOINT_LOG_ONCE, ISDEBUG, SCHEMAS, SEED_LOCATION};
+use flx_nocode_api::core::{self, generate_users};
+use flx_nocode_api::database::{self, state::{AppState, QueryConverter}};
+use flx_nocode_api::helpers::cetak_label;
+use flx_nocode_api::log::log_output;
+#[cfg(feature = "mcp")]
+use flx_nocode_api::mcp;
+use flx_nocode_api::middleware::{AuthMiddleware, GlobalRateLimit, StatusLogger};
+use flx_nocode_api::nocode::consumer::start_consumer;
+use flx_nocode_api::nocode::email_queue::start_email_consumer;
+use flx_nocode_api::{cli, routes, startup};
+#[cfg(feature = "mongodb")]
+use flx_nocode_api::storage::mongodb_store::MongoStore;
+
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-mod auth;
-mod crypt;
-mod database;
-use database::state::{AppState, QueryConverter};
-mod error;
-mod nocode;
-use nocode::consumer::start_consumer;
-use nocode::email_queue::start_email_consumer;
-mod core;
-use core::generate_users;
-mod audit;
-mod helpers;
-mod log;
-mod metrics;
-mod middleware;
-mod model;
-mod rate_limit;
-mod storage;
-#[cfg(feature = "mongodb")]
-use crate::storage::mongodb_store::MongoStore;
-use middleware::{AuthMiddleware, GlobalRateLimit, StatusLogger};
-
-mod config;
-use config::{CONFIG, CONFIG_LOCATION, ENDPOINT_LOG_ONCE, ISDEBUG, SCHEMAS, SEED_LOCATION};
-
-mod cli;
-#[cfg(feature = "mcp")]
-mod mcp;
-mod routes;
-mod startup;
-
 /// Response headers browser-based clients (e.g. MCP Inspector) must be able to read.
 const CORS_EXPOSE_HEADERS: [&str; 3] = ["www-authenticate", "mcp-session-id", "mcp-protocol-version"];
+
+fn init_tracing() {
+    use tracing_subscriber::EnvFilter;
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let json = env::var("LOG_FORMAT")
+        .map(|v| v.eq_ignore_ascii_case("json"))
+        .unwrap_or(false);
+    // stdio MCP mode owns stdout for JSON-RPC: logs must go to stderr there.
+    let to_stderr = env::args().any(|a| a == "--stdio") || json;
+    let builder = tracing_subscriber::fmt().with_env_filter(filter).with_target(false);
+    let result = if json {
+        if to_stderr { builder.json().with_writer(std::io::stderr).try_init() } else { builder.json().try_init() }
+    } else if to_stderr {
+        builder.compact().with_writer(std::io::stderr).try_init()
+    } else {
+        builder.compact().try_init()
+    };
+    let _ = result; // already initialised (tests) is fine
+}
 
 #[actix_web::main]
 async fn main() -> anyhow::Result<()> {
@@ -55,6 +55,12 @@ async fn main() -> anyhow::Result<()> {
     unsafe {
         let _ = EnvLoader::new().load_and_modify();
     }
+
+    // ── Structured logging (tracing) ─────────────────────────────────────────
+    // RUST_LOG controls the level (default `info`; `flx::access=warn` silences
+    // the per-request access line). LOG_FORMAT=json emits one JSON object per
+    // line for log shippers; the default is a human-readable compact format.
+    init_tracing();
 
     // ── CLI: --version ────────────────────────────────────────────────────────
     if matches!(
@@ -151,10 +157,10 @@ async fn main() -> anyhow::Result<()> {
     } = database::connection::initialize_database(cpu).await?;
 
     let datetime_now: String = match db_type {
-        crate::model::DbType::Mysql => "NOW()".to_string(),
-        crate::model::DbType::Postgres => "NOW()".to_string(),
-        crate::model::DbType::Sqlite => "CURRENT_TIMESTAMP".to_string(),
-        crate::model::DbType::Mssql => "GETDATE()".to_string(),
+        flx_nocode_api::model::DbType::Mysql => "NOW()".to_string(),
+        flx_nocode_api::model::DbType::Postgres => "NOW()".to_string(),
+        flx_nocode_api::model::DbType::Sqlite => "CURRENT_TIMESTAMP".to_string(),
+        flx_nocode_api::model::DbType::Mssql => "GETDATE()".to_string(),
         _ => "CURRENT_TIMESTAMP".to_string(),
     };
 
@@ -168,10 +174,10 @@ async fn main() -> anyhow::Result<()> {
         .collect();
 
     // ── DataStore adapter ─────────────────────────────────────────────────────
-    let store_adapter: Arc<dyn crate::storage::traits::DataStore> = {
+    let store_adapter: Arc<dyn flx_nocode_api::storage::traits::DataStore> = {
         match db_type {
             #[cfg(feature = "mongodb")]
-            crate::model::DbType::Mongodb => {
+            flx_nocode_api::model::DbType::Mongodb => {
                 let uri = env::var("MONGODB_URI").map_err(|_| {
                     eprintln!("Please set MONGODB_URI in .env for DB_TYPE=mongodb");
                     anyhow::anyhow!("MONGODB_URI not set")
@@ -186,7 +192,7 @@ async fn main() -> anyhow::Result<()> {
                 })?;
                 Arc::new(mongo)
             }
-            _ => Arc::new(crate::storage::sql_store::SqlStore::new(
+            _ => Arc::new(flx_nocode_api::storage::sql_store::SqlStore::new(
                 db_repo.clone(),
                 db_type.as_str().to_string(),
             )),
@@ -200,7 +206,7 @@ async fn main() -> anyhow::Result<()> {
     if is_cachedb {
         match tokio::time::timeout(
             Duration::from_millis(1000),
-            crate::database::redis::get_manager(),
+            flx_nocode_api::database::redis::get_manager(),
         )
         .await
         {
@@ -237,8 +243,7 @@ async fn main() -> anyhow::Result<()> {
         .and_then(|s| s.parse().ok())
         .unwrap_or(50_000);
 
-    // Capacity is a BYTE budget (approximate serialized size per entry), not an
-    // entry count: 50 000 entries x 2 000 rows each could reach gigabytes.
+    // Capacity is a BYTE budget (serialized size per entry), not an entry count.
     let l1_cache_max_bytes: u64 = env::var("L1_CACHE_MAX_BYTES")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -246,13 +251,8 @@ async fn main() -> anyhow::Result<()> {
     let _ = l1_cache_max_capacity; // kept for env compatibility; bytes win
     let l1_cache = moka::future::Cache::builder()
         .max_capacity(l1_cache_max_bytes)
-        .weigher(|_k: &String, v: &crate::model::WebResponse| {
-            crate::database::state::approx_json_bytes(&v.data)
-                .saturating_add(64)
-                .min(u32::MAX as usize) as u32
-        })
+        .weigher(|_k: &String, v: &flx_nocode_api::database::state::CachedPage| v.weight())
         .time_to_live(Duration::from_secs(l1_cache_ttl_secs))
-        .support_invalidation_closures()
         .build();
 
     // ── AppState ──────────────────────────────────────────────────────────────
@@ -296,7 +296,7 @@ async fn main() -> anyhow::Result<()> {
 
     // ── Write-queue consumer ──────────────────────────────────────────────────
     if app_state.write_queue_enabled {
-        match crate::database::redis::get_manager().await {
+        match flx_nocode_api::database::redis::get_manager().await {
             Err(e) => eprintln!("WRITE QUEUE enabled but Redis not available: {}", e),
             Ok(_) => {
                 start_consumer(app_state.clone(), Arc::clone(&SCHEMAS.0)).await;
@@ -316,7 +316,7 @@ async fn main() -> anyhow::Result<()> {
         .map(|v| matches!(v.to_lowercase().as_str(), "1" | "true" | "yes" | "on"))
         .unwrap_or(false)
     {
-        match crate::database::redis::get_manager().await {
+        match flx_nocode_api::database::redis::get_manager().await {
             Err(e) => eprintln!("EMAIL CONSUMER enabled but Redis not available: {}", e),
             Ok(_) => {
                 start_email_consumer().await;
@@ -335,7 +335,7 @@ async fn main() -> anyhow::Result<()> {
     startup::run_table_generation(&app_state).await?;
 
     // // ── Role seeding (background task) ────────────────────────────────────────
-    // if app_state.db_type != crate::model::DbType::Mongodb {
+    // if app_state.db_type != flx_nocode_api::model::DbType::Mongodb {
     //     startup::run_role_seeding(app_state.clone(), &id_user_str).await;
     // }
 
@@ -509,10 +509,13 @@ async fn main() -> anyhow::Result<()> {
                     .unwrap_or(false),
                 cors,
             ))
+            // Response compression is ON by default (JSON lists shrink 70-85 %).
+            // Set ENABLE_COMPRESSION=false to turn it off (e.g. when a reverse
+            // proxy already compresses). Binary downloads opt out per response.
             .wrap(Condition::new(
                 env::var("ENABLE_COMPRESSION")
-                    .map(|v| matches!(v.to_lowercase().as_str(), "1" | "true" | "yes"))
-                    .unwrap_or(false),
+                    .map(|v| !matches!(v.to_lowercase().as_str(), "0" | "false" | "no" | "off"))
+                    .unwrap_or(true),
                 Compress::default(),
             ))
             .wrap(StatusLogger);

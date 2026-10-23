@@ -562,10 +562,7 @@ async fn exec_post(state: Data<AppState>, route: String, schemas_map: Arc<HashMa
 
     match state.store.insert(&schema.table, Value::Object(doc_map)).await {
         Ok(_) => {
-            // Invalidate cached GET results for this route (L1 & L2 Redis)
-            crate::database::state::invalidate_l1_route(&state.l1_cache, &route);
-            let cache_prefix = crate::database::redis::build_key_prefix("public", &route);
-            let _ = crate::database::redis::redis_delete_by_prefix(&cache_prefix).await;
+            crate::database::state::invalidate_route(&state, &route).await;
             Ok(())
         }
         Err(e) => {
@@ -641,9 +638,7 @@ async fn exec_put(state: Data<AppState>, route: String, schemas_map: Arc<HashMap
 
     match state.store.update(&schema.table, filter, Value::Object(doc_map)).await {
         Ok(_) => {
-            crate::database::state::invalidate_l1_route(&state.l1_cache, &route);
-            let cache_prefix = crate::database::redis::build_key_prefix("public", &route);
-            let _ = crate::database::redis::redis_delete_by_prefix(&cache_prefix).await;
+            crate::database::state::invalidate_route(&state, &route).await;
             Ok(())
         }
         Err(e) => {
@@ -668,11 +663,7 @@ async fn exec_delete(state: Data<AppState>, route: String, schemas_map: Arc<Hash
 
         match state.store.update(&schema.table, filter, Value::Object(patch)).await {
             Ok(_) => {
-                crate::database::state::invalidate_l1_route(&state.l1_cache, &route);
-                let cache_prefix = crate::database::redis::build_key_prefix("public", &route);
-                if let Ok(n) = crate::database::redis::redis_delete_by_prefix(&cache_prefix).await {
-                    log_output("REDIS", "INVALIDATE", route.as_str(), format!("prefix={}, deleted={}", cache_prefix, n), true);
-                }
+                crate::database::state::invalidate_route(&state, &route).await;
                 Ok(())
             }
             Err(e) => {
@@ -683,11 +674,7 @@ async fn exec_delete(state: Data<AppState>, route: String, schemas_map: Arc<Hash
     } else {
         match state.store.delete(&schema.table, filter).await {
             Ok(_) => {
-                crate::database::state::invalidate_l1_route(&state.l1_cache, &route);
-                let cache_prefix = crate::database::redis::build_key_prefix("public", &route);
-                if let Ok(n) = crate::database::redis::redis_delete_by_prefix(&cache_prefix).await {
-                    log_output("REDIS", "INVALIDATE", route.as_str(), format!("prefix={}, deleted={}", cache_prefix, n), true);
-                }
+                crate::database::state::invalidate_route(&state, &route).await;
                 Ok(())
             }
             Err(e) => {

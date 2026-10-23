@@ -221,8 +221,38 @@ where
     }
 }
 
-// ---------------- Status Logger Middleware ----------------
-// Log all requests that end up with 404 / 405 for easier debugging
+// ---------------- Request observer (StatusLogger) ----------------
+// Per request: assigns/propagates `x-request-id`, measures latency into the
+// `flx_http_request_duration_seconds` histogram, emits one `tracing` access
+// event, and keeps the old 404/405 debug line.
+
+static REQUEST_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Known first path segments get their own series; everything else is folded
+/// into `other` so a path scanner cannot inflate metric cardinality.
+fn route_label(path: &str) -> String {
+    let seg = path.trim_matches('/').split('/').next().unwrap_or("");
+    if seg.is_empty() {
+        return "root".to_string();
+    }
+    if crate::config::SCHEMAS.0.contains_key(seg)
+        || matches!(seg, "login" | "register" | "roles" | "healthz" | "livez" | "readyz" | "metrics" | "static" | "email" | "import" | "export" | "validate" | "generate" | "seed" | "mcp")
+    {
+        seg.to_string()
+    } else {
+        "other".to_string()
+    }
+}
+
+fn new_request_id() -> String {
+    let n = REQUEST_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let t = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_micros() as u64)
+        .unwrap_or(0);
+    format!("{:x}-{:x}", t, n)
+}
+
 pub struct StatusLogger;
 
 impl<S, B> Transform<S, ServiceRequest> for StatusLogger
@@ -256,14 +286,44 @@ where
         self.service.poll_ready(ctx)
     }
 
-    fn call(&self, req: ServiceRequest) -> Self::Future {
+    fn call(&self, mut req: ServiceRequest) -> Self::Future {
+        let start = std::time::Instant::now();
         let method = req.method().clone();
         let path = req.path().to_string();
+        let route = route_label(&path);
+        // Propagate the caller's id (max 64 visible ASCII chars) or mint one.
+        let request_id = req
+            .headers()
+            .get("x-request-id")
+            .and_then(|v| v.to_str().ok())
+            .filter(|s| !s.is_empty() && s.len() <= 64 && s.chars().all(|c| c.is_ascii_graphic()))
+            .map(|s| s.to_string())
+            .unwrap_or_else(new_request_id);
+        if let Ok(v) = actix_web::http::header::HeaderValue::from_str(&request_id) {
+            req.headers_mut().insert(actix_web::http::header::HeaderName::from_static("x-request-id"), v);
+        }
 
         let fut = self.service.call(req);
         Box::pin(async move {
-            let res = fut.await?;
+            let mut res = fut.await?;
             let status = res.status();
+            let elapsed = start.elapsed();
+
+            if let Ok(v) = actix_web::http::header::HeaderValue::from_str(&request_id) {
+                res.headers_mut().insert(actix_web::http::header::HeaderName::from_static("x-request-id"), v);
+            }
+            METRICS.record_http(&route, method.as_str(), status.as_u16(), elapsed);
+
+            tracing::info!(
+                target: "flx::access",
+                request_id = %request_id,
+                method = %method,
+                path = %path,
+                route = %route,
+                status = status.as_u16(),
+                latency_ms = elapsed.as_secs_f64() * 1000.0,
+                "request"
+            );
 
             if status == StatusCode::METHOD_NOT_ALLOWED || status == StatusCode::NOT_FOUND {
                 let allow_hdr = res
@@ -271,7 +331,6 @@ where
                     .get("Allow")
                     .and_then(|v| v.to_str().ok())
                     .unwrap_or("");
-
                 log_output(
                     "HTTP",
                     "STATUS",

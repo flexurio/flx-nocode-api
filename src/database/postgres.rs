@@ -229,6 +229,14 @@ impl DbRepository for PostgresRepo {
         }
     }
 
+    fn pool_stats(&self) -> Option<super::state::PoolStats> {
+        Some(super::state::PoolStats {
+            size: self.pool.size(),
+            idle: self.pool.num_idle() as u32,
+            max: self.pool.options().get_max_connections(),
+        })
+    }
+
     async fn begin_transaction(&self) -> Result<Box<dyn DbTransaction>, anyhow::Error> {
         let tx = self.pool.begin().await?;
         Ok(Box::new(PostgresTransaction { tx }))

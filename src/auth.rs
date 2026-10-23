@@ -717,8 +717,6 @@ pub fn retain_fields_on(allowed: &[String], data: &mut Value) {
 /// fields plus `id`; everything else is removed in place. No-op when no
 /// restriction applies. Because the result is role-specific, a filtered
 /// response must not be written to or served from the shared response cache.
-
-
 #[cfg(test)]
 mod tests {
     use super::*;

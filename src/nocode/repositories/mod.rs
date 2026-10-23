@@ -1,3 +1,6 @@
+// Request path: a panic here would abort an in-flight request. Flagged as
+// warnings now; promoted to `deny` once the remaining sites are cleaned up.
+#![warn(clippy::unwrap_used, clippy::expect_used)]
 pub mod data_read_repo;
 pub mod data_update_repo;
 pub mod data_create_repo;

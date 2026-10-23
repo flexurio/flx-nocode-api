@@ -316,28 +316,41 @@ pub async fn process_export_request(
 
 
     let ts = Local::now().format("%Y%m%d-%H%M%S");
-    let (content_type, file_ext, bytes) = if export_type == "xlsx" {
-        match write_xlsx(&headers, &data_rows) {
-            Ok(buf) => (
-                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet".to_string(),
-                "xlsx".to_string(),
-                buf,
-            ),
-            Err(e) => {
-                log_output(
+    // Building a workbook/CSV for up to EXPORT_LIMIT_MAX rows is pure CPU work:
+    // run it on the blocking pool so this worker keeps serving other requests.
+    let want_xlsx = export_type == "xlsx";
+    let route_owned = route.to_string();
+    let built = tokio::task::spawn_blocking(move || -> (String, String, Vec<u8>) {
+        if want_xlsx {
+            match write_xlsx(&headers, &data_rows) {
+                Ok(buf) => return (
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet".to_string(),
+                    "xlsx".to_string(),
+                    buf,
+                ),
+                Err(e) => log_output(
                     "WARN",
                     "EXPORT",
-                    route,
+                    &route_owned,
                     format!("XLSX generation failed, falling back to CSV: {}", e),
                     true,
-                );
-                let buf = write_csv(&headers, &data_rows).unwrap_or_default();
-                ("text/csv".to_string(), "csv".to_string(), buf)
+                ),
             }
         }
-    } else {
         let buf = write_csv(&headers, &data_rows).unwrap_or_default();
         ("text/csv".to_string(), "csv".to_string(), buf)
+    })
+    .await;
+    let (content_type, file_ext, bytes) = match built {
+        Ok(t) => t,
+        Err(e) => {
+            return HttpResponse::InternalServerError().json(WebResponse {
+                success: false,
+                message: format!("Export build failed: {}", e),
+                total_data: 0,
+                data: Value::Null,
+            })
+        }
     };
 
      // Audit
@@ -370,6 +383,8 @@ pub async fn process_export_request(
     HttpResponse::Ok()
         .insert_header((header::CONTENT_TYPE, content_type_header))
         .insert_header((header::CONTENT_DISPOSITION, content_disp_header))
+        // XLSX is already deflate-compressed; skip the Compress middleware.
+        .insert_header(header::ContentEncoding::Identity)
         .body(bytes)
 
 }

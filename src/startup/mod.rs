@@ -108,10 +108,10 @@ pub fn run_config_lint() -> anyhow::Result<()> {
 
 /// Lint messages are formatted `[route] message`; split for log columns.
 fn split_route(line: &str) -> (&str, &str) {
-    if let Some(rest) = line.strip_prefix('[') {
-        if let Some((route, msg)) = rest.split_once("] ") {
-            return (route, msg);
-        }
+    if let Some(rest) = line.strip_prefix('[')
+        && let Some((route, msg)) = rest.split_once("] ")
+    {
+        return (route, msg);
     }
     ("-", line)
 }

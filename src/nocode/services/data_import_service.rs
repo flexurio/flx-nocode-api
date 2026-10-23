@@ -295,20 +295,23 @@ pub async fn process_import_request(
     let is_csv_mime = matches!(declared_mime.as_deref(), Some("text/csv")) || is_csv_ext;
 
     // 5. Parse Rows
+    // Parsing a spreadsheet is CPU-bound: keep it off the async worker threads.
+    let parse_err = |what: &str, e: String| WebResponse {
+        success: false,
+        message: format!("Failed to read {}: {}", what, e),
+        total_data: 0,
+        data: Value::Null,
+    };
     let rows: Vec<Map<String, Value>> = if is_xlsx_mime || is_xlsx_ext {
-        parse_xlsx(file_bytes).map_err(|e| WebResponse {
-            success: false,
-            message: format!("Failed to read XLSX: {}", e),
-            total_data: 0,
-            data: Value::Null,
-        })?
+        tokio::task::spawn_blocking(move || parse_xlsx(file_bytes))
+            .await
+            .map_err(|e| parse_err("XLSX", e.to_string()))?
+            .map_err(|e| parse_err("XLSX", e.to_string()))?
     } else if is_csv_mime || is_csv_ext {
-        parse_csv(file_bytes).map_err(|e| WebResponse {
-            success: false,
-            message: format!("Failed to read CSV: {}", e),
-            total_data: 0,
-            data: Value::Null,
-        })?
+        tokio::task::spawn_blocking(move || parse_csv(file_bytes))
+            .await
+            .map_err(|e| parse_err("CSV", e.to_string()))?
+            .map_err(|e| parse_err("CSV", e.to_string()))?
     } else {
         return Err(WebResponse {
             success: false,

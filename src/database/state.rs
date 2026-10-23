@@ -31,7 +31,100 @@ pub struct AppState {
     pub write_queue_enabled: bool, // enable Redis write queue for POST/PUT/DELETE
     pub default_collate: String, // default collation for tables (e.g. utf8mb4_bin)
     pub rules: Value, // cached rules.json
-    pub l1_cache: moka::future::Cache<String, crate::model::WebResponse>,
+    /// L1 page cache: key = `flx:c2:<route>:v<version>:<sorted params>`,
+    /// value = the already-serialized JSON body (see [`CachedPage`]).
+    pub l1_cache: moka::future::Cache<String, CachedPage>,
+}
+
+/// A cached GET page. The body is stored **serialized** so a cache hit costs one
+/// `Bytes` ref-count clone instead of a `serde_json::Value` deep clone plus a
+/// full re-serialization. The ETag lets clients get `304 Not Modified`.
+#[derive(Clone, Debug)]
+pub struct CachedPage {
+    pub body: actix_web::web::Bytes,
+    pub etag: String,
+    pub next_cursor: Option<String>,
+    pub total_data: i32,
+}
+
+impl CachedPage {
+    /// Serialize a response once; returns `None` only if serialization fails.
+    pub fn from_response(resp: &crate::model::WebResponse, next_cursor: Option<String>) -> Option<Self> {
+        let body = serde_json::to_vec(resp).ok()?;
+        let etag = Self::etag_for(&body);
+        Some(Self {
+            body: actix_web::web::Bytes::from(body),
+            etag,
+            next_cursor,
+            total_data: resp.total_data,
+        })
+    }
+
+    /// Strong ETag: deterministic across processes (SipHash with fixed keys) so
+    /// every replica answers the same `If-None-Match`.
+    pub fn etag_for(body: &[u8]) -> String {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        body.hash(&mut h);
+        format!("\"{:016x}-{}\"", h.finish(), body.len())
+    }
+
+    /// Approximate memory weight for the L1 byte budget.
+    pub fn weight(&self) -> u32 {
+        (self.body.len() + self.etag.len() + self.next_cursor.as_ref().map(|c| c.len()).unwrap_or(0) + 64)
+            .min(u32::MAX as usize) as u32
+    }
+
+    /// L2 (Redis) wire format: `<cursor>\n<total>\n<json body>`.
+    pub fn encode(&self) -> String {
+        let mut s = String::with_capacity(self.body.len() + 32);
+        s.push_str(self.next_cursor.as_deref().unwrap_or(""));
+        s.push('\n');
+        s.push_str(&self.total_data.to_string());
+        s.push('\n');
+        // Body is JSON produced by serde_json, therefore valid UTF-8.
+        s.push_str(std::str::from_utf8(&self.body).unwrap_or("{}"));
+        s
+    }
+
+    pub fn decode(raw: String) -> Option<Self> {
+        let (cursor, rest) = raw.split_once('\n')?;
+        let (total, body) = rest.split_once('\n')?;
+        if body.is_empty() {
+            return None;
+        }
+        let body_bytes = body.as_bytes().to_vec();
+        let etag = Self::etag_for(&body_bytes);
+        Some(Self {
+            body: actix_web::web::Bytes::from(body_bytes),
+            etag,
+            next_cursor: if cursor.is_empty() { None } else { Some(cursor.to_string()) },
+            total_data: total.parse().unwrap_or(0),
+        })
+    }
+}
+
+/// Build the cache key for a GET page. `params` must already exclude control
+/// parameters such as `redis`.
+pub fn build_cache_key(route: &str, version: u64, params: &serde_json::Map<String, Value>) -> String {
+    let prefix = crate::database::redis::build_key_prefix("c2", route);
+    let mut keys: Vec<String> = params.iter().map(|(k, v)| format!("{}={}", k, v)).collect();
+    keys.sort();
+    let mut key = String::with_capacity(prefix.len() + 16 + keys.iter().map(|k| k.len() + 1).sum::<usize>());
+    key.push_str(&prefix);
+    key.push_str(":v");
+    key.push_str(&version.to_string());
+    if !keys.is_empty() {
+        key.push(':');
+        key.push_str(&keys.join("&"));
+    }
+    key
+}
+
+/// Invalidate every cached GET page of `route` (L1 on this process, L2 and the
+/// L1 of other replicas through the shared version key). O(1), never scans.
+pub async fn invalidate_route(state: &AppState, route: &str) {
+    crate::database::redis::bump_route_version(route, state.is_cachedb).await;
 }
 
 /// Simple cross-DB parameter type for binding values safely.
@@ -44,9 +137,22 @@ pub enum DbParam {
     Null,
 }
 
+/// Connection-pool snapshot exported on `/metrics`.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PoolStats {
+    pub size: u32,
+    pub idle: u32,
+    pub max: u32,
+}
+
 #[async_trait::async_trait]
 pub trait DbRepository: Send + Sync {
     async fn query(&self, sql: &str) -> Result<Vec<Value>, anyhow::Error>;
+
+    /// Pool occupancy for observability; `None` when the backend has no pool.
+    fn pool_stats(&self) -> Option<PoolStats> {
+        None
+    }
 
     // Parameterized variants for safer queries. SQL must contain placeholders
     // appropriate for the target DB (MySQL/SQLite: `?`, Postgres: `$1,$2,...`).
@@ -80,34 +186,6 @@ pub trait DbTransaction: Send + Sync {
     ) -> Result<u64, anyhow::Error>;
     async fn commit(self: Box<Self>) -> Result<(), anyhow::Error>;
     async fn rollback(self: Box<Self>) -> Result<(), anyhow::Error>;
-}
-
-/// Rough serialized size of a JSON value, used as the L1 cache weight.
-/// Cheaper than serializing: walks the tree once and sums approximate lengths.
-pub fn approx_json_bytes(v: &Value) -> usize {
-    match v {
-        Value::Null => 4,
-        Value::Bool(_) => 5,
-        Value::Number(_) => 12,
-        Value::String(s) => s.len() + 2,
-        Value::Array(a) => 2 + a.iter().map(|x| approx_json_bytes(x) + 1).sum::<usize>(),
-        Value::Object(o) => 2 + o.iter().map(|(k, x)| k.len() + 4 + approx_json_bytes(x)).sum::<usize>(),
-    }
-}
-
-/// Drop every L1 entry cached for `route` (keys `flx:public:<route>` and
-/// `flx:public:<route>:...`). Replaces the old `invalidate_all()`, which wiped
-/// the cache of every route on any single write.
-pub fn invalidate_l1_route(cache: &moka::future::Cache<String, crate::model::WebResponse>, route: &str) {
-    let exact = crate::database::redis::build_key_prefix("public", route);
-    let with_sep = format!("{}:", exact);
-    if cache
-        .invalidate_entries_if(move |k, _| k == &exact || k.starts_with(&with_sep))
-        .is_err()
-    {
-        // Only fails if the cache was built without invalidation-closure support.
-        cache.invalidate_all();
-    }
 }
 
 /// Execute a parameterized SQL formula string within a generic TxStore transaction.

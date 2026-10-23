@@ -13,7 +13,7 @@ use crate::storage::ast::{Query as Q, Filter as F, Val as V};
 
 // TxStore variant to support new generic transaction path
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn process_foreign_keys_delete_update_txstore(
+pub async fn process_foreign_keys_delete_update_txstore(
     type_process: &str, // "DELETE" or "UPDATE"
     state: Data<AppState>,
     route: String,
@@ -159,7 +159,7 @@ async fn execute(
 }
 
 // create function to check master if column foreign key
-pub(crate) async fn check_data_foreign_key(
+pub async fn check_data_foreign_key(
     state: &Data<AppState>,
     reference_table: String,
     reference_column: String,

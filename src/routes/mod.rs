@@ -127,11 +127,17 @@ pub fn configure_routes(
     log_ep(do_log, "CORE ENDPOINT", "GET", host, &port_str, "healthz");
 
     // ── Prometheus metrics ────────────────────────────────────────────────────
-    cfg.service(web::resource("/metrics").route(web::get().to(|| async {
-        let out = METRICS.to_prometheus_format();
-        HttpResponse::Ok()
-            .content_type("text/plain; charset=utf-8")
-            .body(out)
+    cfg.service(web::resource("/metrics").route(web::get().to({
+        let state = app_state.clone();
+        move || {
+            let state = state.clone();
+            async move {
+                let out = METRICS.to_prometheus_format(state.db.pool_stats());
+                HttpResponse::Ok()
+                    .content_type("text/plain; version=0.0.4; charset=utf-8")
+                    .body(out)
+            }
+        }
     })));
     log_ep(do_log, "CORE ENDPOINT", "GET", host, &port_str, "metrics");
 

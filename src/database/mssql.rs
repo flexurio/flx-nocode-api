@@ -555,7 +555,15 @@ pub async fn connect_mssql(url: &str, timeout_secs: u64) -> Result<Client<tokio_
         config.trust_cert();
     }
 
-    let client = tiberius::Client::connect(config, tcp.compat_write()).await?;
+    let mut client = tiberius::Client::connect(config, tcp.compat_write()).await?;
+    // Server-side guard rails: a blocked lock or runaway statement must fail
+    // instead of pinning the connection. Best-effort; failure only logs.
+    let ms = *crate::database::timeout::STATEMENT_TIMEOUT_MS;
+    let sql = format!("SET LOCK_TIMEOUT {}", ms);
+    match client.simple_query(sql).await {
+        Ok(stream) => { let _ = stream.into_results().await; }
+        Err(e) => eprintln!("MSSQL: could not set LOCK_TIMEOUT: {}", e),
+    }
     Ok(client)
 }
 

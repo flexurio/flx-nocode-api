@@ -17,7 +17,7 @@ use crate::storage::sql_store::SqlStore;
 use crate::{
     AppState,
     auth::create_token,
-    crypt::{decrypt, hash_password, is_argon2_hash, verify_password},
+    crypt::{decrypt, hash_password, hash_password_async, is_argon2_hash, verify_password_async},
     helpers::{get_client_ip, multipart_to_json},
     log::log_output,
     model::WebResponse,
@@ -213,14 +213,14 @@ pub async fn login(state: web::Data<AppState>, req: actix_web::HttpRequest) -> i
     let user_found = !id_user_str.is_empty();
     let stored_is_legacy = !password_db.is_empty() && !is_argon2_hash(&password_db);
     let password_ok = if is_argon2_hash(&password_db) {
-        verify_password(pass_in, &password_db)
+        verify_password_async(pass_in.to_string(), password_db.clone()).await
     } else if stored_is_legacy {
         // Legacy reversible format: compare against the decrypted value.
         pass_in == decrypt(state.encrypt_key.clone(), password_db.clone())
     } else {
         // No stored credential (user absent/disabled). Run a dummy verify so the
         // response time is comparable to the valid-user path.
-        let _ = verify_password(pass_in, &DUMMY_PASSWORD_HASH);
+        let _ = verify_password_async(pass_in.to_string(), DUMMY_PASSWORD_HASH.clone()).await;
         false
     };
 
@@ -267,7 +267,7 @@ pub async fn login(state: web::Data<AppState>, req: actix_web::HttpRequest) -> i
     // logged but never block login. Skipped for MongoDB (uses the document store
     // path rather than the SQL helpers below).
     if user_found && stored_is_legacy && state.db_type != crate::model::DbType::Mongodb {
-        let new_hash = hash_password(pass_in);
+        let new_hash = hash_password_async(pass_in.to_string()).await;
         if !new_hash.is_empty() {
             let id_val = if let Ok(n) = id_user_str.parse::<i64>() {
                 QV::I64(n)
@@ -432,7 +432,7 @@ pub async fn register(state: Data<AppState>, multipart: Multipart) -> impl Respo
         password_value.to_string()
     };
 
-    let encrypt_password = hash_password(&password);
+    let encrypt_password = hash_password_async(password).await;
 
     // Use DataStore insert with app-side timestamps for cross-DB compatibility
     let ds = SqlStore::new(state.db.clone(), state.db_type.as_str().to_string());
@@ -1059,7 +1059,7 @@ fn extract_zip(zip_path: &str, target_dir: &str) -> Result<(), Box<dyn Error + S
 }
 
 // Function create directory & get config
-pub(crate) async fn create_dir_and_get_config(conf: &str) -> Result<(), std::io::Error> {
+pub async fn create_dir_and_get_config(conf: &str) -> Result<(), std::io::Error> {
     // If db directory already exists, skip
     if Path::new(conf).exists() {
         return Ok(());
@@ -1103,7 +1103,7 @@ pub(crate) async fn create_dir_and_get_config(conf: &str) -> Result<(), std::io:
 
 // function to add flx_roles and flx_users if not exist. Download from github latest release file core_config.zip.
 // Extract and move to config directory
-pub(crate) async fn create_core_config_if_not_exists(
+pub async fn create_core_config_if_not_exists(
     conf: &str,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     // If db directory already exists, skip
@@ -1151,7 +1151,7 @@ pub(crate) async fn create_core_config_if_not_exists(
 }
 
 // function download .env from latest release github
-pub(crate) async fn download_env_file() -> Result<(), Box<dyn Error + Send + Sync>> {
+pub async fn download_env_file() -> Result<(), Box<dyn Error + Send + Sync>> {
     let latest_version = get_latest_release().await?;
     let url = format!(
         "https://github.com/flexurio/flx-nocode-api/releases/download/{}/env",

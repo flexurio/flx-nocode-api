@@ -26,7 +26,7 @@ pub struct PreparedDetailBatch {
 
 /// Batch validate foreign keys in a single query for better performance (optimization)
 /// This replaces N sequential DB queries with 1 UNION ALL query
-pub(crate) async fn validate_foreign_keys_batch(
+pub async fn validate_foreign_keys_batch(
     state: &web::Data<AppState>,
     // (col_name, ref_table, ref_column, value, type_data) — type_data is the FK column's own
     // type so the value can be bound with the correct DbParam variant (avoids comparing an
@@ -1003,7 +1003,8 @@ mod tests {
 
         // 4. Test preview_insert_bulk compilation with SQLite pool
         let pool = sqlx::SqlitePool::connect_lazy("sqlite::memory:").unwrap();
-        let db_repo = std::sync::Arc::new(crate::database::sqlite::SqliteRepo { pool });
+        let write_pool = sqlx::SqlitePool::connect_lazy("sqlite::memory:").unwrap();
+        let db_repo = std::sync::Arc::new(crate::database::sqlite::SqliteRepo { pool, write_pool });
 
         let ds_pg = SqlStore::new(db_repo.clone(), "postgres".to_string());
         let (sql_pg, params_pg) = ds_pg

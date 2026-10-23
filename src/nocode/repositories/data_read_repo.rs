@@ -72,10 +72,11 @@ fn json_to_qv(v: &Value) -> QV {
 /// Parse a list value: JSON array string (`[1,"a"]`) or comma separated (`1,a`).
 fn parse_list(raw: &str) -> Vec<QV> {
     let t = raw.trim();
-    if t.starts_with('[') && t.ends_with(']') {
-        if let Ok(arr) = serde_json::from_str::<Vec<Value>>(t) {
-            return arr.iter().map(json_to_qv).collect();
-        }
+    if t.starts_with('[')
+        && t.ends_with(']')
+        && let Ok(arr) = serde_json::from_str::<Vec<Value>>(t)
+    {
+        return arr.iter().map(json_to_qv).collect();
     }
     if t.contains(',') {
         return t.split(',').map(|s| to_val(s.trim())).collect();
@@ -340,10 +341,10 @@ struct FilterCtx<'a> {
 
 fn column_allowed(declared: &HashSet<String>, col: &ColRef) -> bool {
     if declared.contains(&col.key) { return true; }
-    if col.json_path.is_some() {
-        if let Some((base, _)) = col.key.split_once("->") {
-            return declared.contains(&format!("{}->*", base));
-        }
+    if col.json_path.is_some()
+        && let Some((base, _)) = col.key.split_once("->")
+    {
+        return declared.contains(&format!("{}->*", base));
     }
     false
 }
@@ -414,7 +415,13 @@ fn parse_filter_node(v: &Value, ctx: &mut FilterCtx, depth: usize) -> Result<Opt
 
 /// Set of column identities (`table.col`, `table.col->path`, `table.col->*`)
 /// that appear anywhere in `get.parameters` (any operator).
-pub fn declared_columns(table_schema: &TableSchema, dialect: &str) -> HashSet<String> {
+pub fn declared_columns<'a>(table_schema: &'a TableSchema, dialect: &str) -> &'a HashSet<String> {
+    // The identity keys do not depend on the dialect (only the compiled `expr`
+    // does), so one computation per schema is correct for every backend.
+    table_schema.declared_cols.get_or_init(|| compute_declared_columns(table_schema, dialect))
+}
+
+fn compute_declared_columns(table_schema: &TableSchema, dialect: &str) -> HashSet<String> {
     let mut set = HashSet::new();
     for param in &table_schema.get.parameters {
         let clean = param.trim_start_matches('*');
@@ -432,7 +439,7 @@ pub fn declared_columns(table_schema: &TableSchema, dialect: &str) -> HashSet<St
 /// depth and leaf limits. Returns `(filter, touches_deleted_at)`.
 pub fn parse_filter_json(table_schema: &TableSchema, dialect: &str, raw: &Value) -> Result<(Option<QF>, bool), String> {
     let declared = declared_columns(table_schema, dialect);
-    let mut ctx = FilterCtx { table: &table_schema.table, dialect, declared: &declared, leaves: 0, touches_deleted_at: false };
+    let mut ctx = FilterCtx { table: &table_schema.table, dialect, declared, leaves: 0, touches_deleted_at: false };
     let f = parse_filter_node(raw, &mut ctx, 1)?;
     Ok((f, ctx.touches_deleted_at))
 }
@@ -888,6 +895,7 @@ mod tests {
     use crate::model::{Column, Index, PrimaryKey};
     use serde_json::json;
 
+    #[allow(clippy::field_reassign_with_default)]
     fn schema(params: &[&str], columns: &[&str]) -> TableSchema {
         let mut t = TableSchema::default();
         t.table = "orders".into();

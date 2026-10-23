@@ -307,6 +307,11 @@ pub struct TableSchema {
     pub seed: bool,
     #[serde(default)]
     pub collate: String,
+    /// Allow-list of filterable column identities (`table.col`, `table.col->path`,
+    /// `table.col->*`) derived from `get.parameters`. Computed once per schema on
+    /// first use instead of on every GET request.
+    #[serde(skip)]
+    pub declared_cols: std::sync::OnceLock<std::collections::HashSet<String>>,
 }
 
 // default value for TableSchema
@@ -376,6 +381,7 @@ impl Default for TableSchema {
             auto_generate: false,
             seed: false,
             collate: "".to_string(),
+            declared_cols: std::sync::OnceLock::new(),
         }
     }
 }

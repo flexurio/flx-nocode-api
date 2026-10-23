@@ -560,16 +560,17 @@ fn lint_one(ctx: &LintCtx<'_>, report: &mut LintReport, route: &str, schema: &Ta
                 ),
             );
         }
-        if let Some(cond) = &trig.condition {
-            if !cond.field.is_empty() && !LintCtx::has_column(schema, &cond.field) {
-                report.warn(
-                    route,
-                    format!(
-                        "action_triggers '{}' condition.field '{}' is not a column of this entity",
-                        trig.name, cond.field
-                    ),
-                );
-            }
+        if let Some(cond) = &trig.condition
+            && !cond.field.is_empty()
+            && !LintCtx::has_column(schema, &cond.field)
+        {
+            report.warn(
+                route,
+                format!(
+                    "action_triggers '{}' condition.field '{}' is not a column of this entity",
+                    trig.name, cond.field
+                ),
+            );
         }
         lint_trigger_actions(ctx, report, route, &trig.name, &trig.actions);
     }
@@ -696,16 +697,17 @@ fn lint_one(ctx: &LintCtx<'_>, report: &mut LintReport, route: &str, schema: &Ta
 
     // ── Column defaults ──────────────────────────────────────────────────
     for col in &schema.columns {
-        if let Some(def) = &col.default {
-            if is_text_type(&col.type_data) && default_looks_like_bare_literal(def) {
-                report.warn(
-                    route,
-                    format!(
-                        "column '{}' ({}) default '{}' is an unquoted string: DDL will treat it as an identifier/expression; use \"'{}'\"",
-                        col.name, col.type_data, def, def
-                    ),
-                );
-            }
+        if let Some(def) = &col.default
+            && is_text_type(&col.type_data)
+            && default_looks_like_bare_literal(def)
+        {
+            report.warn(
+                route,
+                format!(
+                    "column '{}' ({}) default '{}' is an unquoted string: DDL will treat it as an identifier/expression; use \"'{}'\"",
+                    col.name, col.type_data, def, def
+                ),
+            );
         }
     }
 }

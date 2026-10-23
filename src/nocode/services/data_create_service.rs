@@ -673,12 +673,8 @@ pub async fn process_insert_request(
     .await
     {
         Ok((msg, _count, inserted_data)) => {
-            // Invalidate L1 in-memory cache and L2 Redis cache
-            crate::database::state::invalidate_l1_route(&state.l1_cache, route);
-            if state.is_cachedb {
-                let cache_prefix = crate::database::redis::build_key_prefix("public", route);
-                let _ = crate::database::redis::redis_delete_by_prefix(&cache_prefix).await;
-            }
+            // Invalidate cached GET pages (L1 + L2) in O(1) via the route version.
+            crate::database::state::invalidate_route(state, route).await;
 
             // Audit Log
             if let Some(actor) = &actor_id_opt {

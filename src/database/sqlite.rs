@@ -8,8 +8,31 @@ use sqlx::{
 
 use super::state::{DbParam, DbRepository, DbTransaction};
 
+/// SQLite allows many concurrent readers (WAL) but exactly one writer. Giving
+/// writers their own single-connection pool serialises them in-process instead
+/// of letting N connections fight over the file lock (`database is locked`).
 pub struct SqliteRepo {
+    /// Read pool (SELECT / PRAGMA / EXPLAIN / WITH).
     pub pool: SqlitePool,
+    /// Write pool, `max_connections = 1`; also used for every transaction.
+    pub write_pool: SqlitePool,
+}
+
+/// True when the statement only reads. Anything else goes to the writer.
+pub fn is_read_only_sql(sql: &str) -> bool {
+    let head: String = sql
+        .trim_start()
+        .chars()
+        .take(8)
+        .collect::<String>()
+        .to_ascii_uppercase();
+    head.starts_with("SELECT") || head.starts_with("WITH") || head.starts_with("PRAGMA") || head.starts_with("EXPLAIN")
+}
+
+impl SqliteRepo {
+    fn pool_for(&self, sql: &str) -> &SqlitePool {
+        if is_read_only_sql(sql) { &self.pool } else { &self.write_pool }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -117,7 +140,7 @@ impl DbRepository for SqliteRepo {
         // SAFETY: `sql` is built by our internal query compiler (storage::sql_store),
         // not raw-concatenated user input; user-supplied values are always bound
         // as parameters, never interpolated into the SQL text.
-        match sqlx::query(sqlx::AssertSqlSafe(sql)).fetch_all(&self.pool).await {
+        match sqlx::query(sqlx::AssertSqlSafe(sql)).fetch_all(self.pool_for(sql)).await {
             Ok(rows) => {
                 // Jika berhasil, konversi hasilnya ke dalam JSON
                 let rows: Vec<SqliteRow> = rows.into_iter().collect();
@@ -148,7 +171,7 @@ impl DbRepository for SqliteRepo {
                 DbParam::Null => q.bind(Option::<i32>::None),
             };
         }
-        match q.fetch_all(&self.pool).await {
+        match q.fetch_all(self.pool_for(sql)).await {
             Ok(rows) => {
                 let rows: Vec<SqliteRow> = rows.into_iter().collect();
                 Ok(sqliterows_to_json(rows))
@@ -157,8 +180,16 @@ impl DbRepository for SqliteRepo {
         }
     }
 
+    fn pool_stats(&self) -> Option<super::state::PoolStats> {
+        Some(super::state::PoolStats {
+            size: self.pool.size() + self.write_pool.size(),
+            idle: (self.pool.num_idle() + self.write_pool.num_idle()) as u32,
+            max: self.pool.options().get_max_connections() + 1,
+        })
+    }
+
     async fn begin_transaction(&self) -> Result<Box<dyn DbTransaction>, anyhow::Error> {
-        let tx = self.pool.begin().await?;
+        let tx = self.write_pool.begin().await?;
         Ok(Box::new(SqliteTransaction { tx }))
     }
 }
@@ -230,5 +261,20 @@ impl DbTransaction for SqliteTransaction {
             .rollback()
             .await
             .map_err(|e| anyhow::anyhow!("Transaction rollback failed: {}", e))
+    }
+}
+
+#[cfg(test)]
+mod routing_tests {
+    use super::is_read_only_sql;
+
+    #[test]
+    fn classifies_statements() {
+        assert!(is_read_only_sql("  select 1"));
+        assert!(is_read_only_sql("WITH x AS (SELECT 1) SELECT * FROM x"));
+        assert!(is_read_only_sql("PRAGMA journal_mode"));
+        assert!(!is_read_only_sql("INSERT INTO t VALUES (1)"));
+        assert!(!is_read_only_sql("UPDATE t SET a = 1"));
+        assert!(!is_read_only_sql("CREATE TABLE t (a)"));
     }
 }

@@ -109,12 +109,8 @@ pub async fn process_delete_request(
         ).await?;
     }
 
-    // 5. Invalidate L1 & Redis Cache
-    crate::database::state::invalidate_l1_route(&state.l1_cache, &route);
-    if state.is_cachedb {
-        let cache_prefix = crate::database::redis::build_key_prefix("public", &route);
-        let _ = crate::database::redis::redis_delete_by_prefix(&cache_prefix).await;
-    }
+    // 5. Invalidate cached GET pages (L1 + L2) in O(1) via the route version.
+    crate::database::state::invalidate_route(&state, &route).await;
 
     // 6. Audit
     let ip_opt = get_client_ip(&req);

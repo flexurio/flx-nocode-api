@@ -113,6 +113,22 @@ pub fn verify_password(plaintext: &str, phc_hash: &str) -> bool {
     }
 }
 
+/// Varian non-blocking dari [`hash_password`]: Argon2 memakai CPU 50-200 ms,
+/// jadi dijalankan di thread pool blocking agar worker actix tetap melayani
+/// koneksi lain.
+pub async fn hash_password_async(plaintext: String) -> String {
+    tokio::task::spawn_blocking(move || hash_password(&plaintext))
+        .await
+        .unwrap_or_default()
+}
+
+/// Varian non-blocking dari [`verify_password`] (lihat [`hash_password_async`]).
+pub async fn verify_password_async(plaintext: String, phc_hash: String) -> bool {
+    tokio::task::spawn_blocking(move || verify_password(&plaintext, &phc_hash))
+        .await
+        .unwrap_or(false)
+}
+
 /// True bila string tampak sebagai hash Argon2 PHC (mis. `$argon2id$...`).
 /// Dipakai untuk membedakan kredensial yang sudah di-hash dari format lama
 /// (AES terenkripsi) demi migrasi mulus saat login.

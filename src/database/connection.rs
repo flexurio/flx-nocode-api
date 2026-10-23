@@ -30,30 +30,28 @@ pub struct PoolSettings {
 
 impl PoolSettings {
     pub fn from_env(cpu: usize) -> Self {
-        // Optimize pool size for better concurrency: 4-8x CPU for better connection utilization
-        // High concurrency: 8x CPU cores, Low latency: 4x CPU cores
+        // An API process is I/O bound: a handful of connections per core keeps
+        // the database's own CPUs busy without piling up hundreds of idle
+        // sessions once several replicas run (3 x 16 vCPU used to mean 384
+        // Postgres connections). Put PgBouncer/ProxySQL in front for more.
         let max_pool = env::var("MAX_POOL")
             .ok()
             .and_then(|s| s.parse().ok())
-            .unwrap_or(((cpu as u32) * 8).clamp(32, 256));  // Increased min from 16 to 32 for high concurrency
+            .unwrap_or(((cpu as u32) * 2 + 4).clamp(8, 64));
 
-        // Default kept low so a saturated pool fails fast (30s) instead of piling
-        // up requests for minutes and cascading into worker starvation. Override
-        // via CONNECT_TIMEOUT for deployments with known slow DB connect times.
+        // Fail fast: a request should get a 503 after a few seconds rather than
+        // queue for half a minute on a saturated pool (that queue only makes
+        // every other request slower too). Override via CONNECT_TIMEOUT.
         let acquire_timeout_secs = env::var("CONNECT_TIMEOUT")
             .ok()
             .and_then(|s| s.parse().ok())
-            .unwrap_or(30);
+            .unwrap_or(5);
 
-        // Min pool: pre-warm connections to avoid cold starts
-        // 50% of max_pool, but at least 8 connections for safety
+        // Min pool: enough warm connections for the first burst after boot.
         let min_pool = env::var("MIN_POOL")
             .ok()
             .and_then(|s| s.parse().ok())
-            .or_else(|| {
-                let suggested = ((cpu as u32) * 4).clamp(8, 64);
-                Some(suggested)
-            });
+            .or_else(|| Some((cpu as u32).clamp(2, 16)));
 
         let max_lifetime = env::var("POOL_MAX_LIFETIME_SECS")
             .ok()
@@ -141,9 +139,24 @@ pub async fn initialize_database(cpu: usize) -> anyhow::Result<DbInitialization>
                     }
                 };
 
+                let stmt_ms = *crate::database::timeout::STATEMENT_TIMEOUT_MS;
                 let mut opts = sqlx::mysql::MySqlPoolOptions::new()
                     .max_connections(pool_settings.max_pool)
-                    .acquire_timeout(pool_settings.acquire_timeout);
+                    .acquire_timeout(pool_settings.acquire_timeout)
+                    .after_connect(move |conn, _meta| {
+                        Box::pin(async move {
+                            // MySQL >= 5.7.8 (milliseconds); MariaDB spells it
+                            // max_statement_time in seconds. Try both, never fail.
+                            let sql = format!("SET SESSION max_execution_time = {}", stmt_ms);
+                            if sqlx::query(sqlx::AssertSqlSafe(sql)).execute(&mut *conn).await.is_err() {
+                                let sql = format!("SET SESSION max_statement_time = {}", (stmt_ms as f64 / 1000.0).max(1.0));
+                                let _ = sqlx::query(sqlx::AssertSqlSafe(sql)).execute(&mut *conn).await;
+                            }
+                            let sql = format!("SET SESSION innodb_lock_wait_timeout = {}", (stmt_ms / 1000).max(1));
+                            let _ = sqlx::query(sqlx::AssertSqlSafe(sql)).execute(&mut *conn).await;
+                            Ok(())
+                        })
+                    });
                 if let Some(min) = pool_settings.min_pool {
                     opts = opts.min_connections(min);
                 }
@@ -186,9 +199,20 @@ pub async fn initialize_database(cpu: usize) -> anyhow::Result<DbInitialization>
                     }
                 };
 
+                let stmt_ms = *crate::database::timeout::STATEMENT_TIMEOUT_MS;
                 let mut opts = sqlx::postgres::PgPoolOptions::new()
                     .max_connections(pool_settings.max_pool)
-                    .acquire_timeout(pool_settings.acquire_timeout);
+                    .acquire_timeout(pool_settings.acquire_timeout)
+                    // One runaway filter must not pin a connection for hours.
+                    .after_connect(move |conn, _meta| {
+                        Box::pin(async move {
+                            let sql = format!("SET statement_timeout = {}", stmt_ms);
+                            sqlx::query(sqlx::AssertSqlSafe(sql)).execute(&mut *conn).await?;
+                            let sql = format!("SET lock_timeout = {}", stmt_ms);
+                            sqlx::query(sqlx::AssertSqlSafe(sql)).execute(&mut *conn).await?;
+                            Ok(())
+                        })
+                    });
                 if let Some(min) = pool_settings.min_pool {
                     opts = opts.min_connections(min);
                 }
@@ -242,31 +266,49 @@ pub async fn initialize_database(cpu: usize) -> anyhow::Result<DbInitialization>
                     println!("File {} berhasil dibuat.", db_path.display());
                 }
 
-                let mut opts = sqlx::sqlite::SqlitePoolOptions::new()
-                    .max_connections(pool_settings.max_pool)
+                use std::str::FromStr;
+                // PRAGMAs are per-connection, so they belong in the connect
+                // options (the old `pool.execute("PRAGMA ...")` only reached one
+                // connection of the pool).
+                let connect_opts = sqlx::sqlite::SqliteConnectOptions::from_str(&url)
+                    .map_err(|e| anyhow::anyhow!("Invalid SQLITE_URL: {}", e))?
+                    .create_if_missing(true)
+                    .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+                    .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
+                    .busy_timeout(Duration::from_millis(*crate::database::timeout::STATEMENT_TIMEOUT_MS))
+                    .pragma("temp_store", "MEMORY")
+                    .pragma("cache_size", "-65536") // 64 MiB page cache per connection
+                    .pragma("mmap_size", "268435456");
+
+                // Readers: WAL allows them to run concurrently with the writer.
+                let reader_max = pool_settings.max_pool.clamp(2, 16);
+                let mut read_opts = sqlx::sqlite::SqlitePoolOptions::new()
+                    .max_connections(reader_max)
                     .acquire_timeout(pool_settings.acquire_timeout);
                 if let Some(min) = pool_settings.min_pool {
-                    opts = opts.min_connections(min);
-                }
-                if let Some(d) = pool_settings.max_lifetime {
-                    opts = opts.max_lifetime(d);
+                    read_opts = read_opts.min_connections(min.min(reader_max));
                 }
                 if let Some(d) = pool_settings.idle_timeout {
-                    opts = opts.idle_timeout(d);
+                    read_opts = read_opts.idle_timeout(d);
                 }
-                let pool = opts
-                    .connect(&url)
+                let pool = read_opts
+                    .connect_with(connect_opts.clone())
                     .await
                     .map_err(|e| {
                         eprintln!("Failed to connect to SQLite: {}", e);
                         anyhow::anyhow!("Failed to connect to SQLite: {}", e)
                     })?;
 
-                let _ = sqlx::query("PRAGMA journal_mode=WAL;").execute(&pool).await;
-                let _ = sqlx::query("PRAGMA synchronous=NORMAL;").execute(&pool).await;
-                let _ = sqlx::query("PRAGMA busy_timeout=5000;").execute(&pool).await;
+                // Single writer: serialises writes in-process instead of on the file lock.
+                let write_pool = sqlx::sqlite::SqlitePoolOptions::new()
+                    .max_connections(1)
+                    .min_connections(1)
+                    .acquire_timeout(pool_settings.acquire_timeout)
+                    .connect_with(connect_opts)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("Failed to open SQLite writer: {}", e))?;
 
-                Arc::new(SqliteRepo { pool })
+                Arc::new(SqliteRepo { pool, write_pool })
             }
         }
         crate::model::DbType::Mssql => {
@@ -360,5 +402,7 @@ pub async fn initialize_database(cpu: usize) -> anyhow::Result<DbInitialization>
 
     };
 
+    // Client-side timeout + duration metrics for every statement (see timeout.rs).
+    let repo = crate::database::timeout::TimeoutRepo::wrap(repo);
     Ok(DbInitialization { db_type, repo })
 }
