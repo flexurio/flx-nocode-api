@@ -324,11 +324,12 @@ async fn main() -> anyhow::Result<()> {
 
     // ── Atomic sequences table (custom ids / {seq:}) ─────────────────────────
     if app_state.db_type != flx_nocode_api::model::DbType::Mongodb {
+        flx_nocode_api::nocode::sequences::migrate_legacy_column(app_state.store.as_ref(), app_state.db_type.as_str()).await;
         let ds = flx_nocode_api::storage::sql_store::SqlStore::new(app_state.db.clone(), app_state.db_type.as_str().to_string());
         let (sql_t, sql_i) = flx_nocode_api::nocode::generate::generate_table(&ds, &flx_nocode_api::nocode::sequences::table_schema());
         let (ok, msg) = flx_nocode_api::nocode::generate::execute_generate_table("flx_sequences".into(), &app_state, sql_t, sql_i).await;
         if !ok {
-            eprintln!("WARNING: could not create flx_sequences ({}); custom ids fall back to MAX+1", msg);
+            eprintln!("ERROR: could not create flx_sequences ({}); inserts with custom ids (000ID) will fail", msg);
         }
     }
 

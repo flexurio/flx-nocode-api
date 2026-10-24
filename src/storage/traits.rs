@@ -44,7 +44,7 @@ pub trait TxStore: Send + Sync {
     }
 
     /// Raw statement that returns no rows; yields the number of affected rows.
-    /// Used by atomic sequences (`UPDATE … SET last_value = last_value + 1`).
+    /// Used by atomic sequences (`UPDATE … SET seq_value = seq_value + 1`).
     async fn raw_execute(
         &mut self,
         _sql: &str,
