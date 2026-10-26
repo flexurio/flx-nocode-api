@@ -6,6 +6,9 @@
 #   ./deploy_apple.sh                       # upload release/flx-nocode-*-apple-darwin.pkg
 #   ./deploy_apple.sh release/a.pkg ...     # upload specific assets
 #   RELEASE_TAG=v1.2.3-release ./deploy_apple.sh
+#   ENV_TEMPLATE=path/to/template ./deploy_apple.sh   # default: .env.example
+#
+# Also uploads the env template as the release asset "env".
 #
 # Called automatically by build_apple.sh after a successful build
 # (set SKIP_UPLOAD=1 on build_apple.sh to skip).
@@ -62,6 +65,17 @@ for asset in "${assets[@]}"; do
   ( cd "$(dirname "$asset")" && shasum -a 256 "$(basename "$asset")" ) >> "$checksum_file"
 done
 upload_assets=("${assets[@]}" "$checksum_file")
+
+# Env template, published as the asset named "env" (the URL older binaries
+# download from). The repo is public, so this must be a placeholder template,
+# never a real .env with secrets.
+ENV_TEMPLATE="${ENV_TEMPLATE:-.env.example}"
+if [[ ! -f "$ENV_TEMPLATE" ]]; then
+  echo "Env template not found: $ENV_TEMPLATE" >&2
+  exit 1
+fi
+cp "$ENV_TEMPLATE" release/env
+upload_assets+=("release/env")
 
 echo "Uploading to GitHub release $RELEASE_TAG:"
 printf '  - %s\n' "${upload_assets[@]}"
