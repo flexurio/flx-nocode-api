@@ -627,8 +627,8 @@ pub fn build_read_query(
         }
     }
 
-    // default deleted_at IS NULL if not requested otherwise
-    if is_deleted_at {
+    // default deleted_at IS NULL if not requested otherwise (skip for append-only flx_audit_trail)
+    if is_deleted_at && table_schema.table != crate::nocode::audit_trail::TABLE {
         filters.push(QF::IsNull(format!("{}.deleted_at", table_schema.table)));
     }
 

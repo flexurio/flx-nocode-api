@@ -105,6 +105,131 @@ pub struct TriggerRuntime {
     pub accumulated: HashMap<String, f64>,
     /// Generated running sequence numbers indexed by key (e.g. "AR_INVOICE", "GL_JOURNAL")
     pub sequences: HashMap<String, String>,
+    /// Name of the trigger currently executing (stored in audit `reason`).
+    pub trigger_name: String,
+    /// Request metadata propagated into `flx_audit_trail` rows for cascaded writes.
+    pub audit: TriggerAudit,
+}
+
+/// Request metadata carried into CPOB `flx_audit_trail` rows written for
+/// `update` / `insert` / `insert_batch` actions on audited target entities.
+#[derive(Debug, Default, Clone)]
+pub struct TriggerAudit {
+    pub reason: Option<String>,
+    pub request_id: Option<String>,
+    pub actor_custom: Option<String>,
+}
+
+impl TriggerAudit {
+    /// Build from a parent request's audit context.
+    pub fn from_ctx(ctx: &crate::nocode::audit_trail::AuditContext<'_>) -> Self {
+        Self {
+            reason: ctx.reason.map(str::to_string),
+            request_id: ctx.request_id.map(str::to_string),
+            actor_custom: ctx.actor_custom.map(str::to_string),
+        }
+    }
+}
+
+/// `reason` stored on trigger-written audit rows: `"<user reason> [trigger:<name>]"`
+/// or `"trigger:<name>"` when the originating request carried no reason.
+fn trigger_audit_reason(runtime: &TriggerRuntime) -> String {
+    match runtime.audit.reason.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(r) => format!("{} [trigger:{}]", r, runtime.trigger_name),
+        None => format!("trigger:{}", runtime.trigger_name),
+    }
+}
+
+/// Write `TRIGGER_*` audit rows for `target` from before/after snapshots.
+async fn audit_trigger_snapshot(
+    tx: &mut (dyn TxStore + '_),
+    target: &crate::nocode::audit_trail::AuditTarget,
+    before: &[Value],
+    after: &[Value],
+    ctx: &TriggerContext<'_>,
+    runtime: &TriggerRuntime,
+) -> Result<(), String> {
+    let reason = trigger_audit_reason(runtime);
+    let audit_ctx = crate::nocode::audit_trail::AuditContext {
+        action: "TRIGGER",
+        actor_id: ctx.actor_id.filter(|s| !s.is_empty()).unwrap_or("0"),
+        actor_custom: runtime.audit.actor_custom.as_deref(),
+        reason: Some(reason.as_str()),
+        request_id: runtime.audit.request_id.as_deref(),
+    };
+    crate::nocode::audit_trail::record_snapshot_diff_in_tx(
+        tx,
+        target,
+        before,
+        after,
+        crate::nocode::audit_trail::TRIGGER_ACTIONS,
+        &audit_ctx,
+        false,
+    )
+    .await
+    .map(|_| ())
+}
+
+/// Execute one `INSERT` for a trigger action. When `target_table` is an
+/// audited entity the inserted row is read back (`RETURNING *` /
+/// `OUTPUT INSERTED.*` / `LAST_INSERT_ID()`) and recorded as `TRIGGER_CREATE`.
+#[allow(clippy::too_many_arguments)]
+async fn trigger_insert_row(
+    db_type: &DbType,
+    tx: &mut (dyn TxStore + '_),
+    target_table: &str,
+    cols: &[String],
+    resolved: &[String],
+    params: Vec<DbParam>,
+    ctx: &TriggerContext<'_>,
+    runtime: &TriggerRuntime,
+) -> Result<(), String> {
+    let audit_t = crate::nocode::audit_trail::audit_target_for_table(target_table);
+    let placeholders = vec!["?"; cols.len()].join(", ");
+    let col_list = cols.join(", ");
+    let insert_sql = match (&audit_t, db_type) {
+        (Some(_), DbType::Postgres | DbType::Sqlite) => {
+            format!("INSERT INTO {} ({}) VALUES ({}) RETURNING *", target_table, col_list, placeholders)
+        }
+        (Some(_), DbType::Mssql) => {
+            format!("INSERT INTO {} ({}) OUTPUT INSERTED.* VALUES ({})", target_table, col_list, placeholders)
+        }
+        _ => format!("INSERT INTO {} ({}) VALUES ({})", target_table, col_list, placeholders),
+    };
+    let built_insert = crate::database::state::rehydrate_placeholders(&insert_sql, db_type.as_str());
+    let returned = tx
+        .raw_sql(&built_insert, params)
+        .await
+        .map_err(|e| format!("Failed to insert into '{}': {}", target_table, e))?;
+
+    let Some(t) = audit_t else { return Ok(()) };
+    let mut after: Vec<Value> = returned.into_iter().filter(|v| v.is_object()).collect();
+    if after.is_empty() {
+        // MySQL (no RETURNING): locate the row by explicit PK values, else LAST_INSERT_ID().
+        let mut key = Map::new();
+        for pk in &t.pk_cols {
+            if let Some(i) = cols.iter().position(|c| c.eq_ignore_ascii_case(pk))
+                && !resolved[i].trim().is_empty()
+            {
+                key.insert(pk.clone(), Value::String(resolved[i].clone()));
+            }
+        }
+        if key.len() != t.pk_cols.len() && t.pk_cols.len() == 1 && *db_type == DbType::Mysql {
+            key.clear();
+            if let Ok(id_rows) = tx.raw_sql("SELECT LAST_INSERT_ID() AS id", vec![]).await
+                && let Some(id) = id_rows.first().and_then(|r| r.get("id")).cloned()
+                && !id.is_null()
+            {
+                key.insert(t.pk_cols[0].clone(), id);
+            }
+        }
+        if key.len() == t.pk_cols.len() {
+            after = crate::nocode::audit_trail::reselect_by_pks(tx, &t, &[Value::Object(key)])
+                .await
+                .map_err(|e| format!("Error recording audit trail: {}", e))?;
+        }
+    }
+    audit_trigger_snapshot(tx, &t, &[], &after, ctx, runtime).await
 }
 
 /// Traverse nested JSON object by dot-separated path (e.g. "product.cost_price", "category.code")
@@ -1103,6 +1228,20 @@ pub async fn execute_triggers<'a>(
     ctx: &TriggerContext<'a>,
     event_name: &str,
 ) -> Result<Vec<String>, String> {
+    execute_triggers_audited(db_type, tx, table_schema, ctx, event_name, &TriggerAudit::default()).await
+}
+
+/// Same as [`execute_triggers`], propagating the originating request's audit
+/// metadata (`X-Change-Reason`, request id, actor custom) into `flx_audit_trail`
+/// rows written for audited target entities.
+pub async fn execute_triggers_audited<'a>(
+    db_type: DbType,
+    tx: &mut (dyn TxStore + 'a),
+    table_schema: &TableSchema,
+    ctx: &TriggerContext<'a>,
+    event_name: &str,
+    audit: &TriggerAudit,
+) -> Result<Vec<String>, String> {
     if table_schema.action_triggers.is_empty() {
         return Ok(vec![]);
     }
@@ -1136,7 +1275,11 @@ pub async fn execute_triggers<'a>(
             );
         }
 
-        let mut runtime = TriggerRuntime::default();
+        let mut runtime = TriggerRuntime {
+            trigger_name: trigger.name.clone(),
+            audit: audit.clone(),
+            ..Default::default()
+        };
 
         // Execute sequential actions
         for action in &trigger.actions {
@@ -1524,6 +1667,14 @@ fn execute_action<'a>(
                     .await
                     .map_err(|e| format!("Failed to update '{}': {}", target_table, e))?;
 
+                // CPOB audit trail: diff locked pre-image rows against their post-image.
+                if let Some(t) = crate::nocode::audit_trail::audit_target_for_table(target_table) {
+                    let after = crate::nocode::audit_trail::reselect_by_pks(tx, &t, &rows)
+                        .await
+                        .map_err(|e| format!("Error recording audit trail: {}", e))?;
+                    audit_trigger_snapshot(tx, &t, &rows, &after, ctx, runtime).await?;
+                }
+
                 Ok(item_opt)
             }
 
@@ -1546,12 +1697,11 @@ fn execute_action<'a>(
                 }
 
                 let mut cols = Vec::new();
-                let mut placeholders = Vec::new();
+                let mut resolved = Vec::new();
                 let mut params = Vec::new();
 
                 for (col, val) in fields_map {
                     cols.push(col.clone());
-                    placeholders.push("?");
 
                     let resolved_str = match val {
                         Value::String(s) => interpolate_string_full(s, ctx, Some(runtime), item_opt.as_ref()),
@@ -1559,22 +1709,10 @@ fn execute_action<'a>(
                     };
 
                     params.push(coerce_dbparam(&resolved_str));
+                    resolved.push(resolved_str);
                 }
 
-                let insert_sql = format!(
-                    "INSERT INTO {} ({}) VALUES ({})",
-                    target_table,
-                    cols.join(", "),
-                    placeholders.join(", ")
-                );
-                let built_insert = crate::database::state::rehydrate_placeholders(
-                    &insert_sql,
-                    db_type.as_str(),
-                );
-
-                tx.raw_sql(&built_insert, params)
-                    .await
-                    .map_err(|e| format!("Failed to insert into '{}': {}", target_table, e))?;
+                trigger_insert_row(&db_type, tx, target_table, &cols, &resolved, params, ctx, runtime).await?;
 
                 Ok(item_opt)
             }
@@ -1645,12 +1783,11 @@ fn execute_action<'a>(
 
                 for row_map in rows {
                     let mut cols = Vec::new();
-                    let mut placeholders = Vec::new();
+                    let mut resolved = Vec::new();
                     let mut params = Vec::new();
 
                     for (col, val) in row_map {
                         cols.push(col.clone());
-                        placeholders.push("?");
 
                         let resolved_str = match val {
                             Value::String(s) => interpolate_string_full(s, ctx, Some(runtime), item_opt.as_ref()),
@@ -1658,22 +1795,12 @@ fn execute_action<'a>(
                         };
 
                         params.push(coerce_dbparam(&resolved_str));
+                        resolved.push(resolved_str);
                     }
 
-                    let insert_sql = format!(
-                        "INSERT INTO {} ({}) VALUES ({})",
-                        target_table,
-                        cols.join(", "),
-                        placeholders.join(", ")
-                    );
-                    let built_insert = crate::database::state::rehydrate_placeholders(
-                        &insert_sql,
-                        db_type.as_str(),
-                    );
-
-                    tx.raw_sql(&built_insert, params)
+                    trigger_insert_row(&db_type, tx, target_table, &cols, &resolved, params, ctx, runtime)
                         .await
-                        .map_err(|e| format!("Failed batch insert into '{}': {}", target_table, e))?;
+                        .map_err(|e| e.replacen("Failed to insert into", "Failed batch insert into", 1))?;
                 }
 
                 Ok(item_opt)

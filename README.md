@@ -26,6 +26,7 @@ Ship full CRUD plus advanced data operations (GET / POST / PUT / DELETE / PATCH 
 10. [Declarative Action Triggers & ERP Cascading Workflows (`action_triggers`)](#10-declarative-action-triggers--erp-cascading-workflows-action_triggers)
 11. [Document Immutability & State Machine Governance (`locked_when` & `state_machine`)](#11-document-immutability--state-machine-governance-locked_when--state_machine)
     - 11b. [Scheduled jobs & time-based workflows (`schedules`)](#11b-scheduled-jobs--time-based-workflows-schedules)
+    - 11c. [Structured Audit Trail (`audit_trail` & `GET /audit_trail`)](#11c-structured-audit-trail-audit_trail--get-audit_trail)
 12. [Database seeding (`seed`)](#12-database-seeding-seed)
 13. [Hooks & validation](#13-hooks--validation)
 14. [Formula placeholders](#14-formula-placeholders)
@@ -1813,6 +1814,87 @@ When the instrument is recalibrated and `next_calibration_date` moves forward, t
 - `select` and `sql` statements are trusted configuration written by administrators. They are never built from user input. Restrict write access to `LOC_CONFIG` accordingly.
 - Keep each run well below `lock_ttl_secs`. Use `max_rows` to split large backlogs across runs.
 - For validation (IQ/OQ), use `POST /admin/schedules/<name>/run` on a test dataset and keep the JSON report together with the audit lines it produced.
+
+---
+
+## 11c. Structured Audit Trail (`audit_trail` & `GET /audit_trail`)
+
+For regulated workflows (CPOB / GMP Annex 11 / 21 CFR Part 11), Flexurio maintains an append-only core table `flx_audit_trail` created automatically at startup on all SQL backends (`SQLite`, `MySQL`, `PostgreSQL`, `MSSQL`):
+
+```
+flx_audit_trail (
+  id, entity, table_name, record_id, action, column_name,
+  old_value, new_value, actor_id, actor_custom, reason, request_id, at
+)
+```
+
+### 11c.1 Enabling per entity
+
+Add `"audit_trail"` to `LOC_CONFIG/entity/<route>.json`:
+
+```json
+"audit_trail": {
+  "enabled": true,
+  "columns": ["status", "problem", "evaluation"],
+  "require_reason_when": {
+    "status": ["CLOSED", "IMPLEMENTATION"]
+  },
+  "readers": ["qa_reviewer", "auditor"]
+}
+```
+
+- **`enabled`**: Turns on atomic, transactional audit logging into `flx_audit_trail` (committed in the same DB transaction as the write; rolled back if the write fails).
+- **`columns`**: Columns tracked for diffing. When omitted/empty, all changed business columns (excluding `updated_at`, `updated_by_id`, `version`) are tracked.
+- **`require_reason_when`**: Map of `column -> target value(s)` (array, single value, `"*"`, or `true`). When a `PUT` or `PATCH` changes that column to a matching value and the `X-Change-Reason` HTTP header is missing or blank, the request fails with **`400 Bad Request`** and rolls back.
+- **`readers`**: Additional JWT roles (beyond `ADMIN_ROLES`) permitted to read this entity's rows via `GET /audit_trail`.
+
+### 11c.2 Querying (`GET /audit_trail`)
+
+`GET /audit_trail` is a read-only core endpoint supporting standard Flexurio filters, sorting, pagination, `?count=true`, and keyset cursors (`?after=`):
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8080/audit_trail?entity.eq=capa&record_id.eq=42&sort=-id&limit=50"
+```
+
+- **Authorization**:
+  - Roles in `ADMIN_ROLES` (or user `id = "1"`) may read audit rows across all entities.
+  - Roles listed in an entity's `audit_trail.readers` may read only the entities they are authorized for (requesting another entity returns `403 Forbidden`).
+  - All other authenticated callers receive `403 Forbidden`; unauthenticated callers receive `401 Unauthorized`.
+- **Immutability**: `POST`, `PUT`, `PATCH`, `DELETE`, and `TRACE` on `/audit_trail`, `/audit_trail/{id}`, or any route targeting `flx_audit_trail` always return **`405 Method Not Allowed`**. Audit rows can never be modified or deleted via the API.
+- **Filtering tips**: `record_id` and `actor_id` are stored as text; numeric literals (`record_id.eq=42`) are bound as strings automatically. `at` is ISO-8601 UTC with milliseconds, so ranges like `at.gte=2026-01-01T00:00:00.000Z&at.lte=2026-03-31T23:59:59.999Z` work on every backend (useful for periodic MOD-29 reviews).
+- A reader scoped to some entities who filters `entity.eq=<other>` gets `403`; without an `entity` filter, results are restricted to their permitted entities.
+
+### 11c.3 What gets recorded
+
+| Operation | `action` | Rows written | `old_value` / `new_value` |
+|---|---|---|---|
+| `POST /<route>` | `POST` | one per tracked, non-null column | `NULL` / new value |
+| `PUT /<route>/{id}` | `PUT` | one per tracked column that actually changed | old / new |
+| `PATCH /<route>/{id}` | `PATCH` | one per tracked column that actually changed | old / new |
+| `DELETE /<route>/{id}` (hard or soft) | `DELETE` | one per tracked, non-null column (or a single `column_name = "*"` row if none) | old value / `NULL` |
+| `schedules` update action | `SCHEDULE` | one per changed tracked column | old / new; `reason = "schedule:<name>"` |
+| `details[]` child rows written via the parent `POST`/`PUT`/`PATCH` | `DETAIL_CREATE` / `DETAIL_UPDATE` / `DETAIL_DELETE` | per child row and tracked column, on the **child** entity | as above |
+| `action_triggers` `update` / `insert` / `insert_batch` on another entity | `TRIGGER_UPDATE` / `TRIGGER_CREATE` | per affected row and tracked column, on the **target** entity | as above; `reason = "<request reason> [trigger:<name>]"` or `"trigger:<name>"` |
+| FK `on_delete: cascade` / `set null` when the parent is deleted | `CASCADE_DELETE` / `CASCADE_UPDATE` | per affected child row and tracked column | as above |
+| `POST /import/{route}` (CSV/XLSX) | `IMPORT` | per imported row and tracked, non-null column | `NULL` / new value |
+
+Indirect writes (the last four rows) are recorded only when the **affected** entity itself has `audit_trail.enabled`. They are found by mapping the physical table name to a registered entity, and use the same `actor_id`, `actor_custom` and `request_id` as the request that caused them. To see everything one user action did, filter on `request_id.eq=<id>`. Soft-deleted child rows are recorded as `*_DELETE`. When `details[]` uses `replace`, it physically deletes and re-inserts child rows, so it shows up as `DETAIL_DELETE` plus `DETAIL_CREATE` with new ids. Use `upsert` if you want updates recorded as `DETAIL_UPDATE`.
+
+- **Diff semantics**: strings compare case-sensitively (`open` → `OPEN` is audited); numbers compare numerically (`42` == `"42"`, `1` == `1.0`); booleans match `0/1`; `null` == absent. A `PUT` that changes no tracked column writes no rows. When `columns` is empty, only real schema columns are tracked: embedded `details[]` arrays and internal keys never produce rows.
+- **Actor & correlation**: `actor_id` = JWT `id` (`"0"` when auth is off), `actor_custom` = JWT `cs` claim, `request_id` = the `x-request-id` header, `reason` = `X-Change-Reason`. The reason is stored on every row of the request, including `POST`/`DELETE`/`IMPORT` when supplied.
+- **`require_reason_when` on child entities**: it is also enforced for `DETAIL_UPDATE` changes made through the parent `PUT`/`PATCH`, and the whole request returns `400` and rolls back. It is not enforced for system-driven trigger, cascade or schedule writes.
+- **Atomicity**: audit rows are inserted in the same transaction as the business write; if either fails, both roll back.
+- **Write queue (`?isqueue=true` with `WRITE_QUEUE_ENABLED`)**: `X-Change-Reason` and the original `x-request-id` are stored on the queued job and replayed by the consumer. A `PUT`/`PATCH` that violates `require_reason_when` is rejected with `400` **before** it is queued. The consumer re-checks it against the row's state at execution time.
+- **Import performance**: when an audited entity's primary key is generated by the database, `POST /import` inserts row by row so each audit row gets the real `record_id`. Entities whose PK comes from the file, or that have no `audit_trail`, keep the bulk insert path.
+- **Validation**: the schema lint (run at startup and on `POST /admin/reload`) reports an error when `audit_trail.columns` or `require_reason_when` names a column the entity does not have.
+- The legacy file log (`LOC_AUDIT`, `write_audit`) is still written; `flx_audit_trail` is the reviewable, queryable record.
+
+### 11c.4 Current limitations
+
+- **SQL backends only**: on MongoDB the table is not created and `GET /audit_trail` returns `501`.
+- **`action_triggers` `type: "sql"`** (free-form SQL statements) and `pre_process`/`post_process` `SQL:` formulas are **not** audited, because their effect cannot be determined generically. For GxP-relevant entities, use the `update` / `insert` / `insert_batch` actions instead.
+- `require_reason_when` applies to `PUT`/`PATCH` (including child rows changed through them); `POST`/`DELETE`/`IMPORT` record a reason when sent but never require one.
 
 ---
 

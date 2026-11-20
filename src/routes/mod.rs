@@ -71,6 +71,119 @@ fn method_disabled(route: &str, method: &Method) -> HttpResponse {
     )
 }
 
+fn is_audit_trail_target(route: &str, schema: &TableSchema) -> bool {
+    route.eq_ignore_ascii_case(crate::nocode::audit_trail::TABLE)
+        || route.eq_ignore_ascii_case("audit_trail")
+        || schema.table.eq_ignore_ascii_case(crate::nocode::audit_trail::TABLE)
+}
+
+fn audit_trail_immutable_err() -> HttpResponse {
+    json_err(
+        actix_web::http::StatusCode::METHOD_NOT_ALLOWED,
+        "Audit trail is read-only and immutable; rows cannot be created, modified, or deleted via API",
+    )
+}
+
+async fn audit_trail_immutable() -> HttpResponse {
+    audit_trail_immutable_err()
+}
+
+/// Read-only `GET /audit_trail?record_id.eq=…&entity.eq=…` with standard filters.
+///
+/// Restricted to roles in `ADMIN_ROLES` (full access) or roles listed in an
+/// entity's `audit_trail.readers` (scoped to those entities only).
+async fn audit_trail_get(
+    state: web::Data<AppState>,
+    req: HttpRequest,
+    parameters: web::Query<Value>,
+) -> HttpResponse {
+    if state.db_type == crate::model::DbType::Mongodb {
+        return json_err(
+            actix_web::http::StatusCode::NOT_IMPLEMENTED,
+            "Audit trail table is only supported on SQL backends",
+        );
+    }
+
+    let params_map = match parameters.into_inner() {
+        Value::Object(map) => map,
+        _ => return json_err(actix_web::http::StatusCode::BAD_REQUEST, "Invalid parameters format"),
+    };
+
+    let mut allowed_entities: Option<Vec<String>> = None;
+    if state.require_auth {
+        use actix_web::HttpMessage;
+        let claims = match req.extensions().get::<crate::auth::Claims>().cloned() {
+            Some(c) => c,
+            None => match crate::auth::get_user_info_from_token(&req, state.clone()) {
+                Ok(c) => c,
+                Err(_) => {
+                    return json_err(actix_web::http::StatusCode::UNAUTHORIZED, "Invalid token");
+                }
+            },
+        };
+
+        if !is_admin(&state, &req) {
+            let reg = registry::current();
+            let readable = crate::nocode::audit_trail::readable_entities_for_roles(
+                &reg.schemas,
+                &claims.get_roles(),
+            );
+            if readable.is_empty() {
+                return json_err(
+                    actix_web::http::StatusCode::FORBIDDEN,
+                    "Forbidden: Admin role or audit_trail.readers role required",
+                );
+            }
+            // If caller explicitly filters by `entity.eq` / `entity`, reject immediately
+            // with 403 when that entity is outside their reader scope.
+            if let Some(req_entity) = params_map
+                .get("entity.eq")
+                .or_else(|| params_map.get("entity"))
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                && !readable.iter().any(|e| e.eq_ignore_ascii_case(req_entity))
+            {
+                return json_err(
+                    actix_web::http::StatusCode::FORBIDDEN,
+                    format!("Forbidden: role is not permitted to read audit trail for entity '{}'", req_entity),
+                );
+            }
+            allowed_entities = Some(readable);
+        }
+    }
+
+    match crate::nocode::audit_trail::query_audit_trail(
+        &state,
+        &params_map,
+        allowed_entities.as_deref(),
+    )
+    .await
+    {
+        Ok((rows, total, next_cursor)) => {
+            let mut resp = HttpResponse::Ok();
+            if let Some(c) = next_cursor.as_deref() {
+                resp.insert_header(("X-Next-Cursor", c.to_string()));
+                resp.insert_header((
+                    actix_web::http::header::LINK,
+                    crate::nocode::services::data_read_service::next_page_link(
+                        req.path(),
+                        req.query_string(),
+                        c,
+                    ),
+                ));
+            }
+            resp.json(WebResponse {
+                success: true,
+                message: "Data found".to_string(),
+                total_data: total as i32,
+                data: Value::Array(rows),
+            })
+        }
+        Err(e) => json_err(actix_web::http::StatusCode::BAD_REQUEST, e),
+    }
+}
+
 fn boxed(r: impl Responder, req: &HttpRequest) -> HttpResponse {
     r.respond_to(req).map_into_boxed_body()
 }
@@ -100,6 +213,9 @@ async fn entity_post(
 ) -> HttpResponse {
     let route = path.into_inner();
     let schema = match resolve(&state, &route) { Ok(s) => s, Err(r) => return *r };
+    if is_audit_trail_target(&route, &schema) {
+        return audit_trail_immutable_err();
+    }
     if !schema.post.enable_method {
         return method_disabled(&route, req.method());
     }
@@ -117,6 +233,9 @@ async fn entity_trace(
 ) -> HttpResponse {
     let route = path.into_inner();
     let schema = match resolve(&state, &route) { Ok(s) => s, Err(r) => return *r };
+    if is_audit_trail_target(&route, &schema) {
+        return audit_trail_immutable_err();
+    }
     if !schema.trace.enable_method {
         return method_disabled(&route, req.method());
     }
@@ -131,6 +250,9 @@ async fn entity_patch(
 ) -> HttpResponse {
     let route = path.into_inner();
     let schema = match resolve(&state, &route) { Ok(s) => s, Err(r) => return *r };
+    if is_audit_trail_target(&route, &schema) {
+        return audit_trail_immutable_err();
+    }
     if !schema.patch.enable_method {
         return method_disabled(&route, req.method());
     }
@@ -145,6 +267,9 @@ async fn entity_delete(
 ) -> HttpResponse {
     let (route, id) = path.into_inner();
     let schema = match resolve(&state, &route) { Ok(s) => s, Err(r) => return *r };
+    if is_audit_trail_target(&route, &schema) {
+        return audit_trail_immutable_err();
+    }
     if !schema.del.enable_method {
         return method_disabled(&route, req.method());
     }
@@ -168,6 +293,9 @@ async fn entity_put(
 ) -> HttpResponse {
     let (route, id) = path.into_inner();
     let schema = match resolve(&state, &route) { Ok(s) => s, Err(r) => return *r };
+    if is_audit_trail_target(&route, &schema) {
+        return audit_trail_immutable_err();
+    }
     if !schema.put.enable_method {
         return method_disabled(&route, req.method());
     }
@@ -190,6 +318,9 @@ async fn entity_import(
 ) -> HttpResponse {
     let route = path.into_inner();
     let schema = match resolve(&state, &route) { Ok(s) => s, Err(r) => return *r };
+    if is_audit_trail_target(&route, &schema) {
+        return audit_trail_immutable_err();
+    }
     if !schema.post.enable_method {
         return method_disabled(&route, req.method());
     }
@@ -524,6 +655,25 @@ pub fn configure_routes(
     cfg.service(web::resource("/admin/schedules").route(web::get().to(admin_list_schedules)));
     cfg.service(web::resource("/admin/schedules/{name}/run").route(web::post().to(admin_run_schedule)));
     log_ep(do_log, "CORE ENDPOINT", "POST", host, &port_str, "admin/reload | admin/schedules/{name}/run");
+
+    // ── CPOB Audit Trail (read-only, immutable) ───────────────────────────────
+    cfg.service(
+        web::resource("/audit_trail")
+            .route(web::get().to(audit_trail_get))
+            .route(web::post().to(audit_trail_immutable))
+            .route(web::put().to(audit_trail_immutable))
+            .route(web::patch().to(audit_trail_immutable))
+            .route(web::delete().to(audit_trail_immutable))
+            .route(web::trace().to(audit_trail_immutable)),
+    );
+    cfg.service(
+        web::resource("/audit_trail/{id}")
+            .route(web::post().to(audit_trail_immutable))
+            .route(web::put().to(audit_trail_immutable))
+            .route(web::patch().to(audit_trail_immutable))
+            .route(web::delete().to(audit_trail_immutable)),
+    );
+    log_ep(do_log, "CORE ENDPOINT", "GET", host, &port_str, "audit_trail");
 
     // ── Dynamic nocode routes (resolved per request from the registry) ────────
     // Specific prefixes first, then the two catch-alls.

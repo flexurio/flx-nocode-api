@@ -600,11 +600,23 @@ pub async fn process_import_request(
     let batch_size = get_import_batch_size();
     let mut inserted: i32 = 0;
 
+    // CPOB audit trail: one IMPORT row per imported column value, same transaction.
+    let audit_on = crate::nocode::audit_trail::is_enabled(&table_schema);
+    let audit_reason = crate::nocode::audit_trail::extract_change_reason(&req);
+    let audit_request_id = crate::nocode::audit_trail::extract_request_id(&req);
+    let audit_pk_cols: Vec<String> = if table_schema.primary_key.columns.is_empty() {
+        vec!["id".to_string()]
+    } else {
+        table_schema.primary_key.columns.clone()
+    };
+
     for chunk in rows.chunks(batch_size) {
         let mut bulk_rows: Vec<Vec<InsertValue>> = Vec::with_capacity(chunk.len());
+        let mut audit_rows: Vec<serde_json::Map<String, Value>> = Vec::new();
 
         for (i_row, row) in chunk.iter().enumerate() {
             let mut row_vals: Vec<InsertValue> = Vec::with_capacity(final_columns.len() + 2);
+            let mut audit_rec = serde_json::Map::new();
 
             for col in final_columns.iter() {
                 let mut value_str = if let Some(av) = additional_columns.get(&col.name) {
@@ -667,6 +679,11 @@ pub async fn process_import_request(
                     value_str = encrypt(state.encrypt_key.clone(), value_str);
                 }
 
+                if audit_on {
+                    let v = if value_str.is_empty() && col.nullable { Value::Null } else { Value::String(value_str.clone()) };
+                    audit_rec.insert(col.name.clone(), v);
+                }
+
                 // Convert to DbParam
                 if value_str.is_empty() && col.nullable {
                     row_vals.push(InsertValue::Param(crate::database::state::DbParam::Null));
@@ -681,14 +698,37 @@ pub async fn process_import_request(
                 claims.id.clone(),
             )));
             bulk_rows.push(row_vals);
+            if audit_on {
+                audit_rows.push(audit_rec);
+            }
         }
 
         let mut col_names: Vec<String> = final_columns.iter().map(|c| c.name.clone()).collect();
         col_names.push("created_at".into());
         col_names.push("created_by_id".into());
 
-        if let Err(e) =
+        // Audited entity with DB-generated PKs: insert row-by-row to learn each
+        // record id for `flx_audit_trail.record_id`; otherwise keep the bulk path.
+        let needs_generated_pk = audit_on
+            && audit_rows
+                .iter()
+                .any(|r| crate::nocode::audit_trail::row_pk(r, &audit_pk_cols).is_none());
+        let insert_res = if needs_generated_pk {
+            crate::nocode::repositories::data_import_repo::perform_insert_rows_returning_pk(
+                &state, &mut tx, &table_schema, &col_names, bulk_rows, &audit_pk_cols,
+            )
+            .await
+            .map(|keys| {
+                for (rec, key) in audit_rows.iter_mut().zip(keys) {
+                    if let Some(k) = key {
+                        rec.extend(k);
+                    }
+                }
+            })
+        } else {
             perform_bulk_insert_sql(&state, &mut tx, &table_schema, &col_names, bulk_rows).await
+        };
+        if let Err(e) = insert_res
         {
             let _ = tx.rollback().await;
             return Err(WebResponse {
@@ -697,6 +737,33 @@ pub async fn process_import_request(
                 total_data: inserted,
                 data: Value::Null,
             });
+        }
+
+        if audit_on {
+            let actor_custom = if claims.cs.is_empty() { None } else { Some(claims.cs.as_str()) };
+            let audit_ctx = crate::nocode::audit_trail::AuditContext {
+                action: "IMPORT",
+                actor_id: if claims.id.is_empty() { "0" } else { claims.id.as_str() },
+                actor_custom,
+                reason: audit_reason.as_deref(),
+                request_id: audit_request_id.as_deref(),
+            };
+            for rec in &audit_rows {
+                let record_id = crate::nocode::audit_trail::row_pk(rec, &audit_pk_cols).unwrap_or_default();
+                if let Err(e) = crate::nocode::audit_trail::record_create_in_tx(
+                    &mut *tx, &table_schema, &route, &record_id, rec, &audit_ctx,
+                )
+                .await
+                {
+                    let _ = tx.rollback().await;
+                    return Err(WebResponse {
+                        success: false,
+                        message: format!("Error recording audit trail: {}", e),
+                        total_data: inserted,
+                        data: Value::Null,
+                    });
+                }
+            }
         }
 
         inserted += chunk.len() as i32;

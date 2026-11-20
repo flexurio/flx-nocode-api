@@ -95,11 +95,27 @@ pub async fn process_update_request(
             }
         }
 
+        // CPOB: reject a missing `X-Change-Reason` now (400) instead of letting the
+        // queued job dead-letter after the client already received 202.
+        if let Err(e) = crate::nocode::audit_trail::precheck_reason_for_queue(
+            state,
+            table_schema,
+            &id_raw,
+            &body,
+            crate::nocode::audit_trail::extract_change_reason(req).as_deref(),
+        )
+        .await
+        {
+            return bad_request(&e);
+        }
+
+        let fwd_headers = crate::nocode::audit_trail::forwarded_headers(req);
+
         let job = crate::nocode::consumer::WriteJob {
             route: route.to_string(),
             op: crate::nocode::consumer::WriteOpKind::Put { id: id_raw },
             body,
-            headers: vec![],
+            headers: fwd_headers,
             enqueued_at: chrono::Utc::now().to_rfc3339(),
             actor_id: actor_id_opt,
             claims: if auth_required { Some(claims.clone()) } else { None },
@@ -673,6 +689,22 @@ pub async fn process_update_request(
         .and_then(|h| h.to_str().ok())
         .map(|s| s.to_string());
 
+    let change_reason = crate::nocode::audit_trail::extract_change_reason(req);
+    let request_id = crate::nocode::audit_trail::extract_request_id(req);
+    let action_method = req.method().as_str();
+    let actor_custom = if auth_required && !claims.cs.is_empty() {
+        Some(claims.cs.as_str())
+    } else {
+        None
+    };
+    let audit_ctx = crate::nocode::audit_trail::AuditContext {
+        action: action_method,
+        actor_id: actor_id_opt.as_deref().unwrap_or("0"),
+        actor_custom,
+        reason: change_reason.as_deref(),
+        request_id: request_id.as_deref(),
+    };
+
     // Call Repository
     match data_update_repo::perform_update(
         state,
@@ -688,6 +720,7 @@ pub async fn process_update_request(
         auth_token,
         actor_id_opt.as_deref(),
         Some(claims.rl.as_str()),
+        audit_ctx,
     )
     .await
     {
@@ -705,7 +738,7 @@ pub async fn process_update_request(
                 write_audit(&AuditEntry {
                     at: Local::now().to_rfc3339(),
                     actor_id: claims.id.clone(),
-                    action: "PUT",
+                    action: action_method,
                     route,
                     id: Some(&id_raw),
                     ip: Some(ip_opt.as_str()),
@@ -724,6 +757,9 @@ pub async fn process_update_request(
                 total_data: count,
                 data: updated_data,
             })
+        }
+        Err(e) if e.starts_with(data_update_repo::BAD_REQUEST_PREFIX) => {
+            bad_request(e.trim_start_matches(data_update_repo::BAD_REQUEST_PREFIX))
         }
         Err(e) if e.starts_with(data_update_repo::NOT_FOUND_PREFIX) => {
             HttpResponse::NotFound().json(web_err(e))

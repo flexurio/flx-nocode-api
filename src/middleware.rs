@@ -236,7 +236,7 @@ fn route_label(path: &str) -> String {
         return "root".to_string();
     }
     if crate::registry::current().schemas.contains_key(seg)
-        || matches!(seg, "login" | "register" | "roles" | "healthz" | "livez" | "readyz" | "metrics" | "static" | "email" | "import" | "export" | "validate" | "generate" | "seed" | "mcp" | "admin")
+        || matches!(seg, "login" | "register" | "roles" | "healthz" | "livez" | "readyz" | "metrics" | "static" | "email" | "import" | "export" | "validate" | "generate" | "seed" | "mcp" | "admin" | "audit_trail")
     {
         seg.to_string()
     } else {

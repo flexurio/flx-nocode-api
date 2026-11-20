@@ -117,9 +117,21 @@ pub fn sqliterows_to_json(rows: Vec<SqliteRow>) -> Vec<Value> {
                     Ok(Some(v)) => Value::String(v),
                     _ => Value::Null,
                 },
+                // Expression columns (CASE/EXISTS/aggregates) have no declared type:
+                // decode by the stored value's storage class instead of assuming TEXT.
                 SqliteColType::Fallback => match row.try_get::<Option<String>, _>(idx) {
                     Ok(Some(v)) => Value::String(v),
-                    _ => Value::Null,
+                    Ok(None) => Value::Null,
+                    Err(_) => match row.try_get::<Option<i64>, _>(idx) {
+                        Ok(Some(v)) => Value::Number(v.into()),
+                        Ok(None) => Value::Null,
+                        Err(_) => match row.try_get::<Option<f64>, _>(idx) {
+                            Ok(Some(v)) => serde_json::Number::from_f64(v)
+                                .map(Value::Number)
+                                .unwrap_or(Value::Null),
+                            _ => Value::Null,
+                        },
+                    },
                 },
             };
 

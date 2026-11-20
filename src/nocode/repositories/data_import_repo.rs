@@ -44,6 +44,46 @@ pub async fn calculate_max_id(
     }
 }
 
+/// Insert rows one by one and return each row's generated primary key
+/// (`RETURNING` / `OUTPUT INSERTED` / MySQL `LAST_INSERT_ID()`). Used instead of
+/// [`perform_bulk_insert_sql`] when the CPOB audit trail needs the record id of
+/// rows whose PK is assigned by the database.
+pub async fn perform_insert_rows_returning_pk(
+    state: &AppState,
+    tx: &mut Box<dyn crate::storage::traits::TxStore>,
+    table_schema: &TableSchema,
+    col_names: &[String],
+    bulk_rows: Vec<Vec<InsertValue>>,
+    pk_cols: &[String],
+) -> Result<Vec<Option<serde_json::Map<String, serde_json::Value>>>, String> {
+    let ds = SqlStore::new(state.db.clone(), state.db_type.as_str().to_string());
+    let returning: Vec<&str> = pk_cols.iter().map(|s| s.as_str()).collect();
+    let mut keys = Vec::with_capacity(bulk_rows.len());
+    for row in bulk_rows {
+        let fields: Vec<(String, InsertValue)> = col_names.iter().cloned().zip(row).collect();
+        let (sql, params) = ds
+            .preview_insert_with_returning(&table_schema.table, &fields, &returning)
+            .map_err(|e| format!("Insert compile error: {}", e))?;
+        let mut returned = tx.raw_sql(&sql, params).await.map_err(|e| format!("Insert error: {}", e))?;
+        let mut key = returned
+            .drain(..)
+            .next()
+            .and_then(|v| v.as_object().cloned())
+            .unwrap_or_default();
+        key.retain(|k, _| pk_cols.iter().any(|p| p == k));
+        if key.is_empty()
+            && pk_cols.len() == 1
+            && state.db_type == crate::model::DbType::Mysql
+            && let Ok(id_rows) = tx.raw_sql("SELECT LAST_INSERT_ID() AS id", vec![]).await
+            && let Some(id) = id_rows.first().and_then(|r| r.get("id")).cloned()
+        {
+            key.insert(pk_cols[0].clone(), id);
+        }
+        keys.push(if key.len() == pk_cols.len() { Some(key) } else { None });
+    }
+    Ok(keys)
+}
+
 pub async fn perform_bulk_insert_sql(
     state: &AppState,
     tx: &mut Box<dyn crate::storage::traits::TxStore>,

@@ -380,12 +380,23 @@ pub async fn start_consumer(state: Data<AppState>) {
 /// triggers, state machine and audit all apply exactly as for a direct call.
 fn synthetic_request(method: actix_web::http::Method, path: &str, job: &WriteJob) -> actix_web::HttpRequest {
     use actix_web::HttpMessage;
-    let req = actix_web::test::TestRequest::default()
+    let mut builder = actix_web::test::TestRequest::default()
         .method(method)
         .uri(path)
-        .insert_header(("content-type", "application/json"))
-        .insert_header(("x-request-id", format!("queue-{}", job.enqueued_at)))
-        .to_http_request();
+        .insert_header(("content-type", "application/json"));
+    // Replay audit headers captured at enqueue time (`X-Change-Reason`,
+    // original `x-request-id`) so CPOB audit_trail rows keep reason + correlation.
+    let mut has_request_id = false;
+    for (k, v) in &job.headers {
+        if k.eq_ignore_ascii_case("x-request-id") {
+            has_request_id = true;
+        }
+        builder = builder.insert_header((k.as_str(), v.as_str()));
+    }
+    if !has_request_id {
+        builder = builder.insert_header(("x-request-id", format!("queue-{}", job.enqueued_at)));
+    }
+    let req = builder.to_http_request();
     match (&job.claims, &job.actor_id) {
         (Some(c), _) => {
             req.extensions_mut().insert(c.clone());

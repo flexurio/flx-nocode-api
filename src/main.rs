@@ -333,6 +333,16 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    // ── CPOB Audit Trail table (flx_audit_trail) ────────────────────────────
+    if app_state.db_type != flx_nocode_api::model::DbType::Mongodb {
+        let ds = flx_nocode_api::storage::sql_store::SqlStore::new(app_state.db.clone(), app_state.db_type.as_str().to_string());
+        let (sql_t, sql_i) = flx_nocode_api::nocode::generate::generate_table(&ds, &flx_nocode_api::nocode::audit_trail::table_schema());
+        let (ok, msg) = flx_nocode_api::nocode::generate::execute_generate_table("flx_audit_trail".into(), &app_state, sql_t, sql_i).await;
+        if !ok {
+            eprintln!("ERROR: could not create flx_audit_trail ({}); entity audit_trail writes will fail", msg);
+        }
+    }
+
     // ── Transactional outbox (webhooks) ──────────────────────────────────────
     if app_state.db_type != flx_nocode_api::model::DbType::Mongodb
         && env::var("OUTBOX_ENABLED").map(|v| !matches!(v.to_lowercase().as_str(), "0" | "false" | "no" | "off")).unwrap_or(true)

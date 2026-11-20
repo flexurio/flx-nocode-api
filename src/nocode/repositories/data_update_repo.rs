@@ -111,6 +111,9 @@ async fn validate_foreign_keys_batch_put(
 pub const NOT_FOUND_PREFIX: &str = "Record not found: ";
 /// Prefix of repository error strings for optimistic-locking failures; mapped to HTTP 409.
 pub const CONFLICT_PREFIX: &str = "Version conflict: ";
+/// Prefix of repository error strings for client validation failures (e.g. missing
+/// `X-Change-Reason` for `audit_trail.require_reason_when`); mapped to HTTP 400.
+pub const BAD_REQUEST_PREFIX: &str = "Bad request: ";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DetailUpdateStrategy {
@@ -631,6 +634,7 @@ pub async fn perform_update(
     auth_token: Option<String>,
     actor_id: Option<&str>,
     caller_role: Option<&str>,
+    audit_ctx: crate::nocode::audit_trail::AuditContext<'_>,
 ) -> Result<(String, i32, Value), String> {
     // Handling password-only update for flx_users
     if route == "flx_users" && password_override.is_some() && table_schema.put.columns.len() == 1 {
@@ -726,6 +730,21 @@ pub async fn perform_update(
         if let Err(e) = check_transition_guards(table_schema, &old_record, &patch_fields, caller_role) {
             let _ = tx.rollback().await;
             return Err(e);
+        }
+
+        // 2b. CPOB audit_trail: enforce `require_reason_when` before writing.
+        //     Skipped when `old_record` is empty (non-existent row will return 404 below).
+        if !old_record.is_empty()
+            && crate::nocode::audit_trail::is_enabled(table_schema)
+            && let Err(e) = crate::nocode::audit_trail::check_require_reason_on_patch(
+                table_schema,
+                &old_record,
+                &patch_fields,
+                audit_ctx.reason,
+            )
+        {
+            let _ = tx.rollback().await;
+            return Err(format!("{}{}", BAD_REQUEST_PREFIX, e));
         }
 
         // Batch FK Validation
@@ -861,6 +880,23 @@ pub async fn perform_update(
                              })
                              .unwrap_or_else(|| id_raw.to_string());
 
+                         // CPOB audit trail for the detail entity: snapshot child rows
+                         // before the sync, diff against the final rows afterwards.
+                         let detail_audit = crate::nocode::audit_trail::audit_target_for_table(&batch.target_table);
+                         let detail_before = match &detail_audit {
+                             Some(t) => {
+                                 let fk_val = crate::nocode::audit_trail::typed_key_value(&parent_key_str, &batch.fk_type_data);
+                                 match crate::nocode::audit_trail::select_rows_where_eq(&mut *tx, t, &batch.foreign_key_column, &fk_val).await {
+                                     Ok(rows) => rows,
+                                     Err(e) => {
+                                         let _ = tx.rollback().await;
+                                         return Err(format!("Error recording audit trail: {}", e));
+                                     }
+                                 }
+                             }
+                             None => Vec::new(),
+                         };
+
                          match sync_detail_batch_in_tx(
                              state,
                              &ds,
@@ -872,6 +908,25 @@ pub async fn perform_update(
                          .await
                          {
                              Ok(final_rows) => {
+                                 if let Some(t) = &detail_audit
+                                     && let Err(e) = crate::nocode::audit_trail::record_snapshot_diff_in_tx(
+                                         &mut *tx,
+                                         t,
+                                         &detail_before,
+                                         &final_rows,
+                                         crate::nocode::audit_trail::DETAIL_ACTIONS,
+                                         &audit_ctx,
+                                         true,
+                                     )
+                                     .await
+                                 {
+                                     let _ = tx.rollback().await;
+                                     return Err(if e.starts_with(crate::nocode::audit_trail::REASON_REQUIRED_PREFIX) {
+                                         format!("{}{}", BAD_REQUEST_PREFIX, e)
+                                     } else {
+                                         e
+                                     });
+                                 }
                                  final_patch.insert(batch.field.clone(), Value::Array(final_rows));
                              }
                              Err(e) => {
@@ -898,12 +953,13 @@ pub async fn perform_update(
                          actor_id,
                      };
 
-                     match crate::nocode::trigger_engine::execute_triggers(
+                     match crate::nocode::trigger_engine::execute_triggers_audited(
                          state.db_type.clone(),
                          &mut *tx,
                          table_schema,
                          &trigger_ctx,
                          "on_update",
+                         &crate::nocode::trigger_engine::TriggerAudit::from_ctx(&audit_ctx),
                      ).await {
                          Ok(executed) => {
                              for trig_name in executed {
@@ -947,6 +1003,41 @@ pub async fn perform_update(
                      ).await {
                          let _ = tx.rollback().await;
                          return Err(format!("Error queueing webhook: {}", e));
+                     }
+                 }
+
+                 // CPOB structured audit trail: one row per changed tracked column,
+                 // committed atomically inside the same transaction.
+                 if crate::nocode::audit_trail::is_enabled(table_schema) {
+                     let mut new_record = old_record.clone();
+                     for (k, v) in &final_patch {
+                         new_record.insert(k.clone(), v.clone());
+                     }
+                     let changes = crate::nocode::audit_trail::compute_diff(
+                         table_schema,
+                         &old_record,
+                         &new_record,
+                     );
+                     if let Err(e) = crate::nocode::audit_trail::check_require_reason(
+                         table_schema,
+                         &changes,
+                         audit_ctx.reason,
+                     ) {
+                         let _ = tx.rollback().await;
+                         return Err(format!("{}{}", BAD_REQUEST_PREFIX, e));
+                     }
+                     if let Err(e) = crate::nocode::audit_trail::record_update_in_tx(
+                         &mut *tx,
+                         table_schema,
+                         route,
+                         id_raw,
+                         &changes,
+                         &audit_ctx,
+                     )
+                     .await
+                     {
+                         let _ = tx.rollback().await;
+                         return Err(format!("Error recording audit trail: {}", e));
                      }
                  }
 

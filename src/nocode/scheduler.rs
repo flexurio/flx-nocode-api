@@ -1091,12 +1091,13 @@ async fn execute_single_action(
                         request_body: &request_body,
                         actor_id: Some(ctx.actor_id),
                     };
-                    let executed = crate::nocode::trigger_engine::execute_triggers(
+                    let executed = crate::nocode::trigger_engine::execute_triggers_audited(
                         ctx.state.db_type.clone(),
                         tx,
                         schema,
                         &trigger_ctx,
                         "on_update",
+                        &crate::nocode::trigger_engine::TriggerAudit { reason: Some(format!("schedule:{}", ctx.schedule.name)), ..Default::default() },
                     )
                     .await
                     .map_err(|e| format!("trigger failed on '{}' {}: {}", route, pk_str, e))?;
@@ -1120,6 +1121,24 @@ async fn execute_single_action(
                     )
                     .await
                     .map_err(|e| format!("failed to queue on_update webhook for '{}': {}", route, e))?;
+                }
+
+                // CPOB structured audit trail for scheduled updates.
+                if crate::nocode::audit_trail::is_enabled(schema) {
+                    let changes = crate::nocode::audit_trail::compute_diff(schema, old, &new_record);
+                    let sched_reason = format!("schedule:{}", ctx.schedule.name);
+                    let audit_ctx = crate::nocode::audit_trail::AuditContext {
+                        action: "SCHEDULE",
+                        actor_id: ctx.actor_id,
+                        actor_custom: None,
+                        reason: Some(sched_reason.as_str()),
+                        request_id: None,
+                    };
+                    crate::nocode::audit_trail::record_update_in_tx(
+                        tx, schema, route, &pk_str, &changes, &audit_ctx,
+                    )
+                    .await
+                    .map_err(|e| format!("failed to record audit trail for '{}': {}", route, e))?;
                 }
 
                 outcome.updated_rows += affected;

@@ -54,7 +54,7 @@ pub async fn process_delete_request(
             route: route.clone(),
             op: crate::nocode::consumer::WriteOpKind::Delete { id: id_raw.clone() },
             body: Value::Null,
-            headers: vec![],
+            headers: crate::nocode::audit_trail::forwarded_headers(&req),
             enqueued_at: Local::now().to_rfc3339(),
             actor_id: actor_id_opt.clone(),
             claims: if actor_id_opt.is_some() { Some(claims.clone()) } else { None },
@@ -98,6 +98,17 @@ pub async fn process_delete_request(
             is_soft
         ).await?;
     } else {
+        let change_reason = crate::nocode::audit_trail::extract_change_reason(&req);
+        let request_id = crate::nocode::audit_trail::extract_request_id(&req);
+        let actor_id_str = if claims.id.is_empty() { "0" } else { claims.id.as_str() };
+        let actor_custom = if claims.cs.is_empty() { None } else { Some(claims.cs.as_str()) };
+        let audit_ctx = crate::nocode::audit_trail::AuditContext {
+            action: "DELETE",
+            actor_id: actor_id_str,
+            actor_custom,
+            reason: change_reason.as_deref(),
+            request_id: request_id.as_deref(),
+        };
         perform_delete_sql(
             &state,
             &table_schema,
@@ -106,7 +117,8 @@ pub async fn process_delete_request(
             &pk_values,
             &ref_fks,
             &claims.id,
-            is_soft
+            is_soft,
+            audit_ctx,
         ).await?;
     }
 

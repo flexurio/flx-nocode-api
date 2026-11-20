@@ -487,6 +487,7 @@ pub async fn perform_insert(
     mut prepared_details: Vec<PreparedDetailBatch>,
     route: &str,
     auth_token: Option<String>,
+    audit_ctx: crate::nocode::audit_trail::AuditContext<'_>,
 ) -> Result<(String, i64, Value), String> {
     // Begin the transaction first (SQL backends): FK/unique validation, id
     // generation and the INSERT all run on the same connection and snapshot.
@@ -835,6 +836,32 @@ pub async fn perform_insert(
                                     let _ = tx.rollback().await;
                                     return Err(format!("Error inserting detail items into {}: {}", batch.target_table, e));
                                 }
+
+                                // CPOB audit trail for the detail entity (all rows are new).
+                                if let Some(t) = crate::nocode::audit_trail::audit_target_for_table(&batch.target_table) {
+                                    let fk_val = match &inserted_id {
+                                        Value::String(s) => crate::nocode::audit_trail::typed_key_value(s, &batch.fk_type_data),
+                                        other => other.clone(),
+                                    };
+                                    let res = match crate::nocode::audit_trail::select_rows_where_eq(&mut *tx, &t, &batch.foreign_key_column, &fk_val).await {
+                                        Ok(after) => crate::nocode::audit_trail::record_snapshot_diff_in_tx(
+                                            &mut *tx,
+                                            &t,
+                                            &[],
+                                            &after,
+                                            crate::nocode::audit_trail::DETAIL_ACTIONS,
+                                            &audit_ctx,
+                                            false,
+                                        )
+                                        .await
+                                        .map(|_| ()),
+                                        Err(e) => Err(format!("Error recording audit trail: {}", e)),
+                                    };
+                                    if let Err(e) = res {
+                                        let _ = tx.rollback().await;
+                                        return Err(e);
+                                    }
+                                }
                             }
 
                             // Embed detail items into response doc_map
@@ -906,12 +933,13 @@ pub async fn perform_insert(
                                 actor_id: None,
                             };
 
-                            match crate::nocode::trigger_engine::execute_triggers(
+                            match crate::nocode::trigger_engine::execute_triggers_audited(
                                 state.db_type.clone(),
                                 &mut *tx,
                                 table_schema,
                                 &trigger_ctx,
                                 "on_create",
+                                &crate::nocode::trigger_engine::TriggerAudit::from_ctx(&audit_ctx),
                             )
                             .await
                             {
@@ -946,6 +974,27 @@ pub async fn perform_insert(
                             ).await {
                                 let _ = tx.rollback().await;
                                 return Err(format!("Error queueing webhook: {}", e));
+                            }
+                        }
+
+                        // CPOB structured audit trail (POST) committed atomically with the insert.
+                        if crate::nocode::audit_trail::is_enabled(table_schema) {
+                            let id_str = doc_map
+                                .get("id")
+                                .map(|v| match v { Value::String(s) => s.clone(), Value::Number(n) => n.to_string(), _ => v.to_string() })
+                                .unwrap_or_default();
+                            if let Err(e) = crate::nocode::audit_trail::record_create_in_tx(
+                                &mut *tx,
+                                table_schema,
+                                route,
+                                &id_str,
+                                &doc_map,
+                                &audit_ctx,
+                            )
+                            .await
+                            {
+                                let _ = tx.rollback().await;
+                                return Err(format!("Error recording audit trail: {}", e));
                             }
                         }
 

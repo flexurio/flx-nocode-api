@@ -18,6 +18,7 @@ pub async fn perform_delete_sql(
     ref_fks: &[ReferenceForeignKey],
     actor_id: &str,
     is_soft: bool,
+    audit_ctx: crate::nocode::audit_trail::AuditContext<'_>,
 ) -> Result<(), String> {
     
     let (exec_sql, exec_params) = if is_soft {
@@ -137,10 +138,20 @@ pub async fn perform_delete_sql(
         return Err(format!("Error in pre-process: {}", err));
     }
 
+    // CPOB audit trail: before-images of audited child rows touched by FK cascades
+    // (taken before the parent DELETE so DB-level ON DELETE CASCADE is covered too).
+    let cascade_snapshots = match crate::nocode::audit_trail::snapshot_fk_cascade(&mut *tx, route, ref_fks, id_raw).await {
+        Ok(s) => s,
+        Err(e) => {
+            let _ = tx.rollback().await;
+            return Err(e);
+        }
+    };
+
     match tx.raw_sql(&exec_sql, exec_params).await {
         Ok(_) => {
             let (is_fk_ok, err_message) = process_foreign_keys_delete_update_txstore(
-                "DELETE", 
+                "DELETE",
                 state.clone(),
                 route.to_string(),
                 &mut tx,
@@ -149,6 +160,14 @@ pub async fn perform_delete_sql(
                 id_raw.to_string(),
                 "".to_string(), // for UPDATE
             ).await;
+
+            if is_fk_ok
+                && !cascade_snapshots.is_empty()
+                && let Err(e) = crate::nocode::audit_trail::record_fk_cascade_in_tx(&mut *tx, &cascade_snapshots, &audit_ctx).await
+            {
+                let _ = tx.rollback().await;
+                return Err(e);
+            }
 
             if is_fk_ok {
                 // POST-PROCESS
@@ -169,12 +188,13 @@ pub async fn perform_delete_sql(
                         actor_id: Some(actor_id),
                     };
 
-                    match crate::nocode::trigger_engine::execute_triggers(
+                    match crate::nocode::trigger_engine::execute_triggers_audited(
                         state.db_type.clone(),
                         &mut *tx,
                         table_schema,
                         &trigger_ctx,
                         "on_delete",
+                        &crate::nocode::trigger_engine::TriggerAudit::from_ctx(&audit_ctx),
                     ).await {
                         Ok(executed) => {
                             for trig_name in executed {
@@ -203,6 +223,22 @@ pub async fn perform_delete_sql(
                         let _ = tx.rollback().await;
                         return Err(format!("Error queueing webhook: {}", e));
                     }
+                }
+
+                // CPOB structured audit trail (DELETE) committed atomically with the delete.
+                if crate::nocode::audit_trail::is_enabled(table_schema)
+                    && let Err(e) = crate::nocode::audit_trail::record_delete_in_tx(
+                        &mut *tx,
+                        table_schema,
+                        route,
+                        id_raw,
+                        &old_record,
+                        &audit_ctx,
+                    )
+                    .await
+                {
+                    let _ = tx.rollback().await;
+                    return Err(format!("Error recording audit trail: {}", e));
                 }
 
                 tx.commit().await.map_err(|e| format!("Error committing transaction: {}", e))?;

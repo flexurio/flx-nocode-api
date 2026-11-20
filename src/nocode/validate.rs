@@ -222,7 +222,7 @@ pub const SUPPORTED_TRIGGER_EVENTS: &[&str] = &["update", "create", "delete", "s
 pub const KNOWN_TOP_LEVEL_KEYS: &[&str] = &[
     "table", "primary_key", "foreign_keys", "columns", "indexes", "details",
     "action_triggers", "triggers", "redis", "get", "post", "put", "del", "patch", "trace",
-    "locked_when", "state_machine", "auto_generate", "seed", "collate", "position", "search_columns", "webhooks", "schedules", "http_cache_secs",
+    "locked_when", "state_machine", "audit_trail", "auto_generate", "seed", "collate", "position", "search_columns", "webhooks", "schedules", "http_cache_secs",
 ];
 
 /// Keys a `columns[]` object may contain (mirrors `model::Column` + aliases).
@@ -811,6 +811,26 @@ fn lint_one(ctx: &LintCtx<'_>, report: &mut LintReport, route: &str, schema: &Ta
                 report.warn(
                     route,
                     format!("locked_when.except_columns '{}' is not a column of this entity", c),
+                );
+            }
+        }
+    }
+    if let Some(at) = &schema.audit_trail
+        && at.enabled
+    {
+        for c in &at.columns {
+            if !LintCtx::has_column(schema, c) {
+                report.error(
+                    route,
+                    format!("audit_trail.columns '{}' is not a column of this entity", c),
+                );
+            }
+        }
+        for c in at.require_reason_when.keys() {
+            if !LintCtx::has_column(schema, c) {
+                report.error(
+                    route,
+                    format!("audit_trail.require_reason_when '{}' is not a column of this entity", c),
                 );
             }
         }

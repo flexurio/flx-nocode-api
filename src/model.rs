@@ -361,6 +361,36 @@ pub struct LockedWhen {
     pub conditions: serde_json::Map<String, serde_json::Value>,
 }
 
+/// Per-entity CPOB/GxP structured audit trail configuration (`flx_audit_trail`).
+///
+/// ```json
+/// "audit_trail": {
+///   "enabled": true,
+///   "columns": ["status", "problem", "evaluation"],
+///   "require_reason_when": { "status": ["CLOSED", "IMPLEMENTATION"] },
+///   "readers": ["qa_reviewer", "auditor"]
+/// }
+/// ```
+#[derive(Debug, Default, Serialize, Deserialize, Clone, PartialEq)]
+pub struct AuditTrailConfig {
+    /// Enable structured row/column audit logging into `flx_audit_trail`.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Columns tracked on PUT/PATCH/POST/DELETE. When empty, all changed
+    /// business columns (excluding `updated_at`, `updated_by_id`, `version`)
+    /// are tracked.
+    #[serde(default)]
+    pub columns: Vec<String>,
+    /// Columns and target values that require a non-empty `X-Change-Reason`
+    /// header on PUT/PATCH (returns `400 Bad Request` when missing/empty).
+    #[serde(default)]
+    pub require_reason_when: std::collections::BTreeMap<String, serde_json::Value>,
+    /// Additional roles (beyond `ADMIN_ROLES`) permitted to read this entity's
+    /// rows via `GET /audit_trail`.
+    #[serde(default)]
+    pub readers: Vec<String>,
+}
+
 impl LockedWhen {
     pub fn get_conditions(&self) -> &serde_json::Map<String, serde_json::Value> {
         &self.conditions
@@ -405,6 +435,9 @@ pub struct TableSchema {
     pub locked_when: Option<LockedWhen>,
     #[serde(default)]
     pub state_machine: Option<StateMachine>,
+    /// Structured CPOB/GxP column-level audit trail into `flx_audit_trail`.
+    #[serde(default)]
+    pub audit_trail: Option<AuditTrailConfig>,
     #[serde(default)]
     pub auto_generate: bool,
     #[serde(default)]
@@ -500,6 +533,7 @@ impl Default for TableSchema {
             },
             locked_when: None,
             state_machine: None,
+            audit_trail: None,
             auto_generate: false,
             seed: false,
             collate: "".to_string(),

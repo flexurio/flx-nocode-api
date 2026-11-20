@@ -120,7 +120,7 @@ pub async fn process_insert_request(
             route: route.to_string(),
             op: crate::nocode::consumer::WriteOpKind::Post,
             body,
-            headers: vec![],
+            headers: crate::nocode::audit_trail::forwarded_headers(req),
             enqueued_at: chrono::Utc::now().to_rfc3339(),
             actor_id: actor_id_opt.clone(),
             claims: claims_opt.clone(),
@@ -684,6 +684,20 @@ pub async fn process_insert_request(
         .and_then(|h| h.to_str().ok())
         .map(|s| s.to_string());
 
+    let change_reason = crate::nocode::audit_trail::extract_change_reason(req);
+    let request_id = crate::nocode::audit_trail::extract_request_id(req);
+    let actor_custom = claims_opt
+        .as_ref()
+        .map(|c| c.cs.as_str())
+        .filter(|s| !s.is_empty());
+    let audit_ctx = crate::nocode::audit_trail::AuditContext {
+        action: "POST",
+        actor_id: actor_id_opt.as_deref().unwrap_or("0"),
+        actor_custom,
+        reason: change_reason.as_deref(),
+        request_id: request_id.as_deref(),
+    };
+
     match data_create_repo::perform_insert(
         state,
         table_schema,
@@ -697,6 +711,7 @@ pub async fn process_insert_request(
         prepared_details,
         route,
         auth_token,
+        audit_ctx,
     )
     .await
     {
