@@ -824,9 +824,15 @@ pub async fn fetch_dynamic_data(
                 continue;
             }
 
+            let parent_key_col = detail
+                .parent_key_column
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .unwrap_or("id");
+
             let parent_ids: Vec<QV> = enriched_rows
                 .iter()
-                .filter_map(|r| r.get("id"))
+                .filter_map(|r| r.get(parent_key_col))
                 .map(|v| match v {
                     Value::Number(n) => {
                         if let Some(i) = n.as_i64() { QV::I64(i) } else { QV::F64(n.as_f64().unwrap_or(0.0)) }
@@ -839,9 +845,15 @@ pub async fn fetch_dynamic_data(
                 .collect();
 
             if !parent_ids.is_empty() {
+                let mut detail_filter = QF::In(detail.foreign_key_column.clone(), parent_ids);
+                if let Some(d_schema) = crate::registry::current().schemas.get(&detail.target_table)
+                    && d_schema.columns.iter().any(|c| c.name == "deleted_at")
+                {
+                    detail_filter = QF::And(vec![detail_filter, QF::IsNull("deleted_at".to_string())]);
+                }
                 let detail_query = QQ::from(detail.target_table.clone())
                     .select(vec!["*".to_string()])
-                    .r#where(QF::In(detail.foreign_key_column.clone(), parent_ids));
+                    .r#where(detail_filter);
 
                 if let Ok(detail_rows) = state.store.query(&detail_query).await {
                     let mut detail_groups: std::collections::HashMap<String, Vec<Value>> =
@@ -858,7 +870,7 @@ pub async fn fetch_dynamic_data(
                     }
 
                     for row in &mut enriched_rows {
-                        if let Some(parent_id_val) = row.get("id") {
+                        if let Some(parent_id_val) = row.get(parent_key_col) {
                             let parent_key = match parent_id_val {
                                 Value::Number(n) => n.to_string(),
                                 Value::String(s) => s.clone(),

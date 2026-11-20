@@ -1288,11 +1288,23 @@ fn execute_action<'a>(
                     .filter(|s| !s.is_empty())
                     .unwrap_or("sales_order_id");
 
-                // Query child items belonging to this parent header
-                let select_sql = format!(
-                    "SELECT * FROM {} WHERE {} = ?",
-                    detail_table, fk_column
-                );
+                // Query active child items belonging to this parent header (exclude soft-deleted rows)
+                let has_deleted_at = crate::registry::current()
+                    .schemas
+                    .get(detail_table)
+                    .map(|s| s.columns.iter().any(|c| c.name == "deleted_at"))
+                    .unwrap_or(false);
+                let select_sql = if has_deleted_at {
+                    format!(
+                        "SELECT * FROM {} WHERE {} = ? AND deleted_at IS NULL",
+                        detail_table, fk_column
+                    )
+                } else {
+                    format!(
+                        "SELECT * FROM {} WHERE {} = ?",
+                        detail_table, fk_column
+                    )
+                };
                 let built_sql = crate::database::state::rehydrate_placeholders(
                     &select_sql,
                     db_type.as_str(),

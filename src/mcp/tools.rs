@@ -468,6 +468,7 @@ pub struct DetailInfo {
     pub target_entity: String,
     pub foreign_key_column: String,
     pub update_strategy: String,
+    pub delete_missing: bool,
     pub cascade_delete: bool,
 }
 
@@ -1043,6 +1044,7 @@ pub fn describe(name: &str, s: &TableSchema) -> DescribeEntityOutput {
                     .update_strategy
                     .clone()
                     .unwrap_or_else(|| "replace".into()),
+                delete_missing: d.delete_missing.unwrap_or(true),
                 cascade_delete: d.cascade_delete.unwrap_or(true),
             })
             .collect(),

@@ -113,6 +113,10 @@ pub struct DetailSchema {
     /// Update strategy on PUT: "replace" (default), "upsert", "append"
     #[serde(default)]
     pub update_strategy: Option<String>,
+    /// For "upsert": delete existing child rows omitted from payload (default: true).
+    /// When `false`, missing child rows are left untouched.
+    #[serde(default)]
+    pub delete_missing: Option<bool>,
     /// Cascade delete detail records when parent header is deleted (default: true)
     #[serde(default)]
     pub cascade_delete: Option<bool>,
@@ -852,7 +856,19 @@ mod tests {
         assert_eq!(detail.parent_key_column.as_deref(), Some("id"));
         assert_eq!(detail.columns, vec!["material_id", "qty_ordered", "unit_price"]);
         assert_eq!(detail.update_strategy.as_deref(), Some("replace"));
+        assert_eq!(detail.delete_missing, None);
         assert_eq!(detail.cascade_delete, Some(true));
+
+        let upsert_json = r#"{
+            "field": "actions",
+            "target_table": "plant_capa_actions",
+            "foreign_key_column": "capa_id",
+            "update_strategy": "upsert",
+            "delete_missing": false
+        }"#;
+        let upsert_detail: DetailSchema = serde_json::from_str(upsert_json).unwrap();
+        assert_eq!(upsert_detail.update_strategy.as_deref(), Some("upsert"));
+        assert_eq!(upsert_detail.delete_missing, Some(false));
     }
 
     // --- Column default ---

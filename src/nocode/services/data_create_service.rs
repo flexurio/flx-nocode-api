@@ -459,8 +459,20 @@ pub async fn process_insert_request(
                     .map(|c| c.name.clone())
                     .collect();
 
+                let has_created_at = detail_schema.columns.iter().any(|c| c.name == "created_at");
+                let created_by_col = detail_schema.columns.iter().find(|c| c.name == "created_by_id");
+
                 if !detail_insert_cols.contains(&detail.foreign_key_column) {
                     detail_insert_cols.insert(0, detail.foreign_key_column.clone());
+                }
+                if has_created_at && !detail_insert_cols.contains(&"created_at".to_string()) {
+                    detail_insert_cols.push("created_at".to_string());
+                }
+                if created_by_col.is_some()
+                    && actor_id_opt.is_some()
+                    && !detail_insert_cols.contains(&"created_by_id".to_string())
+                {
+                    detail_insert_cols.push("created_by_id".to_string());
                 }
 
                 let fk_index = detail_insert_cols
@@ -536,6 +548,18 @@ pub async fn process_insert_request(
                     for col_name in &detail_insert_cols {
                         if col_name == &detail.foreign_key_column {
                             row_values.push(InsertValue::Param(DbParam::Null));
+                            continue;
+                        }
+                        if col_name == "created_at" {
+                            row_values.push(InsertValue::Raw(state.query_converter.datetime_now.clone()));
+                            continue;
+                        }
+                        if col_name == "created_by_id"
+                            && let (Some(col_def), Some(actor_id)) = (created_by_col, actor_id_opt.as_deref())
+                        {
+                            let (insert_val, json_val) = audit_actor_value(col_def, actor_id);
+                            item_resp_map.insert(col_name.clone(), json_val);
+                            row_values.push(insert_val);
                             continue;
                         }
 

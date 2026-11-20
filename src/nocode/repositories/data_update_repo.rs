@@ -112,6 +112,299 @@ pub const NOT_FOUND_PREFIX: &str = "Record not found: ";
 /// Prefix of repository error strings for optimistic-locking failures; mapped to HTTP 409.
 pub const CONFLICT_PREFIX: &str = "Version conflict: ";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DetailUpdateStrategy {
+    #[default]
+    Replace,
+    Upsert,
+    Append,
+}
+
+impl DetailUpdateStrategy {
+    pub fn from_opt(raw: Option<&str>) -> Self {
+        match raw.map(str::trim).unwrap_or("").to_ascii_lowercase().as_str() {
+            "upsert" => Self::Upsert,
+            "append" => Self::Append,
+            _ => Self::Replace,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct PreparedDetailUpdateItem {
+    pub pk_raw: String,
+    pub pk_param: DbParam,
+    /// Columns & values to SET (empty when caller sent only the PK to keep the row untouched).
+    pub set_fields: Vec<(String, InsertValue)>,
+    /// Optional insert row used only when `pk_auto_increment == false` and the PK is not yet present.
+    pub fallback_insert_row: Option<Vec<InsertValue>>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct PreparedDetailUpdateBatch {
+    pub field: String,
+    pub target_table: String,
+    pub foreign_key_column: String,
+    pub parent_key_column: Option<String>,
+    pub fk_type_data: String,
+    pub pk_column: String,
+    pub pk_type_data: String,
+    pub pk_auto_increment: bool,
+    pub strategy: DetailUpdateStrategy,
+    pub delete_missing: bool,
+    pub use_soft_delete: bool,
+    pub has_deleted_at: bool,
+    pub has_deleted_by_id: bool,
+    pub deleted_by_type: String,
+    pub insert_columns: Vec<String>,
+    pub fk_index: usize,
+    pub insert_rows: Vec<Vec<InsertValue>>,
+    pub update_items: Vec<PreparedDetailUpdateItem>,
+}
+
+fn dbparam_to_qv(p: &DbParam) -> QV {
+    match p {
+        DbParam::I64(n) => QV::I64(*n),
+        DbParam::F64(f) => QV::F64(*f),
+        DbParam::Bool(b) => QV::Bool(*b),
+        DbParam::Null => QV::Null,
+        DbParam::Str(s) => QV::Str(s.clone()),
+    }
+}
+
+fn json_val_to_pk_str(v: &Value) -> String {
+    match v {
+        Value::String(s) => s.trim().to_string(),
+        Value::Number(n) => n.to_string(),
+        Value::Bool(b) => b.to_string(),
+        _ => String::new(),
+    }
+}
+
+async fn sync_detail_batch_in_tx(
+    state: &web::Data<AppState>,
+    ds: &SqlStore,
+    tx: &mut dyn crate::storage::traits::TxStore,
+    batch: &mut PreparedDetailUpdateBatch,
+    parent_key_str: &str,
+    actor_id: Option<&str>,
+) -> Result<Vec<Value>, String> {
+    let fk_pk_param = crate::nocode::pk_utils::dbparam_from_str_and_type(parent_key_str, &batch.fk_type_data);
+    let fk_pk_qv = dbparam_to_qv(&fk_pk_param);
+
+    match batch.strategy {
+        DetailUpdateStrategy::Replace => {
+            // 1. Delete existing details for this parent
+            let del_filter = QF::Eq(batch.foreign_key_column.clone(), fk_pk_qv.clone());
+            let (del_sql, del_params) = ds
+                .preview_delete(&batch.target_table, Some(&del_filter))
+                .map_err(|e| format!("Error building delete for {}: {}", batch.target_table, e))?;
+            tx.raw_sql(&del_sql, del_params)
+                .await
+                .map_err(|e| format!("Error clearing old detail items for {}: {}", batch.target_table, e))?;
+
+            // 2. Bulk insert new details if any
+            if !batch.insert_rows.is_empty() {
+                for r in &mut batch.insert_rows {
+                    if batch.fk_index < r.len() {
+                        r[batch.fk_index] = InsertValue::Param(fk_pk_param.clone());
+                    }
+                }
+                let (bulk_sql, bulk_params) = ds
+                    .preview_insert_bulk(&batch.target_table, &batch.insert_columns, &batch.insert_rows)
+                    .map_err(|e| format!("Error building bulk insert for {}: {}", batch.target_table, e))?;
+                let built_bulk = crate::database::state::rehydrate_placeholders(&bulk_sql, state.db_type.as_str());
+                tx.raw_sql(&built_bulk, bulk_params)
+                    .await
+                    .map_err(|e| format!("Error inserting detail items into {}: {}", batch.target_table, e))?;
+            }
+        }
+        DetailUpdateStrategy::Append => {
+            // Insert-only: leave all existing child rows untouched.
+            if !batch.insert_rows.is_empty() {
+                for r in &mut batch.insert_rows {
+                    if batch.fk_index < r.len() {
+                        r[batch.fk_index] = InsertValue::Param(fk_pk_param.clone());
+                    }
+                }
+                let (bulk_sql, bulk_params) = ds
+                    .preview_insert_bulk(&batch.target_table, &batch.insert_columns, &batch.insert_rows)
+                    .map_err(|e| format!("Error building bulk insert for {}: {}", batch.target_table, e))?;
+                let built_bulk = crate::database::state::rehydrate_placeholders(&bulk_sql, state.db_type.as_str());
+                tx.raw_sql(&built_bulk, bulk_params)
+                    .await
+                    .map_err(|e| format!("Error appending detail items into {}: {}", batch.target_table, e))?;
+            }
+        }
+        DetailUpdateStrategy::Upsert => {
+            // 1. Fetch existing active child PKs belonging to this parent
+            let select_existing_sql = if batch.has_deleted_at {
+                format!(
+                    "SELECT {} FROM {} WHERE {} = ? AND deleted_at IS NULL",
+                    batch.pk_column, batch.target_table, batch.foreign_key_column
+                )
+            } else {
+                format!(
+                    "SELECT {} FROM {} WHERE {} = ?",
+                    batch.pk_column, batch.target_table, batch.foreign_key_column
+                )
+            };
+            let built_select = crate::database::state::rehydrate_placeholders(
+                &select_existing_sql,
+                state.db_type.as_str(),
+            );
+            let existing_rows = tx
+                .raw_sql(&built_select, vec![fk_pk_param.clone()])
+                .await
+                .map_err(|e| format!("Error reading existing detail items for {}: {}", batch.target_table, e))?;
+
+            let mut existing_ids: Vec<(String, DbParam)> = Vec::with_capacity(existing_rows.len());
+            let mut existing_id_set: std::collections::HashSet<String> =
+                std::collections::HashSet::with_capacity(existing_rows.len());
+            for row in existing_rows {
+                if let Some(pk_val) = row.get(&batch.pk_column) {
+                    let pk_str = json_val_to_pk_str(pk_val);
+                    if !pk_str.is_empty() {
+                        let pk_param = crate::nocode::pk_utils::dbparam_from_str_and_type(&pk_str, &batch.pk_type_data);
+                        existing_id_set.insert(pk_str.clone());
+                        existing_ids.push((pk_str, pk_param));
+                    }
+                }
+            }
+
+            // 2. Update existing rows matched by PK + parent FK
+            let mut kept_ids: std::collections::HashSet<String> =
+                std::collections::HashSet::with_capacity(batch.update_items.len());
+            let mut extra_insert_rows: Vec<Vec<InsertValue>> = Vec::new();
+
+            for u_item in &batch.update_items {
+                if existing_id_set.contains(&u_item.pk_raw) {
+                    kept_ids.insert(u_item.pk_raw.clone());
+                    if !u_item.set_fields.is_empty() {
+                        let mut parts = vec![
+                            QF::Eq(batch.pk_column.clone(), dbparam_to_qv(&u_item.pk_param)),
+                            QF::Eq(batch.foreign_key_column.clone(), fk_pk_qv.clone()),
+                        ];
+                        if batch.has_deleted_at {
+                            parts.push(QF::IsNull("deleted_at".to_string()));
+                        }
+                        let upd_filter = QF::And(parts);
+                        let (upd_sql, upd_params) = ds
+                            .preview_update_with(&batch.target_table, Some(&upd_filter), &u_item.set_fields)
+                            .map_err(|e| format!("Error building detail update for {}: {}", batch.target_table, e))?;
+                        tx.raw_sql(&upd_sql, upd_params)
+                            .await
+                            .map_err(|e| format!("Error updating detail item '{}' in {}: {}", u_item.pk_raw, batch.target_table, e))?;
+                    }
+                } else if !batch.pk_auto_increment
+                    && let Some(fallback_row) = &u_item.fallback_insert_row
+                {
+                    extra_insert_rows.push(fallback_row.clone());
+                } else {
+                    return Err(format!(
+                        "{}detail item in '{}' with {}='{}' not found for parent '{}'",
+                        NOT_FOUND_PREFIX, batch.field, batch.pk_column, u_item.pk_raw, parent_key_str
+                    ));
+                }
+            }
+
+            // 3. Delete (soft or hard) existing rows missing from the payload if delete_missing is enabled
+            if batch.delete_missing {
+                let missing_qvs: Vec<QV> = existing_ids
+                    .iter()
+                    .filter(|(id_str, _)| !kept_ids.contains(id_str))
+                    .map(|(_, p)| dbparam_to_qv(p))
+                    .collect();
+
+                if !missing_qvs.is_empty() {
+                    let mut parts = vec![
+                        QF::In(batch.pk_column.clone(), missing_qvs),
+                        QF::Eq(batch.foreign_key_column.clone(), fk_pk_qv.clone()),
+                    ];
+                    if batch.has_deleted_at {
+                        parts.push(QF::IsNull("deleted_at".to_string()));
+                    }
+                    let del_filter = QF::And(parts);
+
+                    if batch.use_soft_delete {
+                        let mut soft_fields: Vec<(String, InsertValue)> = vec![(
+                            "deleted_at".to_string(),
+                            InsertValue::Raw(state.query_converter.datetime_now.clone()),
+                        )];
+                        if batch.has_deleted_by_id {
+                            let actor = actor_id.unwrap_or("0");
+                            soft_fields.push((
+                                "deleted_by_id".to_string(),
+                                InsertValue::Param(crate::nocode::pk_utils::dbparam_from_str_and_type(
+                                    actor,
+                                    &batch.deleted_by_type,
+                                )),
+                            ));
+                        }
+                        let (soft_sql, soft_params) = ds
+                            .preview_update_with(&batch.target_table, Some(&del_filter), &soft_fields)
+                            .map_err(|e| format!("Error building soft delete for {}: {}", batch.target_table, e))?;
+                        tx.raw_sql(&soft_sql, soft_params)
+                            .await
+                            .map_err(|e| format!("Error soft-deleting missing detail items in {}: {}", batch.target_table, e))?;
+                    } else {
+                        let (hard_sql, hard_params) = ds
+                            .preview_delete(&batch.target_table, Some(&del_filter))
+                            .map_err(|e| format!("Error building hard delete for {}: {}", batch.target_table, e))?;
+                        tx.raw_sql(&hard_sql, hard_params)
+                            .await
+                            .map_err(|e| format!("Error deleting missing detail items in {}: {}", batch.target_table, e))?;
+                    }
+                }
+            }
+
+            // 4. Bulk insert new rows (items without PK + non-autoincrement fallbacks)
+            let mut all_inserts = std::mem::take(&mut batch.insert_rows);
+            all_inserts.extend(extra_insert_rows);
+            if !all_inserts.is_empty() {
+                for r in &mut all_inserts {
+                    if batch.fk_index < r.len() {
+                        r[batch.fk_index] = InsertValue::Param(fk_pk_param.clone());
+                    }
+                }
+                let (bulk_sql, bulk_params) = ds
+                    .preview_insert_bulk(&batch.target_table, &batch.insert_columns, &all_inserts)
+                    .map_err(|e| format!("Error building bulk insert for {}: {}", batch.target_table, e))?;
+                let built_bulk = crate::database::state::rehydrate_placeholders(&bulk_sql, state.db_type.as_str());
+                tx.raw_sql(&built_bulk, bulk_params)
+                    .await
+                    .map_err(|e| format!("Error inserting new detail items into {}: {}", batch.target_table, e))?;
+            }
+        }
+    }
+
+    // Re-read the final active detail rows inside the transaction so the response,
+    // action_triggers (new_record), and outbox webhooks reflect the exact final state.
+    let order_clause = if !batch.pk_column.is_empty() {
+        format!(" ORDER BY {} ASC", batch.pk_column)
+    } else {
+        String::new()
+    };
+    let select_final_sql = if batch.has_deleted_at {
+        format!(
+            "SELECT * FROM {} WHERE {} = ? AND deleted_at IS NULL{}",
+            batch.target_table, batch.foreign_key_column, order_clause
+        )
+    } else {
+        format!(
+            "SELECT * FROM {} WHERE {} = ?{}",
+            batch.target_table, batch.foreign_key_column, order_clause
+        )
+    };
+    let built_final = crate::database::state::rehydrate_placeholders(
+        &select_final_sql,
+        state.db_type.as_str(),
+    );
+    tx.raw_sql(&built_final, vec![fk_pk_param])
+        .await
+        .map_err(|e| format!("Error reading final detail items for {}: {}", batch.target_table, e))
+}
+
 fn json_to_i64(v: &Value) -> Option<i64> {
     match v {
         Value::Number(n) => n.as_i64().or_else(|| n.as_f64().map(|f| f as i64)),
@@ -333,7 +626,7 @@ pub async fn perform_update(
     mut patch_fields: serde_json::Map<String, Value>,
     fk_checks: Vec<(String, String, String, String, String)>,
     password_override: Option<String>,
-    mut prepared_details: Vec<crate::nocode::repositories::data_create_repo::PreparedDetailBatch>,
+    mut prepared_details: Vec<PreparedDetailUpdateBatch>,
     body: &Value,
     auth_token: Option<String>,
     actor_id: Option<&str>,
@@ -551,56 +844,41 @@ pub async fn perform_update(
              Ok(_) => {
                  let mut final_patch = patch_fields;
 
-                 // Sync Details inside transaction
+                 // Sync Details inside transaction (replace / upsert / append)
                  let ds = SqlStore::new(state.db.clone(), state.db_type.as_str().to_string());
                  for batch in &mut prepared_details {
                      if !batch.target_table.is_empty() && !batch.foreign_key_column.is_empty() {
-                         // 1. Delete existing details for this parent
-                         let delete_sql = format!(
-                             "DELETE FROM {} WHERE {} = ?",
-                             batch.target_table, batch.foreign_key_column
-                         );
-                         let fk_pk_param = crate::nocode::pk_utils::dbparam_from_str_and_type(id_raw, &batch.fk_type_data);
-                         let built_delete = crate::database::state::rehydrate_placeholders(&delete_sql, state.db_type.as_str());
-                         if let Err(e) = tx.raw_sql(&built_delete, vec![fk_pk_param.clone()]).await {
-                             let _ = tx.rollback().await;
-                             return Err(format!("Error clearing old detail items for {}: {}", batch.target_table, e));
-                         }
+                         let parent_key_str = batch
+                             .parent_key_column
+                             .as_deref()
+                             .filter(|c| !c.is_empty() && *c != "id")
+                             .and_then(|col| {
+                                 final_patch
+                                     .get(col)
+                                     .or_else(|| old_record.get(col))
+                                     .map(json_val_to_pk_str)
+                                     .filter(|s| !s.is_empty())
+                             })
+                             .unwrap_or_else(|| id_raw.to_string());
 
-                         // 2. Insert new details if any
-                         if !batch.rows.is_empty() {
-                             for r in &mut batch.rows {
-                                 if batch.fk_index < r.len() {
-                                     r[batch.fk_index] = InsertValue::Param(fk_pk_param.clone());
-                                 }
+                         match sync_detail_batch_in_tx(
+                             state,
+                             &ds,
+                             &mut *tx,
+                             batch,
+                             &parent_key_str,
+                             actor_id,
+                         )
+                         .await
+                         {
+                             Ok(final_rows) => {
+                                 final_patch.insert(batch.field.clone(), Value::Array(final_rows));
                              }
-
-                             for resp in &mut batch.response_items {
-                                 resp.insert(batch.foreign_key_column.clone(), serde_json::json!(id_raw));
-                             }
-
-                             let (bulk_sql, bulk_params) = ds
-                                 .preview_insert_bulk(&batch.target_table, &batch.columns, &batch.rows)
-                                 .map_err(|e| format!("Error building bulk insert for {}: {}", batch.target_table, e))?;
-
-                             let built_bulk = crate::database::state::rehydrate_placeholders(&bulk_sql, state.db_type.as_str());
-                             if let Err(e) = tx.raw_sql(&built_bulk, bulk_params).await {
+                             Err(e) => {
                                  let _ = tx.rollback().await;
-                                 return Err(format!("Error inserting detail items into {}: {}", batch.target_table, e));
+                                 return Err(e);
                              }
                          }
-
-                         final_patch.insert(
-                             batch.field.clone(),
-                             Value::Array(
-                                 batch
-                                     .response_items
-                                     .iter()
-                                     .cloned()
-                                     .map(Value::Object)
-                                     .collect(),
-                             ),
-                         );
                      }
                  }
 
@@ -783,6 +1061,18 @@ mod tests {
     use super::*;
     use crate::storage::ast::Val as QV;
     use crate::nocode::pk_utils::{build_pk_filter, parse_pk_values};
+
+    #[test]
+    fn test_detail_update_strategy_parse() {
+        assert_eq!(DetailUpdateStrategy::from_opt(None), DetailUpdateStrategy::Replace);
+        assert_eq!(DetailUpdateStrategy::from_opt(Some("")), DetailUpdateStrategy::Replace);
+        assert_eq!(DetailUpdateStrategy::from_opt(Some("replace")), DetailUpdateStrategy::Replace);
+        assert_eq!(DetailUpdateStrategy::from_opt(Some("upsert")), DetailUpdateStrategy::Upsert);
+        assert_eq!(DetailUpdateStrategy::from_opt(Some(" UPSERT ")), DetailUpdateStrategy::Upsert);
+        assert_eq!(DetailUpdateStrategy::from_opt(Some("append")), DetailUpdateStrategy::Append);
+        assert_eq!(DetailUpdateStrategy::from_opt(Some("Append")), DetailUpdateStrategy::Append);
+        assert_eq!(DetailUpdateStrategy::from_opt(Some("unknown")), DetailUpdateStrategy::Replace);
+    }
 
     #[test]
     fn test_parse_pk_values_repo_uses_shared_util() {

@@ -622,7 +622,8 @@ Configure one or more detail relationships inside `LOC_CONFIG/entity/<parent_rou
 | `foreign_key_column` | *(required)* | Column in the child table referencing the parent header's primary key (e.g. `"po_id"`). |
 | `parent_key_column` | `"id"` | Column on the parent table whose value is injected into child records. |
 | `columns` | `[]` | *(optional)* Column whitelist for child records. If specified, any extra keys in detail items are safely ignored. |
-| `update_strategy` | `"replace"` | Strategy on `PUT /<route>/{id}`. Only `"replace"` (delete old & insert new) is implemented today; `"upsert"` and `"append"` are accepted by the parser but behave as `"replace"`. |
+| `update_strategy` | `"replace"` | Strategy on `PUT`/`PATCH /<route>/{id}`: `"replace"` (delete all existing child rows & insert new), `"upsert"` (update rows matching `id`, insert rows without `id`, and delete or keep omitted rows per `delete_missing`), or `"append"` (insert new rows only; existing rows are untouched). |
+| `delete_missing` | `true` | Only applies when `update_strategy` is `"upsert"`. When `true` (default), existing child rows omitted from the payload are soft-deleted (if `del.type_delete == "soft"` and the child table has `deleted_at`) or hard-deleted. Set to `false` to leave omitted child rows untouched. |
 | `cascade_delete` | `true` | When `true`, deleting the parent via `DELETE /<route>/{id}` automatically deletes child records in the same transaction. |
 
 ### 9.2 Creating Master‑Detail Records (`POST`)
@@ -660,7 +661,7 @@ Send a `POST /<parent_route>` with multipart/form-data or JSON containing the ne
 4. All child items are bulk-inserted into `transaction_purchase_order_items`.
 5. The entire operation is committed atomically. If any detail record fails validation or DB constraint, the parent record is automatically rolled back.
 
-### 9.3 Updating Master‑Detail Records (`PUT`)
+### 9.3 Updating Master‑Detail Records (`PUT` / `PATCH`): `replace`, `upsert`, `append`
 
 Send `PUT /<parent_route>/{id}` with the updated header fields and new/modified detail items:
 
@@ -674,7 +675,117 @@ Send `PUT /<parent_route>/{id}` with the updated header fields and new/modified 
 }
 ```
 
-Under `"update_strategy": "replace"` (default), existing child items for that parent are deleted and the new list is inserted within the transaction.
+`PATCH /<parent_route>/{id}` follows exactly the same path. What happens to the existing child rows depends on the detail's `update_strategy`.
+
+> **Detail field omitted?** If the payload does not contain the detail `field` at all (or sends `null`), the child rows are **not touched**, whatever the strategy. This lets you update the header alone (e.g. `{ "status": "APPROVED" }`) without resending all the lines. Sending an empty array `[]` is different: it means "the document now has no lines" (see each strategy below).
+
+#### 9.3.1 Choosing a strategy
+
+| Strategy | Existing rows in the payload (with `id`) | New rows (without `id`) | Existing rows **not** in the payload | Child `id` / `created_at` preserved? | Typical use |
+|---|---|---|---|---|---|
+| `"replace"` *(default)* | Deleted, then re-inserted as new rows | Inserted | **Hard-deleted** | No, new `id` on every save | Simple documents whose lines nothing else refers to: drafts, quotations, carts |
+| `"upsert"` + `delete_missing: true` *(default)* | **UPDATE in place** | Inserted | **Soft-deleted** (`del.type_delete = "soft"` and `deleted_at` exists), otherwise hard-deleted | Yes | GxP/audited documents where the editor sends the full list: CAPA actions, affected batches, test parameters, audit items |
+| `"upsert"` + `delete_missing: false` | **UPDATE in place** | Inserted | **Left untouched** | Yes | Partial edits: the client sends only the lines that changed or were added |
+| `"append"` | Not updated (treated as new inserts) | Inserted | **Left untouched** | Yes | Append-only logs: deviation notes, investigation timeline, comments, sampling records |
+
+All strategies run **inside the parent's ACID transaction**: header update, child UPDATE/INSERT/DELETE, `action_triggers` and the outbox either all commit or all roll back.
+
+#### 9.3.2 `"replace"`: delete all and re-insert (default)
+
+```json
+"details": [{ "field": "items", "target_table": "transaction_purchase_order_items",
+              "foreign_key_column": "po_id", "update_strategy": "replace" }]
+```
+
+1. `DELETE FROM <target_table> WHERE <foreign_key_column> = <parent key>`, including rows that were already soft-deleted.
+2. Bulk-INSERT every item in the payload (`created_at`/`created_by_id` are set to the current time and actor).
+
+Simple and predictable, but every save gives the child rows **new** `id`, `created_at` and `created_by_id`. Any foreign key from another table to a child row (for example a signature on one action line) breaks. Do **not** use it for regulated documents.
+
+#### 9.3.3 `"upsert"`: keep the identity of each line
+
+```json
+"details": [{ "field": "actions", "target_table": "plant_capa_actions", "foreign_key_column": "capa_id",
+              "update_strategy": "upsert", "delete_missing": true }]
+```
+
+Existing CAPA `CAPA-001` has actions `id=11` ("Root cause analysis") and `id=12` ("Retrain operators"). The user edits action 11, removes action 12 and adds a new one:
+
+```http
+PUT /plant_capa/CAPA-001
+```
+```json
+{
+  "title": "CAPA-001 rev 2",
+  "actions": [
+    { "id": 11, "title": "Root cause analysis (5-Why + Fishbone)", "due_date": "2026-12-01" },
+    { "title": "Update SOP-QA-017", "due_date": "2026-12-15" }
+  ]
+}
+```
+
+The engine, in a single transaction:
+
+1. Reads the **active** child keys of this parent (`deleted_at IS NULL` when the column exists) → `{11, 12}`.
+2. **Row with `id` that belongs to this parent** (`11`) → `UPDATE ... WHERE id = 11 AND capa_id = 'CAPA-001' AND deleted_at IS NULL`.
+   - Only the columns actually **sent** in the item are changed. Columns left out keep their value (partial update per line).
+   - Updatable columns are the child's `put.columns` (falling back to `post.columns`, then all columns), further limited by `details[].columns` when set. The PK, the FK column and the audit columns (`created_at`, `created_by_id`, `deleted_*`) can never be overwritten from the payload.
+   - `updated_at` / `updated_by_id` are set automatically when the table has them. `id`, `created_at` and `created_by_id` stay unchanged.
+   - An item containing **only** `{ "id": 11 }` keeps the row exactly as it is (no UPDATE, and it is not counted as "missing").
+3. **Row without `id`** → INSERT with `created_at`/`created_by_id` = now/current actor.
+4. **Active row missing from the payload** (`12`), with `delete_missing: true`:
+   - `del.type_delete = "soft"` (on the child entity, falling back to the parent's) **and** the child table has `deleted_at` → `UPDATE SET deleted_at = now, deleted_by_id = <actor>`. The row stays in the database for the audit trail and FKs pointing to it remain valid.
+   - Otherwise → hard `DELETE`.
+   - With `delete_missing: false` this step is skipped and row `12` is kept as is.
+5. Re-reads the final active child rows and returns them in the response under `actions`.
+
+Validation and safety rules:
+
+| Situation | Result |
+|---|---|
+| `id` belongs to **another** parent (`capa_id` differs) | `404 Not Found`, whole transaction rolled back (lines of other documents cannot be hijacked) |
+| `id` belongs to a row that is already soft-deleted | `404 Not Found`, rolled back (deleted lines cannot be revived by accident) |
+| `id` not found and the child PK is **auto-increment** | `404 Not Found`, rolled back |
+| `id` not found and the child PK is **not** auto-increment (e.g. a UUID/code generated by the client) | Inserted as a new row with that `id` |
+| Same `id` appears twice in one payload | `400 Bad Request` |
+| `null` sent for a `NOT NULL` column | `400 Bad Request` |
+| `"actions": []` with `delete_missing: true` | All active lines are deleted (soft/hard per rule above) |
+| `"actions": []` with `delete_missing: false` | Nothing changes |
+
+#### 9.3.4 `"append"`: insert only
+
+```json
+"details": [{ "field": "notes", "target_table": "plant_deviation_notes", "foreign_key_column": "deviation_id",
+              "update_strategy": "append" }]
+```
+
+```json
+PUT /plant_deviation/DEV-2026-0042
+{ "notes": [ { "note": "QA confirmed the batch is on hold" } ] }
+```
+
+Every item in the payload is INSERTed as a new line. Existing lines are **never** updated or deleted, so the client only needs to send the new lines. Ideal for history records that may only grow. Do not send an `id` for an auto-increment PK. With a non-auto-increment PK, the `id` you send is used as the new row's key and must not already exist.
+
+#### 9.3.5 Consistency with GET, triggers and cache
+
+- **GET** (`GET /<parent_route>` and `/{id}`) embeds only active child rows: soft-deleted lines (`deleted_at IS NOT NULL`) are hidden automatically. Embedding uses `parent_key_column` when it is set.
+- **`action_triggers` with `iterate_detail`** read the child rows from the database inside the same transaction, after the detail sync, and skip soft-deleted rows. Totals, stock movements and similar actions therefore always use the **final** rows (old lines that were kept + updated lines + new lines, minus deleted lines).
+- The **`PUT`/`PATCH` response** and the outbox/webhook payload contain the final rows as stored in the database (with real `id`s, `created_at`, `updated_at`), not a copy of the request.
+- The GET cache for the parent route **and** for the child `target_table` is invalidated after commit.
+- `validate` / lint reports an error for an unknown `update_strategy` value (anything other than `replace`, `upsert`, `append`, case-insensitive).
+
+#### 9.3.6 Example use cases
+
+| Document | Detail | Recommended configuration | Why |
+|---|---|---|---|
+| CAPA | Actions (`plant_capa_actions`) | `upsert`, `delete_missing: true`, child `del.type_delete: "soft"` | Each action has an owner, signature and due date; its identity and history must survive revisions |
+| Deviation / OOS | Affected batches | `upsert`, `delete_missing: true`, soft delete | Batch lines are referenced by disposition records; a removed batch must stay traceable |
+| Test specification | Test parameters | `upsert`, `delete_missing: false` | Lab users edit one parameter at a time without resending the whole spec |
+| Internal audit | Audit items / findings | `upsert`, `delete_missing: true`, soft delete | Findings are linked to CAPAs through FKs that must not break |
+| Deviation / complaint | Investigation notes, timeline | `append` | Append-only history; old entries must not be changed |
+| Quotation, draft PO, cart | Item lines | `replace` | Nothing else refers to the lines; simplest behavior |
+
+> **GxP tip:** for 21 CFR Part 11 / EU Annex 11 audit trails, combine `upsert` with `del.type_delete: "soft"` on the child entity and make sure the child table has the columns `created_at`, `created_by_id`, `updated_at`, `updated_by_id`, `deleted_at` and `deleted_by_id`. Every line then keeps who created it, who last changed it and who removed it.
 
 ### 9.4 Reading Master‑Detail Records (`GET`)
 

@@ -758,6 +758,17 @@ fn lint_one(ctx: &LintCtx<'_>, report: &mut LintReport, route: &str, schema: &Ta
                 );
             }
         }
+        if let Some(strat) = d.update_strategy.as_deref().map(str::trim).filter(|s| !s.is_empty())
+            && !matches!(strat.to_ascii_lowercase().as_str(), "replace" | "upsert" | "append")
+        {
+            report.error(
+                route,
+                format!(
+                    "details '{}' has unknown update_strategy '{}' (expected 'replace', 'upsert', or 'append')",
+                    label, strat
+                ),
+            );
+        }
         for c in &d.columns {
             let stripped = c.trim().trim_end_matches('*');
             if stripped.is_empty() || stripped.contains('(') {

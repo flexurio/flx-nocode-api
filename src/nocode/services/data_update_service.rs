@@ -254,7 +254,7 @@ pub async fn process_update_request(
     }
 
     // In-memory Pre-processing of Details for Update
-    let mut prepared_details: Vec<crate::nocode::repositories::data_create_repo::PreparedDetailBatch> = Vec::new();
+    let mut prepared_details: Vec<data_update_repo::PreparedDetailUpdateBatch> = Vec::new();
     let skip_columns: std::collections::HashSet<&str> = [
         "created_at", "created_by_id", "updated_at", "updated_by_id", "deleted_at", "deleted_by_id",
     ].iter().copied().collect();
@@ -275,8 +275,62 @@ pub async fn process_update_request(
             let target_schema_opt = registry.schemas.get(&detail.target_table);
 
             if let Some(detail_schema) = target_schema_opt {
+                let strategy = data_update_repo::DetailUpdateStrategy::from_opt(
+                    detail.update_strategy.as_deref(),
+                );
+                let delete_missing = detail.delete_missing.unwrap_or(true);
+
+                let pk_column = detail_schema
+                    .primary_key
+                    .columns
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| "id".to_string());
+                let pk_col_def = detail_schema.columns.iter().find(|c| c.name == pk_column);
+                let pk_type_data = pk_col_def
+                    .map(|c| c.type_data.clone())
+                    .unwrap_or_else(|| "int".to_string());
+                let pk_auto_increment = pk_col_def
+                    .map(|c| c.auto_increment)
+                    .unwrap_or(false);
+
+                let has_created_at = detail_schema.columns.iter().any(|c| c.name == "created_at");
+                let created_by_col = detail_schema.columns.iter().find(|c| c.name == "created_by_id");
+                let has_updated_at = detail_schema.columns.iter().any(|c| c.name == "updated_at");
+                let updated_by_col = detail_schema.columns.iter().find(|c| c.name == "updated_by_id");
+                let has_deleted_at = detail_schema.columns.iter().any(|c| c.name == "deleted_at");
+                let deleted_by_col = detail_schema.columns.iter().find(|c| c.name == "deleted_by_id");
+                let has_deleted_by_id = deleted_by_col.is_some();
+                let deleted_by_type = deleted_by_col
+                    .map(|c| c.type_data.clone())
+                    .unwrap_or_else(|| "int".to_string());
+
+                let effective_type_delete = if !detail_schema.del.type_delete.is_empty() {
+                    detail_schema.del.type_delete.as_str()
+                } else if !table_schema.del.type_delete.is_empty() {
+                    table_schema.del.type_delete.as_str()
+                } else {
+                    "hard"
+                };
+                let use_soft_delete =
+                    effective_type_delete.eq_ignore_ascii_case("soft") && has_deleted_at;
+
+                let detail_whitelist: std::collections::HashSet<&str> = detail
+                    .columns
+                    .iter()
+                    .map(|s| s.trim().trim_end_matches('*'))
+                    .filter(|s| !s.is_empty())
+                    .collect();
+
                 let detail_post_cols: std::collections::HashSet<&str> = detail_schema
                     .post
+                    .columns
+                    .iter()
+                    .map(|s| s.trim_end_matches('*'))
+                    .collect();
+
+                let detail_put_cols: std::collections::HashSet<&str> = detail_schema
+                    .put
                     .columns
                     .iter()
                     .map(|s| s.trim_end_matches('*'))
@@ -289,6 +343,7 @@ pub async fn process_update_request(
                         !c.auto_increment
                             && !skip_columns.contains(c.name.as_str())
                             && (detail_post_cols.is_empty() || detail_post_cols.contains(c.name.as_str()))
+                            && (detail_whitelist.is_empty() || detail_whitelist.contains(c.name.as_str()))
                     })
                     .map(|c| c.name.clone())
                     .collect();
@@ -296,6 +351,32 @@ pub async fn process_update_request(
                 if !detail_insert_cols.contains(&detail.foreign_key_column) {
                     detail_insert_cols.insert(0, detail.foreign_key_column.clone());
                 }
+                if has_created_at && !detail_insert_cols.contains(&"created_at".to_string()) {
+                    detail_insert_cols.push("created_at".to_string());
+                }
+                if created_by_col.is_some() && !detail_insert_cols.contains(&"created_by_id".to_string()) {
+                    detail_insert_cols.push("created_by_id".to_string());
+                }
+
+                let detail_updatable_cols: Vec<String> = detail_schema
+                    .columns
+                    .iter()
+                    .filter(|c| {
+                        !c.auto_increment
+                            && c.name != pk_column
+                            && c.name != detail.foreign_key_column
+                            && !skip_columns.contains(c.name.as_str())
+                            && (if !detail_put_cols.is_empty() {
+                                detail_put_cols.contains(c.name.as_str())
+                            } else if !detail_post_cols.is_empty() {
+                                detail_post_cols.contains(c.name.as_str())
+                            } else {
+                                true
+                            })
+                            && (detail_whitelist.is_empty() || detail_whitelist.contains(c.name.as_str()))
+                    })
+                    .map(|c| c.name.clone())
+                    .collect();
 
                 let fk_index = detail_insert_cols
                     .iter()
@@ -310,9 +391,10 @@ pub async fn process_update_request(
                     .map(|c| c.type_data.clone())
                     .unwrap_or_else(|| "int".to_string());
 
-                let mut detail_rows: Vec<Vec<InsertValue>> = Vec::with_capacity(items_arr.len());
-                let mut detail_response_items: Vec<serde_json::Map<String, Value>> =
-                    Vec::with_capacity(items_arr.len());
+                let mut insert_rows: Vec<Vec<InsertValue>> = Vec::new();
+                let mut update_items: Vec<data_update_repo::PreparedDetailUpdateItem> = Vec::new();
+                let mut seen_update_pks: std::collections::HashSet<String> =
+                    std::collections::HashSet::new();
 
                 for (idx, item) in items_arr.iter().enumerate() {
                     let Some(item_obj) = item.as_object() else {
@@ -322,96 +404,236 @@ pub async fn process_update_request(
                         return bad_request(format!("Item #{} in '{}': {}", idx + 1, detail.field, e));
                     }
 
-                    let mut row_values: Vec<InsertValue> = Vec::with_capacity(detail_insert_cols.len());
-                    let mut item_resp_map = serde_json::Map::with_capacity(detail_insert_cols.len());
+                    // Extract PK if upsert strategy is active and item supplies a non-empty PK
+                    let upsert_pk_opt = if strategy == data_update_repo::DetailUpdateStrategy::Upsert {
+                        item_obj.get(&pk_column).and_then(|v| match v {
+                            Value::Null => None,
+                            Value::String(s) => {
+                                let t = s.trim();
+                                if t.is_empty() { None } else { Some(t.to_string()) }
+                            }
+                            Value::Number(n) => Some(n.to_string()),
+                            other => {
+                                let s = other.to_string();
+                                if s.is_empty() { None } else { Some(s) }
+                            }
+                        })
+                    } else {
+                        None
+                    };
 
-                    for col_name in &detail_insert_cols {
-                        if col_name == &detail.foreign_key_column {
-                            row_values.push(InsertValue::Param(DbParam::Null));
-                            continue;
-                        }
+                    // Helper closure to build a full INSERT row for this item
+                    let build_insert_row = |fk_checks: &mut Vec<(String, String, String, String, String)>| -> Result<Vec<InsertValue>, HttpResponse> {
+                        let mut row_values: Vec<InsertValue> = Vec::with_capacity(detail_insert_cols.len());
+                        for col_name in &detail_insert_cols {
+                            if col_name == &detail.foreign_key_column {
+                                row_values.push(InsertValue::Param(DbParam::Null));
+                                continue;
+                            }
+                            if col_name == "created_at" {
+                                row_values.push(InsertValue::Raw(state.query_converter.datetime_now.clone()));
+                                continue;
+                            }
+                            if col_name == "created_by_id" {
+                                let td = created_by_col.map(|c| c.type_data.as_str()).unwrap_or("int");
+                                row_values.push(InsertValue::Param(dbparam_from_str_and_type(&claims.id, td)));
+                                continue;
+                            }
 
-                        let col_def_opt = detail_schema.columns.iter().find(|c| &c.name == col_name);
-                        let raw_val = item_obj.get(col_name);
-                        let str_val = match raw_val {
-                            None | Some(Value::Null) => String::new(),
-                            Some(Value::String(s)) => s.trim().to_string(),
-                            Some(v) => v.to_string().trim().to_string(),
-                        };
+                            let col_def_opt = detail_schema.columns.iter().find(|c| &c.name == col_name);
+                            let raw_val = item_obj.get(col_name);
+                            let str_val = match raw_val {
+                                None | Some(Value::Null) => String::new(),
+                                Some(Value::String(s)) => s.trim().to_string(),
+                                Some(v) => v.to_string().trim().to_string(),
+                            };
 
-                        if !str_val.is_empty() {
-                            for fk in &detail_schema.foreign_keys {
-                                if &fk.column == col_name {
-                                    let td = col_def_opt.map(|c| c.type_data.clone()).unwrap_or_else(|| "text".to_string());
-                                    fk_checks.push((col_name.clone(), fk.reference_table.clone(), fk.reference_column.clone(), str_val.clone(), td));
+                            if !str_val.is_empty() {
+                                for fk in &detail_schema.foreign_keys {
+                                    if &fk.column == col_name {
+                                        let td = col_def_opt.map(|c| c.type_data.clone()).unwrap_or_else(|| "text".to_string());
+                                        fk_checks.push((col_name.clone(), fk.reference_table.clone(), fk.reference_column.clone(), str_val.clone(), td));
+                                    }
                                 }
                             }
+
+                            let encrypt_col = col_def_opt.map(|c| c.encrypt).unwrap_or(false);
+                            let value_for_db = if encrypt_col && !str_val.is_empty() && !is_encrypted_string(&str_val) {
+                                encrypt(state.encrypt_key.clone(), str_val.clone())
+                            } else {
+                                str_val.clone()
+                            };
+
+                            let type_lower = col_def_opt.map(|c| c.type_data.to_lowercase()).unwrap_or_default();
+                            let bool_col = col_def_opt.and_then(|c| bool_kind(&c.type_data));
+                            let is_int = bool_col.is_none() && type_lower.contains("int");
+                            let is_float = type_lower.contains("float")
+                                || type_lower.contains("double")
+                                || type_lower.contains("decimal")
+                                || type_lower.contains("numeric")
+                                || type_lower.contains("money")
+                                || type_lower.contains("real");
+
+                            if bool_col.is_some() {
+                                let td = col_def_opt.map(|c| c.type_data.as_str()).unwrap_or("bool");
+                                let raw = raw_val.cloned().unwrap_or(Value::Null);
+                                let param = if str_val.is_empty() { DbParam::Null } else { dbparam_from_value_and_type(&raw, td) };
+                                if matches!(param, DbParam::Str(_)) {
+                                    return Err(bad_request(format!(
+                                        "Item #{} in '{}': Invalid field '{}': must be a boolean (true/false, 1/0, yes/no)",
+                                        idx + 1, detail.field, col_name
+                                    )));
+                                }
+                                row_values.push(InsertValue::Param(param));
+                            } else if is_int {
+                                if let Ok(n) = value_for_db.parse::<i64>() {
+                                    row_values.push(InsertValue::Param(DbParam::I64(n)));
+                                } else {
+                                    row_values.push(InsertValue::Param(DbParam::Null));
+                                }
+                            } else if is_float {
+                                if let Ok(f) = value_for_db.parse::<f64>() {
+                                    row_values.push(InsertValue::Param(DbParam::F64(f)));
+                                } else {
+                                    row_values.push(InsertValue::Param(DbParam::Null));
+                                }
+                            } else if matches!(raw_val, Some(Value::Null))
+                                && col_def_opt.map(|c| c.nullable).unwrap_or(false)
+                            {
+                                row_values.push(InsertValue::Param(DbParam::Null));
+                            } else {
+                                row_values.push(InsertValue::Param(DbParam::Str(value_for_db)));
+                            }
+                        }
+                        Ok(row_values)
+                    };
+
+                    if let Some(pk_raw) = upsert_pk_opt {
+                        if !seen_update_pks.insert(pk_raw.clone()) {
+                            return bad_request(format!(
+                                "Duplicate detail {} '{}' in '{}'",
+                                pk_column, pk_raw, detail.field
+                            ));
                         }
 
-                        let encrypt_col = col_def_opt.map(|c| c.encrypt).unwrap_or(false);
-                        let value_for_db = if encrypt_col && !str_val.is_empty() && !is_encrypted_string(&str_val) {
-                            encrypt(state.encrypt_key.clone(), str_val.clone())
-                        } else {
-                            str_val.clone()
-                        };
+                        let mut set_fields: Vec<(String, InsertValue)> = Vec::new();
+                        for col_name in &detail_updatable_cols {
+                            let Some(raw_val) = item_obj.get(col_name) else {
+                                continue;
+                            };
+                            let Some(col_def) = detail_schema.columns.iter().find(|c| &c.name == col_name) else {
+                                continue;
+                            };
 
-                        let type_lower = col_def_opt.map(|c| c.type_data.to_lowercase()).unwrap_or_default();
-                        let bool_col = col_def_opt.and_then(|c| bool_kind(&c.type_data));
-                        let is_int = bool_col.is_none() && type_lower.contains("int");
-                        let is_float = type_lower.contains("float")
-                            || type_lower.contains("double")
-                            || type_lower.contains("decimal")
-                            || type_lower.contains("numeric")
-                            || type_lower.contains("money")
-                            || type_lower.contains("real");
+                            if raw_val.is_null() {
+                                if !col_def.nullable {
+                                    return bad_request(format!(
+                                        "Item #{} in '{}': Field '{}' cannot be null (column is NOT NULL)",
+                                        idx + 1, detail.field, col_name
+                                    ));
+                                }
+                                set_fields.push((col_name.clone(), InsertValue::Param(DbParam::Null)));
+                                continue;
+                            }
 
-                        if bool_col.is_some() {
-                            let td = col_def_opt.map(|c| c.type_data.as_str()).unwrap_or("bool");
-                            let raw = raw_val.cloned().unwrap_or(Value::Null);
-                            let param = if str_val.is_empty() { DbParam::Null } else { dbparam_from_value_and_type(&raw, td) };
-                            if matches!(param, DbParam::Str(_)) {
-                                return bad_request(format!(
-                                    "Item #{} in '{}': Invalid field '{}': must be a boolean (true/false, 1/0, yes/no)",
-                                    idx + 1, detail.field, col_name
+                            let str_val = match raw_val {
+                                Value::String(s) => s.trim().to_string(),
+                                v => v.to_string().trim().to_string(),
+                            };
+
+                            if !str_val.is_empty() {
+                                for fk in &detail_schema.foreign_keys {
+                                    if &fk.column == col_name {
+                                        fk_checks.push((
+                                            col_name.clone(),
+                                            fk.reference_table.clone(),
+                                            fk.reference_column.clone(),
+                                            str_val.clone(),
+                                            col_def.type_data.clone(),
+                                        ));
+                                    }
+                                }
+                            }
+
+                            if is_bool_type(&col_def.type_data) {
+                                let param = dbparam_from_value_and_type(raw_val, &col_def.type_data);
+                                if matches!(param, DbParam::Str(_)) {
+                                    return bad_request(format!(
+                                        "Item #{} in '{}': Invalid field '{}': must be a boolean (true/false, 1/0, yes/no)",
+                                        idx + 1, detail.field, col_name
+                                    ));
+                                }
+                                set_fields.push((col_name.clone(), InsertValue::Param(param)));
+                                continue;
+                            }
+
+                            let value_for_db = if col_def.encrypt && !str_val.is_empty() && !is_encrypted_string(&str_val) {
+                                encrypt(state.encrypt_key.clone(), str_val.clone())
+                            } else {
+                                str_val.clone()
+                            };
+                            let param = dbparam_from_str_and_type(&value_for_db, &col_def.type_data);
+                            set_fields.push((col_name.clone(), InsertValue::Param(param)));
+                        }
+
+                        if !set_fields.is_empty() {
+                            if has_updated_at {
+                                set_fields.push((
+                                    "updated_at".to_string(),
+                                    InsertValue::Raw(state.query_converter.datetime_now.clone()),
                                 ));
                             }
-                            item_resp_map.insert(col_name.clone(), if str_val.is_empty() { Value::Null } else { json_value_from_value_and_type(&raw, td) });
-                            row_values.push(InsertValue::Param(param));
-                        } else if is_int {
-                            if let Ok(n) = value_for_db.parse::<i64>() {
-                                item_resp_map.insert(col_name.clone(), serde_json::json!(n));
-                                row_values.push(InsertValue::Param(DbParam::I64(n)));
-                            } else {
-                                item_resp_map.insert(col_name.clone(), raw_val.cloned().unwrap_or(Value::Null));
-                                row_values.push(InsertValue::Param(DbParam::Null));
+                            if let Some(upd_by) = updated_by_col {
+                                set_fields.push((
+                                    "updated_by_id".to_string(),
+                                    InsertValue::Param(dbparam_from_str_and_type(&claims.id, &upd_by.type_data)),
+                                ));
                             }
-                        } else if is_float {
-                            if let Ok(f) = value_for_db.parse::<f64>() {
-                                item_resp_map.insert(col_name.clone(), serde_json::json!(f));
-                                row_values.push(InsertValue::Param(DbParam::F64(f)));
-                            } else {
-                                item_resp_map.insert(col_name.clone(), raw_val.cloned().unwrap_or(Value::Null));
-                                row_values.push(InsertValue::Param(DbParam::Null));
+                        }
+
+                        let fallback_insert_row = if !pk_auto_increment {
+                            match build_insert_row(&mut fk_checks) {
+                                Ok(r) => Some(r),
+                                Err(resp) => return resp,
                             }
                         } else {
-                            item_resp_map.insert(col_name.clone(), raw_val.cloned().unwrap_or(Value::String(String::new())));
-                            row_values.push(InsertValue::Param(DbParam::Str(value_for_db)));
+                            None
+                        };
+
+                        let pk_param = dbparam_from_str_and_type(&pk_raw, &pk_type_data);
+                        update_items.push(data_update_repo::PreparedDetailUpdateItem {
+                            pk_raw,
+                            pk_param,
+                            set_fields,
+                            fallback_insert_row,
+                        });
+                    } else {
+                        match build_insert_row(&mut fk_checks) {
+                            Ok(r) => insert_rows.push(r),
+                            Err(resp) => return resp,
                         }
                     }
-
-                    detail_rows.push(row_values);
-                    detail_response_items.push(item_resp_map);
                 }
 
-                prepared_details.push(crate::nocode::repositories::data_create_repo::PreparedDetailBatch {
+                prepared_details.push(data_update_repo::PreparedDetailUpdateBatch {
                     field: detail.field.clone(),
                     target_table: detail.target_table.clone(),
                     foreign_key_column: detail.foreign_key_column.clone(),
+                    parent_key_column: detail.parent_key_column.clone(),
                     fk_type_data,
-                    columns: detail_insert_cols,
+                    pk_column,
+                    pk_type_data,
+                    pk_auto_increment,
+                    strategy,
+                    delete_missing,
+                    use_soft_delete,
+                    has_deleted_at,
+                    has_deleted_by_id,
+                    deleted_by_type,
+                    insert_columns: detail_insert_cols,
                     fk_index,
-                    rows: detail_rows,
-                    response_items: detail_response_items,
+                    insert_rows,
+                    update_items,
                 });
             }
         }
@@ -472,6 +694,11 @@ pub async fn process_update_request(
         Ok((msg, count, mut updated_data)) => {
             // Invalidate cached GET pages (L1 + L2) in O(1) via the route version.
             crate::database::state::invalidate_route(state, route).await;
+            for detail in &table_schema.details {
+                if !detail.target_table.is_empty() && detail.target_table != route {
+                    crate::database::state::invalidate_route(state, &detail.target_table).await;
+                }
+            }
 
             if auth_required {
                 let ip_opt = get_client_ip(req);
