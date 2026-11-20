@@ -222,8 +222,107 @@ pub async fn validate_unique_constraints_batch_put(
     Ok(())
 }
 
-// Suppress too_many_arguments for now
-// Suppress too_many_arguments for now
+/// Shared write guard for one record update: `state_machine` transition matrix
+/// followed by the `locked_when` immutability lock.
+///
+/// Used by `PUT`/`PATCH` ([`perform_update`]) and by the cron scheduler
+/// (`crate::nocode::scheduler`, role `"system"`) so both paths enforce exactly
+/// the same rules and return the same messages.
+///
+/// * `old_record` — current row (read under row lock by the caller).
+/// * `patch` — columns about to be written.
+/// * `caller_role` — role checked against `transitions[].roles`.
+///
+/// Returns `Ok(true)` when `patch` carries an authorized status transition,
+/// `Ok(false)` when it does not change the status field, `Err(msg)` otherwise.
+pub fn check_transition_guards(
+    table_schema: &TableSchema,
+    old_record: &serde_json::Map<String, Value>,
+    patch: &serde_json::Map<String, Value>,
+    caller_role: Option<&str>,
+) -> Result<bool, String> {
+    // 1. state_machine transition guard
+    let mut status_transition_authorized = false;
+    if let Some(sm) = &table_schema.state_machine
+        && let Some(new_status_val) = patch.get(&sm.field)
+    {
+        let old_status_val = old_record.get(&sm.field);
+        if old_status_val != Some(new_status_val) {
+            let old_status_str = old_status_val.and_then(|v| v.as_str()).unwrap_or("");
+            let new_status_str = new_status_val.as_str().unwrap_or("");
+
+            let matching_transition = sm.transitions.iter().find(|t| {
+                let matches_to = t.to.eq_ignore_ascii_case(new_status_str);
+                let matches_from = match &t.from {
+                    Value::Array(arr) => arr.iter().any(|v| match v {
+                        Value::String(s) => s.eq_ignore_ascii_case(old_status_str) || s == "*",
+                        _ => false,
+                    }),
+                    Value::String(s) => s.eq_ignore_ascii_case(old_status_str) || s == "*",
+                    _ => false,
+                };
+                matches_to && matches_from
+            });
+
+            match matching_transition {
+                None => {
+                    return Err(format!(
+                        "Illegal state transition on '{}': cannot transition from '{}' to '{}'",
+                        sm.field, old_status_str, new_status_str
+                    ));
+                }
+                Some(trans) => {
+                    if !trans.roles.is_empty() {
+                        let role = caller_role.unwrap_or("");
+                        let is_role_ok = trans.roles.iter().any(|r| r.eq_ignore_ascii_case(role) || r == "*");
+                        if !is_role_ok {
+                            return Err(format!(
+                                "Unauthorized state transition on '{}': role '{}' is not permitted to transition from '{}' to '{}'",
+                                sm.field, role, old_status_str, new_status_str
+                            ));
+                        }
+                    }
+                    status_transition_authorized = true;
+                }
+            }
+        }
+    }
+
+    // 2. locked_when immutability lock
+    if let Some(locked_cfg) = &table_schema.locked_when {
+        let conditions = locked_cfg.get_conditions();
+        let except_cols = locked_cfg.get_except_columns();
+        let sm_field_opt = table_schema.state_machine.as_ref().map(|sm| &sm.field);
+
+        for (field, expected_val) in conditions {
+            if let Some(actual_val) = old_record.get(field) {
+                let is_match = match expected_val {
+                    Value::Array(arr) => arr.iter().any(|v| crate::nocode::trigger_engine::value_matches(v, Some(actual_val))),
+                    single => crate::nocode::trigger_engine::value_matches(single, Some(actual_val)),
+                };
+                if is_match {
+                    let modified_keys: Vec<&String> = patch.keys().filter(|k| !k.starts_with("updated_")).collect();
+                    let only_allowed = !modified_keys.is_empty() && modified_keys.iter().all(|k| {
+                        except_cols.contains(k) || (status_transition_authorized && sm_field_opt == Some(*k))
+                    });
+                    if !only_allowed {
+                        return Err(format!(
+                            "Cannot modify locked record: field '{}' is currently '{}'",
+                            field,
+                            match actual_val {
+                                Value::String(s) => s.as_str(),
+                                _ => "locked",
+                            }
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(status_transition_authorized)
+}
+
 #[allow(clippy::too_many_arguments, clippy::collapsible_if)]
 pub async fn perform_update(
     state: &web::Data<AppState>,
@@ -329,86 +428,11 @@ pub async fn perform_update(
             }
         }
 
-        // 1. Check state machine transition guards
-        let mut status_transition_authorized = false;
-        if let Some(sm) = &table_schema.state_machine {
-            if let Some(new_status_val) = patch_fields.get(&sm.field) {
-                let old_status_val = old_record.get(&sm.field);
-                if old_status_val != Some(new_status_val) {
-                    let old_status_str = old_status_val.map(|v| match v { Value::String(s) => s.as_str(), _ => "" }).unwrap_or("");
-                    let new_status_str = match new_status_val { Value::String(s) => s.as_str(), _ => "" };
-
-                    let matching_transition = sm.transitions.iter().find(|t| {
-                        let matches_to = t.to.eq_ignore_ascii_case(new_status_str);
-                        let matches_from = match &t.from {
-                            Value::Array(arr) => arr.iter().any(|v| match v {
-                                Value::String(s) => s.eq_ignore_ascii_case(old_status_str) || s == "*",
-                                _ => false,
-                            }),
-                            Value::String(s) => s.eq_ignore_ascii_case(old_status_str) || s == "*",
-                            _ => false,
-                        };
-                        matches_to && matches_from
-                    });
-
-                    match matching_transition {
-                        None => {
-                            let _ = tx.rollback().await;
-                            return Err(format!(
-                                "Illegal state transition on '{}': cannot transition from '{}' to '{}'",
-                                sm.field, old_status_str, new_status_str
-                            ));
-                        }
-                        Some(trans) => {
-                            if !trans.roles.is_empty() {
-                                let role = caller_role.unwrap_or("");
-                                let is_role_ok = trans.roles.iter().any(|r| r.eq_ignore_ascii_case(role) || r == "*");
-                                if !is_role_ok {
-                                    let _ = tx.rollback().await;
-                                    return Err(format!(
-                                        "Unauthorized state transition on '{}': role '{}' is not permitted to transition from '{}' to '{}'",
-                                        sm.field, role, old_status_str, new_status_str
-                                    ));
-                                }
-                            }
-                            status_transition_authorized = true;
-                        }
-                    }
-                }
-            }
-        }
-
-        // 2. Check document immutability lock (locked_when)
-        if let Some(locked_cfg) = &table_schema.locked_when {
-            let conditions = locked_cfg.get_conditions();
-            let except_cols = locked_cfg.get_except_columns();
-            let sm_field_opt = table_schema.state_machine.as_ref().map(|sm| &sm.field);
-
-            for (field, expected_val) in conditions {
-                if let Some(actual_val) = old_record.get(field) {
-                    let is_match = match expected_val {
-                        Value::Array(arr) => arr.iter().any(|v| crate::nocode::trigger_engine::value_matches(v, Some(actual_val))),
-                        single => crate::nocode::trigger_engine::value_matches(single, Some(actual_val)),
-                    };
-                    if is_match {
-                        let modified_keys: Vec<&String> = patch_fields.keys().filter(|k| !k.starts_with("updated_")).collect();
-                        let only_allowed = !modified_keys.is_empty() && modified_keys.iter().all(|k| {
-                            except_cols.contains(k) || (status_transition_authorized && sm_field_opt == Some(*k))
-                        });
-                        if !only_allowed {
-                            let _ = tx.rollback().await;
-                            return Err(format!(
-                                "Cannot modify locked record: field '{}' is currently '{}'",
-                                field,
-                                match actual_val {
-                                    Value::String(s) => s.as_str(),
-                                    _ => "locked",
-                                }
-                            ));
-                        }
-                    }
-                }
-            }
+        // 1-2. state_machine transition guard + locked_when immutability lock
+        //      (shared with the cron scheduler, see `check_transition_guards`).
+        if let Err(e) = check_transition_guards(table_schema, &old_record, &patch_fields, caller_role) {
+            let _ = tx.rollback().await;
+            return Err(e);
         }
 
         // Batch FK Validation

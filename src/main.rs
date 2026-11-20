@@ -354,6 +354,14 @@ async fn main() -> anyhow::Result<()> {
     let _ = &*flx_nocode_api::registry::current();
     flx_nocode_api::registry::spawn_sighup_listener(app_state.clone());
 
+    // ── Declarative cron scheduler (schedules[]) ─────────────────────────────
+    if env::var("SCHEDULER_ENABLED")
+        .map(|v| !matches!(v.to_lowercase().as_str(), "0" | "false" | "no" | "off"))
+        .unwrap_or(true)
+    {
+        flx_nocode_api::nocode::scheduler::start_worker(app_state.clone().into_inner());
+    }
+
     // // ── Role seeding (background task) ────────────────────────────────────────
     // if app_state.db_type != flx_nocode_api::model::DbType::Mongodb {
     //     startup::run_role_seeding(app_state.clone(), &id_user_str).await;

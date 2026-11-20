@@ -25,6 +25,7 @@ Ship full CRUD plus advanced data operations (GET / POST / PUT / DELETE / PATCH 
 9. [Master‑Detail (Header‑Detail) transactional orchestration](#9-master-detail-header-detail-transactional-orchestration)
 10. [Declarative Action Triggers & ERP Cascading Workflows (`action_triggers`)](#10-declarative-action-triggers--erp-cascading-workflows-action_triggers)
 11. [Document Immutability & State Machine Governance (`locked_when` & `state_machine`)](#11-document-immutability--state-machine-governance-locked_when--state_machine)
+    - 11b. [Scheduled jobs & time-based workflows (`schedules`)](#11b-scheduled-jobs--time-based-workflows-schedules)
 12. [Database seeding (`seed`)](#12-database-seeding-seed)
 13. [Hooks & validation](#13-hooks--validation)
 14. [Formula placeholders](#14-formula-placeholders)
@@ -277,6 +278,7 @@ cp env .env
 | `DEFAULT_COLLATE` | Default collation for MySQL/MariaDB (e.g. `utf8mb4_bin`). |
 | `MSSQL_ENCRYPTION` / `MSSQL_TRUST_CERT` | TLS options for MSSQL. |
 | `REDIS_HOST` / `REDIS_PORT` / `REDIS_PASSWORD` / `REDIS_DB` | Redis connection (caching / extension). |
+| `SCHEDULER_ENABLED` / `SCHEDULER_TICK_SECS` / `SCHEDULER_CATCH_UP_SECS` / `SCHEDULER_LOCK_TTL_SECS` / `SCHEDULER_MAX_ROWS` | Built-in cron scheduler (default on, 15 s tick, 1 h catch-up, 900 s lease, 10 000 rows/run). See [§11b](#11b-scheduled-jobs--time-based-workflows-schedules). |
 
 ### Logging & observability
 
@@ -1347,6 +1349,362 @@ Add `"state_machine"` to `LOC_CONFIG/entity/<route>.json`:
 
 ---
 
+## 11b. Scheduled jobs & time-based workflows (`schedules`)
+
+Many regulated workflows change state **because time passes**, not because a user clicked something:
+
+| Workflow (GMP / CPOB, ERP) | Time rule | Engine effect |
+|---|---|---|
+| CAPA past its due date | `plan_due_date < today` while `IMPLEMENTATION` | status → `OVERDUE`, notify QA |
+| Instrument calibration | due in ≤ 30 days (H-30) | reminder webhook, once |
+| Controlled document | periodic review date reached | status → `DUE_REVIEW` |
+| Approved supplier | GMP / halal certificate expired | status → `SUSPENDED`, notify purchasing |
+| Retained sample | retention period ended | create a disposal task |
+| Sales order | unpaid for 7 days | status → `CANCELLED`, release stock (via `action_triggers`) |
+
+The usual workaround is an external cron that calls the API. It has real problems: it is not part of the engine's audit trail, it fires once per replica (so 3 pods send 3 notifications), it needs a service account that bypasses or fakes `state_machine` roles, and it lives outside FLEXURIO's configuration.
+
+`schedules[]` moves these jobs into the engine. A schedule is a cron expression plus a read-only `SELECT` that finds the affected rows, plus a list of actions to run for each row. Each row runs in its own transaction and follows the same rules as a normal `PUT`.
+
+### 11b.1 Quick example — CAPA overdue
+
+`LOC_CONFIG/entity/plant_capas.json` (excerpt):
+
+```json
+{
+  "table": "plant_capas",
+  "state_machine": {
+    "field": "status",
+    "transitions": [
+      { "from": "IMPLEMENTATION", "to": "OVERDUE", "roles": ["system"] },
+      { "from": "OVERDUE", "to": "IMPLEMENTATION", "roles": ["qa_manager"] }
+    ]
+  },
+  "webhooks": [
+    { "event": "capa_overdue", "url": "https://qms.example.com/hooks/capa-overdue" }
+  ],
+  "schedules": [
+    {
+      "name": "capa_overdue",
+      "cron": "0 1 * * *",
+      "timezone": "Asia/Jakarta",
+      "select": "SQL:SELECT id FROM plant_capas WHERE status = 'IMPLEMENTATION' AND plan_due_date < CURRENT_DATE AND deleted_at IS NULL",
+      "actions": [
+        { "type": "update", "table": "plant_capas", "where": { "id": "{row.id}" }, "set": { "status": "OVERDUE" } },
+        { "type": "webhook", "event": "capa_overdue" }
+      ]
+    }
+  ]
+}
+```
+
+Every day at 01:00 WIB, exactly one replica picks up the slot. It selects the overdue CAPAs and, for each one, in one transaction:
+1. locks the row,
+2. checks `IMPLEMENTATION → OVERDUE` against `state_machine` with role `system`,
+3. writes the status,
+4. runs the entity's `on_update` triggers and webhooks,
+5. queues the `capa_overdue` webhook in the outbox, and
+6. commits.
+
+Each changed row and the run itself are written to the audit trail as `SCHEDULE`. To try it without waiting for 01:00, call `POST /admin/schedules/capa_overdue/run`.
+
+### 11b.2 Where schedules are declared
+
+| Location | Notes |
+|---|---|
+| `entity/<route>.json` → `"schedules": [...]` | Recommended. The schedule **belongs to** that entity (`owner_route`): a `webhook` action with no `table` targets this entity, and audit rows default to this route. |
+| `routes.json` → `"schedules": [...]` | Cross-entity jobs. |
+| `schedules.json` (optional) | Either a JSON array or `{ "schedules": [...] }`. Lets you keep jobs separate from entities. |
+
+All three sources are merged. A schedule `name` must be unique across all of them, because the lint rejects duplicates. Schedules hot-reload with `POST /admin/reload` or `SIGHUP`: added, changed, and removed schedules take effect on the next tick, without a restart.
+
+### 11b.3 Schedule reference
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `name` | string | — | Unique id, `[A-Za-z0-9_.-]`. Used in the admin endpoint, lock rows, audit, and logs. |
+| `cron` | string | — | 5-field cron expression or macro. See [§11b.4](#11b4-cron-syntax). |
+| `timezone` | string | `UTC` | Timezone the cron fields are evaluated in. See [§11b.5](#11b5-timezone). |
+| `enabled` | bool | `true` | `false` keeps the definition but stops cron firing. A manual run still works. |
+| `select` | string | `""` | Read-only `SELECT` (optional `SQL:` prefix) that returns the rows to process. Empty means the actions run **once** with an empty row (pure periodic job). |
+| `actions[]` | array | `[]` | Actions run in order for **each** selected row, inside one transaction per row. |
+| `catch_up_secs` | int | `SCHEDULER_CATCH_UP_SECS` (3600) | A slot missed because of a restart, deploy, or long previous run is still executed if it is at most this many seconds old. `0` means only in the exact minute. Max 7 days. |
+| `max_rows` | int | `SCHEDULER_MAX_ROWS` (10000) | Upper bound on rows per run. Extra rows are left for the next run, and the report shows `truncated: true`. |
+| `lock_ttl_secs` | int | `SCHEDULER_LOCK_TTL_SECS` (900) | Run lease lifetime. Must be longer than the slowest expected run. If a replica dies mid-run, the lease frees itself after this time. |
+
+### 11b.4 Cron syntax
+
+`minute hour day-of-month month day-of-week`
+
+| Field | Range | Names |
+|---|---|---|
+| minute | 0–59 | |
+| hour | 0–23 | |
+| day of month | 1–31 | |
+| month | 1–12 | `JAN`–`DEC` |
+| day of week | 0–7 (0 and 7 = Sunday) | `SUN`–`SAT` |
+
+Each field accepts `*`, values (`5`), lists (`1,15`), ranges (`9-17`), and steps (`*/15`, `0-30/10`, `5/20`). Macros: `@hourly`, `@daily` / `@midnight`, `@weekly`, `@monthly`, `@yearly` / `@annually`.
+
+Day matching follows Vixie cron. If **both** day-of-month and day-of-week are restricted, a day matches when **either** one matches (`0 8 1 * MON` = the 1st of the month *and* every Monday). If either field starts with `*` (including `*/2`), both must match.
+
+| Expression | Meaning |
+|---|---|
+| `0 1 * * *` | every day at 01:00 |
+| `*/15 7-18 * * MON-FRI` | every 15 min during working hours, Mon–Fri |
+| `0 6 1 * *` | 06:00 on the 1st of every month |
+| `30 23 28-31 * *` | 23:30 on the last days of the month (check the date in `select`) |
+| `0 9 * * 1` | Mondays 09:00 |
+
+### 11b.5 Timezone
+
+- IANA names from the tz database, for example `Asia/Jakarta`, `Asia/Makassar`, `Asia/Jayapura`, `Asia/Singapore`, `Europe/Berlin`, `America/New_York`. **Daylight-saving time is handled.** A `30 1 * * *` job in `Europe/Berlin` runs at 01:30 local time before and after the clock change.
+- Indonesian aliases: `WIB`, `WITA`, `WIT`.
+- `UTC` / `GMT`, `Local` (the server's local zone), or fixed offsets: `+07:00`, `+0700`, `UTC+7`, `GMT-05:00`.
+
+> The timezone only decides **when** the job fires. Date functions inside `select` (`CURRENT_DATE`, `NOW()`) use the **database session timezone**. If the database runs in UTC and the job fires at 01:00 WIB (18:00 UTC the previous day), `CURRENT_DATE` is still yesterday. Either set the database timezone to match, or compare against explicit offsets (PostgreSQL: `(now() AT TIME ZONE 'Asia/Jakarta')::date`).
+
+### 11b.6 `select`
+
+- A single read-only statement starting with `SELECT` or `WITH`. `;` and the keywords `INSERT`, `UPDATE`, `DELETE`, `DROP`, `ALTER`, `TRUNCATE`, `CREATE`, `REPLACE`, `MERGE`, `GRANT`, `REVOKE`, `EXEC` are rejected by the startup/reload lint. Text inside quoted literals is ignored for this check.
+- Every returned column is available to actions as `{row.<column>}`. Return the primary key (usually `id`) and whatever the actions need.
+- Make the query **state-based**, for example `status = 'IMPLEMENTATION' AND due < CURRENT_DATE`, rather than time-window-based such as "changed in the last 24 h". A missed or repeated run then cannot skip or double-process anything, because the next run simply finds whatever is still pending.
+- Exclude soft-deleted rows (`deleted_at IS NULL`) and back the filter with an index for large tables. `update` actions additionally skip soft-deleted rows by themselves.
+- The engine wraps the query as `SELECT * FROM (<select>) LIMIT max_rows + 1` (PostgreSQL, MySQL, SQLite). On MSSQL the result is capped in memory instead, so use `TOP` yourself for very large result sets.
+
+### 11b.7 Actions
+
+| `type` | Keys | What it does |
+|---|---|---|
+| `update` | `table`, `where`, `set` | Updates the record(s) matching `where`, following the same rules as `PUT` (see below). `table` may be the **route name or the physical table name**, because both resolve to the entity. |
+| `webhook` | `event`, optional `table`, `url`, `headers` | Queues a webhook in `flx_outbox` inside the row's transaction, so it is delivered only if the row committed. Without `url`, it is delivered to the entity's `webhooks[]` entries whose `event` equals this `event` (or `*`). The target entity is `table` if set, otherwise the entity of the preceding `update`, otherwise the owning entity. With `url`, it is delivered directly to that URL. `event` defaults to the schedule name. |
+| `insert` | `table`, `fields` (alias `values`) | Inserts one row. On an entity table, `created_at` and `created_by_id` are filled in automatically. |
+| `sql` | `statement`, `params[]`, optional `table` | Parameterized escape hatch (`?` placeholders, rehydrated per dialect). No entity rules are applied. Set `table` to invalidate that route's cache. |
+
+**What an `update` does for each matching record (one transaction per selected row):**
+
+1. Reads the target rows with a row lock (`SELECT … FOR UPDATE` on PostgreSQL and MySQL, `UPDLOCK` on MSSQL), excluding soft-deleted rows.
+2. Skips any record where every `set` value already equals the stored value (idempotency).
+3. Runs the **same guard as `PUT`/`PATCH`**:
+   - `state_machine`: the transition must be declared, and its `roles` must contain `system` or `*`, or be empty.
+   - `locked_when`: a locked document may only change the status field through an authorized transition, or columns listed in `except_columns`.
+4. Writes `set` plus `updated_at = NOW()`, `updated_by_id` (`NULL` for cron runs, the admin's user id for manual runs), and `version = version + 1` when the entity has a `version` column, so clients using optimistic locking see the change.
+5. Fires the entity's `action_triggers` for `on_update` / `on_status_change` (audited as `TRIGGER`), and queues `on_update` webhooks with the stored `record` and the previous `old_record`.
+
+If any step fails, that row's transaction is rolled back. The row is counted as failed and audited as `SCHEDULE_FAILED`, and the run continues with the next row.
+
+**Idempotency rule:** when an `update` action changes nothing, because the record is already `OVERDUE` or no record matched, the row is **skipped**: the remaining actions for that row (webhook, insert, …) do not run. Two overlapping runs, or a manual run right after a cron run, therefore never send the same notification twice. If you need a notification without a status change (for example a calibration reminder), add a marker column and `update` it first, as in the H-30 example below.
+
+### 11b.8 Template tokens
+
+Allowed in `where`, `set`, `fields`, and `params`:
+
+| Token | Value |
+|---|---|
+| `{row.<col>}` | Column from the `select` row. A value that is exactly `"{row.id}"` keeps its JSON type (number stays a number). Nested objects: `{row.meta.owner}`. |
+| `{schedule.name}` | The schedule name. |
+| `{now:YYYY-MM-DD}`, `{now:YYYY-MM-DD HH:mm:ss}`, `{now:YYYY/MM/DD}`, `{now:YYYY/MM}`, `{now()}` | Current time in the **schedule timezone**. |
+| `{now+30:YYYY-MM-DD}`, `{now-7:YYYY-MM-DD}` | Today ± N days. |
+
+Tokens are bound as parameters and never concatenated into SQL. Column and table names must be plain identifiers.
+
+### 11b.9 Running on several replicas
+
+Every replica runs the worker. It ticks every `SCHEDULER_TICK_SECS` (default 15 s), finds the latest due slot of each enabled schedule within `catch_up_secs`, and fires it on its own task, so a slow schedule never delays another. Coordination happens in the database (`flx_sequences`), with **two rows per schedule**; the table does not grow over time:
+
+| Row (`scope`) | `seq_value` | Purpose |
+|---|---|---|
+| `sched:lease:<name>` | lease expiry (unix seconds) | Only one run of a schedule at a time, cron or manual, on any replica. Taken with `UPDATE … WHERE seq_value < now()`. |
+| `sched:slot:<name>` | last executed slot `YYYYMMDDHHMM` (UTC) | Each slot runs exactly once. Claimed with `UPDATE … WHERE seq_value < slot`. |
+
+Consequences:
+- **No double runs.** Three pods produce one run per slot.
+- **Missed slots are caught up once.** If the server was down at 01:00 and starts at 01:40, the 01:00 slot runs at 01:40 (within the default 1 h window). It does not run again after a second restart.
+- **Overlapping runs wait.** If a run is still holding the lease when the next slot is due, the new slot waits and retries every tick while it is inside its catch-up window.
+- The scheduler requires a **SQL backend** (PostgreSQL, MySQL, MSSQL, SQLite). On MongoDB the worker is not started and manual runs return `422`.
+- Disable the worker on a replica with `SCHEDULER_ENABLED=false`. For example, run jobs only on dedicated worker pods. Manual runs keep working there.
+
+### 11b.10 Audit trail
+
+Schedule activity is written to the audit log (`LOC_AUDIT`, JSON lines) with extra keys:
+
+```json
+{"at":"2026-11-20T18:00:03Z","actor_id":"system","action":"SCHEDULE","route":"plant_capas","id":"42","schedule":"capa_overdue","trigger":"cron","slot":202611191800}
+{"at":"2026-11-20T18:00:03Z","actor_id":"system","action":"TRIGGER","route":"plant_capas:log_overdue","id":"42","schedule":"capa_overdue","trigger":"cron"}
+{"at":"2026-11-20T18:00:03Z","actor_id":"system","action":"SCHEDULE_FAILED","route":"plant_capas","id":"57","schedule":"capa_overdue","trigger":"cron","slot":202611191800,"error":"Unauthorized state transition on 'status': role 'system' is not permitted to transition from 'DRAFT' to 'OVERDUE'"}
+{"at":"2026-11-20T18:00:03Z","actor_id":"system","action":"SCHEDULE_FAILED","route":"schedule:capa_overdue","schedule":"capa_overdue","trigger":"cron","slot":202611191800,"matched":2,"succeeded":1,"skipped":0,"failed":1,"updated":1,"webhooks":2,"truncated":false}
+```
+
+| `action` | Written when |
+|---|---|
+| `SCHEDULE` (route = entity) | a row was changed by the run |
+| `SCHEDULE_FAILED` (route = entity) | a row was rolled back, with `error` |
+| `SCHEDULE` / `SCHEDULE_FAILED` (route = `schedule:<name>`) | once per run, with a summary. A run whose `select` fails is also recorded. |
+| `TRIGGER` | an `action_trigger` fired by a schedule update |
+
+`actor_id` is `system` for cron runs and the admin's user id for manual runs.
+
+### 11b.11 Admin endpoints
+
+Both require an admin JWT (see [§5b](#5b-operations-offline-init-hot-reload-queues-webhooks-tokens)).
+
+**`GET /admin/schedules`** lists the configured schedules and their next run:
+
+```json
+{ "success": true, "total_data": 1, "data": [
+  { "name": "capa_overdue", "cron": "0 1 * * *", "timezone": "Asia/Jakarta", "enabled": true,
+    "owner_route": "plant_capas", "actions_count": 2, "catch_up_secs": null, "max_rows": null,
+    "lock_ttl_secs": null, "next_run_at": "2026-11-21T01:00:00+07:00" } ] }
+```
+
+**`POST /admin/schedules/<name>/run`** runs a schedule now. It is meant for UAT and validation evidence, or for a one-off run after fixing data. It takes the same lease as cron, so it never overlaps a cron run. Disabled schedules can still be run manually.
+
+```json
+{ "success": true, "message": "Schedule 'capa_overdue' executed", "total_data": 3,
+  "data": { "schedule": "capa_overdue", "trigger": "manual", "slot": null,
+            "matched_rows": 3, "succeeded_rows": 2, "skipped_rows": 1, "failed_rows": 0,
+            "updated_rows": 2, "webhooks_enqueued": 4, "triggers_executed": 2,
+            "truncated": false, "errors": [], "elapsed_ms": 18 } }
+```
+
+| Status | Meaning |
+|---|---|
+| `200` | Run finished. `success: false` when at least one row failed (see `data.errors`). |
+| `403` | Not an admin. |
+| `404` | Unknown schedule name. |
+| `409` | The schedule is already running (cron or another manual run). |
+| `422` | Run could not start (invalid `select`, `select` failed, MongoDB backend). |
+
+### 11b.12 Environment variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `SCHEDULER_ENABLED` | `true` | Start the cron worker on this instance. |
+| `SCHEDULER_TICK_SECS` | `15` | Evaluation interval (1–30 s). |
+| `SCHEDULER_CATCH_UP_SECS` | `3600` | Default `catch_up_secs`. |
+| `SCHEDULER_LOCK_TTL_SECS` | `900` | Default `lock_ttl_secs` (min 60). |
+| `SCHEDULER_MAX_ROWS` | `10000` | Default `max_rows`. |
+
+### 11b.13 Validation (config lint)
+
+At startup and on every reload (`CONFIG_LINT=strict` rejects errors; `warn` only logs them):
+
+- **Errors:**
+  - empty, invalid, or duplicate `name`
+  - invalid `cron` or `timezone`
+  - a `select` that is not a single read-only `SELECT`
+  - unknown action `type`
+  - an `update` without `where` or `set`
+  - an `insert` without `fields`
+  - a `sql` action without `statement`
+  - a `webhook` without `event`/`url`, or with no target entity
+- **Warnings:**
+  - a schedule without actions
+  - an `update` on a table that is not a configured entity (so `state_machine`, `locked_when`, triggers, and webhooks are **not** applied)
+  - `catch_up_secs` or `lock_ttl_secs` out of range
+
+### 11b.14 Use-case recipes
+
+The examples use PostgreSQL date syntax. On MySQL use `CURDATE()` and `DATE_ADD(CURDATE(), INTERVAL 30 DAY)`; on SQLite use `date('now')` and `date('now','+30 day')`; on MSSQL use `CAST(GETDATE() AS date)` and `DATEADD(day, 30, CAST(GETDATE() AS date))`.
+
+**1. Calibration due in 30 days (H-30 reminder, sent once).** A marker column makes the reminder idempotent: the `update` changes the marker only once, so the webhook runs only once.
+
+```json
+{
+  "name": "calibration_due_h30",
+  "cron": "0 7 * * *",
+  "timezone": "Asia/Jakarta",
+  "select": "SQL:SELECT id, code, next_calibration_date FROM qc_instruments WHERE next_calibration_date <= CURRENT_DATE + 30 AND (reminder_for IS NULL OR reminder_for <> next_calibration_date) AND deleted_at IS NULL",
+  "actions": [
+    { "type": "update", "table": "qc_instruments", "where": { "id": "{row.id}" }, "set": { "reminder_for": "{row.next_calibration_date}" } },
+    { "type": "webhook", "event": "calibration_due" }
+  ]
+}
+```
+
+When the instrument is recalibrated and `next_calibration_date` moves forward, the reminder fires again for the new date.
+
+**2. Controlled document periodic review.** This requires the transition `{ "from": "EFFECTIVE", "to": "DUE_REVIEW", "roles": ["system"] }` in the document's `state_machine`.
+
+```json
+{
+  "name": "document_due_review",
+  "cron": "0 2 * * *",
+  "timezone": "Asia/Jakarta",
+  "select": "SQL:SELECT id FROM qa_documents WHERE status = 'EFFECTIVE' AND next_review_date <= CURRENT_DATE AND deleted_at IS NULL",
+  "actions": [
+    { "type": "update", "table": "qa_documents", "where": { "id": "{row.id}" }, "set": { "status": "DUE_REVIEW" } },
+    { "type": "webhook", "event": "document_due_review" }
+  ]
+}
+```
+
+**3. Supplier certificate expired.** This suspends the supplier; `locked_when` and other entity rules still apply.
+
+```json
+{
+  "name": "supplier_cert_expired",
+  "cron": "15 0 * * *",
+  "timezone": "Asia/Jakarta",
+  "select": "SQL:SELECT s.id FROM purchasing_suppliers s WHERE s.status = 'APPROVED' AND s.gmp_cert_expiry < CURRENT_DATE AND s.deleted_at IS NULL",
+  "actions": [
+    { "type": "update", "table": "purchasing_suppliers", "where": { "id": "{row.id}" }, "set": { "status": "SUSPENDED", "suspend_reason": "GMP certificate expired (detected {now:YYYY-MM-DD})" } },
+    { "type": "webhook", "event": "supplier_suspended", "url": "https://purchasing.example.com/hooks/supplier", "headers": { "X-Hook-Secret": "..." } }
+  ]
+}
+```
+
+**4. Retained sample due for disposal.** This creates a task and marks the sample in one transaction.
+
+```json
+{
+  "name": "retained_sample_disposal",
+  "cron": "0 6 * * MON",
+  "timezone": "Asia/Jakarta",
+  "select": "SQL:SELECT id, batch_no, location FROM qc_retained_samples WHERE status = 'STORED' AND retain_until < CURRENT_DATE AND deleted_at IS NULL",
+  "actions": [
+    { "type": "update", "table": "qc_retained_samples", "where": { "id": "{row.id}" }, "set": { "status": "DISPOSAL_DUE" } },
+    { "type": "insert", "table": "qc_disposal_tasks", "fields": { "sample_id": "{row.id}", "batch_no": "{row.batch_no}", "location": "{row.location}", "due_date": "{now+7:YYYY-MM-DD}", "status": "OPEN" } }
+  ]
+}
+```
+
+**5. Auto-cancel unpaid sales orders.** Stock is released by the order's own `action_triggers` (`on_status_change` → `CANCELLED`). Those triggers run because the schedule's `update` goes through the same trigger engine as `PUT`.
+
+```json
+{
+  "name": "so_auto_cancel",
+  "cron": "*/30 * * * *",
+  "timezone": "Asia/Jakarta",
+  "select": "SQL:SELECT id FROM transaction_sales_order WHERE status = 'CONFIRMED' AND payment_status = 'UNPAID' AND confirmed_at < NOW() - INTERVAL '7 days'",
+  "max_rows": 500,
+  "actions": [
+    { "type": "update", "table": "transaction_sales_order", "where": { "id": "{row.id}" }, "set": { "status": "CANCELLED" } }
+  ]
+}
+```
+
+**6. Periodic job without rows.** With an empty `select`, the actions run once per slot, for example to refresh a summary table.
+
+```json
+{
+  "name": "refresh_stock_snapshot",
+  "cron": "@hourly",
+  "actions": [
+    { "type": "sql", "table": "inventory_stock_snapshot", "statement": "INSERT INTO inventory_stock_snapshot (taken_at, product_id, qty) SELECT CURRENT_TIMESTAMP, product_id, SUM(qty) FROM transaction_product_lot GROUP BY product_id" }
+  ]
+}
+```
+
+### 11b.15 Limits & good practice
+
+- `insert` and `sql` actions write directly. They do **not** fire the target entity's `on_create` triggers or webhooks, and do not apply its `state_machine`. Use `update` on an entity when the rules must apply.
+- `select` and `sql` statements are trusted configuration written by administrators. They are never built from user input. Restrict write access to `LOC_CONFIG` accordingly.
+- Keep each run well below `lock_ttl_secs`. Use `max_rows` to split large backlogs across runs.
+- For validation (IQ/OQ), use `POST /admin/schedules/<name>/run` on a test dataset and keep the JSON report together with the audit lines it produced.
+
+---
+
 ## 12. Database seeding (`seed`)
 
 Flexurio supports declarative database seeding for initial master data, lookup tables, and test fixtures.
@@ -1564,6 +1922,9 @@ Core / system endpoints:
 | `GET /roles` | List roles. |
 | `GET /healthz` | Health check: `{ "status": "ok", "db": "up\|down", "db_type": "…" }`. Returns `503` if the DB is unreachable. |
 | `GET /metrics` | Prometheus‑format metrics. |
+| `POST /admin/reload` / `GET /admin/registry` | Hot reload / inspect the live configuration (admin). See [§5b](#5b-operations-offline-init-hot-reload-queues-webhooks-tokens). |
+| `GET /admin/schedules` | List cron schedules with their next run (admin). See [§11b](#11b-scheduled-jobs--time-based-workflows-schedules). |
+| `POST /admin/schedules/<name>/run` | Run a schedule now (admin; `409` if it is already running). |
 | `POST /mcp` | MCP Streamable HTTP endpoint (see [§18](#18-mcp-server-model-context-protocol)). |
 | `GET /.well-known/oauth-protected-resource[/mcp]` | MCP Protected Resource Metadata (RFC 9728), public. |
 | `GET /static/...` | Static files from `LOC_STATIC` (directory listing in debug mode). |

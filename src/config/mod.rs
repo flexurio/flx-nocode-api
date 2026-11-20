@@ -7,7 +7,7 @@
 //!   loaded at boot. Request-time code must go through `crate::registry`, which
 //!   starts from these values and is swapped atomically on reload.
 
-use crate::model::{ReferenceForeignKey, ReferenceForeignKeyAction, TableSchema};
+use crate::model::{ReferenceForeignKey, ReferenceForeignKeyAction, ScheduleDef, TableSchema};
 use colored::Colorize;
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
@@ -52,6 +52,9 @@ pub struct LoadedConfig {
     pub fingerprints: HashMap<String, u64>,
     /// `rules.json` as loaded (empty object when missing/invalid).
     pub rules: serde_json::Value,
+    /// Merged declarative cron schedules from `routes.json`, optional
+    /// `schedules.json`, and every `entity/<route>.json`.
+    pub schedules: Vec<ScheduleDef>,
 }
 
 impl Default for LoadedConfig {
@@ -61,12 +64,14 @@ impl Default for LoadedConfig {
                 routes: vec![],
                 route_publics: std::collections::HashSet::new(),
                 converter_token: crate::auth::ClaimsConverter::default(),
+                schedules: vec![],
             },
             schemas: HashMap::new(),
             ref_foreign_keys: vec![],
             raw: HashMap::new(),
             fingerprints: HashMap::new(),
             rules: serde_json::json!({}),
+            schedules: vec![],
         }
     }
 }
@@ -181,8 +186,34 @@ pub fn load_config_from(dir: &str, db_type: &str) -> Result<LoadedConfig, String
         Err(_) => serde_json::json!({}),
     };
 
+    // Merge schedules from routes.json, optional schedules.json, and every entity/*.json
+    let mut schedules: Vec<ScheduleDef> = config.schedules.clone();
+    let schedules_path = format!("{}/schedules.json", dir);
+    if let Ok(c) = fs::read_to_string(&schedules_path) {
+        let val: serde_json::Value = serde_json::from_str(&c)
+            .map_err(|e| format!("schedules.json is not valid JSON: {}", e))?;
+        let parsed: Vec<ScheduleDef> = if val.is_array() {
+            serde_json::from_value(val)
+                .map_err(|e| format!("schedules.json is not a valid schedule list: {}", e))?
+        } else if let Some(arr) = val.get("schedules") {
+            serde_json::from_value(arr.clone())
+                .map_err(|e| format!("schedules.json 'schedules' is invalid: {}", e))?
+        } else {
+            return Err("schedules.json must be a JSON array or {\"schedules\": [...]}".to_string());
+        };
+        schedules.extend(parsed);
+    }
+    for route in config.routes.iter() {
+        if let Some(schema) = schemas.get(route) {
+            for mut s in schema.schedules.clone() {
+                s.owner_route = Some(route.clone());
+                schedules.push(s);
+            }
+        }
+    }
+
     schemas.shrink_to_fit();
-    Ok(LoadedConfig { config, schemas, ref_foreign_keys, raw: raw_map, fingerprints, rules })
+    Ok(LoadedConfig { config, schemas, ref_foreign_keys, raw: raw_map, fingerprints, rules, schedules })
 }
 
 /// Configuration loaded at boot. A failure here is fatal (the process cannot

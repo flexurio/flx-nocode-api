@@ -122,6 +122,93 @@ pub async fn seed_and_take(tx: &mut (dyn TxStore + '_), dialect: &str, scope: &s
     }
 }
 
+/// True when `e` is a unique / primary-key violation on any supported dialect.
+fn is_duplicate_key_error(e: &anyhow::Error) -> bool {
+    let msg = e.to_string().to_ascii_lowercase();
+    ["unique", "duplicate", "primary key", "23505", "1062", "2627", "2601", "1555", "2067"]
+        .iter()
+        .any(|needle| msg.contains(needle))
+}
+
+/// Atomic compare-and-set on one `flx_sequences` row, used by the cron
+/// scheduler for cross-replica coordination (one row per scope, never grows):
+///
+/// `UPDATE flx_sequences SET seq_value = new_value WHERE scope = ? AND seq_value < below`
+///
+/// The row is created on first use (value 0; a concurrent creator losing the
+/// primary-key race is ignored). Returns `Ok(true)` when this caller's UPDATE
+/// changed the row — i.e. it won — and `Ok(false)` when another replica got
+/// there first. The UPDATE takes a row lock, so exactly one concurrent caller
+/// can win for the same `(scope, below)` on PostgreSQL / MySQL / MSSQL / SQLite.
+pub async fn compare_and_set_below(
+    store: &dyn crate::storage::traits::DataStore,
+    scope: &str,
+    new_value: i64,
+    below: i64,
+) -> Result<bool> {
+    let now = chrono::Utc::now().to_rfc3339();
+    if let Err(e) = store
+        .insert(TABLE, json!({ "scope": scope, VALUE_COL: 0, "updated_at": now }))
+        .await
+        && !is_duplicate_key_error(&e)
+    {
+        return Err(e);
+    }
+    let mut tx = store.begin_tx().await?;
+    let affected = tx
+        .raw_execute(
+            &format!(
+                "UPDATE {t} SET {c} = ?, updated_at = ? WHERE scope = ? AND {c} < ?",
+                t = TABLE,
+                c = VALUE_COL
+            ),
+            vec![
+                DbParam::I64(new_value),
+                DbParam::Str(now),
+                DbParam::Str(scope.to_string()),
+                DbParam::I64(below),
+            ],
+        )
+        .await;
+    match affected {
+        Ok(n) => {
+            tx.commit().await?;
+            Ok(n > 0)
+        }
+        Err(e) => {
+            let _ = tx.rollback().await;
+            Err(e)
+        }
+    }
+}
+
+/// Set `scope` to `new_value` only if it currently equals `expected`
+/// (used to release a scheduler lease that this process still owns).
+pub async fn compare_and_set_eq(
+    store: &dyn crate::storage::traits::DataStore,
+    scope: &str,
+    new_value: i64,
+    expected: i64,
+) -> Result<bool> {
+    let mut tx = store.begin_tx().await?;
+    let affected = tx
+        .raw_execute(
+            &format!("UPDATE {t} SET {c} = ? WHERE scope = ? AND {c} = ?", t = TABLE, c = VALUE_COL),
+            vec![DbParam::I64(new_value), DbParam::Str(scope.to_string()), DbParam::I64(expected)],
+        )
+        .await;
+    match affected {
+        Ok(n) => {
+            tx.commit().await?;
+            Ok(n > 0)
+        }
+        Err(e) => {
+            let _ = tx.rollback().await;
+            Err(e)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

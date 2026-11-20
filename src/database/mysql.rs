@@ -37,8 +37,13 @@ fn determine_mysql_col_type(column: &sqlx::mysql::MySqlColumn) -> MySqlColType {
     let type_info_debug = format!("{:?}", column.type_info()).to_uppercase();
     let is_unsigned = type_info_debug.contains("UNSIGNED");
     let has_binary_flag = type_info_debug.contains("BINARY");
-    let has_longtext_blob =
-        type_info_debug.contains("BLOB") && type_info_debug.contains("MAX_SIZE: SOME(4294967295)");
+    // MySQL reports TINYTEXT/TEXT/MEDIUMTEXT/LONGTEXT on the wire as BLOB types;
+    // only a binary collation (63) marks real binary data. Without this check
+    // TEXT columns (e.g. flx_outbox.payload) came back base64-encoded, and a
+    // `_bin` collation (DEFAULT_COLLATE=utf8mb4_bin) also sets the BINARY flag.
+    let is_binary_collation = type_info_debug.contains("COLLATION(63)");
+    let has_longtext_blob = type_info_debug.contains("BLOB")
+        && (!is_binary_collation || type_info_debug.contains("MAX_SIZE: SOME(4294967295)"));
 
     if type_info_debug.contains("LONG") {
         if is_unsigned {

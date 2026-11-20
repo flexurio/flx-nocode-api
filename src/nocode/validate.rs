@@ -222,7 +222,7 @@ pub const SUPPORTED_TRIGGER_EVENTS: &[&str] = &["update", "create", "delete", "s
 pub const KNOWN_TOP_LEVEL_KEYS: &[&str] = &[
     "table", "primary_key", "foreign_keys", "columns", "indexes", "details",
     "action_triggers", "triggers", "redis", "get", "post", "put", "del", "patch", "trace",
-    "locked_when", "state_machine", "auto_generate", "seed", "collate", "position", "search_columns", "webhooks", "http_cache_secs",
+    "locked_when", "state_machine", "auto_generate", "seed", "collate", "position", "search_columns", "webhooks", "schedules", "http_cache_secs",
 ];
 
 /// Keys a `columns[]` object may contain (mirrors `model::Column` + aliases).
@@ -867,6 +867,125 @@ pub fn lint_schemas(schemas: &HashMap<String, Arc<TableSchema>>, routes: &[Strin
                     continue;
                 }
                 lint_one(&ctx, &mut report, route, s);
+            }
+        }
+    }
+
+    report
+}
+
+/// Lint declarative cron schedules (`schedules[]`) from `routes.json`,
+/// `schedules.json`, and entity files. `schemas` (route → schema) is used to
+/// check that action tables resolve to managed entities.
+pub fn lint_schedules(
+    schedules: &[crate::model::ScheduleDef],
+    schemas: &HashMap<String, Arc<TableSchema>>,
+) -> LintReport {
+    let resolves = |name: &str| {
+        let n = name.trim();
+        schemas.contains_key(n) || schemas.values().any(|s| s.table.eq_ignore_ascii_case(n))
+    };
+    let mut report = LintReport::default();
+    let mut seen_names: HashSet<String> = HashSet::new();
+
+    for sched in schedules {
+        let label = if sched.name.trim().is_empty() {
+            "schedules".to_string()
+        } else {
+            format!("schedule:{}", sched.name)
+        };
+
+        if sched.name.trim().is_empty() {
+            report.error(&label, "schedule name cannot be empty");
+        } else {
+            let valid_name = sched
+                .name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'));
+            if !valid_name {
+                report.error(&label, "schedule name may only contain [A-Za-z0-9_.-]");
+            }
+            if !seen_names.insert(sched.name.clone()) {
+                report.error(&label, format!("duplicate schedule name '{}'", sched.name));
+            }
+        }
+
+        if let Err(e) = crate::nocode::scheduler::CronExpr::parse(&sched.cron) {
+            report.error(&label, e);
+        }
+        if let Err(e) = crate::nocode::scheduler::parse_timezone(&sched.timezone) {
+            report.error(&label, e);
+        }
+        if let Err(e) = crate::nocode::scheduler::extract_select_sql(&sched.select) {
+            report.error(&label, e);
+        }
+        if sched.actions.is_empty() {
+            report.warn(&label, "schedule has no actions");
+        }
+        if sched.catch_up_secs.is_some_and(|s| s > 7 * 86_400) {
+            report.warn(&label, "catch_up_secs is capped at 604800 (7 days)");
+        }
+        if sched.lock_ttl_secs.is_some_and(|s| s < 60) {
+            report.warn(&label, "lock_ttl_secs below 60 is raised to 60");
+        }
+        // Route/table a `webhook` without `url`/`table` would attach to.
+        let mut webhook_target = sched.owner_route.is_some();
+        for (idx, act) in sched.actions.iter().enumerate() {
+            match act.action_type.trim().to_ascii_lowercase().as_str() {
+                "update" => {
+                    if act.table.trim().is_empty() || !is_valid_identifier(act.table.trim()) {
+                        report.error(&label, format!("action[{}] update has invalid table '{}'", idx, act.table));
+                    } else if !resolves(&act.table) {
+                        report.warn(
+                            &label,
+                            format!(
+                                "action[{}] update table '{}' is not a configured entity: state_machine, locked_when, action_triggers and webhooks are NOT applied",
+                                idx, act.table
+                            ),
+                        );
+                    } else {
+                        webhook_target = true;
+                    }
+                    if act.r#where.as_ref().map(|m| m.is_empty()).unwrap_or(true) {
+                        report.error(&label, format!("action[{}] update requires non-empty 'where'", idx));
+                    }
+                    if act.set.as_ref().map(|m| m.is_empty()).unwrap_or(true) {
+                        report.error(&label, format!("action[{}] update requires non-empty 'set'", idx));
+                    }
+                }
+                "webhook" => {
+                    let has_event = act.event.as_deref().map(|s| !s.trim().is_empty()).unwrap_or(false);
+                    let has_url = act.url.as_deref().map(|s| !s.trim().is_empty()).unwrap_or(false);
+                    if !has_event && !has_url {
+                        report.error(&label, format!("action[{}] webhook requires 'event' or 'url'", idx));
+                    }
+                    let has_table = !act.table.trim().is_empty();
+                    if has_table && !has_url && !resolves(&act.table) {
+                        report.error(&label, format!("action[{}] webhook table '{}' is not a configured entity", idx, act.table));
+                    }
+                    if !has_url && !has_table && !webhook_target {
+                        report.error(
+                            &label,
+                            format!("action[{}] webhook has no target: set 'url' or 'table', declare the schedule inside an entity file, or put an update action on an entity before it", idx),
+                        );
+                    }
+                }
+                "insert" => {
+                    if act.table.trim().is_empty() || !is_valid_identifier(act.table.trim()) {
+                        report.error(&label, format!("action[{}] insert has invalid table '{}'", idx, act.table));
+                    }
+                    if act.fields.as_ref().map(|m| m.is_empty()).unwrap_or(true) {
+                        report.error(&label, format!("action[{}] insert requires non-empty 'fields'", idx));
+                    }
+                }
+                "sql" => {
+                    if act.statement.as_deref().map(|s| s.trim().is_empty()).unwrap_or(true) {
+                        report.error(&label, format!("action[{}] sql requires non-empty 'statement'", idx));
+                    }
+                }
+                other => {
+                    report.error(&label, format!("action[{}] has unsupported type '{}'", idx, other));
+                }
             }
         }
     }

@@ -59,6 +59,7 @@ pub fn run_config_lint() -> anyhow::Result<()> {
     for route in raw_routes {
         report.merge(lint_raw_entity(route, &raw_entities[route]));
     }
+    report.merge(crate::nocode::validate::lint_schedules(&crate::config::boot_config().schedules, &crate::config::boot_config().schemas));
 
     for w in &report.warnings {
         let (route, msg) = split_route(w);

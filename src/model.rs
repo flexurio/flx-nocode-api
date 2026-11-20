@@ -45,6 +45,8 @@ pub struct Config {
     pub route_publics: HashSet<String>,
     #[serde(default)]
     pub converter_token: ClaimsConverter,
+    #[serde(default)]
+    pub schedules: Vec<ScheduleDef>,
 }
 
 pub struct ParamJoin {
@@ -126,6 +128,92 @@ pub struct Webhook {
     /// Extra HTTP headers (e.g. a shared secret) sent with every delivery.
     #[serde(default)]
     pub headers: std::collections::BTreeMap<String, String>,
+}
+
+fn default_schedule_timezone() -> String {
+    "UTC".to_string()
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// Declarative cron-based scheduled job (`schedules[]`).
+///
+/// Can be declared inside an entity JSON (`entity/<route>.json`), inside
+/// `routes.json`, or in an optional `config/schedules.json` file.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct ScheduleDef {
+    /// Unique name of the schedule (used in lock keys, audit trail, and
+    /// `POST /admin/schedules/<name>/run`).
+    pub name: String,
+    /// 5-field cron expression (`min hour dom month dow`) or macro (`@daily`, etc.).
+    pub cron: String,
+    /// IANA timezone name or fixed offset (e.g. `"Asia/Jakarta"`, `"UTC"`, `"+07:00"`).
+    #[serde(default = "default_schedule_timezone")]
+    pub timezone: String,
+    /// Toggle schedule execution without removing the definition (default `true`).
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Read-only `SELECT` query (with optional `"SQL:"` prefix) whose rows drive `actions`.
+    /// When empty, `actions` execute once with an empty row object.
+    #[serde(default)]
+    pub select: String,
+    /// Sequential actions executed per selected row inside a database transaction.
+    #[serde(default)]
+    pub actions: Vec<ScheduleAction>,
+    /// Run-lease TTL in seconds (default `SCHEDULER_LOCK_TTL_SECS`, 900): while
+    /// a run holds the lease no other run of the same schedule (cron or manual,
+    /// on any replica) may start. Must exceed the longest expected run.
+    #[serde(default)]
+    pub lock_ttl_secs: Option<u64>,
+    /// How far back (seconds) a missed cron slot is still executed — after a
+    /// restart, deploy, or a long-running previous run (default
+    /// `SCHEDULER_CATCH_UP_SECS`, 3600; `0` = run only in the exact minute).
+    #[serde(default)]
+    pub catch_up_secs: Option<u64>,
+    /// Maximum rows processed per run from `select` (default
+    /// `SCHEDULER_MAX_ROWS`, 10000). Remaining rows are picked up next run.
+    #[serde(default)]
+    pub max_rows: Option<usize>,
+    /// Owning entity route when declared inside `entity/<route>.json`.
+    #[serde(skip)]
+    pub owner_route: Option<String>,
+}
+
+/// Single action inside a [`ScheduleDef`].
+#[derive(Debug, Default, Serialize, Deserialize, Clone, PartialEq)]
+pub struct ScheduleAction {
+    /// `"update"` | `"webhook"` | `"insert"` | `"sql"`
+    #[serde(default, rename = "type")]
+    pub action_type: String,
+    /// Target table (used by `update`, `insert`, and optional entity override for `webhook`).
+    #[serde(default, alias = "target_table", alias = "entity")]
+    pub table: String,
+    /// Equality filter map for `update` (e.g. `{ "id": "{row.id}" }`).
+    #[serde(default, rename = "where", alias = "filter")]
+    pub r#where: Option<serde_json::Map<String, serde_json::Value>>,
+    /// Column assignments for `update` (e.g. `{ "status": "OVERDUE" }`).
+    #[serde(default)]
+    pub set: Option<serde_json::Map<String, serde_json::Value>>,
+    /// Column values for `insert`.
+    #[serde(default, alias = "values")]
+    pub fields: Option<serde_json::Map<String, serde_json::Value>>,
+    /// Webhook event name (e.g. `"capa_overdue"`).
+    #[serde(default)]
+    pub event: Option<String>,
+    /// Optional direct webhook URL (overrides entity `webhooks[]` lookup).
+    #[serde(default)]
+    pub url: Option<String>,
+    /// Optional extra HTTP headers when `url` is specified directly.
+    #[serde(default)]
+    pub headers: std::collections::BTreeMap<String, String>,
+    /// Parameterized SQL statement for `type: "sql"`.
+    #[serde(default)]
+    pub statement: Option<String>,
+    /// Parameter templates for `type: "sql"`.
+    #[serde(default)]
+    pub params: Option<Vec<String>>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize, Clone, PartialEq)]
@@ -328,6 +416,9 @@ pub struct TableSchema {
     /// Webhooks delivered asynchronously via the transactional outbox.
     #[serde(default)]
     pub webhooks: Vec<Webhook>,
+    /// Declarative cron schedules attached to this entity.
+    #[serde(default)]
+    pub schedules: Vec<ScheduleDef>,
     /// Browser/proxy cache lifetime for GET responses in seconds
     /// (`Cache-Control: private, max-age=N`). 0 (default) sends `no-cache`:
     /// the client may keep the page but must revalidate with `If-None-Match`,
@@ -410,6 +501,7 @@ impl Default for TableSchema {
             collate: "".to_string(),
             search_columns: vec![],
             webhooks: vec![],
+            schedules: vec![],
             http_cache_secs: 0,
             declared_cols: std::sync::OnceLock::new(),
         }

@@ -326,8 +326,102 @@ async fn admin_registry(state: web::Data<AppState>, req: HttpRequest) -> HttpRes
             "loaded_at": reg.loaded_at.to_rfc3339(),
             "routes": reg.routes,
             "route_publics": reg.route_publics,
+            "schedules": reg.schedules.iter().map(|s| &s.name).collect::<Vec<_>>(),
         }),
     })
+}
+
+async fn admin_list_schedules(state: web::Data<AppState>, req: HttpRequest) -> HttpResponse {
+    if !is_admin(&state, &req) {
+        return json_err(actix_web::http::StatusCode::FORBIDDEN, "Admin role required");
+    }
+    let reg = registry::current();
+    let now_utc = chrono::Utc::now();
+    let items: Vec<Value> = reg
+        .schedules
+        .iter()
+        .map(|s| {
+            let next_run = crate::nocode::scheduler::parse_timezone(&s.timezone)
+                .ok()
+                .and_then(|tz| {
+                    crate::nocode::scheduler::CronExpr::parse(&s.cron)
+                        .ok()
+                        .and_then(|c| c.next_after(now_utc, &tz))
+                })
+                .map(|dt| dt.to_rfc3339());
+            serde_json::json!({
+                "name": s.name,
+                "cron": s.cron,
+                "timezone": s.timezone,
+                "enabled": s.enabled,
+                "owner_route": s.owner_route,
+                "catch_up_secs": s.catch_up_secs,
+                "max_rows": s.max_rows,
+                "lock_ttl_secs": s.lock_ttl_secs,
+                "actions_count": s.actions.len(),
+                "next_run_at": next_run,
+            })
+        })
+        .collect();
+    HttpResponse::Ok().json(WebResponse {
+        success: true,
+        message: "Configured schedules".to_string(),
+        total_data: items.len() as i32,
+        data: Value::Array(items),
+    })
+}
+
+async fn admin_run_schedule(
+    state: web::Data<AppState>,
+    req: HttpRequest,
+    path: Path<String>,
+) -> HttpResponse {
+    if !is_admin(&state, &req) {
+        return json_err(actix_web::http::StatusCode::FORBIDDEN, "Admin role required");
+    }
+    let name = path.into_inner();
+    let Some(schedule) = registry::current().schedule(&name) else {
+        return json_err(
+            actix_web::http::StatusCode::NOT_FOUND,
+            format!("Schedule '{}' not found", name),
+        );
+    };
+
+    let ip = crate::helpers::get_client_ip(&req);
+    let ip_opt = if ip.is_empty() { None } else { Some(ip.as_str()) };
+    let actor_id = {
+        use actix_web::HttpMessage;
+        req.extensions()
+            .get::<crate::auth::Claims>()
+            .map(|c| c.id.trim().to_string())
+            .filter(|id| !id.is_empty())
+            .unwrap_or_else(|| crate::nocode::scheduler::SYSTEM_ROLE.to_string())
+    };
+
+    use crate::nocode::scheduler::{run_now, RunError};
+    match run_now(&state, &schedule, &actor_id, ip_opt).await {
+        Ok(report) => HttpResponse::Ok().json(WebResponse {
+            success: report.failed_rows == 0,
+            message: if report.failed_rows == 0 {
+                format!("Schedule '{}' executed", name)
+            } else {
+                format!("Schedule '{}' completed with {} failed row(s)", name, report.failed_rows)
+            },
+            total_data: report.matched_rows as i32,
+            data: serde_json::to_value(report).unwrap_or(Value::Null),
+        }),
+        Err(RunError::Busy) => json_err(
+            actix_web::http::StatusCode::CONFLICT,
+            format!("Schedule '{}' is already running (cron or manual); try again later", name),
+        ),
+        Err(RunError::Failed(e)) => {
+            log_output("ERROR", "SCHEDULER", &name, e.clone(), true);
+            json_err(
+                actix_web::http::StatusCode::UNPROCESSABLE_ENTITY,
+                format!("Schedule '{}' failed: {}", name, e),
+            )
+        }
+    }
 }
 
 // ── Public registration function ──────────────────────────────────────────────
@@ -424,10 +518,12 @@ pub fn configure_routes(
     cfg.service(web::resource("/email/send").route(web::post().to(crate::nocode::handlers::email_handler::send)));
     log_ep(do_log, "CORE ENDPOINT", "POST", host, &port_str, "email/send");
 
-    // ── Admin: live configuration ─────────────────────────────────────────────
+    // ── Admin: live configuration & schedules ────────────────────────────────
     cfg.service(web::resource("/admin/reload").route(web::post().to(admin_reload)));
     cfg.service(web::resource("/admin/registry").route(web::get().to(admin_registry)));
-    log_ep(do_log, "CORE ENDPOINT", "POST", host, &port_str, "admin/reload");
+    cfg.service(web::resource("/admin/schedules").route(web::get().to(admin_list_schedules)));
+    cfg.service(web::resource("/admin/schedules/{name}/run").route(web::post().to(admin_run_schedule)));
+    log_ep(do_log, "CORE ENDPOINT", "POST", host, &port_str, "admin/reload | admin/schedules/{name}/run");
 
     // ── Dynamic nocode routes (resolved per request from the registry) ────────
     // Specific prefixes first, then the two catch-alls.

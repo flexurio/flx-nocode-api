@@ -14,3 +14,4 @@ pub mod repositories;
 pub mod stream_queue;
 pub mod outbox;
 pub mod sequences;
+pub mod scheduler;

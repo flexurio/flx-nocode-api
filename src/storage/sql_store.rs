@@ -871,6 +871,10 @@ impl DataStore for SqlStore {
             tx,
         }))
     }
+
+    async fn raw_sql(&self, sql: &str, params: Vec<DbParam>) -> anyhow::Result<Vec<Value>> {
+        self.inner.query_with_params(sql, params).await
+    }
 }
 
 struct SqlTxStore {

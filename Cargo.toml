@@ -131,6 +131,7 @@ schemars = { version = "1", optional = true }
 http1 = { version = "1", package = "http", optional = true }
 http-body = { version = "1", optional = true }
 http-body-util = { version = "0.1", optional = true }
+chrono-tz = "0.10"
 
 [target.'cfg(unix)'.dependencies]
 # Used by `mcp --stdio` to keep boot logs off the JSON-RPC stdout channel.

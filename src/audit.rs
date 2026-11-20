@@ -88,6 +88,21 @@ pub fn write_audit(entry: &AuditEntry<'_>) {
     }
 }
 
+/// Like [`write_audit`] but merges the keys of `extra` (a JSON object) into
+/// the audit line, e.g. `{"schedule": "capa_overdue", "trigger": "cron",
+/// "error": "..."}`. Keys already present in `entry` are not overwritten.
+pub fn write_audit_with(entry: &AuditEntry<'_>, extra: serde_json::Value) {
+    let Ok(serde_json::Value::Object(mut base)) = serde_json::to_value(entry) else { return };
+    if let serde_json::Value::Object(map) = extra {
+        for (k, v) in map {
+            base.entry(k).or_insert(v);
+        }
+    }
+    if let Ok(json) = serde_json::to_string(&base) {
+        let _ = AUDIT_CHANNEL.try_send(AuditMsg::Line(json));
+    }
+}
+
 /// Flush every buffered audit line to disk. Resolves once the writer confirms
 /// (or immediately if the writer task is gone).
 pub async fn flush() {

@@ -116,6 +116,51 @@ pub async fn enqueue_in_tx(
     Ok(n)
 }
 
+/// Insert a single outbox row for an explicit webhook URL inside `tx` (used by
+/// scheduled actions that declare `url` directly instead of matching entity
+/// `webhooks[]`).
+#[allow(clippy::too_many_arguments)]
+pub async fn enqueue_direct_in_tx(
+    tx: &mut (dyn TxStore + '_),
+    route: &str,
+    table: &str,
+    event: &str,
+    url: &str,
+    headers: &std::collections::BTreeMap<String, String>,
+    id: &str,
+    actor_id: Option<&str>,
+    record: &serde_json::Map<String, Value>,
+    old_record: Option<&serde_json::Map<String, Value>>,
+) -> anyhow::Result<usize> {
+    if url.trim().is_empty() {
+        return Ok(0);
+    }
+    let payload = json!({
+        "event": event,
+        "entity": route,
+        "table": table,
+        "id": id,
+        "actor_id": actor_id,
+        "at": now_iso(),
+        "record": Value::Object(record.clone()),
+        "old_record": old_record.map(|m| Value::Object(m.clone())),
+    })
+    .to_string();
+    let doc = json!({
+        "kind": "webhook",
+        "entity": route,
+        "event": event,
+        "target": url.trim(),
+        "headers": serde_json::to_string(headers).unwrap_or_else(|_| "{}".into()),
+        "payload": payload,
+        "status": "pending",
+        "attempts": 0,
+        "next_attempt_at": now_iso(),
+    });
+    tx.insert(TABLE, doc).await?;
+    Ok(1)
+}
+
 fn backoff_secs(attempt: i64) -> i64 {
     (2i64.pow(attempt.clamp(0, 12) as u32) * 5).min(3600)
 }

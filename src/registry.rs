@@ -19,7 +19,7 @@ use crate::auth::Rule;
 use crate::config::{load_config_from, LoadedConfig, CONFIG_LOCATION};
 use crate::database::state::AppState;
 use crate::log::log_output;
-use crate::model::{ReferenceForeignKey, TableSchema};
+use crate::model::{ReferenceForeignKey, ScheduleDef, TableSchema};
 
 /// Immutable snapshot of one configuration generation.
 pub struct Registry {
@@ -36,6 +36,8 @@ pub struct Registry {
     pub rules: Arc<Vec<Rule>>,
     /// Per-entity file fingerprints (change detection on reload).
     pub fingerprints: HashMap<String, u64>,
+    /// Merged declarative cron schedules (hot-reloaded with the registry).
+    pub schedules: Arc<Vec<ScheduleDef>>,
 }
 
 impl Registry {
@@ -50,6 +52,7 @@ impl Registry {
             rules_raw: loaded.rules.clone(),
             rules: Arc::new(crate::auth::parse_rules_value(&loaded.rules)),
             fingerprints: loaded.fingerprints.clone(),
+            schedules: Arc::new(loaded.schedules.clone()),
         }
     }
 
@@ -59,6 +62,10 @@ impl Registry {
 
     pub fn is_public(&self, route: &str) -> bool {
         self.route_publics.contains(route)
+    }
+
+    pub fn schedule(&self, name: &str) -> Option<ScheduleDef> {
+        self.schedules.iter().find(|s| s.name == name).cloned()
     }
 }
 
@@ -123,6 +130,7 @@ pub async fn reload(state: &AppState) -> Result<ReloadReport, String> {
         for route in raw_routes {
             report.merge(crate::nocode::validate::lint_raw_entity(route, &loaded.raw[route]));
         }
+        report.merge(crate::nocode::validate::lint_schedules(&loaded.schedules, &loaded.schemas));
         lint_warnings = report.warnings.clone();
         if !report.errors.is_empty() && mode == crate::startup::LintMode::Strict {
             return Err(format!(
