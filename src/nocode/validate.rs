@@ -1135,7 +1135,12 @@ pub fn lint_raw_entity(route: &str, raw: &Value) -> LintReport {
     report
 }
 
-pub async fn validate_api_formula(formula: &str, body: &Value, auth_token: Option<&str>) -> Result<(), String> {
+pub async fn validate_api_formula(
+    formula: &str,
+    body: &Value,
+    auth_token: Option<&str>,
+    claims: Option<&crate::auth::Claims>,
+) -> Result<(), String> {
     if !formula.starts_with("API:") {
         return Ok(());
     }
@@ -1159,7 +1164,7 @@ pub async fn validate_api_formula(formula: &str, body: &Value, auth_token: Optio
     let method = parts[1].to_uppercase();
     let url_formula = parts[2];
 
-    match crate::database::state::build_url_from_formula(url_formula, body) {
+    match crate::database::state::build_url_from_formula_with_claims(url_formula, body, claims) {
         Ok(url) => {
             // log_output untuk debug
             log_output("DEBUG", "API VALIDATION","URL", url.to_string(), true);
@@ -1197,9 +1202,23 @@ pub async fn validate_api_formula(formula: &str, body: &Value, auth_token: Optio
                             // Get value from response path
                             let resp_val_opt = crate::database::state::get_by_path_value(&resp_json, resp_path);
 
-                            // Get value from request body to check
-                            let req_key = req_path.strip_prefix("request.").unwrap_or(req_path);
-                            let req_val_opt = crate::database::state::get_by_path_value(body, req_key);
+                            // Get value from request body or caller claims (`user.*`) to check
+                            let owned_user_val: Option<Value>;
+                            let req_val_opt = if let Some(user_key) = req_path.strip_prefix("user.") {
+                                let resolved = crate::database::state::resolve_user_placeholder_str(user_key, claims)
+                                    .map_err(|e| format!("Validation failed: {}", e))?;
+                                owned_user_val = resolved.map(|s| {
+                                    if user_key.trim().starts_with("has_role:") {
+                                        Value::Number(serde_json::Number::from(if s == "1" { 1 } else { 0 }))
+                                    } else {
+                                        Value::String(s)
+                                    }
+                                });
+                                owned_user_val.as_ref()
+                            } else {
+                                let req_key = req_path.strip_prefix("request.").unwrap_or(req_path);
+                                crate::database::state::get_by_path_value(body, req_key)
+                            };
 
                             // Handle unwrapping based on operator requirements
                             // 'eq', 'neq' need single values. 'in' needs array from response.

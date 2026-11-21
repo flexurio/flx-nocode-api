@@ -26,6 +26,7 @@ pub struct TriggerContext<'a> {
     pub new_record: &'a Map<String, Value>,
     pub request_body: &'a Value,
     pub actor_id: Option<&'a str>,
+    pub claims: Option<&'a crate::auth::Claims>,
 }
 
 /// Check whether a trigger condition is met based on old and new record states.
@@ -267,6 +268,29 @@ pub fn resolve_numeric_var(
     item_opt: Option<&Map<String, Value>>,
 ) -> Option<f64> {
     let clean = ident.trim().trim_matches('{').trim_matches('}');
+
+    // 0. Check caller identity (`user.has_role:<role>` -> 1.0/0.0, `user.id` -> numeric if parseable)
+    if let Some(prop) = clean.strip_prefix("user.") {
+        if let Some(role) = prop.strip_prefix("has_role:") {
+            let role = role.trim();
+            if !role.is_empty() {
+                return Some(if ctx.claims.is_some_and(|c| c.has_role(role)) {
+                    1.0
+                } else {
+                    0.0
+                });
+            }
+            return None;
+        }
+        if prop == "id" {
+            return ctx
+                .claims
+                .map(|c| c.id.trim())
+                .filter(|s| !s.is_empty())
+                .and_then(|s| s.parse::<f64>().ok());
+        }
+        return None;
+    }
 
     // 1. Check accumulators (prefix "acc." or "accumulated." or raw key)
     if let Some(prop) = clean.strip_prefix("acc.").or_else(|| clean.strip_prefix("accumulated."))
@@ -857,6 +881,10 @@ fn resolve_single_token(
         if let Some(v) = resolve_nested_json(ctx.request_body, prop) {
             return json_val_to_str(&v);
         }
+    } else if let Some(prop) = expr.strip_prefix("user.") {
+        if let Ok(Some(val)) = crate::database::state::resolve_user_placeholder_str(prop, ctx.claims) {
+            return val;
+        }
     } else {
         // Direct lookups: check item first, then lookups, then accumulators, then parent, then request
         if let Some(item) = item_opt {
@@ -1005,6 +1033,47 @@ pub fn is_date_format(s: &str) -> bool {
         }
     }
     false
+}
+
+/// If `tmpl` is a standalone `{user.<key>}` placeholder (e.g. `"{user.custom}"`,
+/// `"{user.has_role:plant_qa_manager}"`), resolve it directly into a typed [`DbParam`]
+/// without string-coercing numeric NIPs or turning empty claims into `""`.
+fn resolve_exact_user_param(
+    tmpl: &str,
+    claims: Option<&crate::auth::Claims>,
+) -> Option<Result<DbParam, String>> {
+    let trimmed = tmpl.trim();
+    let inner = trimmed.strip_prefix("{user.")?.strip_suffix('}')?;
+    if inner.contains('{') || inner.contains('}') || inner.contains('|') {
+        return None;
+    }
+    Some(
+        crate::database::state::resolve_user_placeholder_param(inner, claims)
+            .map_err(|e| e.to_string()),
+    )
+}
+
+/// Resolve a string template into a bound [`DbParam`], preserving exact `{user.*}` types.
+fn resolve_template_dbparam(
+    tmpl: &str,
+    ctx: &TriggerContext,
+    runtime_opt: Option<&TriggerRuntime>,
+    item_opt: Option<&Map<String, Value>>,
+) -> Result<(String, DbParam), String> {
+    if let Some(res) = resolve_exact_user_param(tmpl, ctx.claims) {
+        let param = res?;
+        let display = match &param {
+            DbParam::Str(s) => s.clone(),
+            DbParam::I64(n) => n.to_string(),
+            DbParam::F64(f) => f.to_string(),
+            DbParam::Bool(b) => b.to_string(),
+            DbParam::Null => String::new(),
+        };
+        return Ok((display, param));
+    }
+    let resolved = interpolate_string_full(tmpl, ctx, runtime_opt, item_opt);
+    let param = coerce_dbparam(&resolved);
+    Ok((resolved, param))
 }
 
 /// Coerce a resolved string into the most appropriate DbParam type.
@@ -1342,12 +1411,12 @@ fn execute_action<'a>(
                 let mut where_clauses = Vec::new();
                 let mut filter_params = Vec::new();
                 for (col, tmpl_val) in filter_map {
-                    let resolved_str = match tmpl_val {
-                        Value::String(s) => interpolate_string_full(s, ctx, Some(runtime), item_opt.as_ref()),
-                        other => json_val_to_str(other),
+                    let param = match tmpl_val {
+                        Value::String(s) => resolve_template_dbparam(s, ctx, Some(runtime), item_opt.as_ref())?.1,
+                        other => coerce_dbparam(&json_val_to_str(other)),
                     };
                     where_clauses.push(format!("{} = ?", col));
-                    filter_params.push(coerce_dbparam(&resolved_str));
+                    filter_params.push(param);
                 }
                 let where_sql = where_clauses.join(" AND ");
 
@@ -1529,12 +1598,12 @@ fn execute_action<'a>(
                 let mut where_clauses = Vec::new();
                 let mut filter_params = Vec::new();
                 for (col, tmpl_val) in filter_map {
-                    let resolved_str = match tmpl_val {
-                        Value::String(s) => interpolate_string_full(s, ctx, Some(runtime), item_opt.as_ref()),
-                        other => json_val_to_str(other),
+                    let param = match tmpl_val {
+                        Value::String(s) => resolve_template_dbparam(s, ctx, Some(runtime), item_opt.as_ref())?.1,
+                        other => coerce_dbparam(&json_val_to_str(other)),
                     };
                     where_clauses.push(format!("{} = ?", col));
-                    filter_params.push(coerce_dbparam(&resolved_str));
+                    filter_params.push(param);
                 }
                 let where_sql = where_clauses.join(" AND ");
 
@@ -1591,6 +1660,10 @@ fn execute_action<'a>(
                             update_params.push(DbParam::Null);
                         }
                         Value::String(expr_str) => {
+                            if let Some(res) = resolve_exact_user_param(expr_str, ctx.claims) {
+                                update_params.push(res?);
+                                continue;
+                            }
                             let resolved_str = interpolate_string_full(expr_str, ctx, Some(runtime), item_opt.as_ref());
                             let trimmed = resolved_str.trim();
 
@@ -1703,12 +1776,16 @@ fn execute_action<'a>(
                 for (col, val) in fields_map {
                     cols.push(col.clone());
 
-                    let resolved_str = match val {
-                        Value::String(s) => interpolate_string_full(s, ctx, Some(runtime), item_opt.as_ref()),
-                        other => json_val_to_str(other),
+                    let (resolved_str, param) = match val {
+                        Value::String(s) => resolve_template_dbparam(s, ctx, Some(runtime), item_opt.as_ref())?,
+                        other => {
+                            let s = json_val_to_str(other);
+                            let p = coerce_dbparam(&s);
+                            (s, p)
+                        }
                     };
 
-                    params.push(coerce_dbparam(&resolved_str));
+                    params.push(param);
                     resolved.push(resolved_str);
                 }
 
@@ -1789,12 +1866,16 @@ fn execute_action<'a>(
                     for (col, val) in row_map {
                         cols.push(col.clone());
 
-                        let resolved_str = match val {
-                            Value::String(s) => interpolate_string_full(s, ctx, Some(runtime), item_opt.as_ref()),
-                            other => json_val_to_str(other),
+                        let (resolved_str, param) = match val {
+                            Value::String(s) => resolve_template_dbparam(s, ctx, Some(runtime), item_opt.as_ref())?,
+                            other => {
+                                let s = json_val_to_str(other);
+                                let p = coerce_dbparam(&s);
+                                (s, p)
+                            }
                         };
 
-                        params.push(coerce_dbparam(&resolved_str));
+                        params.push(param);
                         resolved.push(resolved_str);
                     }
 
@@ -1816,8 +1897,8 @@ fn execute_action<'a>(
                 let mut params = Vec::new();
                 if let Some(param_templates) = &action.params {
                     for tmpl in param_templates {
-                        let resolved = interpolate_string_full(tmpl, ctx, Some(runtime), item_opt.as_ref());
-                        params.push(coerce_dbparam(&resolved));
+                        let (_, param) = resolve_template_dbparam(tmpl, ctx, Some(runtime), item_opt.as_ref())?;
+                        params.push(param);
                     }
                 }
 
@@ -1891,6 +1972,7 @@ mod tests {
             new_record: &new_rec,
             request_body: &req_body,
             actor_id: Some("1"),
+            claims: None,
         };
 
         let mut item = Map::new();
@@ -1914,6 +1996,7 @@ mod tests {
             new_record: &new_rec,
             request_body: &req_body,
             actor_id: None,
+            claims: None,
         };
 
         let mut item = Map::new();
@@ -2149,6 +2232,7 @@ mod tests {
             new_record: &new_rec,
             request_body: &req_body,
             actor_id: Some("1"),
+            claims: None,
         };
 
         let mut mock_tx = MockTxStore {
@@ -2245,6 +2329,7 @@ mod tests {
             new_record: &new_rec,
             request_body: &req_body,
             actor_id: None,
+            claims: None,
         };
 
         // Insufficient stock: lot 12 has only 2 items in stock, but order item requires 5
@@ -2307,6 +2392,7 @@ mod tests {
             new_record: &new_rec,
             request_body: &req_body,
             actor_id: None,
+            claims: None,
         };
 
         let mut mock_tx = MockTxStore {
@@ -2368,6 +2454,7 @@ mod tests {
             new_record: &new_rec,
             request_body: &req_body,
             actor_id: None,
+            claims: None,
         };
 
         let mut mock_tx = MockTxStore {
@@ -2430,6 +2517,7 @@ mod tests {
             new_record: &new_rec,
             request_body: &req_body,
             actor_id: None,
+            claims: None,
         };
 
         let mut item = Map::new();
@@ -2475,6 +2563,7 @@ mod tests {
             new_record: &new_rec,
             request_body: &req_body,
             actor_id: None,
+            claims: None,
         };
 
         let mut item = Map::new();
@@ -2601,6 +2690,7 @@ mod tests {
             new_record: &new_rec,
             request_body: &req_body,
             actor_id: Some("1"),
+            claims: None,
         };
 
         let mut mock_tx = MockTxStore {
@@ -2690,6 +2780,7 @@ mod tests {
             new_record: &new_rec,
             request_body: &req_body,
             actor_id: None,
+            claims: None,
         };
 
         let mut mock_tx = MockTxStore {
@@ -2806,6 +2897,7 @@ mod tests {
             new_record: &new_rec,
             request_body: &req_body,
             actor_id: None,
+            claims: None,
         };
 
         let mut mock_tx = MockTxStore {
@@ -2896,6 +2988,7 @@ mod tests {
             new_record: &new_rec,
             request_body: &req_body,
             actor_id: None,
+            claims: None,
         };
 
         let mut mock_tx = MockTxStore {
@@ -2967,6 +3060,7 @@ mod tests {
             new_record: &new_rec,
             request_body: &req_body,
             actor_id: None,
+            claims: None,
         };
 
         // 1. Run with MSSQL
@@ -2990,6 +3084,178 @@ mod tests {
         assert!(res_pg.is_ok());
         let pg_select = mock_tx_pg.executed_sqls.iter().find(|(s, _)| s.contains("SELECT * FROM transaction_product_lot")).unwrap();
         assert!(pg_select.0.ends_with(" FOR UPDATE"), "Postgres must append FOR UPDATE");
+    }
+
+    #[test]
+    fn test_interpolate_and_conditional_with_user_placeholders() {
+        let claims = crate::auth::Claims {
+            id: "42".to_string(),
+            nm: "Dr. Rina".to_string(),
+            exp: 9999999999,
+            at: 0,
+            rl: "plant_qa_manager/127,auditor".to_string(),
+            cs: "00198801".to_string(),
+            jti: None,
+            typ: None,
+        };
+        let old_rec = Map::new();
+        let new_rec = Map::new();
+        let req_body = serde_json::json!({});
+        let ctx = TriggerContext {
+            parent_table: "plant_capas",
+            parent_pk: "9",
+            old_record: &old_rec,
+            new_record: &new_rec,
+            request_body: &req_body,
+            actor_id: Some("42"),
+            claims: Some(&claims),
+        };
+
+        let rendered = interpolate_string_full(
+            "id={user.id} name={user.name} nip={user.custom} roles={user.roles} qa={user.has_role:plant_qa_manager} adm={user.has_role:admin}",
+            &ctx,
+            None,
+            None,
+        );
+        assert_eq!(
+            rendered,
+            "id=42 name=Dr. Rina nip=00198801 roles=plant_qa_manager,auditor qa=1 adm=0"
+        );
+
+        let cond_true = interpolate_string_full(
+            "{if: user.has_role:plant_qa_manager == 1 ? 'QA_APPROVED' : 'NEEDS_QA'}",
+            &ctx,
+            None,
+            None,
+        );
+        assert_eq!(cond_true, "QA_APPROVED");
+
+        let cond_false = interpolate_string_full(
+            "{if: user.has_role:superadmin == 1 ? 'YES' : 'NO'}",
+            &ctx,
+            None,
+            None,
+        );
+        assert_eq!(cond_false, "NO");
+    }
+
+    #[test]
+    fn test_if_condition_compares_user_custom_with_record_column() {
+        let claims = crate::auth::Claims {
+            id: "42".to_string(),
+            nm: "Dr. Rina".to_string(),
+            exp: 9999999999,
+            at: 0,
+            rl: "plant_qa_manager".to_string(),
+            cs: "00198801".to_string(),
+            jti: None,
+            typ: None,
+        };
+        let old_rec = Map::new();
+        let mut new_rec = Map::new();
+        new_rec.insert("pic_nip".to_string(), serde_json::json!("00198801"));
+        new_rec.insert("prepared_by".to_string(), serde_json::json!("00177777"));
+        let req_body = serde_json::json!({});
+        let ctx = TriggerContext {
+            parent_table: "plant_capas",
+            parent_pk: "9",
+            old_record: &old_rec,
+            new_record: &new_rec,
+            request_body: &req_body,
+            actor_id: Some("42"),
+            claims: Some(&claims),
+        };
+
+        let is_pic = interpolate_string_full(
+            "{if: {user.custom} == {parent.pic_nip} ? 'PIC' : 'OTHER'}",
+            &ctx,
+            None,
+            None,
+        );
+        assert_eq!(is_pic, "PIC");
+
+        let is_preparer = interpolate_string_full(
+            "{if: {user.custom} == {parent.prepared_by} ? 'SAME' : 'DIFF'}",
+            &ctx,
+            None,
+            None,
+        );
+        assert_eq!(is_preparer, "DIFF");
+    }
+
+    #[tokio::test]
+    async fn test_execute_triggers_binds_user_placeholders_as_params() {
+        let claims = crate::auth::Claims {
+            id: "42".to_string(),
+            nm: "Dr. Rina".to_string(),
+            exp: 9999999999,
+            at: 0,
+            rl: "plant_qa_manager,reviewer".to_string(),
+            cs: "00198801".to_string(),
+            jti: None,
+            typ: None,
+        };
+        let trigger: crate::model::ActionTrigger = serde_json::from_value(serde_json::json!({
+            "name": "log_qa_actor",
+            "event": "on_update",
+            "actions": [
+                {
+                    "type": "sql",
+                    "statement": "INSERT INTO capa_log(capa_id, actor_id, actor_nip, actor_roles, is_qa) VALUES (?, ?, ?, ?, ?)",
+                    "params": [
+                        "{parent.id}",
+                        "{user.id}",
+                        "{user.custom}",
+                        "{user.roles}",
+                        "{user.has_role:plant_qa_manager}"
+                    ]
+                }
+            ]
+        }))
+        .unwrap();
+
+        let schema = TableSchema {
+            table: "plant_capas".to_string(),
+            action_triggers: vec![trigger],
+            ..Default::default()
+        };
+        let old_rec = Map::new();
+        let mut new_rec = Map::new();
+        new_rec.insert("id".to_string(), serde_json::json!(9));
+        let req_body = serde_json::json!({});
+        let ctx = TriggerContext {
+            parent_table: "plant_capas",
+            parent_pk: "9",
+            old_record: &old_rec,
+            new_record: &new_rec,
+            request_body: &req_body,
+            actor_id: Some("42"),
+            claims: Some(&claims),
+        };
+
+        let mut mock_tx = MockTxStore {
+            executed_sqls: Vec::new(),
+            lot_stock_12: 0.0,
+            lot_stock_14: 0.0,
+        };
+        let res = execute_triggers(DbType::Postgres, &mut mock_tx, &schema, &ctx, "on_update").await;
+        assert!(res.is_ok(), "trigger failed: {:?}", res);
+
+        let (sql, params) = mock_tx
+            .executed_sqls
+            .iter()
+            .find(|(s, _)| s.contains("INSERT INTO capa_log"))
+            .expect("expected INSERT INTO capa_log");
+        assert_eq!(
+            sql,
+            "INSERT INTO capa_log(capa_id, actor_id, actor_nip, actor_roles, is_qa) VALUES ($1, $2, $3, $4, $5)"
+        );
+        assert_eq!(params.len(), 5);
+        assert!(matches!(&params[0], DbParam::I64(9)));
+        assert!(matches!(&params[1], DbParam::I64(42)));
+        assert!(matches!(&params[2], DbParam::Str(s) if s == "00198801"));
+        assert!(matches!(&params[3], DbParam::Str(s) if s == "plant_qa_manager,reviewer"));
+        assert!(matches!(&params[4], DbParam::I64(1)));
     }
 }
 

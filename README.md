@@ -1055,6 +1055,8 @@ Strings inside `filter`, `set`, `values`, `rows`, and `error_message` support dy
 | `{calc:<expression>}` | Arithmetic calculation evaluated via the math engine | `{calc: item.qty * product.cost_price}`, `{calc: round(parent.subtotal * 0.11, 2)}` |
 | `{if: cond ? val1 : val2}` | Inline conditional ternary expression | `{if: parent.is_taxable == 1 ? 11 : 0}` |
 | `{request.<field>}` | Value supplied in the incoming HTTP request payload | `{request.status}`, `{request.notes}` |
+| `{user.id}`, `{user.name}`, `{user.custom}`, `{user.roles}` | Identity of the authenticated caller (JWT `id`, `nm`, `cs`, role names). A value that is exactly one `{user.*}` token keeps its type: `{user.custom}` stays text, so a NIP keeps its leading zeros. See [§14](#14-formula-placeholders). | `"approved_by": "{user.custom}"` |
+| `{user.has_role:<role>}` | `1` / `0`. Also usable inside `{if: ...}`. To compare identity with a column, write the tokens in braces: `{if: {user.custom} == {parent.pic_nip} ? 'PIC' : 'OTHER'}`. The trigger-level `condition` object (old/new record checks) does not read `user.*`. | `{if: user.has_role:plant_qa_manager == 1 ? 'QA_APPROVED' : 'NEEDS_QA'}` |
 | `{now:FORMAT}` | Current timestamp formatted with date tokens | `{now:YYYY-MM-DD}` $\to$ `2026-09-05` |
 | `{seq:KEY:PATTERN}` or `{seq:KEY}` | Atomic running sequence number generator (e.g. `{seq:INV:INV/{YYYY}/{MM}/{0000ID}}`). Downstream steps can reuse `{seq:KEY}` to share the exact same number across documents. | `{seq:AR_INVOICE:INV/{YYYY}/{MM}/{0000ID}}` $\to$ `INV/2026/09/0001` |
 | `{token|default}` | Fallback syntax if the variable is null or absent | `{request.notes|No notes provided}` |
@@ -2159,19 +2161,53 @@ Notes:
 
 ## 14. Formula placeholders
 
-Placeholders are available inside hooks and formula values:
+Placeholders are available inside hooks (`validate_data`, `pre_process`, `post_process`) for `post`, `put` and `del`, in `API:` validation URLs, and in `action_triggers` (see [§10.3](#template-interpolation-tokens)):
 
 | Placeholder | Expands to |
 |-------------|-----------|
 | `{request.field}` | A value from the request body. Multipart form fields are supported; text that is valid JSON is parsed. Dotted paths work: `{request.user.id}`, `{request.items.0.price}`. |
+| `{user.id}` | Caller's JWT `id` claim (bound as integer if canonical numeric, otherwise string; `NULL` when unauthenticated). |
+| `{user.name}` | Caller's JWT `nm` claim (bound as string; `NULL` when unauthenticated/empty). |
+| `{user.custom}` | Caller's JWT `cs` claim, e.g. NIP populated via `CUSTOME_JWT_QUERY` (always bound as string so leading zeros are preserved; `NULL` when unauthenticated/empty — fail-closed for SoD checks). |
+| `{user.roles}` | Caller's role names from the JWT `rl` claim, **without** the `/bitmask` suffix, as one comma-separated string — e.g. `rl = "plant_qa_manager/127,auditor/1"` → `"plant_qa_manager,auditor"` (`""` when unauthenticated). |
+| `{user.has_role:<role>}` | `1` if the caller holds `<role>` (case-insensitive, ignoring optional `/bitmask` suffix), otherwise `0` (bound as integer). |
 | `{table[123].col}` | Subquery `(SELECT col FROM table WHERE id = 123)`. |
-| `{table[{request.id}].col}` | Subquery with a dynamic id taken from the request. |
+| `{table[{request.id}].col}` / `{table[{user.id}].col}` | Subquery with a dynamic id taken from the request or caller JWT. |
+
+Example (contextual PIC + Separation of Duties in `put.validate_data`):
+
+```json
+"put": {
+  "validate_data": "SQL:SELECT (pic_nip = {user.custom}) AND (prepared_by <> {user.custom}) AS is_valid FROM plant_capas WHERE id = {request.id}"
+}
+```
+
+More recipes:
+
+```json
+// Only QA managers, and never the person who prepared the record, may approve
+"validate_data": "SQL:SELECT ({user.has_role:plant_qa_manager} = 1) AND (prepared_by <> {user.custom}) AS is_valid FROM plant_capas WHERE id = {request.id}"
+
+// Stamp the actor in pre_process
+"pre_process": "SQL:UPDATE plant_capas SET approved_by = {user.custom}, approved_by_name = {user.name} WHERE id = {request.id}"
+
+// Look up the caller's department through a subselect
+"validate_data": "SQL:SELECT ({employees[{user.id}].department_id} = department_id) AS is_valid FROM plant_capas WHERE id = {request.id}"
+
+// API validation: pass the caller to an external check
+"validate_data": "API:GET:http://hr/api/check?nip={user.custom}&doc={request.id}"
+```
 
 Notes:
 
-* For `PUT`, the path parameter `/{id}` is **not** auto‑injected into hooks — include `id` in the request body if a formula needs it.
-* For `POST` with auto‑increment ids, the new id is not available via `{request.*}`. To reference it afterwards, use a custom id (`columns[].function`) or supply `id` yourself.
-* Bindings are numeric/string‑inferred automatically. On PostgreSQL, `?` placeholders are rewritten to `$1, $2, …` internally.
+* All SQL hook and trigger placeholders are **bound as query parameters** (`?` / `$1, $2, …` / `@P1, @P2, …`), never string-interpolated. In `API:` URLs the values are URL-encoded.
+* **Fail-closed**: on public routes, or when `require_auth` is off, there is no caller. `{user.id}`, `{user.name}` and `{user.custom}` then bind `NULL`, so comparisons such as `pic_nip = {user.custom}` evaluate to `NULL` and the `validate_data` check fails. `{user.has_role:*}` gives `0`. Scheduled jobs (`schedules`, [§11b](#11b-scheduled-jobs--time-based-workflows-schedules)) also have no caller.
+* `{user.has_role:<role>}` matches the role name only. The super‑admin wildcard `*/127` does **not** count as holding every role, so SoD rules cannot be bypassed by an admin account. Add `OR {user.has_role:*} = 1` explicitly if admins should pass.
+* In a hook, an unknown key (e.g. `{user.nip}`) or an empty role (`{user.has_role:}`) is a configuration error. The transaction is rolled back and the request is rejected.
+* `{user.custom}` is bound as text. Store NIPs in a `varchar` column, or cast explicitly on PostgreSQL (`pic_nip::text = {user.custom}`), to avoid an `integer = text` mismatch.
+* For `PUT`/`PATCH`, the path parameter `/{id}` (and composite PK columns) is auto-injected into `{request.id}` when omitted from the request body.
+* For `POST` with auto‑increment ids, the new id is not available via `{request.*}` during `validate_data`/`pre_process` (available in `post_process` via `{request.id}` / `{request.id_new}`).
+* Bindings are numeric/string‑inferred automatically (except `{user.custom}`, `{user.name}`, and `{user.roles}`, which always bind as text). On PostgreSQL, `?` placeholders are rewritten to `$1, $2, …` internally.
 
 ---
 

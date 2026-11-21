@@ -18,6 +18,7 @@ pub async fn perform_delete_sql(
     ref_fks: &[ReferenceForeignKey],
     actor_id: &str,
     is_soft: bool,
+    claims: Option<&crate::auth::Claims>,
     audit_ctx: crate::nocode::audit_trail::AuditContext<'_>,
 ) -> Result<(), String> {
     
@@ -133,7 +134,7 @@ pub async fn perform_delete_sql(
     }
 
     // PRE-PROCESS
-    if table_schema.del.pre_process.contains("SQL:") && let Err(err) = crate::database::state::execute_sql_formula_with_txstore(&mut tx, table_schema.del.pre_process.clone(), &body, route).await {
+    if table_schema.del.pre_process.contains("SQL:") && let Err(err) = crate::database::state::execute_sql_formula_with_txstore(&mut tx, table_schema.del.pre_process.clone(), &body, route, claims).await {
         let _ = tx.rollback().await;
         return Err(format!("Error in pre-process: {}", err));
     }
@@ -171,7 +172,7 @@ pub async fn perform_delete_sql(
 
             if is_fk_ok {
                 // POST-PROCESS
-                if table_schema.del.post_process.contains("SQL:") && let Err(err) = crate::database::state::execute_sql_formula_with_txstore(&mut tx, table_schema.del.post_process.clone(), &body, route).await {
+                if table_schema.del.post_process.contains("SQL:") && let Err(err) = crate::database::state::execute_sql_formula_with_txstore(&mut tx, table_schema.del.post_process.clone(), &body, route, claims).await {
                     let _ = tx.rollback().await;
                     return Err(format!("Error in post-process: {}", err));
                 }
@@ -186,6 +187,7 @@ pub async fn perform_delete_sql(
                         new_record: &empty_new,
                         request_body: &body,
                         actor_id: Some(actor_id),
+                        claims,
                     };
 
                     match crate::nocode::trigger_engine::execute_triggers_audited(

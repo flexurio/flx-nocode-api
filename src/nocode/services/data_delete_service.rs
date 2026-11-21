@@ -24,7 +24,8 @@ pub async fn process_delete_request(
 
     // 1. Auth Check
     let mut claims = Claims::default();
-    if state.require_auth && !state.is_public_route(&route) {
+    let auth_required = state.require_auth && !state.is_public_route(&route);
+    if auth_required {
         claims = get_user_info_from_token(&req, state.clone())
             .map_err(|_| "Invalid token".to_string())?;
 
@@ -118,6 +119,7 @@ pub async fn process_delete_request(
             &ref_fks,
             &claims.id,
             is_soft,
+            if auth_required { Some(&claims) } else { None },
             audit_ctx,
         ).await?;
     }

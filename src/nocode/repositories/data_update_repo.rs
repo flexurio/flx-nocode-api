@@ -734,6 +734,7 @@ pub async fn perform_update(
     body: &Value,
     auth_token: Option<String>,
     actor_id: Option<&str>,
+    claims: Option<&crate::auth::Claims>,
     transition_caller: TransitionCaller<'_>,
     audit_ctx: crate::nocode::audit_trail::AuditContext<'_>,
 ) -> Result<(String, i32, Value), String> {
@@ -897,9 +898,33 @@ pub async fn perform_update(
             }
         }
 
+        // Ensure path PK columns (and `id`) are available to `{request.*}` placeholders
+        // even when the PUT/PATCH JSON body omits them.
+        let formula_body: std::borrow::Cow<'_, Value> = {
+            let pk_vals = parse_pk_values(id_raw);
+            let needs_pk = body.as_object().is_some_and(|m| {
+                !m.contains_key("id")
+                    || table_schema
+                        .primary_key
+                        .columns
+                        .iter()
+                        .any(|c| !m.contains_key(c))
+            });
+            if needs_pk {
+                let mut m = body.as_object().cloned().unwrap_or_default();
+                for (col, val) in table_schema.primary_key.columns.iter().zip(pk_vals.iter()) {
+                    m.entry(col.clone()).or_insert_with(|| Value::String(val.clone()));
+                }
+                m.entry("id".to_string()).or_insert_with(|| Value::String(id_raw.to_string()));
+                std::borrow::Cow::Owned(Value::Object(m))
+            } else {
+                std::borrow::Cow::Borrowed(body)
+            }
+        };
+
         // Validate Data Formula (API based)
         if table_schema.put.validate_data.starts_with("API:") {
-             if let Err(e) = crate::nocode::validate::validate_api_formula(&table_schema.put.validate_data, body, auth_token.as_deref()).await {
+             if let Err(e) = crate::nocode::validate::validate_api_formula(&table_schema.put.validate_data, formula_body.as_ref(), auth_token.as_deref(), claims).await {
                  let _ = tx.rollback().await;
                  return Err(e);
              }
@@ -907,7 +932,7 @@ pub async fn perform_update(
 
         // Validate Data Formula
         if table_schema.put.validate_data.contains("SQL:") {
-             match crate::database::state::build_sql_and_params_from_formula(&table_schema.put.validate_data, body) {
+             match crate::database::state::build_sql_and_params_from_formula_with_claims(&table_schema.put.validate_data, formula_body.as_ref(), claims) {
                  Ok((built_sql, params)) => {
                      match tx.raw_sql(&built_sql, params).await {
                          Ok(row) => {
@@ -931,7 +956,7 @@ pub async fn perform_update(
 
         // Pre-Process
         if table_schema.put.pre_process.contains("SQL:") {
-            if let Err(err) = crate::database::state::execute_sql_formula_with_txstore(&mut tx, table_schema.put.pre_process.clone(), body, route).await {
+            if let Err(err) = crate::database::state::execute_sql_formula_with_txstore(&mut tx, table_schema.put.pre_process.clone(), formula_body.as_ref(), route, claims).await {
                 let _ = tx.rollback().await;
                 return Err(format!("Error in pre-process: {}", err));
             }
@@ -1050,8 +1075,9 @@ pub async fn perform_update(
                          parent_pk: id_raw,
                          old_record: &old_record,
                          new_record: &new_record,
-                         request_body: body,
+                         request_body: formula_body.as_ref(),
                          actor_id,
+                         claims,
                      };
 
                      match crate::nocode::trigger_engine::execute_triggers_audited(
@@ -1086,8 +1112,9 @@ pub async fn perform_update(
                      if let Err(err) = crate::database::state::execute_sql_formula_with_txstore(
                          &mut tx,
                          table_schema.put.post_process.clone(),
-                         body,
+                         formula_body.as_ref(),
                          route,
+                         claims,
                      ).await {
                          let _ = tx.rollback().await;
                          return Err(format!("Error in post-process: {}", err));

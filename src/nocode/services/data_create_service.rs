@@ -753,6 +753,7 @@ pub async fn process_insert_request(
         prepared_details,
         route,
         auth_token,
+        claims_opt.as_ref(),
         audit_ctx,
     )
     .await

@@ -487,6 +487,7 @@ pub async fn perform_insert(
     mut prepared_details: Vec<PreparedDetailBatch>,
     route: &str,
     auth_token: Option<String>,
+    claims: Option<&crate::auth::Claims>,
     audit_ctx: crate::nocode::audit_trail::AuditContext<'_>,
 ) -> Result<(String, i64, Value), String> {
     // Begin the transaction first (SQL backends): FK/unique validation, id
@@ -704,6 +705,7 @@ pub async fn perform_insert(
                 &table_schema.post.validate_data,
                 body,
                 auth_token.as_deref(),
+                claims,
             )
             .await
             {
@@ -714,9 +716,10 @@ pub async fn perform_insert(
 
         // Execute VALIDATE_DATA (SQL based) if exists
         if table_schema.post.validate_data.contains("SQL:") {
-            match crate::database::state::build_sql_and_params_from_formula(
+            match crate::database::state::build_sql_and_params_from_formula_with_claims(
                 &table_schema.post.validate_data,
                 body,
+                claims,
             ) {
                 Ok((built_sql, params)) => match tx.raw_sql(&built_sql, params).await {
                     Ok(row) => {
@@ -750,6 +753,7 @@ pub async fn perform_insert(
                 table_schema.post.pre_process.clone(),
                 body,
                 route,
+                claims,
             )
             .await
             {
@@ -904,6 +908,7 @@ pub async fn perform_insert(
                                     table_schema.post.post_process.clone(),
                                     &merged_body,
                                     route,
+                                    claims,
                                 )
                                 .await
                             {
@@ -930,7 +935,8 @@ pub async fn perform_insert(
                                 old_record: &empty_old,
                                 new_record: &doc_map,
                                 request_body: body,
-                                actor_id: None,
+                                actor_id: claims.map(|c| c.id.as_str()).filter(|s| !s.is_empty()),
+                                claims,
                             };
 
                             match crate::nocode::trigger_engine::execute_triggers_audited(

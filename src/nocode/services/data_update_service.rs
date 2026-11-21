@@ -729,6 +729,7 @@ pub async fn process_update_request(
         &body,
         auth_token,
         actor_id_opt.as_deref(),
+        if auth_required { Some(&claims) } else { None },
         transition_caller,
         audit_ctx,
     )

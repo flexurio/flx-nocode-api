@@ -1095,6 +1095,7 @@ async fn execute_single_action(
                         new_record: &new_record,
                         request_body: &request_body,
                         actor_id: Some(ctx.actor_id),
+                        claims: None,
                     };
                     let executed = crate::nocode::trigger_engine::execute_triggers_audited(
                         ctx.state.db_type.clone(),

@@ -205,8 +205,9 @@ pub async fn execute_sql_formula_with_txstore(
     sql: String,
     body: &serde_json::Value,
     route: &str,
+    claims: Option<&crate::auth::Claims>,
 ) -> Result<(), anyhow::Error> {
-    match build_sql_and_params_from_formula(&sql, body) {
+    match build_sql_and_params_from_formula_with_claims(&sql, body, claims) {
         Ok((built_sql, params)) => {
             log_output("QUERY", "build_sql_and_params_from_formula", route, built_sql.clone(), true);
             crate::log::log_output_lazy("INFO", "FORMULA_PARAMS", route, || format!("Params for formula '{}': {:?}", built_sql, params), true);
@@ -334,9 +335,103 @@ pub fn rehydrate_placeholders(sql: &str, dialect: &str) -> String {
 static RE_NESTED: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"\{(\w+)\[\s*\{([^}]+)\}\s*\]\.(\w+)\}").unwrap());
 static RE_PLAIN: Lazy<Regex> = Lazy::new(|| Regex::new(r"\{(\w+)\[(\d+)\]\.(\w+)\}").unwrap());
-static RE_REQ: Lazy<Regex> = Lazy::new(|| Regex::new(r"\{request\.([^}]+)\}").unwrap());
+static RE_FORMULA_TOKEN: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"\{(?:__NUM__:(\d+)|request\.([^}]+)|user\.([^}]+))\}").unwrap()
+});
+static RE_URL_TOKEN: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"\{(?:request\.([^}]+)|user\.([^}]+))\}").unwrap());
 static RE_LEFTOVER: Lazy<Regex> = Lazy::new(|| Regex::new(r"\{[^}]+\}").unwrap());
 static RE_IDENT: Lazy<Regex> = Lazy::new(|| Regex::new(r"^[A-Za-z_][A-Za-z0-9_]*$").unwrap());
+
+/// Resolve a `{user.<key>}` placeholder into a bound [`DbParam`].
+///
+/// Supported keys:
+/// - `id` -> `claims.id` (canonical integer bound as `I64`, otherwise `Str`; `Null` if missing/empty)
+/// - `name` -> `claims.nm` (`Str`; `Null` if missing/empty)
+/// - `custom` -> `claims.cs` (`Str` to preserve leading zeros / NIP; `Null` if missing/empty)
+/// - `roles` -> role names from `claims.rl` without `/bitmask` suffix (`Str`, comma-separated; `""` if missing)
+/// - `has_role:<role>` -> `I64(1)` if caller has `<role>`, else `I64(0)`
+pub fn resolve_user_placeholder_param(
+    key: &str,
+    claims: Option<&crate::auth::Claims>,
+) -> Result<DbParam> {
+    let key = key.trim();
+    match key {
+        "id" => match claims.map(|c| c.id.trim()).filter(|s| !s.is_empty()) {
+            None => Ok(DbParam::Null),
+            Some(s) => {
+                if let Ok(i) = s.parse::<i64>()
+                    && i.to_string() == s
+                {
+                    Ok(DbParam::I64(i))
+                } else {
+                    Ok(DbParam::Str(s.to_string()))
+                }
+            }
+        },
+        "name" => match claims.map(|c| c.nm.as_str()).filter(|s| !s.trim().is_empty()) {
+            None => Ok(DbParam::Null),
+            Some(s) => Ok(DbParam::Str(s.to_string())),
+        },
+        "custom" => match claims.map(|c| c.cs.as_str()).filter(|s| !s.trim().is_empty()) {
+            None => Ok(DbParam::Null),
+            Some(s) => Ok(DbParam::Str(s.to_string())),
+        },
+        "roles" => Ok(DbParam::Str(
+            claims.map(|c| c.role_names_csv()).unwrap_or_default(),
+        )),
+        _ => {
+            if let Some(role) = key.strip_prefix("has_role:") {
+                let role = role.trim();
+                if role.is_empty() {
+                    return Err(anyhow!("Empty role name in {{user.has_role:}} placeholder"));
+                }
+                let has = claims.is_some_and(|c| c.has_role(role));
+                Ok(DbParam::I64(if has { 1 } else { 0 }))
+            } else {
+                Err(anyhow!("Unknown user placeholder: {{user.{}}}", key))
+            }
+        }
+    }
+}
+
+/// Resolve a `{user.<key>}` placeholder into a string value (for URL / template interpolation).
+/// Returns `Ok(None)` when the claim is absent or empty (except `roles` -> `Some("")` and `has_role:*` -> `Some("1"|"0")`).
+pub fn resolve_user_placeholder_str(
+    key: &str,
+    claims: Option<&crate::auth::Claims>,
+) -> Result<Option<String>> {
+    let key = key.trim();
+    match key {
+        "id" => Ok(claims
+            .map(|c| c.id.trim())
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)),
+        "name" => Ok(claims
+            .map(|c| c.nm.as_str())
+            .filter(|s| !s.trim().is_empty())
+            .map(str::to_string)),
+        "custom" => Ok(claims
+            .map(|c| c.cs.as_str())
+            .filter(|s| !s.trim().is_empty())
+            .map(str::to_string)),
+        "roles" => Ok(Some(
+            claims.map(|c| c.role_names_csv()).unwrap_or_default(),
+        )),
+        _ => {
+            if let Some(role) = key.strip_prefix("has_role:") {
+                let role = role.trim();
+                if role.is_empty() {
+                    return Err(anyhow!("Empty role name in {{user.has_role:}} placeholder"));
+                }
+                let has = claims.is_some_and(|c| c.has_role(role));
+                Ok(Some(if has { "1" } else { "0" }.to_string()))
+            } else {
+                Err(anyhow!("Unknown user placeholder: {{user.{}}}", key))
+            }
+        }
+    }
+}
 
 // Helper: get nested value by dotted path, e.g. "user.id" or "items.0.price"
 pub fn get_by_path_value<'a>(root: &'a serde_json::Value, path: &str) -> Option<&'a serde_json::Value> {
@@ -359,11 +454,22 @@ pub fn get_by_path_value<'a>(root: &'a serde_json::Value, path: &str) -> Option<
 
 /// Build parameterized SQL and params from a "SQL:" formula string.
 /// Supported placeholders:
-/// - {request.field} -> bound as a parameter
-/// - {table[<id>].col} or {table[{request.id}].col} -> expanded to subselect
+/// - `{request.field}` -> bound as a parameter
+/// - `{user.id}`, `{user.name}`, `{user.custom}`, `{user.roles}`, `{user.has_role:<role>}` -> bound as a parameter
+/// - `{table[<id>].col}` or `{table[{request.id}].col}` or `{table[{user.id}].col}` -> expanded to subselect
 pub fn build_sql_and_params_from_formula(
     sql_formula: &str,
     body: &serde_json::Value,
+) -> Result<(String, Vec<DbParam>)> {
+    build_sql_and_params_from_formula_with_claims(sql_formula, body, None)
+}
+
+/// Same as [`build_sql_and_params_from_formula`], also resolving `{user.*}` placeholders
+/// from the authenticated caller's JWT claims as bound parameters (never string interpolation).
+pub fn build_sql_and_params_from_formula_with_claims(
+    sql_formula: &str,
+    body: &serde_json::Value,
+    claims: Option<&crate::auth::Claims>,
 ) -> Result<(String, Vec<DbParam>)> {
     // Strip optional prefix
     let mut sql = sql_formula
@@ -376,22 +482,17 @@ pub fn build_sql_and_params_from_formula(
     log_output("QUERY", "BEFORE/AFTER", "build_sql_and_params_from_formula", sql.clone(), true);
     let mut params: Vec<DbParam> = Vec::new();
 
-
-
-
-    // 1) Resolve nested subselects that include an inner {request.*}, deterministically.
-    // Example: {products[{request.product_id}].price}
+    // 1) Expand nested subselects: {table[{request.x}].col} or {table[{user.x}].col}
+    //    Expand structurally without pushing params yet so the single left-to-right pass
+    //    in step 3 binds every `?` in exact positional order.
     while let Some(cap) = RE_NESTED.captures(&sql) {
-        // log_output cap
         crate::log::log_output_lazy("INFO", "CAP", "build_sql_and_params_from_formula", || format!("{:?}", cap), true);
         let table = cap.get(1).unwrap().as_str();
-        let inner = cap.get(2).unwrap().as_str(); // e.g., request.product_id
+        let inner = cap.get(2).unwrap().as_str().trim(); // e.g., request.product_id or user.id
         let field = cap.get(3).unwrap().as_str();
 
-        // log_output table, inner, field
         crate::log::log_output_lazy("INFO", "NESTED", "build_sql_and_params_from_formula", || format!("table:{}, inner: {} field: {}", table, inner, field), true);
 
-        // Validate identifiers strictly
         if !RE_IDENT.is_match(table) || !RE_IDENT.is_match(field) {
             return Err(anyhow!(
                 "Invalid identifier in formula: {}.{}",
@@ -400,44 +501,16 @@ pub fn build_sql_and_params_from_formula(
             ));
         }
 
-        // resolve inner value from body with dotted path support
-        let key: &str = inner.strip_prefix("request.").unwrap_or(inner);
-        // Prefer numeric id, fallback to NULL
-        let id_param = match get_by_path_value(body, key) {
-            Some(serde_json::Value::Number(n)) => {
-                if let Some(i) = n.as_i64() {
-                    DbParam::I64(i)
-                } else if let Some(f) = n.as_f64() {
-                    DbParam::F64(f)
-                } else {
-                    DbParam::Null
-                }
-            }
-            Some(serde_json::Value::String(s)) => {
-                if let Ok(i) = s.parse::<i64>() {
-                    DbParam::I64(i)
-                } else if let Ok(f) = s.parse::<f64>() {
-                    DbParam::F64(f)
-                } else {
-                    DbParam::Null
-                }
-            }
-            Some(&serde_json::Value::Bool(b)) => {
-                if b {
-                    DbParam::I64(1)
-                } else {
-                    DbParam::I64(0)
-                }
-            }
-            _ => DbParam::Null,
+        let inner_token = if inner.starts_with("request.") || inner.starts_with("user.") {
+            format!("{{{}}}", inner)
+        } else {
+            format!("{{request.{}}}", inner)
         };
-        // Parameterize the id inside subselect
-        let sub = format!("(SELECT {} FROM {} WHERE id = ?)", field, table);
-        params.push(id_param);
+        let sub = format!("(SELECT {} FROM {} WHERE id = {})", field, table, inner_token);
         sql = RE_NESTED.replace(&sql, sub.as_str()).to_string();
     }
 
-    // 2) Resolve plain subselects with numeric id: {table[123].field}
+    // 2) Expand plain subselects with numeric id: {table[123].field}
     sql = RE_PLAIN
         .replace_all(&sql, |caps: &regex::Captures| {
             let table = &caps[1];
@@ -446,10 +519,8 @@ pub fn build_sql_and_params_from_formula(
             if !RE_IDENT.is_match(table) || !RE_IDENT.is_match(field) {
                 return String::from("{__INVALID_IDENT__}");
             }
-            // Parameterize numeric id as well
-            // We'll convert this literal to a placeholder and append the param below
             format!(
-                "(SELECT {} FROM {} WHERE id = {{__ID_PLACEHOLDER__:{}}})",
+                "(SELECT {} FROM {} WHERE id = {{__NUM__:{}}})",
                 field, table, id
             )
         })
@@ -459,82 +530,56 @@ pub fn build_sql_and_params_from_formula(
         return Err(anyhow!("Invalid identifier in plain subselect formula"));
     }
 
-    // Post-process RE_PLAIN replacements: find markers and turn them into '?' with params
-    // This avoids running regex with a closure that captures external vec
-    if sql.contains("{__ID_PLACEHOLDER__:") {
-        let mut out = String::with_capacity(sql.len());
-        let mut i = 0;
-        while let Some(start) = sql[i..].find("{__ID_PLACEHOLDER__:") {
-            let abs_start = i + start;
-            out.push_str(&sql[i..abs_start]);
-            // find closing '}'
-            if let Some(end_rel) = sql[abs_start..].find('}') {
-                let content = &sql[abs_start + "{__ID_PLACEHOLDER__:".len()..abs_start + end_rel];
-                // parse number safely
-                if let Ok(n) = content.parse::<i64>() {
-                    params.push(DbParam::I64(n));
-                } else if let Ok(f) = content.parse::<f64>() {
-                    params.push(DbParam::F64(f));
-                } else {
-                    return Err(anyhow!(
-                        "Invalid numeric id in plain subselect: {}",
-                        content
-                    ));
-                }
-                out.push('?');
-                i = abs_start + end_rel + 1;
-            } else {
-                // malformed marker, copy rest and break
-                return Err(anyhow!("Malformed ID placeholder in formula"));
-            }
-        }
-        if i < sql.len() {
-            out.push_str(&sql[i..]);
-        }
-        sql = out;
-    }
-
-    // 3) Bind remaining {request.*} placeholders as parameters (left-to-right, single pass).
-    if RE_REQ.is_match(&sql) {
+    // 3) Single left-to-right pass binding {__NUM__:*}, {request.*}, and {user.*} as `?` params.
+    if RE_FORMULA_TOKEN.is_match(&sql) {
         let mut new_sql = String::with_capacity(sql.len());
         let mut last = 0usize;
-        for cap in RE_REQ.captures_iter(&sql) {
+        for cap in RE_FORMULA_TOKEN.captures_iter(&sql) {
             let full = cap.get(0).unwrap();
-            let key = cap.get(1).unwrap().as_str();
-
-            // push preceding literal SQL
             new_sql.push_str(&sql[last..full.start()]);
-            // push placeholder
             new_sql.push('?');
             last = full.end();
 
-            // Infer type directly from JSON value (with dotted path)
-            match get_by_path_value(body, key) {
-                Some(serde_json::Value::Null) | None => params.push(DbParam::Null),
-                Some(&serde_json::Value::Bool(b)) => params.push(DbParam::Bool(b)),
-                Some(serde_json::Value::Number(n)) => {
-                    if let Some(i) = n.as_i64() {
-                        params.push(DbParam::I64(i));
-                    } else if let Some(f) = n.as_f64() {
-                        params.push(DbParam::F64(f));
-                    } else {
-                        params.push(DbParam::Str(n.to_string()));
-                    }
+            if let Some(num_m) = cap.get(1) {
+                let raw = num_m.as_str();
+                if let Ok(n) = raw.parse::<i64>() {
+                    params.push(DbParam::I64(n));
+                } else if let Ok(f) = raw.parse::<f64>() {
+                    params.push(DbParam::F64(f));
+                } else {
+                    return Err(anyhow!("Invalid numeric id in plain subselect: {}", raw));
                 }
-                Some(serde_json::Value::String(s)) => {
-                    // try numeric first to reduce type mismatch on numeric columns
-                    if let Ok(i) = s.parse::<i64>() {
-                        params.push(DbParam::I64(i));
-                    } else if let Ok(f) = s.parse::<f64>() {
-                        params.push(DbParam::F64(f));
-                    } else {
-                        params.push(DbParam::Str(s.clone()));
+            } else if let Some(req_m) = cap.get(2) {
+                let key = req_m.as_str();
+                match get_by_path_value(body, key) {
+                    Some(serde_json::Value::Null) | None => params.push(DbParam::Null),
+                    Some(&serde_json::Value::Bool(b)) => params.push(DbParam::Bool(b)),
+                    Some(serde_json::Value::Number(n)) => {
+                        if let Some(i) = n.as_i64() {
+                            params.push(DbParam::I64(i));
+                        } else if let Some(f) = n.as_f64() {
+                            params.push(DbParam::F64(f));
+                        } else {
+                            params.push(DbParam::Str(n.to_string()));
+                        }
                     }
+                    Some(serde_json::Value::String(s)) => {
+                        // try numeric first to reduce type mismatch on numeric columns
+                        if let Ok(i) = s.parse::<i64>() {
+                            params.push(DbParam::I64(i));
+                        } else if let Ok(f) = s.parse::<f64>() {
+                            params.push(DbParam::F64(f));
+                        } else {
+                            params.push(DbParam::Str(s.clone()));
+                        }
+                    }
+                    Some(_) => params.push(DbParam::Str(String::new())),
                 }
-                Some(_) => params.push(DbParam::Str(String::new())),
+            } else if let Some(user_m) = cap.get(3) {
+                let param = resolve_user_placeholder_param(user_m.as_str(), claims)?;
+                params.push(param);
             }
         }
-        // push tail
         new_sql.push_str(&sql[last..]);
         sql = new_sql;
     }
@@ -547,20 +592,23 @@ pub fn build_sql_and_params_from_formula(
         ));
     }
 
-
     Ok((sql, params))
 }
 
-/// Build a URL string from an "API:" formula string by interpolating {request.*} variables.
+/// Build a URL string from an "API:" formula string by interpolating `{request.*}` variables.
 pub fn build_url_from_formula(
     url_formula: &str,
     body: &serde_json::Value,
 ) -> Result<String> {
-    // Basic interpolation for {request.field}
-    // We only support simple string replacement for now.
-    
-    let mut final_url = url_formula.to_string();
-    
+    build_url_from_formula_with_claims(url_formula, body, None)
+}
+
+/// Build a URL string from an "API:" formula string by interpolating `{request.*}` and `{user.*}` variables.
+pub fn build_url_from_formula_with_claims(
+    url_formula: &str,
+    body: &serde_json::Value,
+    claims: Option<&crate::auth::Claims>,
+) -> Result<String> {
     // Helper to get nested value by dotted path
     fn get_by_path_str(root: &serde_json::Value, path: &str) -> String {
         let mut cur = root;
@@ -569,11 +617,11 @@ pub fn build_url_from_formula(
                 match cur {
                     serde_json::Value::Array(arr) => {
                         if let Some(val) = arr.get(idx) {
-                             cur = val;
+                            cur = val;
                         } else {
                             return "".to_string();
                         }
-                    },
+                    }
                     _ => return "".to_string(),
                 }
             } else {
@@ -584,42 +632,194 @@ pub fn build_url_from_formula(
                         } else {
                             return "".to_string();
                         }
-                    },
+                    }
                     _ => return "".to_string(),
                 }
             }
         }
         match cur {
-             serde_json::Value::String(s) => s.clone(),
-             serde_json::Value::Number(n) => n.to_string(),
-             serde_json::Value::Bool(b) => b.to_string(),
-             serde_json::Value::Null => "".to_string(),
-             _ => cur.to_string(),
+            serde_json::Value::String(s) => s.clone(),
+            serde_json::Value::Number(n) => n.to_string(),
+            serde_json::Value::Bool(b) => b.to_string(),
+            serde_json::Value::Null => "".to_string(),
+            _ => cur.to_string(),
         }
     }
 
-    if RE_REQ.is_match(&final_url) {
-        // Find all matches and replace them
-        // We do this by creating a new string to handle potential length changes
-        let mut new_url = String::with_capacity(final_url.len());
-        let mut last = 0usize;
-        for cap in RE_REQ.captures_iter(url_formula) { // Iterate on original string
-             let full = cap.get(0).unwrap();
-             let key = cap.get(1).unwrap().as_str();
-             
-             new_url.push_str(&url_formula[last..full.start()]);
-             
-             let val = get_by_path_str(body, key);
-             // URL Encoding could be added here if needed, 
-             // but for now we assume simple values or that the user handles it.
-             // Ideally we should use urlencoding::encode(&val)
-             new_url.push_str(&urlencoding::encode(&val)); 
-             
-             last = full.end();
-        }
-        new_url.push_str(&url_formula[last..]);
-        final_url = new_url;
+    if !RE_URL_TOKEN.is_match(url_formula) {
+        return Ok(url_formula.to_string());
     }
 
-    Ok(final_url)
+    let mut new_url = String::with_capacity(url_formula.len());
+    let mut last = 0usize;
+    for cap in RE_URL_TOKEN.captures_iter(url_formula) {
+        let full = cap.get(0).unwrap();
+        new_url.push_str(&url_formula[last..full.start()]);
+
+        let val = if let Some(req_m) = cap.get(1) {
+            get_by_path_str(body, req_m.as_str())
+        } else if let Some(user_m) = cap.get(2) {
+            resolve_user_placeholder_str(user_m.as_str(), claims)?.unwrap_or_default()
+        } else {
+            String::new()
+        };
+        new_url.push_str(&urlencoding::encode(&val));
+        last = full.end();
+    }
+    new_url.push_str(&url_formula[last..]);
+
+    Ok(new_url)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::auth::Claims;
+    use serde_json::json;
+
+    fn sample_claims() -> Claims {
+        Claims {
+            id: "42".to_string(),
+            nm: "Siti Aminah".to_string(),
+            exp: 9999999999,
+            at: 0,
+            rl: "plant_qa_manager/127,capa_reviewer".to_string(),
+            cs: "00198765".to_string(),
+            jti: None,
+            typ: None,
+        }
+    }
+
+    #[test]
+    fn sql_formula_binds_user_placeholders_in_exact_positional_order() {
+        let claims = sample_claims();
+        let body = json!({ "id": 105 });
+        let formula = "SQL:SELECT (pic_nip = {user.custom}) AND (prepared_by <> {user.custom}) AS is_valid FROM plant_capas WHERE id = {request.id}";
+
+        let (sql, params) =
+            build_sql_and_params_from_formula_with_claims(formula, &body, Some(&claims))
+                .expect("formula should compile");
+
+        assert_eq!(
+            sql,
+            "SELECT (pic_nip = ?) AND (prepared_by <> ?) AS is_valid FROM plant_capas WHERE id = ?"
+        );
+        assert_eq!(params.len(), 3);
+        match &params[0] {
+            DbParam::Str(s) => assert_eq!(s, "00198765"),
+            other => panic!("expected Str for user.custom (preserve leading zeros), got {:?}", other),
+        }
+        match &params[1] {
+            DbParam::Str(s) => assert_eq!(s, "00198765"),
+            other => panic!("expected Str for user.custom, got {:?}", other),
+        }
+        match &params[2] {
+            DbParam::I64(n) => assert_eq!(*n, 105),
+            other => panic!("expected I64 for request.id, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn sql_formula_binds_all_user_fields_and_has_role() {
+        let claims = sample_claims();
+        let body = json!({ "dept_id": 9 });
+        let formula = "SQL:INSERT INTO audit(uid, uname, nip, roles, is_qa, is_admin, dept_head) VALUES ({user.id}, {user.name}, {user.custom}, {user.roles}, {user.has_role:plant_qa_manager}, {user.has_role:superadmin}, {departments[{request.dept_id}].head_nip})";
+
+        let (sql, params) =
+            build_sql_and_params_from_formula_with_claims(formula, &body, Some(&claims))
+                .expect("formula should compile");
+
+        assert_eq!(
+            sql,
+            "INSERT INTO audit(uid, uname, nip, roles, is_qa, is_admin, dept_head) VALUES (?, ?, ?, ?, ?, ?, (SELECT head_nip FROM departments WHERE id = ?))"
+        );
+        assert_eq!(params.len(), 7);
+        assert!(matches!(&params[0], DbParam::I64(42)));
+        assert!(matches!(&params[1], DbParam::Str(s) if s == "Siti Aminah"));
+        assert!(matches!(&params[2], DbParam::Str(s) if s == "00198765"));
+        assert!(matches!(&params[3], DbParam::Str(s) if s == "plant_qa_manager,capa_reviewer"));
+        assert!(matches!(&params[4], DbParam::I64(1)));
+        assert!(matches!(&params[5], DbParam::I64(0)));
+        assert!(matches!(&params[6], DbParam::I64(9)));
+    }
+
+    #[test]
+    fn sql_formula_user_placeholders_fail_closed_when_unauthenticated() {
+        let body = json!({ "id": 1 });
+        let formula = "SQL:SELECT {user.id}, {user.name}, {user.custom}, {user.roles}, {user.has_role:plant_qa_manager} WHERE id = {request.id}";
+
+        let (sql, params) =
+            build_sql_and_params_from_formula_with_claims(formula, &body, None)
+                .expect("formula should compile");
+
+        assert_eq!(sql, "SELECT ?, ?, ?, ?, ? WHERE id = ?");
+        assert!(matches!(&params[0], DbParam::Null));
+        assert!(matches!(&params[1], DbParam::Null));
+        assert!(matches!(&params[2], DbParam::Null));
+        assert!(matches!(&params[3], DbParam::Str(s) if s.is_empty()));
+        assert!(matches!(&params[4], DbParam::I64(0)));
+        assert!(matches!(&params[5], DbParam::I64(1)));
+    }
+
+    #[test]
+    fn sql_formula_prevents_sql_injection_via_claims() {
+        let mut claims = sample_claims();
+        claims.cs = "' OR '1'='1".to_string();
+        let body = json!({ "id": 5 });
+        let formula = "SQL:SELECT (pic_nip = {user.custom}) AS is_valid FROM plant_capas WHERE id = {request.id}";
+
+        let (sql, params) =
+            build_sql_and_params_from_formula_with_claims(formula, &body, Some(&claims))
+                .expect("formula should compile");
+
+        assert_eq!(sql, "SELECT (pic_nip = ?) AS is_valid FROM plant_capas WHERE id = ?");
+        assert!(!sql.contains("OR"));
+        assert!(matches!(&params[0], DbParam::Str(s) if s == "' OR '1'='1"));
+    }
+
+    #[test]
+    fn sql_formula_rejects_unknown_or_empty_user_placeholder() {
+        let claims = sample_claims();
+        let body = json!({});
+        assert!(build_sql_and_params_from_formula_with_claims(
+            "SQL:SELECT {user.unknown}",
+            &body,
+            Some(&claims),
+        )
+        .is_err());
+        assert!(build_sql_and_params_from_formula_with_claims(
+            "SQL:SELECT {user.has_role:}",
+            &body,
+            Some(&claims),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn sql_formula_supports_user_inside_nested_subselect() {
+        let claims = sample_claims();
+        let body = json!({});
+        let formula = "SQL:SELECT {employees[{user.id}].department_id} AS dept";
+        let (sql, params) =
+            build_sql_and_params_from_formula_with_claims(formula, &body, Some(&claims))
+                .expect("nested user subselect should compile");
+        assert_eq!(sql, "SELECT (SELECT department_id FROM employees WHERE id = ?) AS dept");
+        assert!(matches!(&params[0], DbParam::I64(42)));
+    }
+
+    #[test]
+    fn url_formula_interpolates_request_and_user_placeholders() {
+        let claims = sample_claims();
+        let body = json!({ "id": 77 });
+        let url = build_url_from_formula_with_claims(
+            "http://internal/check?id={request.id}&nip={user.custom}&qa={user.has_role:plant_qa_manager}&name={user.name}",
+            &body,
+            Some(&claims),
+        )
+        .expect("url should build");
+        assert_eq!(
+            url,
+            "http://internal/check?id=77&nip=00198765&qa=1&name=Siti%20Aminah"
+        );
+    }
 }

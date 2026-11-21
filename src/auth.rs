@@ -57,6 +57,36 @@ impl Claims {
     pub fn get_roles(&self) -> Vec<String> {
         self.rl.split(",").map(|s| s.to_string()).collect()
     }
+
+    /// Role names from `self.rl` with any `/bitmask` suffix and whitespace removed,
+    /// joined by `,` (e.g. `"plant_qa_manager/127, auditor"` -> `"plant_qa_manager,auditor"`).
+    pub fn role_names_csv(&self) -> String {
+        self.rl
+            .split(',')
+            .map(|raw| raw.trim())
+            .filter(|e| !e.is_empty())
+            .map(|e| e.split('/').next().unwrap_or(e).trim())
+            .filter(|e| !e.is_empty())
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+
+    /// True when the caller holds `target` in `self.rl` (comma-separated list of
+    /// roles, each optionally suffixed with `/bitmask`, matched case-insensitively).
+    pub fn has_role(&self, target: &str) -> bool {
+        let target = target.trim();
+        if target.is_empty() {
+            return false;
+        }
+        self.rl.split(',').any(|raw| {
+            let entry = raw.trim();
+            if entry.is_empty() {
+                return false;
+            }
+            let base = entry.split('/').next().unwrap_or(entry).trim();
+            entry.eq_ignore_ascii_case(target) || base.eq_ignore_ascii_case(target)
+        })
+    }
 }
 
 // set default Claims
@@ -1323,5 +1353,29 @@ mod tests {
             ],
         };
         assert!(!evaluate_condition(&cond, &claims));
+    }
+
+    #[test]
+    fn test_claims_has_role_matches_plain_bitmask_and_case() {
+        let claims = Claims {
+            id: "7".to_string(),
+            nm: "Budi".to_string(),
+            exp: 9999999999,
+            at: 0,
+            rl: "operator/1, plant_qa_manager/127, Reviewer".to_string(),
+            cs: "0012345".to_string(),
+            jti: None,
+            typ: None,
+        };
+        assert!(claims.has_role("plant_qa_manager"));
+        assert!(claims.has_role("PLANT_QA_MANAGER"));
+        assert!(claims.has_role("plant_qa_manager/127"));
+        assert!(claims.has_role("operator"));
+        assert!(claims.has_role("reviewer"));
+        assert!(!claims.has_role("plant_qa"));
+        assert!(!claims.has_role("admin"));
+        assert!(!claims.has_role(""));
+        assert!(!claims.has_role("   "));
+        assert_eq!(claims.role_names_csv(), "operator,plant_qa_manager,Reviewer");
     }
 }
