@@ -1,9 +1,9 @@
 #!/bin/bash
 # -----------------------------------------------------------------------------
-# Upload signed & notarized macOS installers to GitHub Release.
+# Upload signed & notarized macOS installers and signed binaries to GitHub Release.
 #
 # Usage:
-#   ./deploy_apple.sh                       # upload release/flx-nocode-*-apple-darwin.pkg
+#   ./deploy_apple.sh                       # upload release/flx-nocode-*-apple-darwin and .pkg
 #   ./deploy_apple.sh release/a.pkg ...     # upload specific assets
 #   RELEASE_TAG=v1.2.3-release ./deploy_apple.sh
 #   ENV_TEMPLATE=path/to/template ./deploy_apple.sh   # default: .env.example
@@ -26,13 +26,16 @@ if [[ -z "$APP_VERSION" ]]; then
 fi
 RELEASE_TAG="${RELEASE_TAG:-v${APP_VERSION}-release}"
 
-# Collect assets: from args, or default macOS pkgs in release/
+# Collect assets: from args, or default macOS binaries & pkgs in release/
 assets=()
 if [[ $# -gt 0 ]]; then
   assets=("$@")
 else
   shopt -s nullglob
-  assets=(release/flx-nocode-*-apple-darwin.pkg)
+  assets=(
+    release/flx-nocode-*-apple-darwin
+    release/flx-nocode-*-apple-darwin.pkg
+  )
   shopt -u nullglob
 fi
 
