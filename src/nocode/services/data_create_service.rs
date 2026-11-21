@@ -326,15 +326,12 @@ pub async fn process_insert_request(
         // Absent from the body (or explicit null on a NOT NULL column that has a default):
         // leave the column out of the INSERT so the DB default applies. Required
         // columns were already enforced in step 4, so nothing mandatory is skipped here.
-        let absent = match raw_value {
-            None => true,
-            Some(Value::Null) => !col.nullable && col.default.is_some(),
-            Some(_) => false,
+        let Some(raw_value_ref) = raw_value else {
+            continue;
         };
-        if absent {
+        if raw_value_ref.is_null() && !col.nullable && col.default.is_some() {
             continue;
         }
-        let raw_value_ref = raw_value.expect("checked above");
 
         let type_lower = col.type_data.to_lowercase();
         let is_datetime = type_lower.contains("datetime")
@@ -657,18 +654,17 @@ pub async fn process_insert_request(
                             || type_lower.contains("money")
                             || type_lower.contains("real");
 
-                        if let Some(kind) = bool_col {
-                            if str_val.is_empty() {
-                                item_resp_map.insert(col_name.clone(), Value::Null);
-                                row_values.push(InsertValue::Param(DbParam::Null));
-                            } else {
-                                let (param, json_val) = bind_bool(
-                                    col_def_opt.expect("bool_col implies col_def"),
-                                    raw_val.expect("non-empty implies present"),
-                                    kind,
-                                )?;
-                                item_resp_map.insert(col_name.clone(), json_val);
-                                row_values.push(param);
+                        if let (Some(col_def), Some(kind)) = (col_def_opt, bool_col) {
+                            match raw_val {
+                                Some(rv) if !str_val.is_empty() => {
+                                    let (param, json_val) = bind_bool(col_def, rv, kind)?;
+                                    item_resp_map.insert(col_name.clone(), json_val);
+                                    row_values.push(param);
+                                }
+                                _ => {
+                                    item_resp_map.insert(col_name.clone(), Value::Null);
+                                    row_values.push(InsertValue::Param(DbParam::Null));
+                                }
                             }
                         } else if is_int {
                             if let Ok(n) = value_for_db.parse::<i64>() {

@@ -439,7 +439,7 @@ pub async fn process_update_request(
                     };
 
                     // Helper closure to build a full INSERT row for this item
-                    let build_insert_row = |fk_checks: &mut Vec<(String, String, String, String, String)>| -> Result<Vec<InsertValue>, HttpResponse> {
+                    let build_insert_row = |fk_checks: &mut Vec<(String, String, String, String, String)>| -> Result<Vec<InsertValue>, String> {
                         let mut row_values: Vec<InsertValue> = Vec::with_capacity(detail_insert_cols.len());
                         for col_name in &detail_insert_cols {
                             if col_name == &detail.foreign_key_column {
@@ -495,10 +495,10 @@ pub async fn process_update_request(
                                 let raw = raw_val.cloned().unwrap_or(Value::Null);
                                 let param = if str_val.is_empty() { DbParam::Null } else { dbparam_from_value_and_type(&raw, td) };
                                 if matches!(param, DbParam::Str(_)) {
-                                    return Err(bad_request(format!(
+                                    return Err(format!(
                                         "Item #{} in '{}': Invalid field '{}': must be a boolean (true/false, 1/0, yes/no)",
                                         idx + 1, detail.field, col_name
-                                    )));
+                                    ));
                                 }
                                 row_values.push(InsertValue::Param(param));
                             } else if is_int {
@@ -610,7 +610,7 @@ pub async fn process_update_request(
                         let fallback_insert_row = if !pk_auto_increment {
                             match build_insert_row(&mut fk_checks) {
                                 Ok(r) => Some(r),
-                                Err(resp) => return resp,
+                                Err(msg) => return bad_request(msg),
                             }
                         } else {
                             None
@@ -626,7 +626,7 @@ pub async fn process_update_request(
                     } else {
                         match build_insert_row(&mut fk_checks) {
                             Ok(r) => insert_rows.push(r),
-                            Err(resp) => return resp,
+                            Err(msg) => return bad_request(msg),
                         }
                     }
                 }

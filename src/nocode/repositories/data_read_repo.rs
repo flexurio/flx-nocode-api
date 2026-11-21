@@ -194,8 +194,12 @@ pub fn build_leaf_filter(column: String, operator: &str, raw: &str) -> Option<QF
         "=" => {
             let t = v;
             if (t.starts_with('[') && t.ends_with(']')) || t.contains(',') {
-                let vs = parse_list(t);
-                if vs.len() == 1 { QF::Eq(column, vs.into_iter().next().unwrap()) } else { QF::In(column, vs) }
+                let mut vs = parse_list(t);
+                if vs.len() == 1 && let Some(single) = vs.pop() {
+                    QF::Eq(column, single)
+                } else {
+                    QF::In(column, vs)
+                }
             } else { QF::Eq(column, to_val(t)) }
         }
         "<>" => QF::Ne(column, to_val(v)),
@@ -212,11 +216,12 @@ pub fn build_leaf_filter(column: String, operator: &str, raw: &str) -> Option<QF
         "in" => QF::In(column, parse_list(v)),
         "nin" => QF::NotIn(column, parse_list(v)),
         "between" => {
-            let vs = parse_list(v);
-            if vs.len() == 2 {
-                let mut it = vs.into_iter();
-                QF::Between(column, it.next().unwrap(), it.next().unwrap())
-            } else { QF::Eq(column, to_val(v)) }
+            let mut it = parse_list(v).into_iter();
+            if let (Some(lo), Some(hi), None) = (it.next(), it.next(), it.next()) {
+                QF::Between(column, lo, hi)
+            } else {
+                QF::Eq(column, to_val(v))
+            }
         }
         _ => QF::Eq(column, to_val(v)),
     };
@@ -484,9 +489,13 @@ pub fn keyset_filter(keys: &[(String, bool)], vals: &[QV]) -> Result<QF, String>
     if keys.len() == 1 { return Ok(cmp(0)); }
     let mut ors = Vec::with_capacity(keys.len());
     for i in 0..keys.len() {
-        let mut ands: Vec<QF> = (0..i).map(|j| QF::Eq(keys[j].0.clone(), vals[j].clone())).collect();
-        ands.push(cmp(i));
-        ors.push(if ands.len() == 1 { ands.pop().unwrap() } else { QF::And(ands) });
+        if i == 0 {
+            ors.push(cmp(0));
+        } else {
+            let mut ands: Vec<QF> = (0..i).map(|j| QF::Eq(keys[j].0.clone(), vals[j].clone())).collect();
+            ands.push(cmp(i));
+            ors.push(QF::And(ands));
+        }
     }
     Ok(QF::Or(ors))
 }
