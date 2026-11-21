@@ -167,6 +167,9 @@ pub fn validate_token(
             if claims.typ.as_deref() == Some("refresh") {
                 return Err(Box::new(HttpResponse::Unauthorized().json("Refresh token cannot be used for API access")));
             }
+            if claims.typ.as_deref() == Some(SIGNATURE_TOKEN_TYPE) {
+                return Err(Box::new(HttpResponse::Unauthorized().json("Signature token cannot be used for API access")));
+            }
             if is_revoked(&claims) {
                 return Err(Box::new(HttpResponse::Unauthorized().json("Token has been revoked")));
             }
@@ -190,6 +193,38 @@ pub static JWT_ACCESS_TTL_SECS: Lazy<i64> = Lazy::new(|| {
 pub static JWT_REFRESH_TTL_SECS: Lazy<i64> = Lazy::new(|| {
     env::var("JWT_REFRESH_TTL_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(7 * 86_400)
 });
+/// Electronic-signature token lifetime in seconds (`JWT_SIGNATURE_TTL_SECS`,
+/// default 120 = 2 minutes) issued by `POST /auth/verify-password`.
+pub static JWT_SIGNATURE_TTL_SECS: Lazy<i64> = Lazy::new(|| {
+    env::var("JWT_SIGNATURE_TTL_SECS")
+        .ok()
+        .and_then(|s| s.parse::<i64>().ok())
+        .filter(|&v| v > 0)
+        .unwrap_or(120)
+});
+
+pub const SIGNATURE_TOKEN_TYPE: &str = "signature";
+
+static SIGNATURE_JWT_VALIDATION: Lazy<Validation> = Lazy::new(|| {
+    let mut v = Validation::new(Algorithm::HS256);
+    v.validate_exp = true;
+    v.leeway = 5;
+    v
+});
+
+/// Short-lived JWT claims issued by `POST /auth/verify-password` for GxP
+/// electronic signatures (CPOB / 21 CFR Part 11).
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct SignatureClaims {
+    pub id: String,
+    pub nm: String,
+    pub cs: String,
+    pub meaning: String,
+    pub at: usize,
+    pub exp: usize,
+    pub jti: String,
+    pub typ: String,
+}
 
 pub fn new_jti() -> String {
     use rand::RngExt;
@@ -205,28 +240,32 @@ pub fn new_jti() -> String {
 static DENYLIST: Lazy<dashmap::DashMap<String, i64>> = Lazy::new(dashmap::DashMap::new);
 static DENYLIST_REDIS: AtomicBool = AtomicBool::new(false);
 
+pub fn is_jti_revoked(jti: &str) -> bool {
+    DENYLIST.contains_key(jti)
+}
+
 pub fn is_revoked(claims: &Claims) -> bool {
     match &claims.jti {
-        Some(j) => DENYLIST.contains_key(j),
+        Some(j) => is_jti_revoked(j),
         None => false,
     }
 }
 
-/// Revoke a token until it expires anyway.
-pub fn revoke(claims: &Claims) {
-    let Some(jti) = claims.jti.clone() else { return };
-    let exp = claims.exp as i64;
+/// Revoke a token id (`jti`) until `exp` (unix seconds). Used for logout,
+/// refresh-token rotation, and single-use consumption of signature tokens.
+pub fn revoke_jti(jti: &str, exp: i64) {
     let now = Utc::now().timestamp();
-    if exp <= now {
+    if exp <= now || jti.is_empty() {
         return;
     }
-    DENYLIST.insert(jti.clone(), exp);
+    let jti_owned = jti.to_string();
+    DENYLIST.insert(jti_owned.clone(), exp);
     if DENYLIST_REDIS.load(Ordering::Relaxed) {
         tokio::spawn(async move {
             if let Ok(mut conn) = crate::database::redis::get_connection().await {
                 let ttl = (exp - now).max(1) as u64;
                 let _: redis::RedisResult<()> = redis::cmd("SET")
-                    .arg(format!("flx:jwt:deny:{}", jti))
+                    .arg(format!("flx:jwt:deny:{}", jti_owned))
                     .arg(exp)
                     .arg("EX")
                     .arg(ttl)
@@ -235,6 +274,12 @@ pub fn revoke(claims: &Claims) {
             }
         });
     }
+}
+
+/// Revoke a token until it expires anyway.
+pub fn revoke(claims: &Claims) {
+    let Some(jti) = claims.jti.as_deref() else { return };
+    revoke_jti(jti, claims.exp as i64);
 }
 
 /// Start the cross-replica denylist sync (call once at boot when Redis is on).
@@ -308,6 +353,49 @@ pub fn verify_refresh_token(auth_header: &str) -> Result<Claims, &'static str> {
         return Err("Refresh token has been revoked");
     }
     Ok(data.claims)
+}
+
+/// Issue a short-lived GxP electronic-signature token (`typ = "signature"`,
+/// default TTL 120 s via `JWT_SIGNATURE_TTL_SECS`). Returns `(token, exp, ttl_secs)`.
+pub fn create_signature_token(claims: &Claims, meaning: &str) -> Result<(String, usize, i64), String> {
+    let ttl = *JWT_SIGNATURE_TTL_SECS;
+    let now = Utc::now().timestamp();
+    let exp = (now + ttl) as usize;
+    let sig_claims = SignatureClaims {
+        id: claims.id.clone(),
+        nm: claims.nm.clone(),
+        cs: claims.cs.clone(),
+        meaning: meaning.trim().to_string(),
+        at: now as usize,
+        exp,
+        jti: new_jti(),
+        typ: SIGNATURE_TOKEN_TYPE.to_string(),
+    };
+    let token = encode(&Header::default(), &sig_claims, &JWT_ENCODING_KEY)
+        .map_err(|e| format!("Failed to encode signature token: {}", e))?;
+    Ok((token, exp, ttl))
+}
+
+/// Verify an `X-Signature-Token` JWT (HS256 signature, expiry, `typ = "signature"`,
+/// non-empty `id`/`meaning`, and not yet revoked/consumed).
+pub fn verify_signature_token(raw_token: &str) -> Result<SignatureClaims, &'static str> {
+    let token = raw_token.trim().trim_start_matches("Bearer ").trim();
+    if token.is_empty() {
+        return Err("Empty signature token");
+    }
+    let data = decode::<SignatureClaims>(token, &JWT_DECODING_KEY, &SIGNATURE_JWT_VALIDATION)
+        .map_err(|_| "Invalid or expired signature token")?;
+    let c = data.claims;
+    if c.typ != SIGNATURE_TOKEN_TYPE {
+        return Err("Not a signature token");
+    }
+    if c.id.trim().is_empty() || c.meaning.trim().is_empty() {
+        return Err("Malformed signature token");
+    }
+    if is_jti_revoked(&c.jti) {
+        return Err("Signature token has already been used or revoked");
+    }
+    Ok(c)
 }
 
 // ---------------- Converter (external IDP) JWT verification ----------------
@@ -555,7 +643,10 @@ fn extract_token_claims(token: &str) -> Result<Claims, jsonwebtoken::errors::Err
 
     // Decode token dan ekstrak claims
     let token_data = decode::<Claims>(token, &JWT_DECODING_KEY, &JWT_VALIDATION)?;
-    if token_data.claims.typ.as_deref() == Some("refresh") || is_revoked(&token_data.claims) {
+    if token_data.claims.typ.as_deref() == Some("refresh")
+        || token_data.claims.typ.as_deref() == Some(SIGNATURE_TOKEN_TYPE)
+        || is_revoked(&token_data.claims)
+    {
         return Err(jsonwebtoken::errors::ErrorKind::InvalidToken.into());
     }
 
@@ -1377,5 +1468,38 @@ mod tests {
         assert!(!claims.has_role(""));
         assert!(!claims.has_role("   "));
         assert_eq!(claims.role_names_csv(), "operator,plant_qa_manager,Reviewer");
+    }
+
+    #[test]
+    fn test_signature_token_roundtrip_revocation_and_isolation() {
+        let claims = Claims {
+            id: "42".to_string(),
+            nm: "QA Manager".to_string(),
+            exp: (Utc::now().timestamp() + 3600) as usize,
+            at: Utc::now().timestamp() as usize,
+            rl: "plant_qa_manager".to_string(),
+            cs: "0012345".to_string(),
+            jti: Some(new_jti()),
+            typ: None,
+        };
+
+        let (tok, exp, ttl) = create_signature_token(&claims, "  APPROVED  ").unwrap();
+        assert_eq!(ttl, *JWT_SIGNATURE_TTL_SECS);
+        assert!(exp > Utc::now().timestamp() as usize);
+
+        // Valid signature token decodes with trimmed meaning and user identity
+        let decoded = verify_signature_token(&tok).unwrap();
+        assert_eq!(decoded.id, "42");
+        assert_eq!(decoded.cs, "0012345");
+        assert_eq!(decoded.meaning, "APPROVED");
+        assert_eq!(decoded.typ, SIGNATURE_TOKEN_TYPE);
+
+        // Signature token cannot be used as a Bearer access token or refresh token
+        assert!(extract_token_claims(&tok).is_err());
+        assert!(verify_refresh_token(&tok).is_err());
+
+        // Single-use revocation blocks replay
+        revoke_jti(&decoded.jti, decoded.exp as i64);
+        assert!(verify_signature_token(&tok).is_err());
     }
 }

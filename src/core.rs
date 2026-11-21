@@ -9,7 +9,7 @@ use base64::{self, Engine};
 use rand::RngExt;
 use serde_json::{Value, json};
 
-use crate::rate_limit::{RL_WINDOW_LOGIN, RL_WINDOW_LOGIN_FAIL};
+use crate::rate_limit::{RL_WINDOW_LOGIN, RL_WINDOW_LOGIN_FAIL, RL_WINDOW_VERIFY_PASSWORD};
 use crate::storage::ast::{Filter as QF, Query as QQ, Val as QV};
 use crate::storage::sql_store::SqlStore;
 use crate::{
@@ -49,6 +49,12 @@ static RATE_LIMIT_LOGIN_FAIL_IP: once_cell::sync::Lazy<i64> = once_cell::sync::L
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or_else(|| std::cmp::max(20_i64, RATE_LIMIT_LOGIN_PER_MIN_BASE.saturating_mul(5)))
+});
+static RATE_LIMIT_VERIFY_PASSWORD_PER_MIN: once_cell::sync::Lazy<i64> = once_cell::sync::Lazy::new(|| {
+    std::env::var("RATE_LIMIT_VERIFY_PASSWORD_PER_MIN")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(10)
 });
 
 pub async fn login(state: web::Data<AppState>, req: actix_web::HttpRequest) -> impl Responder {
@@ -434,6 +440,191 @@ pub async fn logout(req: actix_web::HttpRequest) -> impl Responder {
         revoked += 1;
     }
     HttpResponse::Ok().json(WebResponse { success: true, message: "Logged out".into(), total_data: revoked, data: Value::Null })
+}
+
+#[derive(serde::Deserialize)]
+struct VerifyPasswordRequest {
+    #[serde(default)]
+    password: String,
+    #[serde(default)]
+    meaning: String,
+}
+
+/// `POST /auth/verify-password` (Bearer access token required).
+///
+/// Re-authenticates the currently logged-in user for GxP electronic signatures
+/// (CPOB / 21 CFR Part 11) and returns a short-lived `signature_token` JWT
+/// (default 2 minutes via `JWT_SIGNATURE_TTL_SECS`) bound to the user and
+/// signature meaning. Uses its own per-user rate limiter
+/// (`RATE_LIMIT_VERIFY_PASSWORD_PER_MIN`, default 10/min/user) and never
+/// increments `RATE_LIMIT_LOGIN_PER_MIN`. Failed verification returns HTTP 401
+/// without leaking the failure reason.
+pub async fn verify_password(
+    state: web::Data<AppState>,
+    req: actix_web::HttpRequest,
+    body: web::Bytes,
+) -> impl Responder {
+    let generic_401 = || {
+        HttpResponse::Unauthorized().json(WebResponse {
+            success: false,
+            message: "Password verification failed".into(),
+            total_data: 0,
+            data: Value::Null,
+        })
+    };
+
+    // Bearer authentication is mandatory (even if caller IP is whitelisted).
+    let has_bearer = req
+        .headers()
+        .get("Authorization")
+        .and_then(|h| h.to_str().ok())
+        .map(|s| s.starts_with("Bearer "))
+        .unwrap_or(false);
+    if !has_bearer {
+        return generic_401();
+    }
+
+    let claims = {
+        use actix_web::HttpMessage;
+        match req.extensions().get::<crate::auth::Claims>().cloned() {
+            Some(c) if !c.id.trim().is_empty() => c,
+            _ => match crate::auth::get_user_info_from_token(&req, state.clone()) {
+                Ok(c) if !c.id.trim().is_empty() => c,
+                _ => return generic_401(),
+            },
+        }
+    };
+
+    // Dedicated per-user rate limit (isolated from RATE_LIMIT_LOGIN_PER_MIN).
+    let limit_i64: i64 = *RATE_LIMIT_VERIFY_PASSWORD_PER_MIN;
+    if limit_i64 > 0 {
+        let limit = (limit_i64.min(u32::MAX as i64)) as u32;
+        if !RL_WINDOW_VERIFY_PASSWORD.check_and_increment(&format!("verify_pw:{}", claims.id), limit) {
+            return HttpResponse::TooManyRequests().json(WebResponse {
+                success: false,
+                message: "Too many password verification attempts".into(),
+                total_data: 0,
+                data: Value::Null,
+            });
+        }
+    }
+
+    let payload: VerifyPasswordRequest = match serde_json::from_slice(&body) {
+        Ok(p) => p,
+        Err(_) => {
+            return HttpResponse::BadRequest().json(WebResponse {
+                success: false,
+                message: "Invalid JSON body".into(),
+                total_data: 0,
+                data: Value::Null,
+            });
+        }
+    };
+
+    let meaning = payload.meaning.trim();
+    if meaning.is_empty() {
+        return HttpResponse::BadRequest().json(WebResponse {
+            success: false,
+            message: "Missing required field: meaning".into(),
+            total_data: 0,
+            data: Value::Null,
+        });
+    }
+    if meaning.chars().count() > 128 {
+        return HttpResponse::BadRequest().json(WebResponse {
+            success: false,
+            message: "Invalid field 'meaning': must be at most 128 characters".into(),
+            total_data: 0,
+            data: Value::Null,
+        });
+    }
+
+    let pass_in = payload.password;
+    if pass_in.is_empty() {
+        let _ = verify_password_async(String::new(), DUMMY_PASSWORD_HASH.clone()).await;
+        return generic_401();
+    }
+
+    let pass_expr: &str = match state.db_type.as_str() {
+        "mysql" | "postgres" => "CAST(password as CHAR(255)) as password",
+        "sqlite" => "CAST(password as TEXT) as password",
+        "mssql" => "CAST(password as NVARCHAR(255)) as password",
+        "mongodb" => "password",
+        _ => "password",
+    };
+    let id_val = if let Ok(n) = claims.id.parse::<i64>() {
+        QV::I64(n)
+    } else {
+        QV::Str(claims.id.clone())
+    };
+    let q_user = QQ::from("flx_users")
+        .select(["id", pass_expr])
+        .r#where(QF::And(vec![
+            QF::Eq("id".into(), id_val),
+            QF::Eq("enabled".into(), QV::Bool(true)),
+        ]))
+        .limit(1);
+
+    let rows = match state.store.query(&q_user).await {
+        Ok(rows) => rows,
+        Err(e) => {
+            log_output(
+                "ERROR",
+                "core.rs/verify_password",
+                "flx_users-query",
+                format!("Verify-password query failed: {}", e),
+                true,
+            );
+            return HttpResponse::ServiceUnavailable().json(WebResponse {
+                success: false,
+                message: "Service temporarily unavailable".into(),
+                total_data: 0,
+                data: Value::Null,
+            });
+        }
+    };
+
+    let password_db = rows
+        .first()
+        .and_then(|row0| row0.get("password"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .replace(' ', "");
+
+    let stored_is_legacy = !password_db.is_empty() && !is_argon2_hash(&password_db);
+    let password_ok = if is_argon2_hash(&password_db) {
+        verify_password_async(pass_in, password_db).await
+    } else if stored_is_legacy {
+        pass_in == decrypt(state.encrypt_key.clone(), password_db)
+    } else {
+        let _ = verify_password_async(pass_in, DUMMY_PASSWORD_HASH.clone()).await;
+        false
+    };
+
+    if !password_ok {
+        return generic_401();
+    }
+
+    match crate::auth::create_signature_token(&claims, meaning) {
+        Ok((signature_token, _exp, ttl)) => HttpResponse::Ok().json(WebResponse {
+            success: true,
+            message: "Password verified".into(),
+            total_data: 1,
+            data: json!({
+                "signature_token": signature_token,
+                "expires_in": ttl,
+            }),
+        }),
+        Err(e) => {
+            log_output("ERROR", "core.rs/verify_password", "jwt-encode", e, true);
+            HttpResponse::InternalServerError().json(WebResponse {
+                success: false,
+                message: "Failed to issue signature token".into(),
+                total_data: 0,
+                data: Value::Null,
+            })
+        }
+    }
 }
 
 // NCO-POST

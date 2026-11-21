@@ -872,6 +872,34 @@ fn lint_one(ctx: &LintCtx<'_>, report: &mut LintReport, route: &str, schema: &Ta
                     );
                 }
             }
+            if let Some(sig) = &tr.require_signature {
+                for (prop, col_opt) in [
+                    ("meaning_column", &sig.meaning_column),
+                    ("by_column", &sig.by_column),
+                    ("at_column", &sig.at_column),
+                ] {
+                    if let Some(col) = col_opt {
+                        let c = col.trim();
+                        if c.is_empty() {
+                            report.error(
+                                route,
+                                format!(
+                                    "state_machine.transitions[{}].require_signature.{} is empty",
+                                    idx, prop
+                                ),
+                            );
+                        } else if !LintCtx::has_column(schema, c) {
+                            report.error(
+                                route,
+                                format!(
+                                    "state_machine.transitions[{}].require_signature.{} '{}' is not a column of this entity",
+                                    idx, prop, c
+                                ),
+                            );
+                        }
+                    }
+                }
+            }
         }
     }
     if let Some(lw) = &schema.locked_when {
@@ -1710,7 +1738,12 @@ mod lint_tests {
                     "to": "CONFIRMED",
                     "actor_column": "missing_pic",
                     "actor_claim": "email",
-                    "not_same_as": ["missing_preparer"]
+                    "not_same_as": ["missing_preparer"],
+                    "require_signature": {
+                        "meaning_column": "missing_meaning",
+                        "by_column": "missing_by",
+                        "at_column": "missing_at"
+                    }
                 }
             ]
         });
@@ -1735,6 +1768,21 @@ mod lint_tests {
         );
         assert!(
             rep.errors.iter().any(|e| e.contains("transitions[0].not_same_as 'missing_preparer'")),
+            "{:?}",
+            rep.errors
+        );
+        assert!(
+            rep.errors.iter().any(|e| e.contains("require_signature.meaning_column 'missing_meaning'")),
+            "{:?}",
+            rep.errors
+        );
+        assert!(
+            rep.errors.iter().any(|e| e.contains("require_signature.by_column 'missing_by'")),
+            "{:?}",
+            rep.errors
+        );
+        assert!(
+            rep.errors.iter().any(|e| e.contains("require_signature.at_column 'missing_at'")),
             "{:?}",
             rep.errors
         );

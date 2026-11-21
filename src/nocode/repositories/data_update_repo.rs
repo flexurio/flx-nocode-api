@@ -522,6 +522,15 @@ pub async fn validate_unique_constraints_batch_put(
     Ok(())
 }
 
+/// Verified state of the `X-Signature-Token` header on a write request.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum SignatureHeader<'a> {
+    #[default]
+    Missing,
+    Invalid(&'static str),
+    Valid(&'a crate::auth::SignatureClaims),
+}
+
 /// Caller identity evaluated by [`check_transition_guards`].
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct TransitionCaller<'a> {
@@ -531,6 +540,33 @@ pub struct TransitionCaller<'a> {
     pub id: Option<&'a str>,
     /// Caller's JWT `cs` claim (used when `actor_claim == "cs"`).
     pub cs: Option<&'a str>,
+    /// Verified `X-Signature-Token` header for `require_signature` transitions.
+    pub signature: SignatureHeader<'a>,
+}
+
+/// Validated electronic-signature metadata produced when a transition with
+/// `require_signature` is authorized.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppliedSignature {
+    pub meaning_column: Option<String>,
+    pub by_column: Option<String>,
+    pub at_column: Option<String>,
+    pub signer_identity: String,
+    pub meaning: String,
+    pub actor_id: String,
+    pub actor_custom: Option<String>,
+    pub jti: String,
+    pub exp: i64,
+    pub field: String,
+    pub old_status: String,
+    pub new_status: String,
+}
+
+/// Detailed result of [`check_transition_guards_detailed`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransitionGuardOutcome {
+    pub status_transition_authorized: bool,
+    pub applied_signature: Option<AppliedSignature>,
 }
 
 fn resolve_caller_identity<'a>(caller: &TransitionCaller<'a>, claim: &str) -> Option<&'a str> {
@@ -577,8 +613,21 @@ pub fn check_transition_guards(
     patch: &serde_json::Map<String, Value>,
     caller: TransitionCaller<'_>,
 ) -> Result<bool, String> {
+    check_transition_guards_detailed(table_schema, old_record, patch, caller)
+        .map(|o| o.status_transition_authorized)
+}
+
+/// Detailed variant of [`check_transition_guards`] that also returns any
+/// validated [`AppliedSignature`] for transitions declaring `require_signature`.
+pub fn check_transition_guards_detailed(
+    table_schema: &TableSchema,
+    old_record: &serde_json::Map<String, Value>,
+    patch: &serde_json::Map<String, Value>,
+    caller: TransitionCaller<'_>,
+) -> Result<TransitionGuardOutcome, String> {
     // 1. state_machine transition guard
     let mut status_transition_authorized = false;
+    let mut applied_signature: Option<AppliedSignature> = None;
     if let Some(sm) = &table_schema.state_machine
         && let Some(new_status_val) = patch.get(&sm.field)
     {
@@ -679,6 +728,87 @@ pub fn check_transition_guards(
                         }
                     }
 
+                    if let Some(req_sig) = &trans.require_signature {
+                        let sig = match caller.signature {
+                            SignatureHeader::Missing => {
+                                return Err(format!("{}Signature required", FORBIDDEN_PREFIX));
+                            }
+                            SignatureHeader::Invalid(reason) => {
+                                return Err(format!(
+                                    "{}Signature required ({})",
+                                    FORBIDDEN_PREFIX, reason
+                                ));
+                            }
+                            SignatureHeader::Valid(s) => s,
+                        };
+
+                        // Signature token must belong to the same authenticated user (fail-closed).
+                        let Some(caller_uid) = caller.id.map(str::trim).filter(|s| !s.is_empty()) else {
+                            return Err(format!("{}Signature required", FORBIDDEN_PREFIX));
+                        };
+                        if sig.id.trim() != caller_uid {
+                            return Err(format!(
+                                "{}Signature required (token does not match authenticated user)",
+                                FORBIDDEN_PREFIX
+                            ));
+                        }
+
+                        if !req_sig.allowed_meanings.is_empty()
+                            && !req_sig
+                                .allowed_meanings
+                                .iter()
+                                .any(|m| m.trim().eq_ignore_ascii_case(sig.meaning.trim()))
+                        {
+                            return Err(format!(
+                                "{}Signature meaning '{}' is not permitted for transition from '{}' to '{}'",
+                                FORBIDDEN_PREFIX, sig.meaning, old_status_str, new_status_str
+                            ));
+                        }
+
+                        let signer_identity = if claim_name.eq_ignore_ascii_case("cs") {
+                            let cs_val = if !sig.cs.trim().is_empty() {
+                                Some(sig.cs.trim())
+                            } else {
+                                caller.cs.map(str::trim).filter(|s| !s.is_empty())
+                            };
+                            let Some(cs_id) = cs_val else {
+                                return Err(format!(
+                                    "{}Signature required: caller claim 'cs' is empty",
+                                    FORBIDDEN_PREFIX
+                                ));
+                            };
+                            cs_id.to_string()
+                        } else {
+                            sig.id.trim().to_string()
+                        };
+
+                        let norm_col = |opt: &Option<String>| -> Option<String> {
+                            opt.as_deref()
+                                .map(str::trim)
+                                .filter(|s| !s.is_empty())
+                                .map(str::to_string)
+                        };
+
+                        applied_signature = Some(AppliedSignature {
+                            meaning_column: norm_col(&req_sig.meaning_column),
+                            by_column: norm_col(&req_sig.by_column),
+                            at_column: norm_col(&req_sig.at_column),
+                            signer_identity,
+                            meaning: sig.meaning.trim().to_string(),
+                            actor_id: sig.id.trim().to_string(),
+                            actor_custom: if sig.cs.trim().is_empty() {
+                                caller.cs.map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+                            } else {
+                                Some(sig.cs.trim().to_string())
+                            },
+                            jti: sig.jti.clone(),
+                            exp: sig.exp as i64,
+                            field: sm.field.clone(),
+                            old_status: old_status_str.to_string(),
+                            new_status: new_status_str.to_string(),
+                        });
+                    }
+
                     status_transition_authorized = true;
                 }
             }
@@ -698,7 +828,10 @@ pub fn check_transition_guards(
                     single => crate::nocode::trigger_engine::value_matches(single, Some(actual_val)),
                 };
                 if is_match {
-                    let modified_keys: Vec<&String> = patch.keys().filter(|k| !k.starts_with("updated_")).collect();
+                    let modified_keys: Vec<&String> = patch
+                        .keys()
+                        .filter(|k| !k.starts_with("updated_") && !k.eq_ignore_ascii_case("version"))
+                        .collect();
                     let only_allowed = !modified_keys.is_empty() && modified_keys.iter().all(|k| {
                         except_cols.contains(k) || (status_transition_authorized && sm_field_opt == Some(*k))
                     });
@@ -717,7 +850,10 @@ pub fn check_transition_guards(
         }
     }
 
-    Ok(status_transition_authorized)
+    Ok(TransitionGuardOutcome {
+        status_transition_authorized,
+        applied_signature,
+    })
 }
 
 #[allow(clippy::too_many_arguments, clippy::collapsible_if)]
@@ -829,9 +965,57 @@ pub async fn perform_update(
 
         // 1-2. state_machine transition guard + locked_when immutability lock
         //      (shared with the cron scheduler, see `check_transition_guards`).
-        if let Err(e) = check_transition_guards(table_schema, &old_record, &patch_fields, transition_caller) {
-            let _ = tx.rollback().await;
-            return Err(e);
+        let guard_outcome = match check_transition_guards_detailed(table_schema, &old_record, &patch_fields, transition_caller) {
+            Ok(outcome) => outcome,
+            Err(e) => {
+                let _ = tx.rollback().await;
+                return Err(e);
+            }
+        };
+
+        // 1b. Electronic signature auto-fill (`require_signature`):
+        //     Populate server-authoritative `by_column`, `at_column`, and
+        //     `meaning_column` AFTER `locked_when` so the client cannot spoof
+        //     them or sneak extra columns past `locked_when`.
+        let mut applied_signature_with_at: Option<(AppliedSignature, String)> = None;
+        let mut pg_timestamp_at_col: Option<(String, String)> = None;
+        if let Some(sig) = guard_outcome.applied_signature {
+            let now_utc = chrono::Utc::now();
+            let signed_at_iso = now_utc.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+            let signed_at_sql = now_utc.format("%Y-%m-%d %H:%M:%S").to_string();
+
+            if let Some(col) = &sig.meaning_column {
+                patch_fields.insert(col.clone(), Value::String(sig.meaning.clone()));
+            }
+            if let Some(col) = &sig.by_column {
+                let td = table_schema
+                    .columns
+                    .iter()
+                    .find(|c| c.name == *col)
+                    .map(|c| c.type_data.as_str())
+                    .unwrap_or("varchar");
+                patch_fields.insert(
+                    col.clone(),
+                    crate::nocode::pk_utils::json_value_from_str_and_type(&sig.signer_identity, td),
+                );
+            }
+            if let Some(col) = &sig.at_column {
+                let td = table_schema
+                    .columns
+                    .iter()
+                    .find(|c| c.name == *col)
+                    .map(|c| c.type_data.to_ascii_lowercase())
+                    .unwrap_or_default();
+                let is_temporal = td.contains("timestamp") || td.contains("datetime") || td == "date";
+                if is_temporal && state.db_type == crate::model::DbType::Postgres {
+                    pg_timestamp_at_col = Some((col.clone(), signed_at_iso.clone()));
+                } else if is_temporal {
+                    patch_fields.insert(col.clone(), Value::String(signed_at_sql));
+                } else {
+                    patch_fields.insert(col.clone(), Value::String(signed_at_iso.clone()));
+                }
+            }
+            applied_signature_with_at = Some((sig, signed_at_iso));
         }
 
         // 2b. CPOB audit_trail: enforce `require_reason_when` before writing.
@@ -988,6 +1172,27 @@ pub async fn perform_update(
              }
              Ok(_) => {
                  let mut final_patch = patch_fields;
+
+                 // On PostgreSQL, `tx.update` binds strings as TEXT which cannot be
+                 // implicitly cast into TIMESTAMP/DATETIME columns; stamp `at_column`
+                 // with `CURRENT_TIMESTAMP` inside the same transaction.
+                 if let Some((ref at_col, ref iso)) = pg_timestamp_at_col {
+                     let ds_pg = SqlStore::new(state.db.clone(), state.db_type.as_str().to_string());
+                     let pk_vals_pg = parse_pk_values(id_raw);
+                     if let Ok(pk_f) = build_pk_filter(&table_schema.primary_key.columns, &pk_vals_pg)
+                         && let Ok((pg_sql, pg_params)) = ds_pg.preview_update_with(
+                             &table_schema.table,
+                             Some(&pk_f),
+                             &[(at_col.clone(), InsertValue::Raw(state.query_converter.datetime_now.clone()))],
+                         )
+                     {
+                         if let Err(e) = tx.raw_execute(&pg_sql, pg_params).await {
+                             let _ = tx.rollback().await;
+                             return Err(format!("Error stamping signature timestamp: {}", e));
+                         }
+                         final_patch.insert(at_col.clone(), Value::String(iso.clone()));
+                     }
+                 }
 
                  // Sync Details inside transaction (replace / upsert / append)
                  let ds = SqlStore::new(state.db.clone(), state.db_type.as_str().to_string());
@@ -1169,9 +1374,39 @@ pub async fn perform_update(
                      }
                  }
 
+                 // GxP electronic signature audit row: always written atomically inside
+                 // the same transaction whenever a `require_signature` transition runs.
+                 if let Some((ref sig, ref signed_at_iso)) = applied_signature_with_at
+                     && let Err(e) = crate::nocode::audit_trail::record_signature_in_tx(
+                         &mut *tx,
+                         table_schema,
+                         route,
+                         id_raw,
+                         &sig.field,
+                         &sig.old_status,
+                         &sig.new_status,
+                         &sig.meaning,
+                         &sig.actor_id,
+                         sig.actor_custom.as_deref(),
+                         audit_ctx.reason,
+                         audit_ctx.request_id,
+                         signed_at_iso,
+                     )
+                     .await
+                 {
+                     let _ = tx.rollback().await;
+                     return Err(format!("Error recording signature audit trail: {}", e));
+                 }
+
                  tx.commit()
                      .await
                      .map_err(|e| format!("Error committing transaction: {}", e))?;
+
+                 // Single-use signature token: revoke `jti` after the signed transition commits.
+                 if let Some((ref sig, _)) = applied_signature_with_at {
+                     crate::auth::revoke_jti(&sig.jti, sig.exp);
+                 }
+
                  Ok(("Data updated successfully".to_string(), 1, Value::Object(final_patch)))
              }
              Err(e) => {
@@ -1583,6 +1818,7 @@ mod tests {
                         actor_column: Some("pic_nip".to_string()),
                         actor_claim: Some("cs".to_string()),
                         not_same_as: vec![],
+                        require_signature: None,
                     },
                     crate::model::StateTransition {
                         from: serde_json::json!("ACTION_PLANNING"),
@@ -1591,6 +1827,7 @@ mod tests {
                         actor_column: Some("owner_id".to_string()),
                         actor_claim: None, // default: "id"
                         not_same_as: vec![],
+                        require_signature: None,
                     },
                     crate::model::StateTransition {
                         from: serde_json::json!("EVALUATION_APPROVAL"),
@@ -1599,6 +1836,7 @@ mod tests {
                         actor_column: None,
                         actor_claim: Some("cs".to_string()),
                         not_same_as: vec!["prepared_by".to_string(), "pic_nip".to_string()],
+                        require_signature: None,
                     },
                 ],
             }),
@@ -1620,16 +1858,16 @@ mod tests {
         patch.insert("status".into(), serde_json::json!("ACTION_PLANNING"));
 
         // Matching cs claim -> allowed
-        let ok_caller = TransitionCaller { role: Some("staff"), id: Some("7"), cs: Some("NIP-1001") };
+        let ok_caller = TransitionCaller { role: Some("staff"), id: Some("7"), cs: Some("NIP-1001"), ..Default::default() };
         assert_eq!(check_transition_guards(&schema, &old, &patch, ok_caller), Ok(true));
 
         // Different cs claim -> 403 Forbidden
-        let wrong_caller = TransitionCaller { role: Some("staff"), id: Some("8"), cs: Some("NIP-9999") };
+        let wrong_caller = TransitionCaller { role: Some("staff"), id: Some("8"), cs: Some("NIP-9999"), ..Default::default() };
         let err = check_transition_guards(&schema, &old, &patch, wrong_caller).unwrap_err();
         assert!(err.starts_with(FORBIDDEN_PREFIX), "expected FORBIDDEN_PREFIX, got: {}", err);
 
         // Missing cs claim -> 403 Forbidden (fail-closed)
-        let empty_cs = TransitionCaller { role: Some("staff"), id: Some("7"), cs: None };
+        let empty_cs = TransitionCaller { role: Some("staff"), id: Some("7"), cs: None, ..Default::default() };
         let err = check_transition_guards(&schema, &old, &patch, empty_cs).unwrap_err();
         assert!(err.starts_with(FORBIDDEN_PREFIX), "expected FORBIDDEN_PREFIX, got: {}", err);
 
@@ -1651,9 +1889,9 @@ mod tests {
         let mut patch_eval = serde_json::Map::new();
         patch_eval.insert("status".into(), serde_json::json!("EVALUATION_APPROVAL"));
 
-        let owner = TransitionCaller { role: Some("staff"), id: Some("42"), cs: None };
+        let owner = TransitionCaller { role: Some("staff"), id: Some("42"), cs: None, ..Default::default() };
         assert_eq!(check_transition_guards(&schema, &old_ap, &patch_eval, owner), Ok(true));
-        let other = TransitionCaller { role: Some("staff"), id: Some("43"), cs: None };
+        let other = TransitionCaller { role: Some("staff"), id: Some("43"), cs: None, ..Default::default() };
         let err = check_transition_guards(&schema, &old_ap, &patch_eval, other).unwrap_err();
         assert!(err.starts_with(FORBIDDEN_PREFIX), "expected FORBIDDEN_PREFIX, got: {}", err);
     }
@@ -1671,28 +1909,28 @@ mod tests {
         patch.insert("status".into(), serde_json::json!("IMPLEMENTATION"));
 
         // Different QA manager -> allowed (and also passes locked_when for status-only transition)
-        let approver = TransitionCaller { role: Some("plant_qa_manager"), id: Some("99"), cs: Some("NIP-2000") };
+        let approver = TransitionCaller { role: Some("plant_qa_manager"), id: Some("99"), cs: Some("NIP-2000"), ..Default::default() };
         assert_eq!(check_transition_guards(&schema, &old, &patch, approver), Ok(true));
 
         // Same person as prepared_by -> 403 Forbidden
-        let same_as_preparer = TransitionCaller { role: Some("plant_qa_manager"), id: Some("10"), cs: Some("NIP-1001") };
+        let same_as_preparer = TransitionCaller { role: Some("plant_qa_manager"), id: Some("10"), cs: Some("NIP-1001"), ..Default::default() };
         let err = check_transition_guards(&schema, &old, &patch, same_as_preparer).unwrap_err();
         assert!(err.starts_with(FORBIDDEN_PREFIX), "expected FORBIDDEN_PREFIX, got: {}", err);
         assert!(err.contains("prepared_by"), "{}", err);
 
         // Same person as pic_nip (even with different ASCII case) -> 403 Forbidden
-        let same_as_pic = TransitionCaller { role: Some("plant_qa_manager"), id: Some("11"), cs: Some("nip-1002") };
+        let same_as_pic = TransitionCaller { role: Some("plant_qa_manager"), id: Some("11"), cs: Some("nip-1002"), ..Default::default() };
         let err = check_transition_guards(&schema, &old, &patch, same_as_pic).unwrap_err();
         assert!(err.starts_with(FORBIDDEN_PREFIX), "expected FORBIDDEN_PREFIX, got: {}", err);
         assert!(err.contains("pic_nip"), "{}", err);
 
         // Wrong role even when different person -> rejected by roles guard
-        let wrong_role = TransitionCaller { role: Some("staff"), id: Some("99"), cs: Some("NIP-2000") };
+        let wrong_role = TransitionCaller { role: Some("staff"), id: Some("99"), cs: Some("NIP-2000"), ..Default::default() };
         let err = check_transition_guards(&schema, &old, &patch, wrong_role).unwrap_err();
         assert!(err.contains("role 'staff' is not permitted"), "{}", err);
 
         // Missing caller cs claim -> 403 Forbidden (fail-closed)
-        let no_claim = TransitionCaller { role: Some("plant_qa_manager"), id: Some("99"), cs: None };
+        let no_claim = TransitionCaller { role: Some("plant_qa_manager"), id: Some("99"), cs: None, ..Default::default() };
         let err = check_transition_guards(&schema, &old, &patch, no_claim).unwrap_err();
         assert!(err.starts_with(FORBIDDEN_PREFIX), "expected FORBIDDEN_PREFIX, got: {}", err);
 
@@ -1717,6 +1955,7 @@ mod tests {
                     actor_column: Some("pic_nip".to_string()),
                     actor_claim: None, // inherits "cs" from state_machine
                     not_same_as: vec![],
+                    require_signature: None,
                 }],
             }),
             ..Default::default()
@@ -1729,10 +1968,116 @@ mod tests {
         let mut patch = serde_json::Map::new();
         patch.insert("status".into(), serde_json::json!("INVESTIGATION"));
 
-        let ok = TransitionCaller { role: None, id: Some("1"), cs: Some("NIP-777") };
+        let ok = TransitionCaller { role: None, id: Some("1"), cs: Some("NIP-777"), ..Default::default() };
         assert_eq!(check_transition_guards(&schema, &old, &patch, ok), Ok(true));
-        let bad = TransitionCaller { role: None, id: Some("NIP-777"), cs: Some("NIP-888") };
+        let bad = TransitionCaller { role: None, id: Some("NIP-777"), cs: Some("NIP-888"), ..Default::default() };
         assert!(check_transition_guards(&schema, &old, &patch, bad).unwrap_err().starts_with(FORBIDDEN_PREFIX));
+    }
+
+    #[test]
+    fn test_state_machine_require_signature_guard() {
+        let schema = TableSchema {
+            table: "plant_capas".to_string(),
+            state_machine: Some(crate::model::StateMachine {
+                field: "status".to_string(),
+                initial: Some("EVALUATION_APPROVAL".to_string()),
+                actor_claim: Some("cs".to_string()),
+                transitions: vec![crate::model::StateTransition {
+                    from: serde_json::json!("EVALUATION_APPROVAL"),
+                    to: "IMPLEMENTATION".to_string(),
+                    roles: vec!["plant_qa_manager".to_string()],
+                    require_signature: Some(crate::model::RequireSignature {
+                        meaning_column: Some("approved_meaning".to_string()),
+                        by_column: Some("approved_by".to_string()),
+                        at_column: Some("approved_at".to_string()),
+                        allowed_meanings: vec!["APPROVED".to_string()],
+                    }),
+                    ..Default::default()
+                }],
+            }),
+            ..Default::default()
+        };
+
+        let mut old = serde_json::Map::new();
+        old.insert("status".into(), serde_json::json!("EVALUATION_APPROVAL"));
+        let mut patch = serde_json::Map::new();
+        patch.insert("status".into(), serde_json::json!("IMPLEMENTATION"));
+
+        // 1. Missing signature header -> 403 Signature required
+        let no_sig = TransitionCaller {
+            role: Some("plant_qa_manager"),
+            id: Some("42"),
+            cs: Some("NIP-0042"),
+            signature: SignatureHeader::Missing,
+        };
+        let err = check_transition_guards_detailed(&schema, &old, &patch, no_sig).unwrap_err();
+        assert_eq!(err, format!("{}Signature required", FORBIDDEN_PREFIX));
+
+        // 2. Signature token belonging to another user -> 403
+        let other_sig = crate::auth::SignatureClaims {
+            id: "99".to_string(),
+            nm: "Other".to_string(),
+            cs: "NIP-0099".to_string(),
+            meaning: "APPROVED".to_string(),
+            at: 1000,
+            exp: 2000,
+            jti: "jti-other".to_string(),
+            typ: crate::auth::SIGNATURE_TOKEN_TYPE.to_string(),
+        };
+        let wrong_user = TransitionCaller {
+            role: Some("plant_qa_manager"),
+            id: Some("42"),
+            cs: Some("NIP-0042"),
+            signature: SignatureHeader::Valid(&other_sig),
+        };
+        let err = check_transition_guards_detailed(&schema, &old, &patch, wrong_user).unwrap_err();
+        assert!(err.starts_with(FORBIDDEN_PREFIX) && err.contains("Signature required"), "{}", err);
+
+        // 3. Disallowed meaning -> 403
+        let bad_meaning_sig = crate::auth::SignatureClaims {
+            id: "42".to_string(),
+            nm: "QA".to_string(),
+            cs: "NIP-0042".to_string(),
+            meaning: "REVIEWED".to_string(),
+            at: 1000,
+            exp: 2000,
+            jti: "jti-m".to_string(),
+            typ: crate::auth::SIGNATURE_TOKEN_TYPE.to_string(),
+        };
+        let bad_meaning = TransitionCaller {
+            role: Some("plant_qa_manager"),
+            id: Some("42"),
+            cs: Some("NIP-0042"),
+            signature: SignatureHeader::Valid(&bad_meaning_sig),
+        };
+        let err = check_transition_guards_detailed(&schema, &old, &patch, bad_meaning).unwrap_err();
+        assert!(err.starts_with(FORBIDDEN_PREFIX) && err.contains("REVIEWED"), "{}", err);
+
+        // 4. Valid signature for same user -> returns AppliedSignature with NIP identity
+        let good_sig = crate::auth::SignatureClaims {
+            id: "42".to_string(),
+            nm: "QA".to_string(),
+            cs: "NIP-0042".to_string(),
+            meaning: "APPROVED".to_string(),
+            at: 1000,
+            exp: 2000,
+            jti: "jti-ok".to_string(),
+            typ: crate::auth::SIGNATURE_TOKEN_TYPE.to_string(),
+        };
+        let ok = TransitionCaller {
+            role: Some("plant_qa_manager"),
+            id: Some("42"),
+            cs: Some("NIP-0042"),
+            signature: SignatureHeader::Valid(&good_sig),
+        };
+        let out = check_transition_guards_detailed(&schema, &old, &patch, ok).unwrap();
+        assert!(out.status_transition_authorized);
+        let applied = out.applied_signature.expect("expected applied_signature");
+        assert_eq!(applied.signer_identity, "NIP-0042");
+        assert_eq!(applied.meaning, "APPROVED");
+        assert_eq!(applied.meaning_column.as_deref(), Some("approved_meaning"));
+        assert_eq!(applied.by_column.as_deref(), Some("approved_by"));
+        assert_eq!(applied.at_column.as_deref(), Some("approved_at"));
     }
 }
 

@@ -705,6 +705,20 @@ pub async fn process_update_request(
         request_id: request_id.as_deref(),
     };
 
+    let raw_sig_token = crate::nocode::audit_trail::extract_signature_token(req);
+    let verified_sig_claims = match raw_sig_token.as_deref() {
+        Some(tok) => match crate::auth::verify_signature_token(tok) {
+            Ok(sig) => Ok(Some(sig)),
+            Err(reason) => Err(reason),
+        },
+        None => Ok(None),
+    };
+    let sig_header = match &verified_sig_claims {
+        Ok(Some(sig)) => data_update_repo::SignatureHeader::Valid(sig),
+        Ok(None) => data_update_repo::SignatureHeader::Missing,
+        Err(reason) => data_update_repo::SignatureHeader::Invalid(reason),
+    };
+
     let transition_caller = data_update_repo::TransitionCaller {
         role: Some(claims.rl.as_str()),
         id: if auth_required && !claims.id.is_empty() {
@@ -713,6 +727,7 @@ pub async fn process_update_request(
             None
         },
         cs: actor_custom,
+        signature: sig_header,
     };
 
     // Call Repository

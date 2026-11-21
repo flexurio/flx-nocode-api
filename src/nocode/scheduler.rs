@@ -1024,7 +1024,12 @@ async fn execute_single_action(
                     schema,
                     old,
                     &patch,
-                    TransitionCaller { role: Some(SYSTEM_ROLE), id: None, cs: None },
+                    TransitionCaller {
+                        role: Some(SYSTEM_ROLE),
+                        id: None,
+                        cs: None,
+                        signature: crate::nocode::repositories::data_update_repo::SignatureHeader::Missing,
+                    },
                 )?;
 
                 // SET <patch>, updated_at, updated_by_id, version + 1
@@ -1579,7 +1584,7 @@ mod tests {
             m.insert("status".into(), json!(s));
             m
         };
-        let sys = TransitionCaller { role: Some(SYSTEM_ROLE), id: None, cs: None };
+        let sys = TransitionCaller { role: Some(SYSTEM_ROLE), ..Default::default() };
         assert_eq!(check_transition_guards(&schema, &rec("IMPLEMENTATION"), &rec("OVERDUE"), sys), Ok(true));
         assert_eq!(check_transition_guards(&schema, &rec("OVERDUE"), &rec("OVERDUE"), sys), Ok(false));
         let err = check_transition_guards(&schema, &rec("DRAFT"), &rec("CLOSED"), sys).unwrap_err();

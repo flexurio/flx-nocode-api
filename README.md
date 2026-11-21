@@ -260,6 +260,8 @@ cp env .env
 | `UPLOAD_EXT_ALLOW` | — | Comma‑separated allow‑list of upload file extensions. |
 | `IMPORT_BATCH_SIZE` | — | Rows per batch during import. |
 | `RATE_LIMIT_LOGIN_PER_MIN` | `3` | Login attempts per minute. |
+| `RATE_LIMIT_VERIFY_PASSWORD_PER_MIN` | `10` | Per‑user limit for `POST /auth/verify-password` (electronic signature re-auth; isolated from login rate limit). |
+| `JWT_SIGNATURE_TTL_SECS` | `120` | Lifetime in seconds of `signature_token` issued by `POST /auth/verify-password` (default 2 minutes). |
 | `RATE_LIMIT_MUTATE_PER_SEC` | `20` | Per‑second limit for mutating methods. |
 | `RATE_LIMIT_GET_PER_SEC` | `50` | Per‑second limit for `GET`. |
 | `RATE_LIMIT_MCP_PER_SEC` | `30` | Per‑second limit for the MCP endpoint (see [§18](#18-mcp-server-model-context-protocol)). |
@@ -353,6 +355,8 @@ The reload re-reads the directory, runs the configuration lint, creates tables/i
 ### Access + refresh tokens, revocation
 
 `POST /login` returns the access token in `data` (unchanged) and a refresh token in the `X-Refresh-Token` header (`X-Token-Expires-In` gives the access TTL). `POST /token/refresh` with `Authorization: Bearer <refresh token>` returns a new access token (roles re-read from the database) and rotates the refresh token. `POST /logout` revokes the presented access token and, if sent in `X-Refresh-Token`, the refresh token. Revocations propagate to other replicas through Redis within `JWT_DENYLIST_SYNC_SECS`. Set `JWT_ACCESS_TTL_SECS=900` for short-lived access tokens.
+
+`POST /auth/verify-password` (Bearer required, body `{ "password", "meaning" }`) re-checks the current user's password for GxP electronic signatures and returns a single-use `signature_token` (`JWT_SIGNATURE_TTL_SECS`, default 120 s). It does not count toward `RATE_LIMIT_LOGIN_PER_MIN`, has its own per-user limit `RATE_LIMIT_VERIFY_PASSWORD_PER_MIN` (default 10/min), and does not issue new access/refresh tokens. A signature token is rejected as a Bearer or refresh token. See [Electronic Signature Flow](#electronic-signature-flow-cpob--21-cfr-part-11).
 
 ### Transaction correctness (document numbers, locks, conflicts)
 
@@ -1441,6 +1445,83 @@ Add `"state_machine"` to `LOC_CONFIG/entity/<route>.json`:
 | `transitions[].actor_column` | `string` | *(optional)* Per-record actor guard: transition is allowed only when the current row's value in this column equals the caller's identity (`id` or `cs`, chosen via `actor_claim`). Rejected with HTTP `403 Forbidden` if empty or mismatched. |
 | `transitions[].actor_claim` | `string` | *(optional)* Overrides `state_machine.actor_claim` for this transition (`"id"` or `"cs"`). |
 | `transitions[].not_same_as` | `array` | *(optional)* Separation-of-duties (SoD) guard: transition is rejected with HTTP `403 Forbidden` if the caller's identity matches the current row's value in any listed column (e.g. `["prepared_by", "pic_nip"]`). |
+| `transitions[].require_signature` | `object` | *(optional)* GxP / 21 CFR Part 11 electronic signature requirement: `{ "meaning_column", "by_column", "at_column", "allowed_meanings" }`. Requires a valid `X-Signature-Token` header from `POST /auth/verify-password` belonging to the same user; missing/invalid token returns `403 Forbidden` (`Signature required`). Auto-populates the configured columns with server-authoritative values, writes a `SIGN` row to `flx_audit_trail`, and consumes the token (single-use). |
+
+#### Electronic Signature Flow (CPOB / 21 CFR Part 11)
+
+1. The authenticated user re-enters their password and selects a signature meaning via `POST /auth/verify-password` (Bearer token required, isolated per-user rate limit `RATE_LIMIT_VERIFY_PASSWORD_PER_MIN`, default `10`/min/user; failed attempts return `401` without leaking the reason):
+   ```json
+   POST /auth/verify-password
+   Authorization: Bearer <access_token>
+   { "password": "...", "meaning": "APPROVED" }
+   ```
+   Response:
+   ```json
+   {
+     "success": true,
+     "message": "Password verified",
+     "total_data": 1,
+     "data": { "signature_token": "<jwt 2m>", "expires_in": 120 }
+   }
+   ```
+   The `signature_token` (`typ = "signature"`) cannot be used as a Bearer access token on normal endpoints.
+2. The client submits the `PATCH /{route}/{id}` (or `PUT /{route}/{id}`) transition with header `X-Signature-Token: <signature_token>`. The engine verifies that the token is valid, unexpired, unused, and belongs to the same authenticated user; populates `by_column` (`id` or `cs`/NIP per `actor_claim`), `at_column` (server timestamp), and `meaning_column` (from the token, ignoring any spoofed body values); records a `SIGN` row in `flx_audit_trail` inside the same transaction; and revokes the token's `jti` upon commit.
+
+Schema example (CAPA approval by QA Manager):
+
+```json
+"state_machine": {
+  "field": "status",
+  "actor_claim": "cs",
+  "transitions": [
+    {
+      "from": "EVALUATION_APPROVAL",
+      "to": "IMPLEMENTATION",
+      "roles": ["plant_qa_manager"],
+      "not_same_as": ["prepared_by"],
+      "require_signature": {
+        "meaning_column": "approved_meaning",
+        "by_column": "approved_by",
+        "at_column": "approved_at",
+        "allowed_meanings": ["APPROVED"]
+      }
+    }
+  ]
+}
+```
+
+Request:
+
+```http
+PATCH /plant_capas/CAPA-0001
+Authorization: Bearer <access_token>
+X-Signature-Token: <signature_token>
+X-Change-Reason: Root cause and action plan verified
+Content-Type: application/json
+
+{ "status": "IMPLEMENTATION" }
+```
+
+Responses:
+
+| Situation | HTTP | Message |
+|---|---|---|
+| Header `X-Signature-Token` missing | `403` | `Signature required` |
+| Token expired / malformed / already used | `403` | `Signature required (<reason>)` |
+| Token belongs to another user | `403` | `Signature required (token does not match authenticated user)` |
+| Meaning not in `allowed_meanings` | `403` | `Signature meaning '<m>' is not permitted for transition from '<a>' to '<b>'` |
+| Wrong password at `POST /auth/verify-password` | `401` | `Password verification failed` (same for unknown/disabled user) |
+| Too many attempts at `POST /auth/verify-password` | `429` | `Too many password verification attempts` |
+| Success | `200` | columns filled, `SIGN` audit row written, token consumed |
+
+Signature semantics:
+
+- **`by_column`** receives the signer's NIP (`cs`) when the transition's effective `actor_claim` is `"cs"`, otherwise the user `id`. **`at_column`** receives the server time (UTC; on PostgreSQL temporal columns `CURRENT_TIMESTAMP` is used). **`meaning_column`** receives the meaning stored in the token. All three are optional; omit the ones your table does not have.
+- **`allowed_meanings`** *(optional)*: case-insensitive whitelist. When empty, any non-empty meaning (max 128 characters) is accepted.
+- **Single-use & short-lived**: the token lives `JWT_SIGNATURE_TTL_SECS` (default `120` s) and is revoked after the first successful signed transition. If the transaction fails (validation error, conflict, …) the token is **not** consumed and can be retried until it expires.
+- **Scope**: the token is bound to the user and the meaning, not to a specific record. Request a new token for every signature (one click = one `verify-password` call).
+- **Audit row**: the `SIGN` row is always written, even when `audit_trail.enabled` is false for the entity: `column_name` = state field, `old_value`/`new_value` = old/new status, `actor_id` / `actor_custom` = signer, `reason` = `"<meaning>"` or `"<meaning> | <X-Change-Reason>"`.
+- **Write queue**: `X-Signature-Token` is forwarded with the queued job and verified by the consumer, so the job must run before the token expires. Do not use `?isqueue=true` for signed transitions.
 
 #### Per-Record Actor & Separation-of-Duties Example (CPOB / GxP)
 
@@ -1537,7 +1618,9 @@ Inside one `PUT`/`PATCH` transaction, after the row is read with `SELECT ... FOR
 2. `roles` (else `403`)
 3. `actor_column` (else `403`)
 4. `not_same_as` (else `403`)
-5. `locked_when` (an authorized status change is allowed even on a locked row; else `400`)
+5. `require_signature`: `X-Signature-Token` present, valid, unused, same user, meaning in `allowed_meanings` (else `403 Signature required…`)
+6. `locked_when` (an authorized status change is allowed even on a locked row; else `400`)
+7. signature columns (`by_column` / `at_column` / `meaning_column`) are filled by the server **after** `locked_when`, overwriting any value sent in the body
 
 Any failure rolls back the whole transaction, so no other field from the same payload is written.
 
@@ -1547,8 +1630,9 @@ Any failure rolls back the whole transaction, so no other field from the same pa
 | Value comparison | Both sides are trimmed. Numeric columns are compared as their string form (`owner_id = 42` matches claim `id = "42"`). `actor_column` is **case-sensitive**; `not_same_as` is **case-insensitive** (stricter in both directions). |
 | One identity per transition | `actor_claim` selects a single claim for both checks of a transition. Columns in `not_same_as` must store the same kind of identity (all NIPs for `cs`, or all user ids such as `created_by_id` for `id`). |
 | Scheduler (`schedules`) | Cron jobs run as role `system` without `id`/`cs`, so they cannot pass a transition that has `actor_column` or `not_same_as`. Give time-based transitions their own entry with `roles: ["system"]`. |
-| Startup lint | `actor_column` / `not_same_as` must reference declared columns and `actor_claim` must be `id` or `cs`; otherwise schema validation reports an error. |
-| MongoDB | Not enforced: the MongoDB update path does not run `state_machine` guards. |
+| Startup lint | `actor_column` / `not_same_as` / `require_signature.{meaning,by,at}_column` must reference declared columns and `actor_claim` must be `id` or `cs`; otherwise schema validation reports an error. |
+| Scheduler & `require_signature` | Cron jobs have no `X-Signature-Token`, so they can never execute a signed transition. |
+| MongoDB | Not enforced: the MongoDB update path does not run `state_machine` guards (including `require_signature`). |
 
 ---
 
@@ -1964,6 +2048,7 @@ curl -H "Authorization: Bearer $TOKEN" \
 | `PUT /<route>/{id}` | `PUT` | one per tracked column that actually changed | old / new |
 | `PATCH /<route>/{id}` | `PATCH` | one per tracked column that actually changed | old / new |
 | `DELETE /<route>/{id}` (hard or soft) | `DELETE` | one per tracked, non-null column (or a single `column_name = "*"` row if none) | old value / `NULL` |
+| `PUT`/`PATCH` transition with `require_signature` | `SIGN` | one row (always, even when `audit_trail.enabled` is false) on the state field | old / new status; `reason = "<meaning>"` or `"<meaning> \| <X-Change-Reason>"` |
 | `schedules` update action | `SCHEDULE` | one per changed tracked column | old / new; `reason = "schedule:<name>"` |
 | `details[]` child rows written via the parent `POST`/`PUT`/`PATCH` | `DETAIL_CREATE` / `DETAIL_UPDATE` / `DETAIL_DELETE` | per child row and tracked column, on the **child** entity | as above |
 | `action_triggers` `update` / `insert` / `insert_batch` on another entity | `TRIGGER_UPDATE` / `TRIGGER_CREATE` | per affected row and tracked column, on the **target** entity | as above; `reason = "<request reason> [trigger:<name>]"` or `"trigger:<name>"` |
@@ -1976,7 +2061,7 @@ Indirect writes (the last four rows) are recorded only when the **affected** ent
 - **Actor & correlation**: `actor_id` = JWT `id` (`"0"` when auth is off), `actor_custom` = JWT `cs` claim, `request_id` = the `x-request-id` header, `reason` = `X-Change-Reason`. The reason is stored on every row of the request, including `POST`/`DELETE`/`IMPORT` when supplied.
 - **`require_reason_when` on child entities**: it is also enforced for `DETAIL_UPDATE` changes made through the parent `PUT`/`PATCH`, and the whole request returns `400` and rolls back. It is not enforced for system-driven trigger, cascade or schedule writes.
 - **Atomicity**: audit rows are inserted in the same transaction as the business write; if either fails, both roll back.
-- **Write queue (`?isqueue=true` with `WRITE_QUEUE_ENABLED`)**: `X-Change-Reason` and the original `x-request-id` are stored on the queued job and replayed by the consumer. A `PUT`/`PATCH` that violates `require_reason_when` is rejected with `400` **before** it is queued. The consumer re-checks it against the row's state at execution time.
+- **Write queue (`?isqueue=true` with `WRITE_QUEUE_ENABLED`)**: `X-Change-Reason`, the original `x-request-id` and `X-Signature-Token` are stored on the queued job and replayed by the consumer (a signature token that expires while queued makes the job fail with `403`). A `PUT`/`PATCH` that violates `require_reason_when` is rejected with `400` **before** it is queued. The consumer re-checks it against the row's state at execution time.
 - **Import performance**: when an audited entity's primary key is generated by the database, `POST /import` inserts row by row so each audit row gets the real `record_id`. Entities whose PK comes from the file, or that have no `audit_trail`, keep the bulk insert path.
 - **Validation**: the schema lint (run at startup and on `POST /admin/reload`) reports an error when `audit_trail.columns` or `require_reason_when` names a column the entity does not have.
 - The legacy file log (`LOC_AUDIT`, `write_audit`) is still written; `flx_audit_trail` is the reviewable, queryable record.
@@ -1986,6 +2071,11 @@ Indirect writes (the last four rows) are recorded only when the **affected** ent
 - **SQL backends only**: on MongoDB the table is not created and `GET /audit_trail` returns `501`.
 - **`action_triggers` `type: "sql"`** (free-form SQL statements) and `pre_process`/`post_process` `SQL:` formulas are **not** audited, because their effect cannot be determined generically. For GxP-relevant entities, use the `update` / `insert` / `insert_batch` actions instead.
 - `require_reason_when` applies to `PUT`/`PATCH` (including child rows changed through them); `POST`/`DELETE`/`IMPORT` record a reason when sent but never require one.
+- **Electronic signatures**:
+  - The server fills `by_column` / `at_column` / `meaning_column` only during the signed transition. A normal `PATCH` without a status change can still write those columns, unless the row is covered by `locked_when`. Protect them with `locked_when` (for example, lock from the signed state onward).
+  - The `SIGN` row stores the signer's `id` and `cs` (NIP), not the printed name. Join `flx_users` when reporting.
+  - Failed `POST /auth/verify-password` attempts are rate-limited but not written to `flx_audit_trail`.
+  - The token is revoked after commit: immediately on the same replica, and on other replicas within `JWT_DENYLIST_SYNC_SECS`. Two parallel requests with the same token, even on one replica, can both succeed because the check runs before the first one commits.
 
 ---
 

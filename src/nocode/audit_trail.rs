@@ -36,6 +36,10 @@ pub const REASON_REQUIRED_PREFIX: &str = "Change reason required";
 /// HTTP header carrying the mandatory/optional change reason for CPOB audits.
 pub const CHANGE_REASON_HEADER: &str = "x-change-reason";
 
+/// HTTP header carrying the short-lived GxP electronic-signature JWT from
+/// `POST /auth/verify-password`.
+pub const SIGNATURE_TOKEN_HEADER: &str = "x-signature-token";
+
 /// Columns ignored when `audit_trail.columns` is empty (auto-maintained metadata).
 const AUTO_IGNORED_COLUMNS: &[&str] = &["updated_at", "updated_by_id", "version"];
 
@@ -175,8 +179,18 @@ pub fn extract_request_id(req: &HttpRequest) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-/// Audit-relevant request headers (`X-Change-Reason`, `x-request-id`) to carry
-/// on a queued `WriteJob` so the consumer replays them on its synthetic request.
+/// Extract the trimmed `X-Signature-Token` header value, or `None` when absent/blank.
+pub fn extract_signature_token(req: &HttpRequest) -> Option<String> {
+    req.headers()
+        .get(SIGNATURE_TOKEN_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Audit-relevant request headers (`X-Change-Reason`, `x-request-id`,
+/// `X-Signature-Token`) to carry on a queued `WriteJob` so the consumer
+/// replays them on its synthetic request.
 pub fn forwarded_headers(req: &HttpRequest) -> Vec<(String, String)> {
     let mut out = Vec::new();
     if let Some(reason) = extract_change_reason(req) {
@@ -184,6 +198,9 @@ pub fn forwarded_headers(req: &HttpRequest) -> Vec<(String, String)> {
     }
     if let Some(req_id) = extract_request_id(req) {
         out.push(("x-request-id".to_string(), req_id));
+    }
+    if let Some(sig_tok) = extract_signature_token(req) {
+        out.push((SIGNATURE_TOKEN_HEADER.to_string(), sig_tok));
     }
     out
 }
@@ -469,6 +486,50 @@ pub async fn record_update_in_tx(
         .await?;
     }
     Ok(changes.len())
+}
+
+/// Insert an immutable electronic-signature (`SIGN`) row into `flx_audit_trail`
+/// inside `tx`. Always written when a `state_machine` transition with
+/// `require_signature` succeeds, even if `schema.audit_trail.enabled` is false.
+#[allow(clippy::too_many_arguments)]
+pub async fn record_signature_in_tx(
+    tx: &mut (dyn TxStore + '_),
+    schema: &TableSchema,
+    route: &str,
+    record_id: &str,
+    field: &str,
+    old_status: &str,
+    new_status: &str,
+    meaning: &str,
+    actor_id: &str,
+    actor_custom: Option<&str>,
+    change_reason: Option<&str>,
+    request_id: Option<&str>,
+    at: &str,
+) -> anyhow::Result<()> {
+    let combined_reason = match change_reason.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(r) => format!("{} | {}", meaning, r),
+        None => meaning.to_string(),
+    };
+    let sig_ctx = AuditContext {
+        action: "SIGN",
+        actor_id,
+        actor_custom,
+        reason: Some(combined_reason.as_str()),
+        request_id,
+    };
+    insert_row_in_tx(
+        tx,
+        route,
+        &schema.table,
+        record_id,
+        field,
+        if old_status.is_empty() { None } else { Some(old_status) },
+        if new_status.is_empty() { None } else { Some(new_status) },
+        &sig_ctx,
+        at,
+    )
+    .await
 }
 
 /// Insert `flx_audit_trail` rows for a newly created record (`POST`) inside `tx`.

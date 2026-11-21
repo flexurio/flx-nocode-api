@@ -85,6 +85,9 @@ pub static RL_WINDOW_MUTATE: Lazy<RateLimiter> = Lazy::new(|| RateLimiter::new(1
 pub static RL_WINDOW_GET: Lazy<RateLimiter> = Lazy::new(|| RateLimiter::new(1));
 // Window used for login failure tracking (e.g., 5 minutes)
 pub static RL_WINDOW_LOGIN_FAIL: Lazy<RateLimiter> = Lazy::new(|| RateLimiter::new(300));
+// Dedicated 1-minute window for GxP electronic signature password verification
+// (`POST /auth/verify-password`), completely isolated from `RL_WINDOW_LOGIN`.
+pub static RL_WINDOW_VERIFY_PASSWORD: Lazy<RateLimiter> = Lazy::new(|| RateLimiter::new(60));
 
 // ----------------------------------------------------------------------------
 // Rate limit key prefix cache

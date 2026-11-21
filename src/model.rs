@@ -350,6 +350,28 @@ pub struct StateMachine {
     pub transitions: Vec<StateTransition>,
 }
 
+/// Electronic signature requirement (GxP / CPOB / 21 CFR Part 11) on a
+/// `state_machine` transition.
+#[derive(Debug, Default, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct RequireSignature {
+    /// Column populated with the signature meaning from `X-Signature-Token`
+    /// (e.g. `"approved_meaning"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meaning_column: Option<String>,
+    /// Column populated with the signer's identity (`id` or `cs`/NIP per
+    /// `actor_claim`, e.g. `"approved_by"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by_column: Option<String>,
+    /// Column populated with the server timestamp of signing
+    /// (e.g. `"approved_at"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at_column: Option<String>,
+    /// Optional list of allowed signature meanings (matched case-insensitively).
+    /// When empty, any non-empty meaning in the verified token is accepted.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_meanings: Vec<String>,
+}
+
 #[derive(Debug, Default, Serialize, Deserialize, Clone, PartialEq)]
 pub struct StateTransition {
     pub from: serde_json::Value,
@@ -370,6 +392,12 @@ pub struct StateTransition {
     /// columns.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub not_same_as: Vec<String>,
+    /// Electronic signature requirement (GxP / CPOB / 21 CFR Part 11): demands
+    /// a valid `X-Signature-Token` header for the same caller, populates
+    /// `by_column` / `at_column` / `meaning_column`, and writes a `SIGN` row to
+    /// `flx_audit_trail`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub require_signature: Option<RequireSignature>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize, Clone, PartialEq)]
@@ -1135,6 +1163,37 @@ mod tests {
         assert_eq!(sm.transitions[1].roles, vec!["plant_qa_manager"]);
         assert_eq!(sm.transitions[1].actor_claim.as_deref(), Some("id"));
         assert_eq!(sm.transitions[1].not_same_as, vec!["prepared_by", "pic_nip"]);
+    }
+
+    #[test]
+    fn test_state_machine_require_signature_serde() {
+        let json = r#"{
+            "table": "plant_capas",
+            "state_machine": {
+                "field": "status",
+                "transitions": [
+                    {
+                        "from": "EVALUATION_APPROVAL",
+                        "to": "IMPLEMENTATION",
+                        "roles": ["plant_qa_manager"],
+                        "require_signature": {
+                            "meaning_column": "approved_meaning",
+                            "by_column": "approved_by",
+                            "at_column": "approved_at"
+                        }
+                    }
+                ]
+            }
+        }"#;
+        let schema: TableSchema = serde_json::from_str(json).unwrap();
+        let sig = schema.state_machine.unwrap().transitions[0]
+            .require_signature
+            .clone()
+            .expect("require_signature parsed");
+        assert_eq!(sig.meaning_column.as_deref(), Some("approved_meaning"));
+        assert_eq!(sig.by_column.as_deref(), Some("approved_by"));
+        assert_eq!(sig.at_column.as_deref(), Some("approved_at"));
+        assert!(sig.allowed_meanings.is_empty());
     }
 
     #[test]

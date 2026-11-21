@@ -18,7 +18,7 @@ use serde_json::Value;
 use std::sync::Arc;
 
 use crate::config::ISDEBUG;
-use crate::core::{get_roles, login, logout, refresh_token, register};
+use crate::core::{get_roles, login, logout, refresh_token, register, verify_password};
 use crate::database::state::AppState;
 use crate::log::log_output;
 use crate::metrics::METRICS;
@@ -596,7 +596,8 @@ pub fn configure_routes(
 
         cfg.service(web::resource("/token/refresh").route(web::post().to(refresh_token)));
         cfg.service(web::resource("/logout").route(web::post().to(logout)));
-        log_ep(do_log, "CORE ENDPOINT", "POST", host, &port_str, "token/refresh | logout");
+        cfg.service(web::resource("/auth/verify-password").route(web::post().to(verify_password)));
+        log_ep(do_log, "CORE ENDPOINT", "POST", host, &port_str, "token/refresh | logout | auth/verify-password");
     }
 
     // ── Roles ─────────────────────────────────────────────────────────────────
