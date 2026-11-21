@@ -1430,13 +1430,67 @@ Add `"state_machine"` to `LOC_CONFIG/entity/<route>.json`:
 | Field | Type | Description |
 |-------|------|-------------|
 | `field` | `string` | The status column governed by the state machine (e.g. `"status"`, `"approval_stage"`). |
-| `initial` | `string` | The mandatory initial state when a new record is created via `POST` (defaults to this value if omitted in the payload). |
+| `initial` | `string` | *(optional, opt-in)* The state every new record must start in. When set, `POST` (incl. write queue and MCP) and file import fill it when the status is omitted and reject any other value with HTTP `400`. When omitted, the status is not checked on create. |
+| `actor_claim` | `string` | *(optional)* Default JWT claim (`"id"` or `"cs"`) used by `transitions[].actor_column` and `transitions[].not_same_as` when a transition omits its own `actor_claim`. Defaults to `"id"`. |
 | `transitions[]` | `array` | List of allowed state transitions. |
 | `transitions[].from` | `string` / `array` | The current state(s) from which transition is valid. Supports `"*"` for any. |
 | `transitions[].to` | `string` | The target state. |
 | `transitions[].roles` | `array` | *(optional)* User roles authorized to perform this transition. If omitted or `["*"]`, any authenticated user may transition. |
+| `transitions[].actor_column` | `string` | *(optional)* Per-record actor guard: transition is allowed only when the current row's value in this column equals the caller's identity (`id` or `cs`, chosen via `actor_claim`). Rejected with HTTP `403 Forbidden` if empty or mismatched. |
+| `transitions[].actor_claim` | `string` | *(optional)* Overrides `state_machine.actor_claim` for this transition (`"id"` or `"cs"`). |
+| `transitions[].not_same_as` | `array` | *(optional)* Separation-of-duties (SoD) guard: transition is rejected with HTTP `403 Forbidden` if the caller's identity matches the current row's value in any listed column (e.g. `["prepared_by", "pic_nip"]`). |
+
+#### Per-Record Actor & Separation-of-Duties Example (CPOB / GxP)
+
+```json
+{
+  "table": "plant_capas",
+  "state_machine": {
+    "field": "status",
+    "initial": "ROOT_CAUSE_ANALYSIS",
+    "actor_claim": "cs",
+    "transitions": [
+      {
+        "from": "ROOT_CAUSE_ANALYSIS",
+        "to": "ACTION_PLANNING",
+        "actor_column": "pic_nip"
+      },
+      {
+        "from": "EVALUATION_APPROVAL",
+        "to": "IMPLEMENTATION",
+        "roles": ["plant_qa_manager"],
+        "not_same_as": ["prepared_by", "pic_nip"]
+      }
+    ]
+  }
+}
+```
+
+Both `actor_column` and `not_same_as` are evaluated inside the same `SELECT ... FOR UPDATE` transaction against the persisted row (`old_record`), so a caller cannot spoof `pic_nip` or `prepared_by` in the same `PUT`/`PATCH` payload to bypass the guard. When rejected, the transaction rolls back and returns HTTP `403 Forbidden`.
 
 #### Behavior & Enforcement
+0. **Initial State on Create (`initial`)**:
+   - Without `initial` a record can be created in any state, which skips every transition guard below. Set `initial` for regulated workflows.
+   - With `initial` set:
+
+     | Status in `POST` body / import row | Result |
+     |---|---|
+     | omitted, `null`, `""` or `"null"` | filled with `initial` (works even when the column is marked `status*`) |
+     | equal to `initial` (trimmed, case-sensitive) | accepted |
+     | anything else | HTTP `400`, nothing written |
+
+     ```json
+     {
+       "success": false,
+       "message": "Invalid initial state on 'status': new records must start in 'ROOT_CAUSE_ANALYSIS' (got 'IMPLEMENTATION')",
+       "total_data": 0,
+       "data": null
+     }
+     ```
+   - The check runs before the write queue, so a rejected `?isqueue=true` request is never enqueued. On import, a multipart field with the status column overrides every row and is checked once; otherwise each row is checked and the error names the row (`Row 3: Invalid initial state ...`). One bad row rejects the whole file.
+   - The status column must be in `post.columns`, otherwise the filled value is not written (startup lint warns).
+   - **Migrating in-flight records** (e.g. CAPAs already in `IMPLEMENTATION` at go-live): load them with `LOC_SEED` seed files or directly in the database. Seeding does not go through `POST` and is not subject to `initial`.
+   - Rows inserted by `action_triggers` / `schedules` are not checked.
 1. **Illegal State Transitions**:
    - If a client attempts an illegal state jump (e.g. jumping from `DRAFT` directly to `PAID`), the engine rejects the request with HTTP `400 Bad Request`:
      ```json
@@ -1453,11 +1507,46 @@ Add `"state_machine"` to `LOC_CONFIG/entity/<route>.json`:
      ```json
      {
        "success": false,
-       "message": "Unauthorized state transition on 'status': role 'warehouse' is not permitted to transition from 'DRAFT' to 'CONFIRMED'",
+       "message": "Forbidden: state transition on 'status': role 'warehouse' is not permitted to transition from 'DRAFT' to 'CONFIRMED'",
        "total_data": 0,
        "data": null
      }
      ```
+3. **Per-Record Actor Guard (`actor_column`)**:
+   - The caller's identity (`id` claim by default, or `cs` with `actor_claim: "cs"`) must equal the value stored in `actor_column` on the current row. Otherwise HTTP `403 Forbidden`:
+     ```json
+     {
+       "success": false,
+       "message": "Forbidden: state transition on 'status' from 'ROOT_CAUSE_ANALYSIS' to 'ACTION_PLANNING' is restricted to the actor in column 'pic_nip'",
+       "total_data": 0,
+       "data": null
+     }
+     ```
+   - **Fail-closed**: an empty/`NULL` column value or a missing caller claim is also rejected with `403`. A transition with an `actor_column` can therefore never be executed by an unauthenticated (public) route.
+4. **Separation of Duties (`not_same_as`)**:
+   - The transition is rejected with HTTP `403 Forbidden` (`"... violates separation of duties: caller cannot be the same as 'prepared_by'"`) when the caller's identity equals the value of **any** listed column.
+   - A listed column that is empty/`NULL` on the row does not block the transition (there is nobody to conflict with). A missing caller claim is rejected (`403`).
+
+#### Guard Evaluation Order & Semantics
+
+Inside one `PUT`/`PATCH` transaction, after the row is read with `SELECT ... FOR UPDATE`:
+
+1. transition exists for `from → to` (else `400`, *Illegal state transition*)
+2. `roles` (else `403`)
+3. `actor_column` (else `403`)
+4. `not_same_as` (else `403`)
+5. `locked_when` (an authorized status change is allowed even on a locked row; else `400`)
+
+Any failure rolls back the whole transaction, so no other field from the same payload is written.
+
+| Rule | Behaviour |
+|------|-----------|
+| Source of comparison | Always the **persisted** row (`old_record`), never the request body. Changing `pic_nip` and `status` in the same request is checked against the old `pic_nip`. |
+| Value comparison | Both sides are trimmed. Numeric columns are compared as their string form (`owner_id = 42` matches claim `id = "42"`). `actor_column` is **case-sensitive**; `not_same_as` is **case-insensitive** (stricter in both directions). |
+| One identity per transition | `actor_claim` selects a single claim for both checks of a transition. Columns in `not_same_as` must store the same kind of identity (all NIPs for `cs`, or all user ids such as `created_by_id` for `id`). |
+| Scheduler (`schedules`) | Cron jobs run as role `system` without `id`/`cs`, so they cannot pass a transition that has `actor_column` or `not_same_as`. Give time-based transitions their own entry with `roles: ["system"]`. |
+| Startup lint | `actor_column` / `not_same_as` must reference declared columns and `actor_claim` must be `id` or `cs`; otherwise schema validation reports an error. |
+| MongoDB | Not enforced: the MongoDB update path does not run `state_machine` guards. |
 
 ---
 

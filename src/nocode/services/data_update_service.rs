@@ -705,6 +705,16 @@ pub async fn process_update_request(
         request_id: request_id.as_deref(),
     };
 
+    let transition_caller = data_update_repo::TransitionCaller {
+        role: Some(claims.rl.as_str()),
+        id: if auth_required && !claims.id.is_empty() {
+            Some(claims.id.as_str())
+        } else {
+            None
+        },
+        cs: actor_custom,
+    };
+
     // Call Repository
     match data_update_repo::perform_update(
         state,
@@ -719,7 +729,7 @@ pub async fn process_update_request(
         &body,
         auth_token,
         actor_id_opt.as_deref(),
-        Some(claims.rl.as_str()),
+        transition_caller,
         audit_ctx,
     )
     .await
@@ -757,6 +767,9 @@ pub async fn process_update_request(
                 total_data: count,
                 data: updated_data,
             })
+        }
+        Err(e) if e.starts_with(data_update_repo::FORBIDDEN_PREFIX) => {
+            HttpResponse::Forbidden().json(web_err(e))
         }
         Err(e) if e.starts_with(data_update_repo::BAD_REQUEST_PREFIX) => {
             bad_request(e.trim_start_matches(data_update_repo::BAD_REQUEST_PREFIX))

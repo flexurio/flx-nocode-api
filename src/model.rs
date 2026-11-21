@@ -341,6 +341,11 @@ pub struct StateMachine {
     pub field: String,
     #[serde(default)]
     pub initial: Option<String>,
+    /// Optional default caller JWT claim (`"id"` or `"cs"`) used by
+    /// `transitions[].actor_column` and `transitions[].not_same_as` when a
+    /// transition does not specify its own `actor_claim`. Defaults to `"id"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor_claim: Option<String>,
     #[serde(default)]
     pub transitions: Vec<StateTransition>,
 }
@@ -351,6 +356,20 @@ pub struct StateTransition {
     pub to: String,
     #[serde(default)]
     pub roles: Vec<String>,
+    /// Record-level actor guard: transition is permitted only when the current
+    /// row's value in this column equals the caller's identity (`id` or `cs`,
+    /// selected via `actor_claim`). Rejected with HTTP 403 otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor_column: Option<String>,
+    /// Caller JWT claim used to evaluate `actor_column` and `not_same_as`:
+    /// `"id"` (default) or `"cs"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor_claim: Option<String>,
+    /// Separation-of-duties guard: transition is rejected with HTTP 403 when
+    /// the caller's identity matches the current row's value in any of these
+    /// columns.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub not_same_as: Vec<String>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize, Clone, PartialEq)]
@@ -1076,6 +1095,46 @@ mod tests {
         assert_eq!(sm.transitions.len(), 3);
         assert_eq!(sm.transitions[0].to, "APPROVED");
         assert_eq!(sm.transitions[0].roles, vec!["manager"]);
+        assert_eq!(sm.transitions[0].actor_column, None);
+        assert_eq!(sm.transitions[0].actor_claim, None);
+        assert!(sm.transitions[0].not_same_as.is_empty());
+    }
+
+    #[test]
+    fn test_state_machine_record_level_guards_serde() {
+        let json = r#"{
+            "table": "plant_capas",
+            "state_machine": {
+                "field": "status",
+                "initial": "ROOT_CAUSE_ANALYSIS",
+                "actor_claim": "cs",
+                "transitions": [
+                    {
+                        "from": "ROOT_CAUSE_ANALYSIS",
+                        "to": "ACTION_PLANNING",
+                        "actor_column": "pic_nip"
+                    },
+                    {
+                        "from": "EVALUATION_APPROVAL",
+                        "to": "IMPLEMENTATION",
+                        "roles": ["plant_qa_manager"],
+                        "actor_claim": "id",
+                        "not_same_as": ["prepared_by", "pic_nip"]
+                    }
+                ]
+            }
+        }"#;
+
+        let schema: TableSchema = serde_json::from_str(json).unwrap();
+        let sm = schema.state_machine.unwrap();
+        assert_eq!(sm.actor_claim.as_deref(), Some("cs"));
+        assert_eq!(sm.transitions.len(), 2);
+        assert_eq!(sm.transitions[0].actor_column.as_deref(), Some("pic_nip"));
+        assert_eq!(sm.transitions[0].actor_claim, None);
+        assert!(sm.transitions[0].not_same_as.is_empty());
+        assert_eq!(sm.transitions[1].roles, vec!["plant_qa_manager"]);
+        assert_eq!(sm.transitions[1].actor_claim.as_deref(), Some("id"));
+        assert_eq!(sm.transitions[1].not_same_as, vec!["prepared_by", "pic_nip"]);
     }
 
     #[test]

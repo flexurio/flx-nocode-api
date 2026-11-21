@@ -302,7 +302,7 @@ pub async fn process_import_request(
         total_data: 0,
         data: Value::Null,
     };
-    let rows: Vec<Map<String, Value>> = if is_xlsx_mime || is_xlsx_ext {
+    let mut rows: Vec<Map<String, Value>> = if is_xlsx_mime || is_xlsx_ext {
         tokio::task::spawn_blocking(move || parse_xlsx(file_bytes))
             .await
             .map_err(|e| parse_err("XLSX", e.to_string()))?
@@ -328,6 +328,35 @@ pub async fn process_import_request(
             total_data: 0,
             data: Value::Null,
         });
+    }
+
+    // 5b. state_machine.initial: every imported record must start in the initial
+    //     state, same rule as POST. A multipart field overrides every row, so it
+    //     is checked once; otherwise each row is checked (and filled when empty).
+    if let Some(field) = table_schema
+        .state_machine
+        .as_ref()
+        .filter(|sm| sm.initial.is_some())
+        .map(|sm| sm.field.clone())
+    {
+        let reject = |message: String| WebResponse {
+            success: false,
+            message,
+            total_data: 0,
+            data: Value::Null,
+        };
+        if additional_columns.contains_key(&field) {
+            crate::nocode::services::data_create_service::enforce_initial_state(
+                &table_schema,
+                &mut additional_columns,
+            )
+            .map_err(reject)?;
+        } else {
+            for (i, row) in rows.iter_mut().enumerate() {
+                crate::nocode::services::data_create_service::enforce_initial_state(&table_schema, row)
+                    .map_err(|e| reject(format!("Row {}: {}", i + 1, e)))?;
+            }
+        }
     }
 
     // Log additional columns

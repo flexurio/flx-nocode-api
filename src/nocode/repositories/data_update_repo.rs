@@ -114,6 +114,10 @@ pub const CONFLICT_PREFIX: &str = "Version conflict: ";
 /// Prefix of repository error strings for client validation failures (e.g. missing
 /// `X-Change-Reason` for `audit_trail.require_reason_when`); mapped to HTTP 400.
 pub const BAD_REQUEST_PREFIX: &str = "Bad request: ";
+/// Prefix of repository error strings for authorization / record-level guard
+/// denials (e.g. `state_machine.transitions[].actor_column` or `not_same_as`);
+/// mapped to HTTP 403.
+pub const FORBIDDEN_PREFIX: &str = "Forbidden: ";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DetailUpdateStrategy {
@@ -518,8 +522,44 @@ pub async fn validate_unique_constraints_batch_put(
     Ok(())
 }
 
+/// Caller identity evaluated by [`check_transition_guards`].
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct TransitionCaller<'a> {
+    /// Role checked against `transitions[].roles`.
+    pub role: Option<&'a str>,
+    /// Caller's JWT `id` claim (default identity for `actor_column` / `not_same_as`).
+    pub id: Option<&'a str>,
+    /// Caller's JWT `cs` claim (used when `actor_claim == "cs"`).
+    pub cs: Option<&'a str>,
+}
+
+fn resolve_caller_identity<'a>(caller: &TransitionCaller<'a>, claim: &str) -> Option<&'a str> {
+    let raw = match claim.trim().to_ascii_lowercase().as_str() {
+        "" | "id" => caller.id,
+        "cs" => caller.cs,
+        _ => None,
+    };
+    raw.map(str::trim).filter(|s| !s.is_empty())
+}
+
+fn record_value_as_identity(val: &Value) -> Option<String> {
+    match val {
+        Value::String(s) => {
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        }
+        Value::Number(n) => Some(n.to_string()),
+        _ => None,
+    }
+}
+
 /// Shared write guard for one record update: `state_machine` transition matrix
-/// followed by the `locked_when` immutability lock.
+/// (including per-record `actor_column` and separation-of-duties `not_same_as`
+/// checks) followed by the `locked_when` immutability lock.
 ///
 /// Used by `PUT`/`PATCH` ([`perform_update`]) and by the cron scheduler
 /// (`crate::nocode::scheduler`, role `"system"`) so both paths enforce exactly
@@ -527,7 +567,7 @@ pub async fn validate_unique_constraints_batch_put(
 ///
 /// * `old_record` — current row (read under row lock by the caller).
 /// * `patch` — columns about to be written.
-/// * `caller_role` — role checked against `transitions[].roles`.
+/// * `caller` — caller role and identity claims (`id`, `cs`).
 ///
 /// Returns `Ok(true)` when `patch` carries an authorized status transition,
 /// `Ok(false)` when it does not change the status field, `Err(msg)` otherwise.
@@ -535,7 +575,7 @@ pub fn check_transition_guards(
     table_schema: &TableSchema,
     old_record: &serde_json::Map<String, Value>,
     patch: &serde_json::Map<String, Value>,
-    caller_role: Option<&str>,
+    caller: TransitionCaller<'_>,
 ) -> Result<bool, String> {
     // 1. state_machine transition guard
     let mut status_transition_authorized = false;
@@ -569,15 +609,76 @@ pub fn check_transition_guards(
                 }
                 Some(trans) => {
                     if !trans.roles.is_empty() {
-                        let role = caller_role.unwrap_or("");
+                        let role = caller.role.unwrap_or("");
                         let is_role_ok = trans.roles.iter().any(|r| r.eq_ignore_ascii_case(role) || r == "*");
                         if !is_role_ok {
+                            // FORBIDDEN_PREFIX -> HTTP 403. (A message starting with
+                            // "Unauthorized" is classified as 401 by ApiError, which
+                            // clients treat as an expired session.)
                             return Err(format!(
-                                "Unauthorized state transition on '{}': role '{}' is not permitted to transition from '{}' to '{}'",
-                                sm.field, role, old_status_str, new_status_str
+                                "{}state transition on '{}': role '{}' is not permitted to transition from '{}' to '{}'",
+                                FORBIDDEN_PREFIX, sm.field, role, old_status_str, new_status_str
                             ));
                         }
                     }
+
+                    let claim_name = trans
+                        .actor_claim
+                        .as_deref()
+                        .or(sm.actor_claim.as_deref())
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or("id");
+
+                    if let Some(actor_col) = trans
+                        .actor_column
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                    {
+                        let Some(caller_id) = resolve_caller_identity(&caller, claim_name) else {
+                            return Err(format!(
+                                "{}state transition on '{}' from '{}' to '{}' requires caller claim '{}' to match column '{}', but caller identity is empty",
+                                FORBIDDEN_PREFIX, sm.field, old_status_str, new_status_str, claim_name, actor_col
+                            ));
+                        };
+                        let Some(record_actor) = old_record.get(actor_col).and_then(record_value_as_identity) else {
+                            return Err(format!(
+                                "{}state transition on '{}' from '{}' to '{}' requires column '{}' to match caller, but '{}' is empty",
+                                FORBIDDEN_PREFIX, sm.field, old_status_str, new_status_str, actor_col, actor_col
+                            ));
+                        };
+                        if record_actor.as_str() != caller_id {
+                            return Err(format!(
+                                "{}state transition on '{}' from '{}' to '{}' is restricted to the actor in column '{}'",
+                                FORBIDDEN_PREFIX, sm.field, old_status_str, new_status_str, actor_col
+                            ));
+                        }
+                    }
+
+                    if !trans.not_same_as.is_empty() {
+                        let Some(caller_id) = resolve_caller_identity(&caller, claim_name) else {
+                            return Err(format!(
+                                "{}state transition on '{}' from '{}' to '{}' enforces separation of duties (not_same_as), but caller claim '{}' is empty",
+                                FORBIDDEN_PREFIX, sm.field, old_status_str, new_status_str, claim_name
+                            ));
+                        };
+                        for col in &trans.not_same_as {
+                            let col = col.trim();
+                            if col.is_empty() {
+                                continue;
+                            }
+                            if let Some(record_actor) = old_record.get(col).and_then(record_value_as_identity)
+                                && record_actor.eq_ignore_ascii_case(caller_id)
+                            {
+                                return Err(format!(
+                                    "{}state transition on '{}' from '{}' to '{}' violates separation of duties: caller cannot be the same as '{}'",
+                                    FORBIDDEN_PREFIX, sm.field, old_status_str, new_status_str, col
+                                ));
+                            }
+                        }
+                    }
+
                     status_transition_authorized = true;
                 }
             }
@@ -633,7 +734,7 @@ pub async fn perform_update(
     body: &Value,
     auth_token: Option<String>,
     actor_id: Option<&str>,
-    caller_role: Option<&str>,
+    transition_caller: TransitionCaller<'_>,
     audit_ctx: crate::nocode::audit_trail::AuditContext<'_>,
 ) -> Result<(String, i32, Value), String> {
     // Handling password-only update for flx_users
@@ -727,7 +828,7 @@ pub async fn perform_update(
 
         // 1-2. state_machine transition guard + locked_when immutability lock
         //      (shared with the cron scheduler, see `check_transition_guards`).
-        if let Err(e) = check_transition_guards(table_schema, &old_record, &patch_fields, caller_role) {
+        if let Err(e) = check_transition_guards(table_schema, &old_record, &patch_fields, transition_caller) {
             let _ = tx.rollback().await;
             return Err(e);
         }
@@ -1327,16 +1428,19 @@ mod tests {
         let sm = crate::model::StateMachine {
             field: "status".to_string(),
             initial: Some("DRAFT".to_string()),
+            actor_claim: None,
             transitions: vec![
                 crate::model::StateTransition {
                     from: serde_json::json!("DRAFT"),
                     to: "APPROVED".to_string(),
                     roles: vec!["manager".to_string(), "admin".to_string()],
+                    ..Default::default()
                 },
                 crate::model::StateTransition {
                     from: serde_json::json!("APPROVED"),
                     to: "SHIPPED".to_string(),
                     roles: vec!["warehouse".to_string()],
+                    ..Default::default()
                 },
             ],
         };
@@ -1387,11 +1491,13 @@ mod tests {
         let sm = crate::model::StateMachine {
             field: "status".to_string(),
             initial: Some("DRAFT".to_string()),
+            actor_claim: None,
             transitions: vec![
                 crate::model::StateTransition {
                     from: serde_json::json!("SHIPPED"),
                     to: "RETURNED".to_string(),
                     roles: vec!["admin".to_string()],
+                    ..Default::default()
                 },
             ],
         };
@@ -1433,6 +1539,173 @@ mod tests {
                 assert!(!only_allowed, "Modification of total_amount must still be blocked on locked record");
             }
         }
+    }
+
+    fn capa_schema_with_record_guards() -> TableSchema {
+        TableSchema {
+            table: "plant_capas".to_string(),
+            state_machine: Some(crate::model::StateMachine {
+                field: "status".to_string(),
+                initial: Some("ROOT_CAUSE_ANALYSIS".to_string()),
+                actor_claim: None,
+                transitions: vec![
+                    crate::model::StateTransition {
+                        from: serde_json::json!("ROOT_CAUSE_ANALYSIS"),
+                        to: "ACTION_PLANNING".to_string(),
+                        roles: vec![],
+                        actor_column: Some("pic_nip".to_string()),
+                        actor_claim: Some("cs".to_string()),
+                        not_same_as: vec![],
+                    },
+                    crate::model::StateTransition {
+                        from: serde_json::json!("ACTION_PLANNING"),
+                        to: "EVALUATION_APPROVAL".to_string(),
+                        roles: vec![],
+                        actor_column: Some("owner_id".to_string()),
+                        actor_claim: None, // default: "id"
+                        not_same_as: vec![],
+                    },
+                    crate::model::StateTransition {
+                        from: serde_json::json!("EVALUATION_APPROVAL"),
+                        to: "IMPLEMENTATION".to_string(),
+                        roles: vec!["plant_qa_manager".to_string()],
+                        actor_column: None,
+                        actor_claim: Some("cs".to_string()),
+                        not_same_as: vec!["prepared_by".to_string(), "pic_nip".to_string()],
+                    },
+                ],
+            }),
+            locked_when: Some(serde_json::from_str(r#"{"status": ["EVALUATION_APPROVAL"]}"#).unwrap()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_state_machine_actor_column_with_cs_and_id_claims() {
+        let schema = capa_schema_with_record_guards();
+
+        let mut old = serde_json::Map::new();
+        old.insert("status".into(), serde_json::json!("ROOT_CAUSE_ANALYSIS"));
+        old.insert("pic_nip".into(), serde_json::json!("NIP-1001"));
+        old.insert("owner_id".into(), serde_json::json!(42));
+
+        let mut patch = serde_json::Map::new();
+        patch.insert("status".into(), serde_json::json!("ACTION_PLANNING"));
+
+        // Matching cs claim -> allowed
+        let ok_caller = TransitionCaller { role: Some("staff"), id: Some("7"), cs: Some("NIP-1001") };
+        assert_eq!(check_transition_guards(&schema, &old, &patch, ok_caller), Ok(true));
+
+        // Different cs claim -> 403 Forbidden
+        let wrong_caller = TransitionCaller { role: Some("staff"), id: Some("8"), cs: Some("NIP-9999") };
+        let err = check_transition_guards(&schema, &old, &patch, wrong_caller).unwrap_err();
+        assert!(err.starts_with(FORBIDDEN_PREFIX), "expected FORBIDDEN_PREFIX, got: {}", err);
+
+        // Missing cs claim -> 403 Forbidden (fail-closed)
+        let empty_cs = TransitionCaller { role: Some("staff"), id: Some("7"), cs: None };
+        let err = check_transition_guards(&schema, &old, &patch, empty_cs).unwrap_err();
+        assert!(err.starts_with(FORBIDDEN_PREFIX), "expected FORBIDDEN_PREFIX, got: {}", err);
+
+        // NULL pic_nip on record -> 403 Forbidden (fail-closed)
+        let mut old_null = old.clone();
+        old_null.insert("pic_nip".into(), Value::Null);
+        let err = check_transition_guards(&schema, &old_null, &patch, ok_caller).unwrap_err();
+        assert!(err.starts_with(FORBIDDEN_PREFIX), "expected FORBIDDEN_PREFIX, got: {}", err);
+
+        // Spoofing attempt: caller tries to overwrite pic_nip in the same patch
+        let mut spoof_patch = patch.clone();
+        spoof_patch.insert("pic_nip".into(), serde_json::json!("NIP-9999"));
+        let err = check_transition_guards(&schema, &old, &spoof_patch, wrong_caller).unwrap_err();
+        assert!(err.starts_with(FORBIDDEN_PREFIX), "spoofed patch must still be rejected: {}", err);
+
+        // Default actor_claim ("id") against numeric DB column `owner_id` (42)
+        let mut old_ap = old.clone();
+        old_ap.insert("status".into(), serde_json::json!("ACTION_PLANNING"));
+        let mut patch_eval = serde_json::Map::new();
+        patch_eval.insert("status".into(), serde_json::json!("EVALUATION_APPROVAL"));
+
+        let owner = TransitionCaller { role: Some("staff"), id: Some("42"), cs: None };
+        assert_eq!(check_transition_guards(&schema, &old_ap, &patch_eval, owner), Ok(true));
+        let other = TransitionCaller { role: Some("staff"), id: Some("43"), cs: None };
+        let err = check_transition_guards(&schema, &old_ap, &patch_eval, other).unwrap_err();
+        assert!(err.starts_with(FORBIDDEN_PREFIX), "expected FORBIDDEN_PREFIX, got: {}", err);
+    }
+
+    #[test]
+    fn test_state_machine_not_same_as_separation_of_duties() {
+        let schema = capa_schema_with_record_guards();
+
+        let mut old = serde_json::Map::new();
+        old.insert("status".into(), serde_json::json!("EVALUATION_APPROVAL"));
+        old.insert("prepared_by".into(), serde_json::json!("NIP-1001"));
+        old.insert("pic_nip".into(), serde_json::json!("NIP-1002"));
+
+        let mut patch = serde_json::Map::new();
+        patch.insert("status".into(), serde_json::json!("IMPLEMENTATION"));
+
+        // Different QA manager -> allowed (and also passes locked_when for status-only transition)
+        let approver = TransitionCaller { role: Some("plant_qa_manager"), id: Some("99"), cs: Some("NIP-2000") };
+        assert_eq!(check_transition_guards(&schema, &old, &patch, approver), Ok(true));
+
+        // Same person as prepared_by -> 403 Forbidden
+        let same_as_preparer = TransitionCaller { role: Some("plant_qa_manager"), id: Some("10"), cs: Some("NIP-1001") };
+        let err = check_transition_guards(&schema, &old, &patch, same_as_preparer).unwrap_err();
+        assert!(err.starts_with(FORBIDDEN_PREFIX), "expected FORBIDDEN_PREFIX, got: {}", err);
+        assert!(err.contains("prepared_by"), "{}", err);
+
+        // Same person as pic_nip (even with different ASCII case) -> 403 Forbidden
+        let same_as_pic = TransitionCaller { role: Some("plant_qa_manager"), id: Some("11"), cs: Some("nip-1002") };
+        let err = check_transition_guards(&schema, &old, &patch, same_as_pic).unwrap_err();
+        assert!(err.starts_with(FORBIDDEN_PREFIX), "expected FORBIDDEN_PREFIX, got: {}", err);
+        assert!(err.contains("pic_nip"), "{}", err);
+
+        // Wrong role even when different person -> rejected by roles guard
+        let wrong_role = TransitionCaller { role: Some("staff"), id: Some("99"), cs: Some("NIP-2000") };
+        let err = check_transition_guards(&schema, &old, &patch, wrong_role).unwrap_err();
+        assert!(err.contains("role 'staff' is not permitted"), "{}", err);
+
+        // Missing caller cs claim -> 403 Forbidden (fail-closed)
+        let no_claim = TransitionCaller { role: Some("plant_qa_manager"), id: Some("99"), cs: None };
+        let err = check_transition_guards(&schema, &old, &patch, no_claim).unwrap_err();
+        assert!(err.starts_with(FORBIDDEN_PREFIX), "expected FORBIDDEN_PREFIX, got: {}", err);
+
+        // NULL value in one of not_same_as columns does not block a legitimate approver
+        let mut old_partial = old.clone();
+        old_partial.insert("pic_nip".into(), Value::Null);
+        assert_eq!(check_transition_guards(&schema, &old_partial, &patch, approver), Ok(true));
+    }
+
+    #[test]
+    fn test_state_machine_level_actor_claim_fallback() {
+        let schema = TableSchema {
+            table: "deviations".to_string(),
+            state_machine: Some(crate::model::StateMachine {
+                field: "status".to_string(),
+                initial: Some("OPEN".to_string()),
+                actor_claim: Some("cs".to_string()),
+                transitions: vec![crate::model::StateTransition {
+                    from: serde_json::json!("OPEN"),
+                    to: "INVESTIGATION".to_string(),
+                    roles: vec![],
+                    actor_column: Some("pic_nip".to_string()),
+                    actor_claim: None, // inherits "cs" from state_machine
+                    not_same_as: vec![],
+                }],
+            }),
+            ..Default::default()
+        };
+
+        let mut old = serde_json::Map::new();
+        old.insert("status".into(), serde_json::json!("OPEN"));
+        old.insert("pic_nip".into(), serde_json::json!("NIP-777"));
+
+        let mut patch = serde_json::Map::new();
+        patch.insert("status".into(), serde_json::json!("INVESTIGATION"));
+
+        let ok = TransitionCaller { role: None, id: Some("1"), cs: Some("NIP-777") };
+        assert_eq!(check_transition_guards(&schema, &old, &patch, ok), Ok(true));
+        let bad = TransitionCaller { role: None, id: Some("NIP-777"), cs: Some("NIP-888") };
+        assert!(check_transition_guards(&schema, &old, &patch, bad).unwrap_err().starts_with(FORBIDDEN_PREFIX));
     }
 }
 

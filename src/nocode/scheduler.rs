@@ -45,7 +45,7 @@ use crate::database::state::{rehydrate_placeholders, AppState, DbParam};
 use crate::log::log_output;
 use crate::model::{DbType, ScheduleAction, ScheduleDef, TableSchema};
 use crate::nocode::outbox;
-use crate::nocode::repositories::data_update_repo::check_transition_guards;
+use crate::nocode::repositories::data_update_repo::{TransitionCaller, check_transition_guards};
 use crate::nocode::sequences;
 use crate::nocode::validate::is_valid_identifier;
 use crate::registry::{self, Registry};
@@ -1020,7 +1020,12 @@ async fn execute_single_action(
                 if patch.iter().all(|(k, v)| same_value(old.get(k), v)) {
                     continue;
                 }
-                check_transition_guards(schema, old, &patch, Some(SYSTEM_ROLE))?;
+                check_transition_guards(
+                    schema,
+                    old,
+                    &patch,
+                    TransitionCaller { role: Some(SYSTEM_ROLE), id: None, cs: None },
+                )?;
 
                 // SET <patch>, updated_at, updated_by_id, version + 1
                 let mut sets: Vec<String> = patch.keys().map(|c| format!("{} = ?", c)).collect();
@@ -1550,9 +1555,20 @@ mod tests {
             state_machine: Some(StateMachine {
                 field: "status".into(),
                 initial: Some("DRAFT".into()),
+                actor_claim: None,
                 transitions: vec![
-                    StateTransition { from: json!("IMPLEMENTATION"), to: "OVERDUE".into(), roles: vec!["system".into()] },
-                    StateTransition { from: json!("DRAFT"), to: "CLOSED".into(), roles: vec!["qa_manager".into()] },
+                    StateTransition {
+                        from: json!("IMPLEMENTATION"),
+                        to: "OVERDUE".into(),
+                        roles: vec!["system".into()],
+                        ..Default::default()
+                    },
+                    StateTransition {
+                        from: json!("DRAFT"),
+                        to: "CLOSED".into(),
+                        roles: vec!["qa_manager".into()],
+                        ..Default::default()
+                    },
                 ],
             }),
             ..Default::default()
@@ -1562,11 +1578,12 @@ mod tests {
             m.insert("status".into(), json!(s));
             m
         };
-        assert_eq!(check_transition_guards(&schema, &rec("IMPLEMENTATION"), &rec("OVERDUE"), Some(SYSTEM_ROLE)), Ok(true));
-        assert_eq!(check_transition_guards(&schema, &rec("OVERDUE"), &rec("OVERDUE"), Some(SYSTEM_ROLE)), Ok(false));
-        let err = check_transition_guards(&schema, &rec("DRAFT"), &rec("CLOSED"), Some(SYSTEM_ROLE)).unwrap_err();
+        let sys = TransitionCaller { role: Some(SYSTEM_ROLE), id: None, cs: None };
+        assert_eq!(check_transition_guards(&schema, &rec("IMPLEMENTATION"), &rec("OVERDUE"), sys), Ok(true));
+        assert_eq!(check_transition_guards(&schema, &rec("OVERDUE"), &rec("OVERDUE"), sys), Ok(false));
+        let err = check_transition_guards(&schema, &rec("DRAFT"), &rec("CLOSED"), sys).unwrap_err();
         assert!(err.contains("role 'system' is not permitted"), "{}", err);
-        let err2 = check_transition_guards(&schema, &rec("CLOSED"), &rec("OVERDUE"), Some(SYSTEM_ROLE)).unwrap_err();
+        let err2 = check_transition_guards(&schema, &rec("CLOSED"), &rec("OVERDUE"), sys).unwrap_err();
         assert!(err2.contains("Illegal state transition"), "{}", err2);
     }
 

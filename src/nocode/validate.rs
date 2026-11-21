@@ -796,6 +796,83 @@ fn lint_one(ctx: &LintCtx<'_>, report: &mut LintReport, route: &str, schema: &Ta
                 format!("state_machine.field '{}' is not a column of this entity", sm.field),
             );
         }
+        // `initial` is enforced on POST/import and auto-filled when the status is
+        // omitted; that fill is only written when the field is a POST column.
+        if sm.initial.as_deref().is_some_and(|s| !s.trim().is_empty())
+            && schema.post.enable_method
+            && !schema.post.columns.iter().any(|c| c.trim_end_matches('*') == sm.field)
+        {
+            report.warn(
+                route,
+                format!(
+                    "state_machine.initial is set but '{}' is not in post.columns: POST cannot write the initial state (the DB default decides); add '{}' to post.columns",
+                    sm.field, sm.field
+                ),
+            );
+        }
+        if let Some(claim) = &sm.actor_claim {
+            let c = claim.trim();
+            if !c.eq_ignore_ascii_case("id") && !c.eq_ignore_ascii_case("cs") {
+                report.error(
+                    route,
+                    format!(
+                        "state_machine.actor_claim '{}' is invalid (must be 'id' or 'cs')",
+                        claim
+                    ),
+                );
+            }
+        }
+        for (idx, tr) in sm.transitions.iter().enumerate() {
+            if let Some(claim) = &tr.actor_claim {
+                let c = claim.trim();
+                if !c.eq_ignore_ascii_case("id") && !c.eq_ignore_ascii_case("cs") {
+                    report.error(
+                        route,
+                        format!(
+                            "state_machine.transitions[{}].actor_claim '{}' is invalid (must be 'id' or 'cs')",
+                            idx, claim
+                        ),
+                    );
+                }
+            }
+            if let Some(col) = &tr.actor_column {
+                let c = col.trim();
+                if c.is_empty() {
+                    report.error(
+                        route,
+                        format!("state_machine.transitions[{}].actor_column is empty", idx),
+                    );
+                } else if !LintCtx::has_column(schema, c) {
+                    report.error(
+                        route,
+                        format!(
+                            "state_machine.transitions[{}].actor_column '{}' is not a column of this entity",
+                            idx, c
+                        ),
+                    );
+                }
+            }
+            for col in &tr.not_same_as {
+                let c = col.trim();
+                if c.is_empty() {
+                    report.error(
+                        route,
+                        format!(
+                            "state_machine.transitions[{}].not_same_as contains an empty column name",
+                            idx
+                        ),
+                    );
+                } else if !LintCtx::has_column(schema, c) {
+                    report.error(
+                        route,
+                        format!(
+                            "state_machine.transitions[{}].not_same_as '{}' is not a column of this entity",
+                            idx, c
+                        ),
+                    );
+                }
+            }
+        }
     }
     if let Some(lw) = &schema.locked_when {
         for field in lw.get_conditions().keys() {
@@ -1599,6 +1676,80 @@ mod lint_tests {
             &["sales_order".to_string(), "sales_order_item".to_string(), "orders_v2".to_string()],
         );
         assert!(rep.errors.iter().any(|e| e.contains("already declared by route 'sales_order'")), "{:?}", rep.errors);
+    }
+
+    #[test]
+    fn state_machine_record_guards_validation() {
+        // Invalid actor_column, not_same_as column, and actor_claim
+        let mut v = order_json();
+        v["state_machine"] = json!({
+            "field": "status",
+            "actor_claim": "nip",
+            "transitions": [
+                {
+                    "from": "DRAFT",
+                    "to": "CONFIRMED",
+                    "actor_column": "missing_pic",
+                    "actor_claim": "email",
+                    "not_same_as": ["missing_preparer"]
+                }
+            ]
+        });
+        let mut m = HashMap::new();
+        m.insert("sales_order".to_string(), schema(v));
+        m.insert("sales_order_item".to_string(), schema(item_json()));
+        let rep = lint_schemas(&m, &["sales_order".to_string(), "sales_order_item".to_string()]);
+        assert!(
+            rep.errors.iter().any(|e| e.contains("state_machine.actor_claim 'nip'")),
+            "{:?}",
+            rep.errors
+        );
+        assert!(
+            rep.errors.iter().any(|e| e.contains("transitions[0].actor_claim 'email'")),
+            "{:?}",
+            rep.errors
+        );
+        assert!(
+            rep.errors.iter().any(|e| e.contains("transitions[0].actor_column 'missing_pic'")),
+            "{:?}",
+            rep.errors
+        );
+        assert!(
+            rep.errors.iter().any(|e| e.contains("transitions[0].not_same_as 'missing_preparer'")),
+            "{:?}",
+            rep.errors
+        );
+
+        // Valid configuration with real columns and valid actor_claim
+        let mut ok = order_json();
+        ok["columns"].as_array_mut().unwrap().push(json!({
+            "name": "pic_nip", "type_data": "varchar(40)", "nullable": true
+        }));
+        ok["columns"].as_array_mut().unwrap().push(json!({
+            "name": "prepared_by", "type_data": "varchar(40)", "nullable": true
+        }));
+        ok["state_machine"] = json!({
+            "field": "status",
+            "actor_claim": "cs",
+            "transitions": [
+                {
+                    "from": "DRAFT",
+                    "to": "CONFIRMED",
+                    "actor_column": "pic_nip"
+                },
+                {
+                    "from": "CONFIRMED",
+                    "to": "APPROVED",
+                    "roles": ["plant_qa_manager"],
+                    "not_same_as": ["prepared_by", "pic_nip"]
+                }
+            ]
+        });
+        let mut m2 = HashMap::new();
+        m2.insert("sales_order".to_string(), schema(ok));
+        m2.insert("sales_order_item".to_string(), schema(item_json()));
+        let rep2 = lint_schemas(&m2, &["sales_order".to_string(), "sales_order_item".to_string()]);
+        assert!(rep2.errors.is_empty(), "{:?}", rep2.errors);
     }
 
     #[test]

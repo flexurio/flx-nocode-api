@@ -53,6 +53,42 @@ fn value_is_present(v: Option<&Value>) -> bool {
     }
 }
 
+/// `state_machine.initial` enforcement for one record about to be created.
+///
+/// Opt-in: does nothing when the entity has no `state_machine` or no `initial`.
+/// Otherwise the status field is filled with `initial` when absent / null / empty,
+/// and any other value is rejected, so a record can only enter the workflow at its
+/// first state and must then pass every transition guard (`roles`, `actor_column`,
+/// `not_same_as`). The error message contains "Invalid" so it maps to HTTP 400.
+pub fn enforce_initial_state(
+    table_schema: &TableSchema,
+    record: &mut serde_json::Map<String, Value>,
+) -> Result<(), String> {
+    let Some(sm) = &table_schema.state_machine else { return Ok(()) };
+    let Some(initial) = sm.initial.as_deref().map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(());
+    };
+    let given = match record.get(&sm.field) {
+        None | Some(Value::Null) => None,
+        // "" and "null" count as absent, same as `value_is_present` (CSV/XLSX cells).
+        Some(Value::String(s)) => {
+            Some(s.trim().to_string()).filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case("null"))
+        }
+        Some(v) => Some(v.to_string()),
+    };
+    match given {
+        None => {
+            record.insert(sm.field.clone(), Value::String(initial.to_string()));
+            Ok(())
+        }
+        Some(v) if v == initial => Ok(()),
+        Some(v) => Err(format!(
+            "Invalid initial state on '{}': new records must start in '{}' (got '{}')",
+            sm.field, initial, v
+        )),
+    }
+}
+
 /// Bind a boolean-like column (`bool`/`boolean` -> Bool, `bit`/`tinyint(1)` -> 0/1).
 fn bind_bool(col: &Column, raw: &Value, kind: BoolKind) -> Result<(InsertValue, Value), WebResponse> {
     let Some(b) = parse_bool_value(raw) else {
@@ -92,6 +128,12 @@ pub async fn process_insert_request(
             .map_err(|e| err(format!("Forbidden: {}", e)))?;
         actor_id_opt = Some(claims.id.clone());
         claims_opt = Some(claims);
+    }
+
+    // 1b. state_machine.initial: a new record must start in the initial state
+    //     (checked before queueing so a rejected job never enters the queue).
+    if let Some(map) = body.as_object_mut() {
+        enforce_initial_state(table_schema, map).map_err(err)?;
     }
 
     // 2. Handle Write Queue
@@ -772,4 +814,70 @@ fn build_formula_value_service(raw: &str, body: &Value) -> (String, Vec<DbParam>
         }
     }
     (sql, params)
+}
+
+#[cfg(test)]
+mod initial_state_tests {
+    use super::enforce_initial_state;
+    use crate::model::{StateMachine, TableSchema};
+    use serde_json::{json, Map, Value};
+
+    fn schema(initial: Option<&str>) -> TableSchema {
+        TableSchema {
+            table: "plant_capas".into(),
+            state_machine: Some(StateMachine {
+                field: "status".into(),
+                initial: initial.map(str::to_string),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn rec(status: Option<Value>) -> Map<String, Value> {
+        let mut m = Map::new();
+        m.insert("code".into(), json!("CAPA-1"));
+        if let Some(s) = status {
+            m.insert("status".into(), s);
+        }
+        m
+    }
+
+    #[test]
+    fn no_initial_or_no_state_machine_is_unchanged() {
+        // Opt-in: entities without `initial` keep today's behaviour.
+        let mut r = rec(Some(json!("IMPLEMENTATION")));
+        assert_eq!(enforce_initial_state(&schema(None), &mut r), Ok(()));
+        assert_eq!(r["status"], "IMPLEMENTATION");
+
+        let mut r = rec(None);
+        assert_eq!(enforce_initial_state(&TableSchema::default(), &mut r), Ok(()));
+        assert!(!r.contains_key("status"));
+    }
+
+    #[test]
+    fn missing_or_empty_status_is_filled() {
+        let s = schema(Some("DRAFT"));
+        for v in [None, Some(Value::Null), Some(json!("")), Some(json!("  ")), Some(json!("null"))] {
+            let mut r = rec(v);
+            assert_eq!(enforce_initial_state(&s, &mut r), Ok(()));
+            assert_eq!(r["status"], "DRAFT");
+        }
+    }
+
+    #[test]
+    fn initial_is_accepted_and_other_states_rejected() {
+        let s = schema(Some("DRAFT"));
+        let mut r = rec(Some(json!(" DRAFT ")));
+        assert_eq!(enforce_initial_state(&s, &mut r), Ok(()));
+
+        let mut r = rec(Some(json!("IMPLEMENTATION")));
+        let e = enforce_initial_state(&s, &mut r).unwrap_err();
+        assert!(e.starts_with("Invalid initial state on 'status'"), "{}", e);
+        // Must map to HTTP 400, not 500.
+        assert_eq!(crate::error::ApiError::from_message(&e).status, actix_web::http::StatusCode::BAD_REQUEST);
+        // Case matters: state names are exact.
+        let mut r = rec(Some(json!("draft")));
+        assert!(enforce_initial_state(&s, &mut r).is_err());
+    }
 }

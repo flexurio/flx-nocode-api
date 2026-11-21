@@ -392,7 +392,6 @@ async fn write_read_cache_etag_metrics() {
           ],
           "state_machine": {{
             "field": "status",
-            "initial": "DRAFT",
             "transitions": [
               {{ "from": "IMPLEMENTATION", "to": "OVERDUE", "roles": ["system"] }},
               {{ "from": "DRAFT", "to": "CLOSED", "roles": ["qa_manager"] }}
